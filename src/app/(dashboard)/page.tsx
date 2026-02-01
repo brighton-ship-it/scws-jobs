@@ -1,6 +1,5 @@
 'use client';
 
-
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { JobStatusBadge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -10,6 +9,7 @@ import {
   mockJobs,
   mockCustomers,
   mockInvoices,
+  mockQuotes,
   getPropertyById,
   getCustomerById,
   getUserById,
@@ -26,6 +26,9 @@ import {
   Calendar,
   TrendingUp,
   AlertTriangle,
+  FileText,
+  ClipboardList,
+  Receipt,
 } from 'lucide-react';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 import Link from 'next/link';
@@ -40,11 +43,6 @@ export default function DashboardPage() {
   // This week's stats
   const weekStart = startOfWeek(new Date());
   const weekEnd = endOfWeek(new Date());
-  const thisWeekJobs = mockJobs.filter(j => {
-    if (!j.scheduled_date) return false;
-    const jobDate = new Date(j.scheduled_date);
-    return jobDate >= weekStart && jobDate <= weekEnd;
-  });
 
   // Revenue calculations
   const thisWeekRevenue = mockInvoices
@@ -56,7 +54,7 @@ export default function DashboardPage() {
     .reduce((sum, inv) => sum + inv.amount, 0);
 
   const pendingInvoices = mockInvoices.filter(i => i.status === 'sent');
-  const pendingAmount = pendingInvoices.reduce((sum, inv) => sum + inv.amount, 0);
+  const pendingAmount = pendingInvoices.reduce((sum, inv) => sum + inv.total, 0);
 
   // Overdue invoices
   const overdueInvoices = pendingInvoices.filter(inv => {
@@ -67,45 +65,49 @@ export default function DashboardPage() {
   // Unassigned jobs
   const unassignedJobs = getUnassignedJobs();
 
-  const stats = [
-    {
-      name: "Today's Jobs",
-      value: todaysJobs.length,
-      icon: Calendar,
-      color: 'bg-blue-500',
-      href: '/schedule',
+  // Workflow stats for Jobber-style cards
+  const workflowStats = {
+    // Requests (mock - we don't have requests in this app)
+    requests: {
+      new: 3,
+      assessmentsComplete: 1,
+      overdue: 0,
     },
-    {
-      name: 'Week Revenue',
-      value: `$${(thisWeekRevenue || 0).toLocaleString()}`,
-      icon: TrendingUp,
-      color: 'bg-green-500',
-      href: '/reports/revenue',
+    // Quotes
+    quotes: {
+      approved: mockQuotes.filter(q => q.status === 'accepted').length,
+      approvedAmount: mockQuotes.filter(q => q.status === 'accepted').reduce((sum, q) => sum + q.total, 0),
+      draft: mockQuotes.filter(q => q.status === 'draft').length,
+      draftAmount: mockQuotes.filter(q => q.status === 'draft').reduce((sum, q) => sum + q.total, 0),
+      changesRequested: mockQuotes.filter(q => q.status === 'declined').length,
     },
-    {
-      name: 'Outstanding',
-      value: `$${(pendingAmount || 0).toLocaleString()}`,
-      icon: DollarSign,
-      color: 'bg-purple-500',
-      href: '/invoices',
+    // Jobs
+    jobs: {
+      requiresInvoicing: mockJobs.filter(j => j.status === 'completed').length,
+      requiresInvoicingAmount: mockJobs.filter(j => j.status === 'completed').length * 450, // Mock
+      active: mockJobs.filter(j => j.status === 'scheduled' || j.status === 'in_progress').length,
+      activeAmount: mockJobs.filter(j => j.status === 'scheduled' || j.status === 'in_progress').length * 350,
+      actionRequired: mockJobs.filter(j => j.priority === 'urgent' || j.priority === 'high').length,
     },
-    {
-      name: 'Need Scheduling',
-      value: unassignedJobs.length,
-      icon: AlertTriangle,
-      color: unassignedJobs.length > 0 ? 'bg-orange-500' : 'bg-gray-400',
-      href: '/dispatch',
+    // Invoices
+    invoices: {
+      awaitingPayment: mockInvoices.filter(i => i.status === 'sent').length,
+      awaitingPaymentAmount: mockInvoices.filter(i => i.status === 'sent').reduce((sum, inv) => sum + (inv.total - inv.amount_paid), 0),
+      draft: mockInvoices.filter(i => i.status === 'draft').length,
+      draftAmount: mockInvoices.filter(i => i.status === 'draft').reduce((sum, inv) => sum + inv.total, 0),
+      pastDue: overdueInvoices.length,
+      pastDueAmount: overdueInvoices.reduce((sum, inv) => sum + (inv.total - inv.amount_paid), 0),
     },
-  ];
+  };
 
   return (
     <div className="space-y-6">
       {/* Welcome */}
       <div>
+        <p className="text-sm text-gray-500">{format(new Date(), 'EEEE, MMMM d')}</p>
         <h2 className="text-2xl font-bold text-gray-900">
           Good {getTimeOfDay()}, {user?.name?.split(' ')[0]}
         </h2>
-        <p className="text-gray-600">Here&apos;s what&apos;s happening today</p>
       </div>
 
       {/* Alerts */}
@@ -116,7 +118,7 @@ export default function DashboardPage() {
               <div className="flex items-center gap-3 rounded-lg bg-red-50 border border-red-200 p-4 hover:bg-red-100 transition-colors">
                 <AlertCircle className="h-5 w-5 text-red-600" />
                 <p className="flex-1 text-sm font-medium text-red-800">
-                  {overdueInvoices.length} invoice{overdueInvoices.length !== 1 ? 's' : ''} overdue
+                  {overdueInvoices.length} invoice{overdueInvoices.length !== 1 ? 's' : ''} past due
                 </p>
                 <ArrowRight className="h-4 w-4 text-red-600" />
               </div>
@@ -136,23 +138,130 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Stats Grid */}
+      {/* Jobber-style Workflow Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {stats.map((stat) => (
-          <Link key={stat.name} href={stat.href}>
-            <Card className="hover:shadow-md transition-shadow cursor-pointer">
-              <CardContent className="flex items-center gap-4 py-6">
-                <div className={`rounded-lg p-3 ${stat.color}`}>
-                  <stat.icon className="h-6 w-6 text-white" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-gray-600">{stat.name}</p>
-                  <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
+        {/* Requests Card */}
+        <Card className="hover:shadow-md transition-shadow">
+          <CardContent className="py-5">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 rounded-lg bg-blue-100">
+                <ClipboardList className="h-5 w-5 text-blue-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">Requests</h3>
+            </div>
+            <Link href="/quotes" className="block">
+              <p className="text-2xl font-bold text-gray-900">
+                {workflowStats.requests.new} <span className="text-base font-medium text-gray-600">New</span>
+              </p>
+            </Link>
+            <div className="mt-3 space-y-1 text-sm">
+              <Link href="/quotes" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Assessments complete</span>
+                <span>{workflowStats.requests.assessmentsComplete}</span>
+              </Link>
+              <Link href="/quotes" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Overdue</span>
+                <span className={workflowStats.requests.overdue > 0 ? 'text-red-600 font-medium' : ''}>
+                  {workflowStats.requests.overdue}
+                </span>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Quotes Card */}
+        <Card className="hover:shadow-md transition-shadow">
+          <CardContent className="py-5">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 rounded-lg bg-green-100">
+                <FileText className="h-5 w-5 text-green-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">Quotes</h3>
+            </div>
+            <Link href="/quotes?status=accepted" className="block">
+              <p className="text-2xl font-bold text-gray-900">
+                {workflowStats.quotes.approved}{' '}
+                <span className="text-base font-medium text-gray-600">
+                  Approved · ${workflowStats.quotes.approvedAmount.toLocaleString()}
+                </span>
+              </p>
+            </Link>
+            <div className="mt-3 space-y-1 text-sm">
+              <Link href="/quotes?status=draft" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Draft</span>
+                <span>{workflowStats.quotes.draft} · ${workflowStats.quotes.draftAmount.toLocaleString()}</span>
+              </Link>
+              <Link href="/quotes?status=declined" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Changes requested</span>
+                <span>{workflowStats.quotes.changesRequested}</span>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Jobs Card */}
+        <Card className="hover:shadow-md transition-shadow">
+          <CardContent className="py-5">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 rounded-lg bg-purple-100">
+                <Briefcase className="h-5 w-5 text-purple-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">Jobs</h3>
+            </div>
+            <Link href="/jobs?status=requires_invoicing" className="block">
+              <p className="text-2xl font-bold text-gray-900">
+                {workflowStats.jobs.requiresInvoicing}{' '}
+                <span className="text-base font-medium text-gray-600">
+                  Requires invoicing · ${workflowStats.jobs.requiresInvoicingAmount.toLocaleString()}
+                </span>
+              </p>
+            </Link>
+            <div className="mt-3 space-y-1 text-sm">
+              <Link href="/jobs?status=scheduled" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Active</span>
+                <span>{workflowStats.jobs.active} · ${workflowStats.jobs.activeAmount.toLocaleString()}</span>
+              </Link>
+              <Link href="/jobs?status=action_required" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Action required</span>
+                <span className={workflowStats.jobs.actionRequired > 0 ? 'text-orange-600 font-medium' : ''}>
+                  {workflowStats.jobs.actionRequired}
+                </span>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Invoices Card */}
+        <Card className="hover:shadow-md transition-shadow">
+          <CardContent className="py-5">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="p-2 rounded-lg bg-yellow-100">
+                <Receipt className="h-5 w-5 text-yellow-600" />
+              </div>
+              <h3 className="font-semibold text-gray-900">Invoices</h3>
+            </div>
+            <Link href="/invoices?status=sent" className="block">
+              <p className="text-2xl font-bold text-gray-900">
+                {workflowStats.invoices.awaitingPayment}{' '}
+                <span className="text-base font-medium text-gray-600">
+                  Awaiting payment · ${workflowStats.invoices.awaitingPaymentAmount.toLocaleString()}
+                </span>
+              </p>
+            </Link>
+            <div className="mt-3 space-y-1 text-sm">
+              <Link href="/invoices?status=draft" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Draft</span>
+                <span>{workflowStats.invoices.draft} · ${workflowStats.invoices.draftAmount.toLocaleString()}</span>
+              </Link>
+              <Link href="/invoices?status=overdue" className="flex justify-between text-gray-600 hover:text-green-600">
+                <span>Past due</span>
+                <span className={workflowStats.invoices.pastDue > 0 ? 'text-red-600 font-medium' : ''}>
+                  {workflowStats.invoices.pastDue} · ${workflowStats.invoices.pastDueAmount.toLocaleString()}
+                </span>
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
       </div>
 
       {/* Main Content Grid */}
@@ -161,7 +270,20 @@ export default function DashboardPage() {
         <div className="lg:col-span-2">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Today&apos;s Schedule</CardTitle>
+              <div>
+                <CardTitle>Today&apos;s Appointments</CardTitle>
+                <div className="flex gap-4 mt-2 text-sm">
+                  <span className="text-gray-500">
+                    Total: <span className="font-medium text-gray-900">${(todaysJobs.length * 350).toLocaleString()}</span>
+                  </span>
+                  <span className="text-gray-500">
+                    Active: <span className="font-medium text-gray-900">{todaysJobs.filter(j => j.status === 'in_progress').length}</span>
+                  </span>
+                  <span className="text-gray-500">
+                    Completed: <span className="font-medium text-green-600">{todaysJobs.filter(j => j.status === 'completed').length}</span>
+                  </span>
+                </div>
+              </div>
               <Button variant="ghost" size="sm" href="/schedule">
                 View all <ArrowRight className="h-4 w-4" />
               </Button>
@@ -184,10 +306,10 @@ export default function DashboardPage() {
                   return (
                     <Link
                       key={job.id}
-                      href={`/jobs/${job.id}/edit`}
+                      href={`/jobs/${job.id}`}
                       className="flex items-start gap-4 rounded-lg border border-gray-100 p-4 hover:bg-gray-50 transition-colors"
                     >
-                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-blue-100 text-blue-600">
+                      <div className="flex h-12 w-12 items-center justify-center rounded-lg bg-green-100 text-green-600">
                         <Clock className="h-5 w-5" />
                       </div>
                       <div className="flex-1 min-w-0">
@@ -215,90 +337,88 @@ export default function DashboardPage() {
           </Card>
         </div>
 
-        {/* Activity Feed */}
-        <ActivityFeed limit={6} />
-      </div>
-
-      {/* Bottom Row */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {/* Pending Invoices */}
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Pending Invoices</CardTitle>
-            <Button variant="ghost" size="sm" href="/invoices">
-              View all <ArrowRight className="h-4 w-4" />
-            </Button>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {pendingInvoices.length === 0 ? (
-              <div className="py-6 text-center">
-                <DollarSign className="mx-auto h-10 w-10 text-gray-300" />
-                <p className="mt-2 text-sm text-gray-500">No pending invoices</p>
-              </div>
-            ) : (
-              pendingInvoices.slice(0, 5).map((invoice) => {
-                const customer = getCustomerById(invoice.customer_id);
-                const dueDate = invoice.due_date ? new Date(invoice.due_date) : null;
-                const isOverdue = dueDate && dueDate < new Date();
-
+        {/* Business Performance Sidebar */}
+        <div className="space-y-6">
+          {/* Receivables */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Receivables</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {mockCustomers.slice(0, 3).map((customer) => {
+                const customerInvoices = mockInvoices.filter(i => 
+                  i.customer_id === customer.id && 
+                  i.status !== 'paid' && 
+                  i.status !== 'void'
+                );
+                const balance = customerInvoices.reduce((sum, inv) => sum + (inv.total - inv.amount_paid), 0);
+                if (balance === 0) return null;
+                
                 return (
-                  <div
-                    key={invoice.id}
-                    className="flex items-center gap-4 rounded-lg border border-gray-100 p-4 hover:bg-gray-50 transition-colors"
-                  >
-                    <div className={`rounded-lg p-2 ${isOverdue ? 'bg-red-100' : 'bg-gray-100'}`}>
-                      {isOverdue ? (
-                        <AlertCircle className="h-5 w-5 text-red-600" />
-                      ) : (
-                        <DollarSign className="h-5 w-5 text-gray-600" />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900">{invoice.invoice_number}</p>
-                      <p className="text-sm text-gray-600 truncate">{customer?.name}</p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-medium text-gray-900">
-                        ${(invoice.amount || 0).toLocaleString()}
-                      </p>
-                      {dueDate && (
-                        <p className={`text-sm ${isOverdue ? 'text-red-600' : 'text-gray-500'}`}>
-                          Due {format(dueDate, 'MMM d')}
-                        </p>
-                      )}
-                    </div>
+                  <div key={customer.id} className="flex items-center justify-between">
+                    <Link href={`/customers/${customer.id}`} className="text-sm font-medium text-gray-900 hover:text-green-600">
+                      {customer.name}
+                    </Link>
+                    <span className="text-sm font-medium text-gray-900">${balance.toLocaleString()}</span>
                   </div>
                 );
-              })
-            )}
-          </CardContent>
-        </Card>
+              })}
+              <Link href="/reports/receivables" className="text-sm text-green-600 hover:underline block mt-2">
+                View all receivables →
+              </Link>
+            </CardContent>
+          </Card>
 
-        {/* Quick Actions */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Quick Actions</CardTitle>
-          </CardHeader>
-          <CardContent className="grid gap-3 sm:grid-cols-2">
-            <Button href="/jobs/new" className="justify-start">
-              <Briefcase className="h-4 w-4" />
-              Create New Job
-            </Button>
-            <Button href="/customers/new" variant="outline" className="justify-start">
-              <Users className="h-4 w-4" />
-              Add Customer
-            </Button>
-            <Button href="/dispatch" variant="outline" className="justify-start">
-              <MapPin className="h-4 w-4" />
-              Dispatch Board
-            </Button>
-            <Button href="/reports" variant="outline" className="justify-start">
-              <TrendingUp className="h-4 w-4" />
-              View Reports
-            </Button>
-          </CardContent>
-        </Card>
+          {/* Upcoming Jobs */}
+          <Card>
+            <CardContent className="py-4">
+              <p className="text-sm text-gray-500">Upcoming jobs this week</p>
+              <p className="text-2xl font-bold text-gray-900">
+                ${mockJobs.filter(j => j.status === 'scheduled').length * 400}
+              </p>
+              <p className="text-xs text-green-600">+12% vs last week</p>
+            </CardContent>
+          </Card>
+
+          {/* Revenue MTD */}
+          <Card>
+            <CardContent className="py-4">
+              <p className="text-sm text-gray-500">Revenue this month</p>
+              <p className="text-2xl font-bold text-gray-900">
+                ${mockInvoices.filter(i => i.status === 'paid').reduce((sum, inv) => sum + inv.total, 0).toLocaleString()}
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Activity Feed */}
+          <ActivityFeed limit={4} />
+        </div>
       </div>
+
+      {/* Quick Actions */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Quick Actions</CardTitle>
+        </CardHeader>
+        <CardContent className="grid gap-3 sm:grid-cols-4">
+          <Button href="/jobs/new" className="justify-start">
+            <Briefcase className="h-4 w-4" />
+            Create Job
+          </Button>
+          <Button href="/customers/new" variant="outline" className="justify-start">
+            <Users className="h-4 w-4" />
+            Add Customer
+          </Button>
+          <Button href="/quotes/new" variant="outline" className="justify-start">
+            <FileText className="h-4 w-4" />
+            New Quote
+          </Button>
+          <Button href="/invoices/new" variant="outline" className="justify-start">
+            <Receipt className="h-4 w-4" />
+            Create Invoice
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

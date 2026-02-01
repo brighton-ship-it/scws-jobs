@@ -4,17 +4,20 @@ import { createContext, useContext, useState, useCallback, ReactNode, useEffect 
 
 interface SidebarContextType {
   isOpen: boolean;
+  isCollapsed: boolean;
   toggle: () => void;
   close: () => void;
   open: () => void;
+  toggleCollapse: () => void;
 }
 
 const SidebarContext = createContext<SidebarContextType | undefined>(undefined);
 
 export function SidebarProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(false);
 
-  // Close sidebar on route change (mobile)
+  // Handle responsive state
   useEffect(() => {
     const handleResize = () => {
       if (window.innerWidth >= 1024) {
@@ -24,19 +27,30 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
       }
     };
 
-    // Set initial state
+    // Load collapsed state from localStorage
+    const saved = localStorage.getItem('sidebar-collapsed');
+    if (saved) {
+      setIsCollapsed(JSON.parse(saved));
+    }
+
     handleResize();
 
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Save collapsed state
+  useEffect(() => {
+    localStorage.setItem('sidebar-collapsed', JSON.stringify(isCollapsed));
+  }, [isCollapsed]);
+
   const toggle = useCallback(() => setIsOpen(prev => !prev), []);
   const close = useCallback(() => setIsOpen(false), []);
   const open = useCallback(() => setIsOpen(true), []);
+  const toggleCollapse = useCallback(() => setIsCollapsed(prev => !prev), []);
 
   return (
-    <SidebarContext.Provider value={{ isOpen, toggle, close, open }}>
+    <SidebarContext.Provider value={{ isOpen, isCollapsed, toggle, close, open, toggleCollapse }}>
       {children}
     </SidebarContext.Provider>
   );

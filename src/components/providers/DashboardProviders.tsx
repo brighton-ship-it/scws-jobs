@@ -4,7 +4,7 @@ import { ReactNode, Suspense } from 'react';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { SearchProvider } from '@/contexts/SearchContext';
-import { SidebarProvider } from '@/contexts/SidebarContext';
+import { SidebarProvider, useSidebar } from '@/contexts/SidebarContext';
 import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
@@ -24,6 +24,26 @@ function DashboardSkeleton() {
   );
 }
 
+function DashboardContent({ children }: { children: ReactNode }) {
+  const { isCollapsed } = useSidebar();
+  
+  return (
+    <div className="flex h-screen bg-gray-50">
+      <Sidebar />
+      <div className={`
+        flex flex-1 flex-col overflow-hidden w-full
+        transition-all duration-300
+        ${isCollapsed ? 'lg:ml-0' : 'lg:ml-0'}
+      `}>
+        <Header />
+        <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+          {children}
+        </main>
+      </div>
+    </div>
+  );
+}
+
 export function DashboardProviders({ children }: { children: ReactNode }) {
   return (
     <Suspense fallback={<DashboardSkeleton />}>
@@ -31,15 +51,7 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
         <NotificationProvider>
           <SearchProvider>
             <SidebarProvider>
-              <div className="flex h-screen bg-gray-50">
-                <Sidebar />
-                <div className="flex flex-1 flex-col overflow-hidden w-full lg:w-auto">
-                  <Header />
-                  <main className="flex-1 overflow-y-auto p-4 lg:p-6">
-                    {children}
-                  </main>
-                </div>
-              </div>
+              <DashboardContent>{children}</DashboardContent>
               <GlobalSearch />
               <Toaster />
             </SidebarProvider>
