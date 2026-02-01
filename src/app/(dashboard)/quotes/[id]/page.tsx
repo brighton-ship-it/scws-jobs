@@ -3,7 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
-import dynamic from 'next/dynamic';
+// import dynamic from 'next/dynamic';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { QuoteStatusBadge } from '@/components/ui/Badge';
@@ -16,27 +16,10 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 
-// Dynamically import PDF components with error handling
-const QuotePDF = dynamic(
-  () => import('@/components/pdf/QuotePDF').then(mod => ({ default: mod.QuotePDF })),
-  { ssr: false }
-);
-
-const PDFDownloadLink = dynamic(
-  () => import('@react-pdf/renderer').then(mod => mod.PDFDownloadLink).catch(() => {
-    // Return a fallback component if PDF fails to load
-    return () => null;
-  }),
-  { 
-    ssr: false,
-    loading: () => (
-      <Button disabled variant="outline">
-        <Loader2 className="h-4 w-4 animate-spin" />
-        Loading...
-      </Button>
-    )
-  }
-);
+// PDF components temporarily disabled for stability
+// TODO: Fix react-pdf compatibility issues
+const QuotePDF = null;
+const PDFDownloadLink = null;
 
 export default function QuoteDetailPage() {
   const router = useRouter();
