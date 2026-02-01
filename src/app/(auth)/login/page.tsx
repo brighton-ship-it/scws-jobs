@@ -3,6 +3,13 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Wrench } from 'lucide-react';
+import { createClient } from '@/lib/supabase/client';
+
+// Check if Supabase is configured
+const isSupabaseConfigured = process.env.NEXT_PUBLIC_SUPABASE_URL && 
+  process.env.NEXT_PUBLIC_SUPABASE_URL !== 'your-supabase-url' &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY &&
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY !== 'your-anon-key';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -16,14 +23,28 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
 
-    // For demo without Supabase, accept any login
-    // In production, this would use Supabase auth
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    
     if (!email || !password) {
       setError('Please enter email and password');
       setLoading(false);
       return;
+    }
+
+    if (isSupabaseConfigured) {
+      // Use Supabase auth
+      const supabase = createClient();
+      const { error: authError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      
+      if (authError) {
+        setError(authError.message);
+        setLoading(false);
+        return;
+      }
+    } else {
+      // Demo mode - accept any login
+      await new Promise((resolve) => setTimeout(resolve, 500));
     }
 
     // Redirect to dashboard
@@ -95,13 +116,15 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Demo credentials hint */}
-          <div className="mt-6 rounded-lg bg-blue-50 p-4 text-sm">
-            <p className="font-medium text-blue-800 mb-1">Demo Mode</p>
-            <p className="text-blue-600">
-              Supabase not connected. Any email/password will work for testing.
-            </p>
-          </div>
+          {/* Demo credentials hint - only show if Supabase not configured */}
+          {!isSupabaseConfigured && (
+            <div className="mt-6 rounded-lg bg-blue-50 p-4 text-sm">
+              <p className="font-medium text-blue-800 mb-1">Demo Mode</p>
+              <p className="text-blue-600">
+                Supabase not connected. Any email/password will work for testing.
+              </p>
+            </div>
+          )}
         </div>
 
         <p className="mt-6 text-center text-sm text-slate-500">
