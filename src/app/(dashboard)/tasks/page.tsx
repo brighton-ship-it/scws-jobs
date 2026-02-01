@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Plus, Search, Filter, CheckSquare, Clock, AlertCircle, User, Calendar } from 'lucide-react';
-import Badge from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/Badge';
 
 // Mock data - will be replaced with Supabase
 const mockTasks = [
@@ -22,11 +22,11 @@ const statusOptions = [
   { value: 'completed', label: 'Completed' },
 ];
 
-const priorityColors: Record<string, 'gray' | 'blue' | 'yellow' | 'red'> = {
-  low: 'gray',
-  normal: 'blue',
-  high: 'yellow',
-  urgent: 'red',
+const priorityColors: Record<string, 'default' | 'info' | 'warning' | 'danger'> = {
+  low: 'default',
+  normal: 'info',
+  high: 'warning',
+  urgent: 'danger',
 };
 
 export default function TasksPage() {
@@ -208,8 +208,8 @@ export default function TasksPage() {
                   {/* Status */}
                   <Badge 
                     variant={
-                      task.status === 'completed' ? 'green' :
-                      task.status === 'in_progress' ? 'blue' : 'yellow'
+                      task.status === 'completed' ? 'success' :
+                      task.status === 'in_progress' ? 'info' : 'warning'
                     }
                   >
                     {task.status.replace('_', ' ')}
@@ -265,9 +265,12 @@ export default function TasksPage() {
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
-                  <select className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent">
+                  <select 
+                    defaultValue="normal"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                  >
                     <option value="low">Low</option>
-                    <option value="normal" selected>Normal</option>
+                    <option value="normal">Normal</option>
                     <option value="high">High</option>
                     <option value="urgent">Urgent</option>
                   </select>

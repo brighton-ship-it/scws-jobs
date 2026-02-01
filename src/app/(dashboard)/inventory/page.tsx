@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Plus, Search, Package, AlertTriangle, ArrowDown, ArrowUp, Filter, Truck, DollarSign, MoreVertical } from 'lucide-react';
-import Badge from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/Badge';
 
 // Mock data - will be replaced with Supabase
 const mockInventory = [
@@ -265,7 +265,7 @@ export default function InventoryPage() {
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600 font-mono">{item.sku}</td>
                     <td className="px-4 py-3">
-                      <Badge variant="gray" size="sm">{item.category}</Badge>
+                      <Badge variant="default" size="sm">{item.category}</Badge>
                     </td>
                     <td className="px-4 py-3 text-right">
                       <span className={`font-semibold ${
@@ -342,14 +342,14 @@ export default function InventoryPage() {
                 <p className="text-gray-900 font-medium">PO-2026-0015</p>
                 <p className="text-gray-500">Franklin Electric - 2 motors</p>
               </div>
-              <Badge variant="yellow" size="sm">In Transit</Badge>
+              <Badge variant="warning" size="sm">In Transit</Badge>
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-gray-900 font-medium">PO-2026-0014</p>
                 <p className="text-gray-500">Ferguson - Pipe fittings</p>
               </div>
-              <Badge variant="blue" size="sm">Ordered</Badge>
+              <Badge variant="info" size="sm">Ordered</Badge>
             </div>
           </div>
         </div>

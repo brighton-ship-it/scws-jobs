@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Plus, Search, Inbox, CheckCircle, Clock, AlertTriangle, ArrowRight, Phone, Mail, MapPin } from 'lucide-react';
-import Badge from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/Badge';
 
 // Mock data - will be replaced with Supabase
 const mockRequests = [
@@ -223,9 +223,9 @@ export default function RequestsPage() {
                           <h3 className="font-medium text-gray-900">{request.title}</h3>
                           <Badge 
                             variant={
-                              request.status === 'new' ? 'blue' :
-                              request.status === 'assessment_complete' ? 'yellow' :
-                              request.status === 'converted' ? 'green' : 'gray'
+                              request.status === 'new' ? 'info' :
+                              request.status === 'assessment_complete' ? 'warning' :
+                              request.status === 'converted' ? 'success' : 'default'
                             }
                             size="sm"
                           >
