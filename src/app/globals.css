@@ -1,0 +1,98 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer utilities {
+  .line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+/* FullCalendar Customization */
+.fc {
+  --fc-border-color: #e5e7eb;
+  --fc-button-bg-color: #3b82f6;
+  --fc-button-border-color: #3b82f6;
+  --fc-button-hover-bg-color: #2563eb;
+  --fc-button-hover-border-color: #2563eb;
+  --fc-button-active-bg-color: #1d4ed8;
+  --fc-button-active-border-color: #1d4ed8;
+  --fc-today-bg-color: #eff6ff;
+  --fc-event-border-color: transparent;
+  --fc-now-indicator-color: #ef4444;
+}
+
+.fc .fc-button {
+  @apply rounded-lg font-medium text-sm px-3 py-2;
+}
+
+.fc .fc-button-group .fc-button {
+  @apply rounded-none first:rounded-l-lg last:rounded-r-lg;
+}
+
+.fc .fc-toolbar-title {
+  @apply text-xl font-bold text-gray-900;
+}
+
+.fc .fc-col-header-cell-cushion {
+  @apply text-sm font-semibold text-gray-700 py-3;
+}
+
+.fc .fc-daygrid-day-number {
+  @apply text-sm text-gray-600 p-2;
+}
+
+.fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
+  @apply font-bold text-blue-600;
+}
+
+.fc .fc-event {
+  @apply rounded-md px-2 py-1 text-xs font-medium border-l-4 shadow-sm;
+}
+
+.fc .fc-event-title {
+  @apply truncate;
+}
+
+.fc .fc-timegrid-slot-label-cushion {
+  @apply text-xs text-gray-500;
+}
+
+.fc .fc-timegrid-event {
+  @apply rounded-md shadow-sm;
+}
+
+.fc .fc-timegrid-event .fc-event-main {
+  @apply p-1.5;
+}
+
+.fc .fc-more-link {
+  @apply text-blue-600 font-medium text-xs hover:text-blue-700;
+}
+
+.fc .fc-popover {
+  @apply rounded-xl shadow-lg border border-gray-200;
+}
+
+.fc .fc-popover-header {
+  @apply bg-gray-50 rounded-t-xl px-3 py-2 font-semibold;
+}
+
+/* Drag & Drop Styles */
+.fc-event-dragging {
+  @apply opacity-75 shadow-lg;
+}
+
+.fc-highlight {
+  @apply bg-blue-100;
+}
