@@ -54,6 +54,8 @@ export interface WellInfo {
   notes: string | null;
 }
 
+export type JobPriority = 'low' | 'normal' | 'high' | 'urgent';
+
 export interface Job {
   id: string;
   property_id: string;
@@ -67,6 +69,10 @@ export interface Job {
   internal_notes: string | null;
   completed_at: string | null;
   created_at: string;
+  updated_at?: string;
+  priority?: JobPriority;
+  recurring_schedule_id?: string | null;
+  job_number?: string;
 }
 
 export interface JobLineItem {
