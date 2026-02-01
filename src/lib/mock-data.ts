@@ -1064,3 +1064,44 @@ export function getTopCustomersByRevenue(limit: number = 5): { id: string; name:
     .sort((a, b) => b.revenue - a.revenue)
     .slice(0, limit);
 }
+
+// Missing exports - Activity & Settings
+export function getRecentActivity(limit: number = 10) {
+  return mockJobs
+    .filter(j => j.updated_at)
+    .sort((a, b) => new Date(b.updated_at!).getTime() - new Date(a.updated_at!).getTime())
+    .slice(0, limit)
+    .map(job => ({
+      id: job.id,
+      type: 'job_update' as const,
+      description: `Job #${job.job_number} - ${job.status}`,
+      timestamp: job.updated_at,
+      user: getUserById(job.assigned_to || ''),
+    }));
+}
+
+export const mockNotifications = [
+  {
+    id: '1',
+    type: 'info',
+    title: 'Welcome to SCWS Job Management',
+    message: 'Your system is ready to use.',
+    read: false,
+    created_at: new Date().toISOString(),
+  },
+];
+
+export const mockCompanySettings = {
+  name: 'Southern California Well Service',
+  email: 'brighton@scwellservice.com',
+  phone: '(760) 440-8520',
+  address: '1077 Main St, Ramona, CA 92065',
+  taxRate: 7.75,
+};
+
+export const mockNotificationSettings = {
+  emailNotifications: true,
+  smsNotifications: false,
+  jobAlerts: true,
+  paymentAlerts: true,
+};
