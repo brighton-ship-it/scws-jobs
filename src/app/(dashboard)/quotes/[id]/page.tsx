@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
@@ -16,14 +16,17 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 
-// Dynamically import PDF components
+// Dynamically import PDF components with error handling
 const QuotePDF = dynamic(
   () => import('@/components/pdf/QuotePDF').then(mod => ({ default: mod.QuotePDF })),
   { ssr: false }
 );
 
 const PDFDownloadLink = dynamic(
-  () => import('@react-pdf/renderer').then(mod => mod.PDFDownloadLink),
+  () => import('@react-pdf/renderer').then(mod => mod.PDFDownloadLink).catch(() => {
+    // Return a fallback component if PDF fails to load
+    return () => null;
+  }),
   { 
     ssr: false,
     loading: () => (
@@ -44,6 +47,11 @@ export default function QuoteDetailPage() {
   const [showSendModal, setShowSendModal] = useState(false);
   const [sendEmail, setSendEmail] = useState('');
   const [sending, setSending] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   const quoteData = getQuoteWithDetails(quoteId);
 
@@ -138,24 +146,26 @@ export default function QuoteDetailPage() {
               Convert to Invoice
             </Button>
           )}
-          <PDFDownloadLink 
-            document={<QuotePDF quote={quoteData} />} 
-            fileName={`quote-${quoteData.quote_number}.pdf`}
-          >
-            {({ loading }) =>
-              loading ? (
-                <Button disabled variant="outline">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading...
-                </Button>
-              ) : (
-                <Button variant="outline">
-                  <Download className="h-4 w-4" />
-                  Download PDF
-                </Button>
-              )
-            }
-          </PDFDownloadLink>
+          {mounted && PDFDownloadLink && (
+            <PDFDownloadLink 
+              document={<QuotePDF quote={quoteData} />} 
+              fileName={`quote-${quoteData.quote_number}.pdf`}
+            >
+              {({ loading }) =>
+                loading ? (
+                  <Button disabled variant="outline">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading...
+                  </Button>
+                ) : (
+                  <Button variant="outline">
+                    <Download className="h-4 w-4" />
+                    Download PDF
+                  </Button>
+                )
+              }
+            </PDFDownloadLink>
+          )}
           <Button variant="outline" onClick={handlePrint}>
             <Printer className="h-4 w-4" />
             Print
