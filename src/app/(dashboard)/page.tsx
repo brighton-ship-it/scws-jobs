@@ -77,14 +77,14 @@ export default function DashboardPage() {
     },
     {
       name: 'Week Revenue',
-      value: `$${thisWeekRevenue.toLocaleString()}`,
+      value: `$${(thisWeekRevenue || 0).toLocaleString()}`,
       icon: TrendingUp,
       color: 'bg-green-500',
       href: '/reports/revenue',
     },
     {
       name: 'Outstanding',
-      value: `$${pendingAmount.toLocaleString()}`,
+      value: `$${(pendingAmount || 0).toLocaleString()}`,
       icon: DollarSign,
       color: 'bg-purple-500',
       href: '/invoices',
@@ -259,7 +259,7 @@ export default function DashboardPage() {
                     </div>
                     <div className="text-right">
                       <p className="font-medium text-gray-900">
-                        ${invoice.amount.toLocaleString()}
+                        ${(invoice.amount || 0).toLocaleString()}
                       </p>
                       {dueDate && (
                         <p className={`text-sm ${isOverdue ? 'text-red-600' : 'text-gray-500'}`}>
