@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { 
   Plus, 
   Mail, 
@@ -14,9 +15,14 @@ import {
   Shield,
   Calendar,
   ChevronRight,
+  ChevronLeft,
   X,
   Upload,
-  User
+  User,
+  Building2,
+  Bell,
+  CreditCard,
+  Puzzle
 } from 'lucide-react';
 
 // Mock team data matching Jobber structure
@@ -229,15 +235,50 @@ export default function UsersSettingsPage() {
 
   return (
     <div className="space-y-6">
+      {/* Back to Settings + Quick Nav */}
+      <div className="flex items-center gap-4">
+        <Link 
+          href="/settings" 
+          className="inline-flex items-center gap-1 text-sm text-gray-600 hover:text-gray-900"
+        >
+          <ChevronLeft className="h-4 w-4" />
+          Settings
+        </Link>
+      </div>
+
+      {/* Settings Quick Nav (Mobile) */}
+      <div className="flex gap-2 overflow-x-auto pb-2 -mx-4 px-4 sm:mx-0 sm:px-0">
+        <Link href="/settings/company" className="flex-shrink-0 px-3 py-1.5 text-sm bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200">
+          <Building2 className="h-4 w-4 inline mr-1" />
+          Company
+        </Link>
+        <span className="flex-shrink-0 px-3 py-1.5 text-sm bg-green-100 text-green-700 rounded-full font-medium">
+          <Users className="h-4 w-4 inline mr-1" />
+          Team
+        </span>
+        <Link href="/settings/notifications" className="flex-shrink-0 px-3 py-1.5 text-sm bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200">
+          <Bell className="h-4 w-4 inline mr-1" />
+          Notifications
+        </Link>
+        <Link href="/settings/billing" className="flex-shrink-0 px-3 py-1.5 text-sm bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200">
+          <CreditCard className="h-4 w-4 inline mr-1" />
+          Billing
+        </Link>
+        <Link href="/settings/integrations" className="flex-shrink-0 px-3 py-1.5 text-sm bg-gray-100 text-gray-600 rounded-full hover:bg-gray-200">
+          <Puzzle className="h-4 w-4 inline mr-1" />
+          Integrations
+        </Link>
+      </div>
+
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Manage Team</h1>
-          <p className="text-gray-500">Add or manage team members that need to log in. Dispatch them to job sites or give them access to more features.</p>
+          <p className="text-gray-500 text-sm sm:text-base">Add or manage team members that need to log in.</p>
         </div>
         <button
           onClick={() => setShowNewUserModal(true)}
-          className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors"
+          className="inline-flex items-center justify-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 transition-colors"
         >
           <UserPlus className="h-4 w-4" />
           Add User
@@ -291,10 +332,10 @@ export default function UsersSettingsPage() {
                       {member.roleLabel}
                     </span>
                   </div>
-                  <div className="mt-2 grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+                  <div className="mt-2 space-y-1 sm:space-y-0 sm:grid sm:grid-cols-2 sm:gap-x-8 text-sm">
                     <div>
                       <span className="text-gray-500">Email</span>
-                      <p className="text-gray-900">{member.email}</p>
+                      <p className="text-gray-900 truncate">{member.email}</p>
                     </div>
                     <div>
                       <span className="text-gray-500">Last Login</span>
