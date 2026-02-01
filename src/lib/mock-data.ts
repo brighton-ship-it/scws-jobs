@@ -1083,11 +1083,13 @@ export function getRecentActivity(limit: number = 10) {
 export const mockNotifications = [
   {
     id: '1',
-    type: 'info',
+    type: 'info' as const,
     title: 'Welcome to SCWS Job Management',
     message: 'Your system is ready to use.',
     read: false,
+    read_at: null,
     created_at: new Date().toISOString(),
+    sent_at: new Date().toISOString(),
   },
 ];
 

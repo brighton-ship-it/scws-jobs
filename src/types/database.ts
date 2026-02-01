@@ -291,3 +291,16 @@ export interface Database {
     };
   };
 }
+
+// Notifications
+export interface Notification {
+  id: string;
+  type: 'info' | 'warning' | 'success' | 'error';
+  title: string;
+  message: string;
+  read: boolean;
+  read_at: string | null;
+  created_at: string;
+  sent_at: string;
+  user_id?: string;
+}
