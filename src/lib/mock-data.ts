@@ -2,7 +2,7 @@
 import type { 
   User, Customer, Property, WellInfo, Job, Invoice, JobType, 
   Quote, QuoteItem, InvoiceItem, Payment, Product, 
-  QuoteWithDetails, InvoiceWithDetails
+  QuoteWithDetails, InvoiceWithDetails, Task, TaskWithDetails
 } from '@/types/database';
 
 export const mockUsers: User[] = [
@@ -1107,3 +1107,181 @@ export const mockNotificationSettings = {
   jobAlerts: true,
   paymentAlerts: true,
 };
+
+// Tasks
+export const mockTasks: Task[] = [
+  {
+    id: 't1',
+    title: 'Order replacement pump for Johnson Ranch',
+    description: 'Need to order Grundfos 5HP submersible pump for upcoming job',
+    assigned_to: '2',
+    due_date: getDateStr(1),
+    due_time: '10:00',
+    status: 'pending',
+    priority: 'high',
+    related_job_id: null,
+    related_customer_id: '1',
+    created_by: '1',
+    created_at: getDateStr(-2) + 'T09:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't2',
+    title: 'Follow up on overdue invoice',
+    description: 'Sunny Acres Farm has an overdue balance - need to call for payment',
+    assigned_to: '2',
+    due_date: getDateStr(0),
+    due_time: '14:00',
+    status: 'in_progress',
+    priority: 'urgent',
+    related_job_id: null,
+    related_customer_id: '4',
+    created_by: '1',
+    created_at: getDateStr(-3) + 'T11:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't3',
+    title: 'Schedule annual maintenance calls',
+    description: 'Contact customers due for annual well maintenance',
+    assigned_to: '2',
+    due_date: getDateStr(3),
+    due_time: null,
+    status: 'pending',
+    priority: 'normal',
+    related_job_id: null,
+    related_customer_id: null,
+    created_by: '1',
+    created_at: getDateStr(-1) + 'T08:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't4',
+    title: 'Review water test results',
+    description: 'Lab results came in for Garcia property - review and update customer',
+    assigned_to: '1',
+    due_date: getDateStr(0),
+    due_time: '16:00',
+    status: 'pending',
+    priority: 'normal',
+    related_job_id: null,
+    related_customer_id: '3',
+    created_by: '2',
+    created_at: getDateStr(-1) + 'T10:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't5',
+    title: 'Restock truck inventory',
+    description: 'Low on pressure switches and fittings',
+    assigned_to: '3',
+    due_date: null,
+    due_time: null,
+    status: 'pending',
+    priority: 'low',
+    related_job_id: null,
+    related_customer_id: null,
+    created_by: '1',
+    created_at: getDateStr(-5) + 'T09:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't6',
+    title: 'Update customer contact info',
+    description: 'Williams family has new phone number',
+    assigned_to: '2',
+    due_date: null,
+    due_time: null,
+    status: 'pending',
+    priority: 'low',
+    related_job_id: null,
+    related_customer_id: '5',
+    created_by: '2',
+    created_at: getDateStr(-4) + 'T14:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't7',
+    title: 'Send quote for new water softener',
+    description: 'Garcia requested quote for water treatment system',
+    assigned_to: '1',
+    due_date: getDateStr(2),
+    due_time: '12:00',
+    status: 'pending',
+    priority: 'normal',
+    related_job_id: null,
+    related_customer_id: '3',
+    created_by: '1',
+    created_at: getDateStr(-1) + 'T15:00:00Z',
+    completed_at: null,
+  },
+  {
+    id: 't8',
+    title: 'Complete job report',
+    description: 'Write up report for completed pump replacement',
+    assigned_to: '3',
+    due_date: getDateStr(-1),
+    due_time: '17:00',
+    status: 'completed',
+    priority: 'normal',
+    related_job_id: '9',
+    related_customer_id: null,
+    created_by: '1',
+    created_at: getDateStr(-3) + 'T16:00:00Z',
+    completed_at: getDateStr(-1) + 'T16:30:00Z',
+  },
+];
+
+// Task helpers
+export function getTaskById(id: string): Task | undefined {
+  return mockTasks.find(t => t.id === id);
+}
+
+export function getTaskWithDetails(id: string): TaskWithDetails | undefined {
+  const task = getTaskById(id);
+  if (!task) return undefined;
+
+  return {
+    ...task,
+    assigned_user: task.assigned_to ? getUserById(task.assigned_to) || null : null,
+    related_job: task.related_job_id ? getJobById(task.related_job_id) || null : null,
+    related_customer: task.related_customer_id ? getCustomerById(task.related_customer_id) || null : null,
+  };
+}
+
+export function getTasksByAssignee(userId: string): Task[] {
+  return mockTasks.filter(t => t.assigned_to === userId);
+}
+
+export function getUnscheduledTasks(): Task[] {
+  return mockTasks.filter(t => !t.due_date && t.status !== 'completed');
+}
+
+export function getScheduledTasks(): Task[] {
+  return mockTasks.filter(t => t.due_date && t.status !== 'completed');
+}
+
+export function getTasksForDate(date: string): Task[] {
+  return mockTasks.filter(t => t.due_date === date && t.status !== 'completed');
+}
+
+export function getPendingTasks(): Task[] {
+  return mockTasks.filter(t => t.status !== 'completed');
+}
+
+export function getTasksByCustomerId(customerId: string): Task[] {
+  return mockTasks.filter(t => t.related_customer_id === customerId);
+}
+
+export function getTasksByJobId(jobId: string): Task[] {
+  return mockTasks.filter(t => t.related_job_id === jobId);
+}
+
+export function getAllTasksWithDetails(): TaskWithDetails[] {
+  return mockTasks.map(task => ({
+    ...task,
+    assigned_user: task.assigned_to ? getUserById(task.assigned_to) || null : null,
+    related_job: task.related_job_id ? getJobById(task.related_job_id) || null : null,
+    related_customer: task.related_customer_id ? getCustomerById(task.related_customer_id) || null : null,
+  }));
+}

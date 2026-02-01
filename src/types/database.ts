@@ -310,3 +310,39 @@ export interface Notification {
   sent_at: string;
   user_id?: string;
 }
+
+// Tasks
+export type TaskStatus = 'pending' | 'in_progress' | 'completed';
+export type TaskPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface Task {
+  id: string;
+  title: string;
+  description: string | null;
+  assigned_to: string | null;
+  due_date: string | null;
+  due_time: string | null;
+  status: TaskStatus;
+  priority: TaskPriority;
+  related_job_id: string | null;
+  related_customer_id: string | null;
+  created_by: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface TaskWithDetails extends Task {
+  assigned_user: User | null;
+  related_job: Job | null;
+  related_customer: Customer | null;
+}
+
+// Map marker types for schedule map
+export interface MapMarker {
+  id: string;
+  lat: number;
+  lng: number;
+  job: Job;
+  property: Property;
+  color: 'green' | 'orange' | 'red' | 'blue';
+}

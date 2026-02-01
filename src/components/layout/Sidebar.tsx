@@ -23,6 +23,12 @@ import {
   CreditCard,
   MessageSquare,
   Clock,
+  CheckSquare,
+  Inbox,
+  Package,
+  Gauge,
+  Droplets,
+  Calculator,
 } from 'lucide-react';
 
 // Jobber-style navigation groups
@@ -38,6 +44,7 @@ const navigationGroups = [
     name: 'Work Management',
     items: [
       { name: 'Customers', href: '/customers', icon: Users },
+      { name: 'Requests', href: '/requests', icon: Inbox },
       { name: 'Quotes', href: '/quotes', icon: ClipboardList },
       { name: 'Jobs', href: '/jobs', icon: Briefcase },
       { name: 'Invoices', href: '/invoices', icon: FileText },
@@ -47,7 +54,15 @@ const navigationGroups = [
     name: 'Operations',
     items: [
       { name: 'Dispatch', href: '/dispatch', icon: Truck },
+      { name: 'Tasks', href: '/tasks', icon: CheckSquare },
       { name: 'Reports', href: '/reports', icon: BarChart3 },
+    ],
+  },
+  {
+    name: 'SCWS Tools',
+    items: [
+      { name: 'Inventory', href: '/inventory', icon: Package },
+      { name: 'Well Tools', href: '/well-tools', icon: Droplets },
     ],
   },
 ];
