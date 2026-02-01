@@ -4,6 +4,7 @@ import { ReactNode, Suspense } from 'react';
 import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { SearchProvider } from '@/contexts/SearchContext';
+import { SidebarProvider } from '@/contexts/SidebarContext';
 import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
@@ -12,7 +13,7 @@ import { Toaster } from '@/components/feedback/Toaster';
 function DashboardSkeleton() {
   return (
     <div className="flex h-screen bg-gray-50">
-      <div className="w-64 bg-gray-100 animate-pulse" />
+      <div className="hidden lg:block w-64 bg-gray-100 animate-pulse" />
       <div className="flex flex-1 flex-col">
         <div className="h-16 bg-gray-100 animate-pulse" />
         <div className="flex-1 p-6">
@@ -29,17 +30,19 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
       <AuthProvider>
         <NotificationProvider>
           <SearchProvider>
-            <div className="flex h-screen bg-gray-50">
-              <Sidebar />
-              <div className="flex flex-1 flex-col overflow-hidden">
-                <Header />
-                <main className="flex-1 overflow-y-auto p-6">
-                  {children}
-                </main>
+            <SidebarProvider>
+              <div className="flex h-screen bg-gray-50">
+                <Sidebar />
+                <div className="flex flex-1 flex-col overflow-hidden w-full lg:w-auto">
+                  <Header />
+                  <main className="flex-1 overflow-y-auto p-4 lg:p-6">
+                    {children}
+                  </main>
+                </div>
               </div>
-            </div>
-            <GlobalSearch />
-            <Toaster />
+              <GlobalSearch />
+              <Toaster />
+            </SidebarProvider>
           </SearchProvider>
         </NotificationProvider>
       </AuthProvider>

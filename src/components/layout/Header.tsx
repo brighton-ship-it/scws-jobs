@@ -1,11 +1,12 @@
 'use client';
 
-import { Bell, Search, Plus, X, Check } from 'lucide-react';
+import { Bell, Search, Plus, X, Check, Menu } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import Link from 'next/link';
 import { useState, useRef, useEffect } from 'react';
 import { useNotifications } from '@/contexts/NotificationContext';
 import { useSearch } from '@/contexts/SearchContext';
+import { useSidebar } from '@/contexts/SidebarContext';
 import { formatDistanceToNow } from 'date-fns';
 
 const pageTitles: Record<string, string> = {
@@ -29,6 +30,7 @@ export default function Header() {
   const pathname = usePathname();
   const { notifications, unreadCount, markAsRead, markAllAsRead } = useNotifications();
   const { openSearch } = useSearch();
+  const { toggle: toggleSidebar } = useSidebar();
   const [showNotifications, setShowNotifications] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   
@@ -75,9 +77,16 @@ export default function Header() {
   };
 
   return (
-    <header className="flex h-16 items-center justify-between border-b border-gray-200 bg-white px-6">
-      <div className="flex items-center gap-4">
-        <h1 className="text-xl font-semibold text-gray-900">{pageTitle}</h1>
+    <header className="flex h-16 items-center justify-between border-b border-gray-200 bg-white px-4 lg:px-6">
+      <div className="flex items-center gap-3">
+        {/* Mobile menu button */}
+        <button
+          onClick={toggleSidebar}
+          className="lg:hidden rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+        >
+          <Menu className="h-5 w-5" />
+        </button>
+        <h1 className="text-lg lg:text-xl font-semibold text-gray-900">{pageTitle}</h1>
       </div>
 
       <div className="flex items-center gap-4">
