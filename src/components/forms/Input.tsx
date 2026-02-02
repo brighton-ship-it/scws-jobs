@@ -13,8 +13,8 @@ export interface InputProps extends Omit<React.InputHTMLAttributes<HTMLInputElem
 }
 
 const sizeClasses = {
-  sm: 'px-3 py-1.5 text-sm',
-  md: 'px-3 py-2 text-sm',
+  sm: 'px-3 py-2 text-sm',
+  md: 'px-3.5 py-2.5 text-sm',
   lg: 'px-4 py-3 text-base',
 };
 
@@ -48,15 +48,15 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
         {label && (
           <label
             htmlFor={inputId}
-            className="block text-sm font-medium text-slate-700 mb-1.5"
+            className="block text-sm font-medium text-gray-700 mb-1.5"
           >
             {label}
-            {props.required && <span className="text-red-500 ml-1">*</span>}
+            {props.required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
         )}
         <div className="relative">
           {leftIcon && (
-            <div className={`absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 ${iconSizeClasses[size]}`}>
+            <div className={`absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none ${iconSizeClasses[size]}`}>
               {leftIcon}
             </div>
           )}
@@ -65,10 +65,15 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             id={inputId}
             disabled={disabled}
             className={`
-              block rounded-lg border bg-white transition-colors
-              focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500
-              disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed
-              ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500/20' : 'border-slate-300'}
+              block rounded-lg border bg-white text-gray-900 placeholder-gray-400
+              transition-all duration-150
+              focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500
+              hover:border-gray-400
+              disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed disabled:hover:border-gray-200
+              ${error 
+                ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20' 
+                : 'border-gray-200'
+              }
               ${leftIcon ? 'pl-10' : ''}
               ${rightIcon ? 'pr-10' : ''}
               ${sizeClasses[size]}
@@ -78,13 +83,13 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
             {...props}
           />
           {rightIcon && (
-            <div className={`absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 ${iconSizeClasses[size]}`}>
+            <div className={`absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 ${iconSizeClasses[size]}`}>
               {rightIcon}
             </div>
           )}
         </div>
         {(error || hint) && (
-          <p className={`mt-1.5 text-sm ${error ? 'text-red-600' : 'text-slate-500'}`}>
+          <p className={`mt-1.5 text-sm ${error ? 'text-red-600' : 'text-gray-500'}`}>
             {error || hint}
           </p>
         )}

@@ -61,20 +61,7 @@ export default function NewQuotePage() {
     // Simulate API call
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    // In a real app, this would save to the database
-    console.log('Saving quote:', {
-      customer_id: customerId,
-      property_id: propertyId || null,
-      valid_until: validUntil || null,
-      notes,
-      internal_notes: internalNotes,
-      tax_rate: taxRate,
-      subtotal,
-      tax_amount: taxAmount,
-      total,
-      status: asDraft ? 'draft' : 'sent',
-      line_items: lineItems,
-    });
+    // TODO: Implement actual save logic
 
     router.push('/quotes');
   };

@@ -92,8 +92,6 @@ export default function NewCustomerPage() {
     // For now, simulate API call
     await new Promise((resolve) => setTimeout(resolve, 1000));
     
-    console.log('Form data:', { customer: formData, properties });
-    
     // Redirect to customers list
     router.push('/customers');
   };

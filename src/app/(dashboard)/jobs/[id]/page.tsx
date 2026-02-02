@@ -1,12 +1,13 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { JobStatusBadge, PriorityBadge, InvoiceStatusBadge } from '@/components/ui/Badge';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/Table';
+import { TeamMemberMultiSelect, AssignmentHistory, AssignedTeamAvatars } from '@/components/scheduling';
 import {
   mockJobs,
   mockInvoices,
@@ -14,7 +15,13 @@ import {
   getCustomerById,
   getUserById,
   getWellInfoByPropertyId,
+  getJobAssignments,
+  getAssignedUsersForJob,
+  getAllTeamMembers,
+  assignUserToJob,
+  unassignUserFromJob,
 } from '@/lib/mock-data';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   ArrowLeft,
   MapPin,
@@ -23,6 +30,7 @@ import {
   Calendar,
   Clock,
   User,
+  Users,
   Edit,
   MoreHorizontal,
   ChevronDown,
@@ -34,6 +42,7 @@ import {
   CheckCircle2,
   FileText,
   Wrench,
+  History,
 } from 'lucide-react';
 import { format, isPast, isToday } from 'date-fns';
 
@@ -67,8 +76,45 @@ export default function JobDetailPage() {
   const params = useParams();
   const id = params.id as string;
   const [showProfitability, setShowProfitability] = useState(true);
+  const [showAssignmentHistory, setShowAssignmentHistory] = useState(false);
+  const { user: currentUser } = useAuth();
   
   const job = mockJobs.find(j => j.id === id);
+  
+  // State for assignments
+  const [assignedUserIds, setAssignedUserIds] = useState<string[]>([]);
+  const [assignments, setAssignments] = useState(job ? getJobAssignments(id) : []);
+  const teamMembers = getAllTeamMembers();
+  
+  // Initialize assigned user IDs
+  useEffect(() => {
+    if (job) {
+      const assignedUsers = getAssignedUsersForJob(id);
+      setAssignedUserIds(assignedUsers.map(u => u.id));
+      setAssignments(getJobAssignments(id));
+    }
+  }, [id, job]);
+
+  // Handle assignment changes
+  const handleAssignmentChange = (newSelectedIds: string[]) => {
+    const added = newSelectedIds.filter(id => !assignedUserIds.includes(id));
+    const removed = assignedUserIds.filter(id => !newSelectedIds.includes(id));
+    
+    // Add new assignments
+    added.forEach(userId => {
+      assignUserToJob(id, userId, currentUser?.id || null, null);
+      console.log(`Job ${id} assigned to user ${userId}`);
+    });
+    
+    // Remove assignments
+    removed.forEach(userId => {
+      unassignUserFromJob(id, userId);
+      console.log(`Job ${id} unassigned from user ${userId}`);
+    });
+    
+    setAssignedUserIds(newSelectedIds);
+    setAssignments(getJobAssignments(id));
+  };
   
   if (!job) {
     return (
@@ -519,6 +565,51 @@ export default function JobDetailPage() {
 
         {/* Right Sidebar - Job Details */}
         <div className="space-y-6">
+          {/* Team Assignment Card */}
+          <Card>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-4 w-4 text-gray-500" />
+                  Team Assignment
+                </CardTitle>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowAssignmentHistory(!showAssignmentHistory)}
+                  className="text-xs text-gray-500 hover:text-gray-700"
+                >
+                  <History className="h-3.5 w-3.5 mr-1" />
+                  History
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Multi-select dropdown */}
+              <TeamMemberMultiSelect
+                teamMembers={teamMembers.filter(m => m.role === 'field')}
+                selectedIds={assignedUserIds}
+                onChange={handleAssignmentChange}
+                placeholder="Assign team members..."
+              />
+              
+              {/* Show all team members option */}
+              {assignedUserIds.length === 0 && (
+                <p className="text-xs text-gray-500">
+                  Select one or more field technicians to assign to this job.
+                </p>
+              )}
+              
+              {/* Assignment History */}
+              {showAssignmentHistory && (
+                <div className="border-t pt-4 mt-4">
+                  <p className="text-sm font-medium text-gray-700 mb-3">Assignment History</p>
+                  <AssignmentHistory assignments={assignments} />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Job Details</CardTitle>
@@ -546,17 +637,19 @@ export default function JobDetailPage() {
                 </div>
               )}
               
-              {assignedUser && (
-                <div>
-                  <p className="text-sm text-gray-500">Assigned To</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <div className="h-6 w-6 rounded-full bg-green-600 flex items-center justify-center text-white text-xs font-medium">
-                      {assignedUser.name.charAt(0)}
-                    </div>
-                    <p className="font-medium text-gray-900">{assignedUser.name}</p>
-                  </div>
-                </div>
-              )}
+              {/* Assigned Team Members */}
+              <div>
+                <p className="text-sm text-gray-500 mb-2">Assigned To</p>
+                {assignedUserIds.length > 0 ? (
+                  <AssignedTeamAvatars 
+                    users={teamMembers.filter(m => assignedUserIds.includes(m.id))} 
+                    showNames={true}
+                    size="md"
+                  />
+                ) : (
+                  <p className="text-gray-400 italic text-sm">Not assigned</p>
+                )}
+              </div>
               
               <div>
                 <p className="text-sm text-gray-500">Created</p>

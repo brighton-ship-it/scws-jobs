@@ -7,17 +7,24 @@ import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { TeamMemberMultiSelect } from './TeamMemberMultiSelect';
 import {
   mockCustomers,
   mockProperties,
   mockJobTypes,
   mockUsers,
   getPropertiesByCustomerId,
+  getFieldCrew,
+  getAssignedUsersForJob,
+  assignUserToJob,
+  unassignUserFromJob,
 } from '@/lib/mock-data';
+import { useAuth } from '@/contexts/AuthContext';
 import type { Job, JobPriority } from '@/types/database';
 import {
   Search,
   User,
+  Users,
   Calendar,
   FileText,
   Repeat,
@@ -50,10 +57,21 @@ interface JobFormProps {
 export function JobForm({ job, mode }: JobFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { user: currentUser } = useAuth();
   const [customerSearch, setCustomerSearch] = useState('');
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState(job?.property_id ? 
     mockProperties.find(p => p.id === job.property_id)?.customer_id : '');
+  
+  // State for team assignments (multiple)
+  const [assignedUserIds, setAssignedUserIds] = useState<string[]>(() => {
+    if (job) {
+      return getAssignedUsersForJob(job.id).map(u => u.id);
+    }
+    return [];
+  });
+  
+  const fieldCrew = getFieldCrew();
 
   // Get pre-filled date from URL params (from calendar click)
   const prefilledDate = searchParams.get('date');
@@ -124,11 +142,29 @@ export function JobForm({ job, mode }: JobFormProps) {
     if (customer) setCustomerSearch(customer.name);
   };
 
-  const fieldCrewMembers = mockUsers.filter(u => u.role === 'field');
-
   const onSubmit = async (data: JobFormData) => {
-    console.log('Form submitted:', data);
-    // In a real app, this would save to Supabase
+    // Handle team assignments
+    if (job) {
+      // Get current assignments
+      const currentAssignedIds = getAssignedUsersForJob(job.id).map(u => u.id);
+      
+      // Find additions and removals
+      const toAdd = assignedUserIds.filter(id => !currentAssignedIds.includes(id));
+      const toRemove = currentAssignedIds.filter(id => !assignedUserIds.includes(id));
+      
+      // Apply changes
+      toAdd.forEach(userId => {
+        assignUserToJob(job.id, userId, currentUser?.id || null);
+        console.log(`Assigned user ${userId} to job ${job.id}`);
+      });
+      
+      toRemove.forEach(userId => {
+        unassignUserFromJob(job.id, userId);
+        console.log(`Unassigned user ${userId} from job ${job.id}`);
+      });
+    }
+    
+    // TODO: Implement actual save to Supabase
     alert(mode === 'create' ? 'Job created!' : 'Job updated!');
     router.push('/jobs');
   };
@@ -360,22 +396,21 @@ export function JobForm({ job, mode }: JobFormProps) {
             </div>
           </div>
 
-          {/* Assign To */}
+          {/* Assign To (Multiple Team Members) */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              Assign To
+            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Assign Team Members
             </label>
-            <select
-              {...register('assigned_to')}
-              className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-            >
-              <option value="">Unassigned</option>
-              {fieldCrewMembers.map(user => (
-                <option key={user.id} value={user.id}>
-                  {user.name}
-                </option>
-              ))}
-            </select>
+            <TeamMemberMultiSelect
+              teamMembers={fieldCrew}
+              selectedIds={assignedUserIds}
+              onChange={setAssignedUserIds}
+              placeholder="Select team members to assign..."
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              You can assign multiple field technicians to this job.
+            </p>
           </div>
         </CardContent>
       </Card>

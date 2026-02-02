@@ -1,6 +1,6 @@
 import { ReactNode } from 'react';
 
-type BadgeVariant = 'default' | 'success' | 'warning' | 'danger' | 'info' | 'purple' | 'orange' | 'green';
+type BadgeVariant = 'default' | 'success' | 'warning' | 'danger' | 'info' | 'purple' | 'orange' | 'green' | 'teal';
 
 interface BadgeProps {
   children: ReactNode;
@@ -9,15 +9,17 @@ interface BadgeProps {
   size?: 'sm' | 'md';
 }
 
+// Jobber-style badge colors - more subtle and professional
 const variantStyles: Record<BadgeVariant, string> = {
-  default: 'bg-gray-100 text-gray-700',
-  success: 'bg-green-100 text-green-700',
-  warning: 'bg-yellow-100 text-yellow-800',
-  danger: 'bg-red-100 text-red-700',
-  info: 'bg-blue-100 text-blue-700',
-  purple: 'bg-purple-100 text-purple-700',
-  orange: 'bg-orange-100 text-orange-700',
-  green: 'bg-emerald-100 text-emerald-700',
+  default: 'bg-gray-100 text-gray-600',
+  success: 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20',
+  warning: 'bg-amber-50 text-amber-700 ring-1 ring-inset ring-amber-600/20',
+  danger: 'bg-red-50 text-red-700 ring-1 ring-inset ring-red-600/20',
+  info: 'bg-blue-50 text-blue-700 ring-1 ring-inset ring-blue-600/20',
+  purple: 'bg-purple-50 text-purple-700 ring-1 ring-inset ring-purple-600/20',
+  orange: 'bg-orange-50 text-orange-700 ring-1 ring-inset ring-orange-600/20',
+  green: 'bg-emerald-50 text-emerald-700 ring-1 ring-inset ring-emerald-600/20',
+  teal: 'bg-teal-50 text-teal-700 ring-1 ring-inset ring-teal-600/20',
 };
 
 export function Badge({ children, variant = 'default', className = '', size = 'sm' }: BadgeProps) {
@@ -56,15 +58,15 @@ export function JobStatusBadge({ status, showDot = false }: { status: string; sh
   const statusConfig: Record<string, { label: string; variant: BadgeVariant; dotColor?: string }> = {
     // Core statuses
     scheduled: { label: 'Scheduled', variant: 'info', dotColor: 'bg-blue-500' },
-    in_progress: { label: 'In Progress', variant: 'warning', dotColor: 'bg-yellow-500' },
-    completed: { label: 'Completed', variant: 'success', dotColor: 'bg-green-500' },
-    invoiced: { label: 'Invoiced', variant: 'default', dotColor: 'bg-gray-500' },
+    in_progress: { label: 'In Progress', variant: 'warning', dotColor: 'bg-amber-500' },
+    completed: { label: 'Completed', variant: 'success', dotColor: 'bg-emerald-500' },
+    invoiced: { label: 'Invoiced', variant: 'teal', dotColor: 'bg-teal-500' },
     
     // Jobber-style action statuses
     late: { label: 'Late', variant: 'danger', dotColor: 'bg-red-500' },
     action_required: { label: 'Action Required', variant: 'orange', dotColor: 'bg-orange-500' },
     requires_invoicing: { label: 'Requires Invoicing', variant: 'purple', dotColor: 'bg-purple-500' },
-    unscheduled: { label: 'Unscheduled', variant: 'warning', dotColor: 'bg-yellow-500' },
+    unscheduled: { label: 'Unscheduled', variant: 'warning', dotColor: 'bg-amber-500' },
     upcoming: { label: 'Upcoming', variant: 'info', dotColor: 'bg-blue-500' },
     archived: { label: 'Archived', variant: 'default', dotColor: 'bg-gray-400' },
   };

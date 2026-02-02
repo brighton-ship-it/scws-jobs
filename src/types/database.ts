@@ -346,3 +346,23 @@ export interface MapMarker {
   property: Property;
   color: 'green' | 'orange' | 'red' | 'blue';
 }
+
+// Job Assignments (for multiple assignees per job)
+export interface JobAssignment {
+  id: string;
+  job_id: string;
+  user_id: string;
+  assigned_at: string;
+  assigned_by: string | null;
+  notes: string | null;
+}
+
+export interface JobAssignmentWithUser extends JobAssignment {
+  user: User;
+  assigned_by_user: User | null;
+}
+
+// Extended JobWithDetails to include assignments
+export interface JobWithAssignments extends JobWithDetails {
+  assignments: JobAssignmentWithUser[];
+}

@@ -5,8 +5,10 @@ import { AuthProvider } from '@/contexts/AuthContext';
 import { NotificationProvider } from '@/contexts/NotificationContext';
 import { SearchProvider } from '@/contexts/SearchContext';
 import { SidebarProvider, useSidebar } from '@/contexts/SidebarContext';
+import { ActivityFeedProvider, useActivityFeed } from '@/contexts/ActivityFeedContext';
 import Sidebar from '@/components/layout/Sidebar';
 import Header from '@/components/layout/Header';
+import { ActivityFeedSidebar } from '@/components/layout/ActivityFeedSidebar';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
 import { Toaster } from '@/components/feedback/Toaster';
 
@@ -26,6 +28,7 @@ function DashboardSkeleton() {
 
 function DashboardContent({ children }: { children: ReactNode }) {
   const { isCollapsed } = useSidebar();
+  const { isOpen: isActivityFeedOpen } = useActivityFeed();
   
   return (
     <div className="flex h-screen bg-gray-50">
@@ -34,12 +37,14 @@ function DashboardContent({ children }: { children: ReactNode }) {
         flex flex-1 flex-col overflow-hidden w-full
         transition-all duration-300
         ${isCollapsed ? 'lg:ml-0' : 'lg:ml-0'}
+        ${isActivityFeedOpen ? 'lg:mr-80' : ''}
       `}>
         <Header />
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           {children}
         </main>
       </div>
+      <ActivityFeedSidebar />
     </div>
   );
 }
@@ -51,9 +56,11 @@ export function DashboardProviders({ children }: { children: ReactNode }) {
         <NotificationProvider>
           <SearchProvider>
             <SidebarProvider>
-              <DashboardContent>{children}</DashboardContent>
-              <GlobalSearch />
-              <Toaster />
+              <ActivityFeedProvider>
+                <DashboardContent>{children}</DashboardContent>
+                <GlobalSearch />
+                <Toaster />
+              </ActivityFeedProvider>
             </SidebarProvider>
           </SearchProvider>
         </NotificationProvider>

@@ -40,10 +40,10 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
         {label && (
           <label
             htmlFor={textareaId}
-            className="block text-sm font-medium text-slate-700 mb-1.5"
+            className="block text-sm font-medium text-gray-700 mb-1.5"
           >
             {label}
-            {props.required && <span className="text-red-500 ml-1">*</span>}
+            {props.required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
         )}
         <textarea
@@ -52,10 +52,15 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
           rows={rows}
           disabled={disabled}
           className={`
-            block px-3 py-2 text-sm rounded-lg border bg-white transition-colors
-            focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500
-            disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed
-            ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500/20' : 'border-slate-300'}
+            block px-3.5 py-2.5 text-sm rounded-lg border bg-white text-gray-900 placeholder-gray-400
+            transition-all duration-150
+            focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500
+            hover:border-gray-400
+            disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed disabled:hover:border-gray-200
+            ${error 
+              ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20' 
+              : 'border-gray-200'
+            }
             ${resizeClasses[resize]}
             ${fullWidth ? 'w-full' : ''}
             ${className}
@@ -63,7 +68,7 @@ export const TextArea = forwardRef<HTMLTextAreaElement, TextAreaProps>(
           {...props}
         />
         {(error || hint) && (
-          <p className={`mt-1.5 text-sm ${error ? 'text-red-600' : 'text-slate-500'}`}>
+          <p className={`mt-1.5 text-sm ${error ? 'text-red-600' : 'text-gray-500'}`}>
             {error || hint}
           </p>
         )}

@@ -48,28 +48,28 @@ export function Tabs({
       case 'pills':
         return `${base} rounded-lg ${
           isActive
-            ? 'bg-blue-600 text-white shadow-md'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-800'
+            ? 'bg-emerald-600 text-white shadow-sm'
+            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
         }`;
       case 'underline':
-        return `${base} border-b-2 ${
+        return `${base} border-b-2 -mb-px ${
           isActive
-            ? 'border-blue-600 text-blue-600'
-            : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            ? 'border-emerald-600 text-emerald-600'
+            : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
         }`;
       default:
-        return `${base} rounded-lg border ${
+        return `${base} rounded-lg ${
           isActive
-            ? 'bg-white border-slate-200 text-slate-800 shadow-sm'
-            : 'border-transparent text-slate-500 hover:text-slate-700'
+            ? 'bg-white text-gray-900 shadow-sm ring-1 ring-gray-200'
+            : 'text-gray-500 hover:text-gray-700'
         }`;
     }
   };
 
   const containerClasses = {
-    default: 'inline-flex gap-1 p-1 bg-slate-100 rounded-lg',
+    default: 'inline-flex gap-1 p-1 bg-gray-100 rounded-xl',
     pills: 'inline-flex gap-1',
-    underline: 'inline-flex gap-0 border-b border-slate-200',
+    underline: 'inline-flex gap-0 border-b border-gray-200',
   };
 
   return (
@@ -91,12 +91,12 @@ export function Tabs({
           {tab.badge !== undefined && tab.badge > 0 && (
             <span
               className={`
-                px-1.5 py-0.5 text-xs font-semibold rounded-full
+                px-1.5 py-0.5 text-xs font-semibold rounded-full min-w-[20px] text-center
                 ${tab.id === activeTab 
                   ? variant === 'pills' 
                     ? 'bg-white/20 text-white' 
-                    : 'bg-blue-100 text-blue-600'
-                  : 'bg-slate-200 text-slate-600'
+                    : 'bg-emerald-100 text-emerald-700'
+                  : 'bg-gray-200 text-gray-600'
                 }
               `}
             >

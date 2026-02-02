@@ -137,21 +137,7 @@ export default function NewInvoicePage() {
     
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    console.log('Saving invoice:', {
-      customer_id: customerId,
-      job_id: jobId || null,
-      quote_id: quoteId || null,
-      issue_date: issueDate,
-      due_date: dueDate,
-      notes,
-      internal_notes: internalNotes,
-      tax_rate: taxRate,
-      subtotal,
-      tax_amount: taxAmount,
-      total,
-      status: asDraft ? 'draft' : 'sent',
-      line_items: lineItems,
-    });
+    // TODO: Implement actual save logic
 
     router.push('/invoices');
   };

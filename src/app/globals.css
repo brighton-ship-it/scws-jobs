@@ -2,10 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ======================================
+   JOBBER-STYLE DESIGN SYSTEM
+   ====================================== */
+
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+  
+  body {
+    @apply bg-gray-50 text-gray-900;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Jobber-style focus outline for accessibility */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-emerald-500;
   }
 }
 
@@ -16,24 +30,155 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  
+  .line-clamp-3 {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
 }
 
-/* FullCalendar Customization */
+/* ======================================
+   SCROLLBAR - Jobber Style (minimal)
+   ====================================== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d1d5db;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+/* Firefox scrollbar */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #d1d5db transparent;
+}
+
+/* ======================================
+   ANIMATIONS - Jobber Style
+   ====================================== */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes fadeOut {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+@keyframes slideUp {
+  from { 
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to { 
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideDown {
+  from { 
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to { 
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideInRight {
+  from { 
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to { 
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes scaleIn {
+  from { 
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to { 
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 1; }
+  100% { transform: scale(1.3); opacity: 0; }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out;
+}
+
+.animate-fade-out {
+  animation: fadeOut 0.2s ease-out;
+}
+
+.animate-slide-up {
+  animation: slideUp 0.25s ease-out;
+}
+
+.animate-slide-down {
+  animation: slideDown 0.25s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slideInRight 0.25s ease-out;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s ease-out;
+}
+
+.animate-shimmer {
+  animation: shimmer 2s infinite;
+}
+
+/* ======================================
+   FULLCALENDAR - Jobber Colors
+   ====================================== */
 .fc {
   --fc-border-color: #e5e7eb;
-  --fc-button-bg-color: #3b82f6;
-  --fc-button-border-color: #3b82f6;
-  --fc-button-hover-bg-color: #2563eb;
-  --fc-button-hover-border-color: #2563eb;
-  --fc-button-active-bg-color: #1d4ed8;
-  --fc-button-active-border-color: #1d4ed8;
-  --fc-today-bg-color: #eff6ff;
+  --fc-button-bg-color: #059669;
+  --fc-button-border-color: #059669;
+  --fc-button-hover-bg-color: #047857;
+  --fc-button-hover-border-color: #047857;
+  --fc-button-active-bg-color: #065f46;
+  --fc-button-active-border-color: #065f46;
+  --fc-today-bg-color: #ecfdf5;
   --fc-event-border-color: transparent;
   --fc-now-indicator-color: #ef4444;
 }
 
 .fc .fc-button {
-  @apply rounded-lg font-medium text-sm px-3 py-2;
+  @apply rounded-lg font-medium text-sm px-3 py-2 shadow-sm;
 }
 
 .fc .fc-button-group .fc-button {
@@ -53,11 +198,15 @@
 }
 
 .fc .fc-daygrid-day.fc-day-today .fc-daygrid-day-number {
-  @apply font-bold text-blue-600;
+  @apply font-bold text-emerald-600;
 }
 
 .fc .fc-event {
-  @apply rounded-md px-2 py-1 text-xs font-medium border-l-4 shadow-sm;
+  @apply rounded-md px-2 py-1 text-xs font-medium border-l-4 shadow-sm cursor-pointer;
+}
+
+.fc .fc-event:hover {
+  @apply shadow-md;
 }
 
 .fc .fc-event-title {
@@ -77,7 +226,7 @@
 }
 
 .fc .fc-more-link {
-  @apply text-blue-600 font-medium text-xs hover:text-blue-700;
+  @apply text-emerald-600 font-medium text-xs hover:text-emerald-700;
 }
 
 .fc .fc-popover {
@@ -85,14 +234,283 @@
 }
 
 .fc .fc-popover-header {
-  @apply bg-gray-50 rounded-t-xl px-3 py-2 font-semibold;
+  @apply bg-gray-50 rounded-t-xl px-3 py-2 font-semibold text-sm;
 }
 
 /* Drag & Drop Styles */
 .fc-event-dragging {
-  @apply opacity-75 shadow-lg;
+  @apply opacity-75 shadow-lg scale-105;
 }
 
 .fc-highlight {
-  @apply bg-blue-100;
+  @apply bg-emerald-100/50;
+}
+
+/* ======================================
+   FORM ELEMENTS - Global Jobber Style
+   ====================================== */
+
+/* All inputs, selects, textareas */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="tel"],
+input[type="url"],
+input[type="search"],
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
+textarea,
+select {
+  @apply text-gray-900 placeholder-gray-400;
+}
+
+/* Checkbox and Radio - Jobber style */
+input[type="checkbox"] {
+  @apply h-4 w-4 rounded border-gray-300 text-emerald-600 
+         focus:ring-2 focus:ring-emerald-500/20 focus:ring-offset-0
+         transition-all cursor-pointer;
+}
+
+input[type="radio"] {
+  @apply h-4 w-4 border-gray-300 text-emerald-600 
+         focus:ring-2 focus:ring-emerald-500/20 focus:ring-offset-0
+         transition-all cursor-pointer;
+}
+
+/* Disabled states */
+input:disabled,
+select:disabled,
+textarea:disabled {
+  @apply bg-gray-50 text-gray-500 cursor-not-allowed;
+}
+
+/* ======================================
+   LINKS - Jobber Style
+   ====================================== */
+.link {
+  @apply text-emerald-600 hover:text-emerald-700 font-medium transition-colors;
+}
+
+.link-subtle {
+  @apply text-gray-600 hover:text-gray-900 transition-colors;
+}
+
+.link-danger {
+  @apply text-red-600 hover:text-red-700 font-medium transition-colors;
+}
+
+/* ======================================
+   CARDS - Jobber Style Enhancements
+   ====================================== */
+.card {
+  @apply bg-white rounded-xl border border-gray-100 shadow-sm;
+}
+
+.card-hover {
+  @apply hover:shadow-md hover:border-gray-200 transition-all;
+}
+
+.card-interactive {
+  @apply hover:shadow-md hover:border-gray-200 hover:scale-[1.01] transition-all cursor-pointer;
+}
+
+/* ======================================
+   BUTTONS - Jobber Style Enhancements
+   ====================================== */
+.btn-icon {
+  @apply p-2 rounded-lg text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-all;
+}
+
+.btn-icon-sm {
+  @apply p-1.5 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 transition-all;
+}
+
+/* ======================================
+   TABLE - Jobber Style Enhancements
+   ====================================== */
+.table-row-clickable {
+  @apply cursor-pointer hover:bg-gray-50/80 transition-colors;
+}
+
+.table-row-clickable:active {
+  @apply bg-gray-100;
+}
+
+/* ======================================
+   BADGE/PILL - Jobber Style
+   ====================================== */
+.pill {
+  @apply inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium;
+}
+
+.pill-sm {
+  @apply inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium;
+}
+
+/* ======================================
+   DROPDOWN/POPOVER - Jobber Style
+   ====================================== */
+.dropdown {
+  @apply absolute z-50 mt-2 rounded-xl bg-white shadow-lg ring-1 ring-gray-200 
+         animate-scale-in origin-top-right;
+}
+
+.dropdown-item {
+  @apply flex items-center gap-2 w-full px-4 py-2.5 text-sm text-gray-700 
+         hover:bg-gray-50 transition-colors cursor-pointer;
+}
+
+.dropdown-item:first-child {
+  @apply rounded-t-xl;
+}
+
+.dropdown-item:last-child {
+  @apply rounded-b-xl;
+}
+
+.dropdown-divider {
+  @apply h-px bg-gray-100 my-1;
+}
+
+/* ======================================
+   TOOLTIP - Jobber Style
+   ====================================== */
+.tooltip {
+  @apply absolute z-50 px-2.5 py-1.5 text-xs font-medium text-white bg-gray-900 
+         rounded-lg shadow-lg animate-fade-in pointer-events-none;
+}
+
+.tooltip::after {
+  content: '';
+  @apply absolute w-2 h-2 bg-gray-900 rotate-45;
+}
+
+.tooltip-top::after {
+  @apply -bottom-1 left-1/2 -translate-x-1/2;
+}
+
+.tooltip-bottom::after {
+  @apply -top-1 left-1/2 -translate-x-1/2;
+}
+
+/* ======================================
+   STATUS INDICATORS - Jobber Style
+   ====================================== */
+.status-dot {
+  @apply w-2 h-2 rounded-full;
+}
+
+.status-dot-lg {
+  @apply w-3 h-3 rounded-full;
+}
+
+.status-dot-pulse {
+  @apply relative;
+}
+
+.status-dot-pulse::before {
+  content: '';
+  @apply absolute inset-0 rounded-full;
+  animation: pulse-ring 1.5s cubic-bezier(0.215, 0.61, 0.355, 1) infinite;
+}
+
+/* ======================================
+   AVATAR - Jobber Style
+   ====================================== */
+.avatar {
+  @apply inline-flex items-center justify-center rounded-full bg-emerald-500 text-white font-medium;
+}
+
+.avatar-sm {
+  @apply w-8 h-8 text-xs;
+}
+
+.avatar-md {
+  @apply w-10 h-10 text-sm;
+}
+
+.avatar-lg {
+  @apply w-12 h-12 text-base;
+}
+
+.avatar-xl {
+  @apply w-16 h-16 text-lg;
+}
+
+/* Avatar group */
+.avatar-group {
+  @apply flex -space-x-2;
+}
+
+.avatar-group > * {
+  @apply ring-2 ring-white;
+}
+
+/* ======================================
+   DIVIDERS - Jobber Style
+   ====================================== */
+.divider {
+  @apply h-px bg-gray-100;
+}
+
+.divider-vertical {
+  @apply w-px bg-gray-100;
+}
+
+/* ======================================
+   SECTION HEADERS - Jobber Style
+   ====================================== */
+.section-title {
+  @apply text-xs font-semibold text-gray-500 uppercase tracking-wide;
+}
+
+.section-header {
+  @apply flex items-center justify-between pb-3 border-b border-gray-100;
+}
+
+/* ======================================
+   UTILITY CLASSES - Jobber Style
+   ====================================== */
+.text-muted {
+  @apply text-gray-500;
+}
+
+.text-caption {
+  @apply text-xs text-gray-500;
+}
+
+.text-label {
+  @apply text-sm font-medium text-gray-700;
+}
+
+.text-value {
+  @apply text-sm text-gray-900;
+}
+
+.text-money {
+  @apply font-semibold tabular-nums;
+}
+
+/* Truncate with tooltip capability */
+.truncate-tooltip {
+  @apply truncate cursor-help;
+}
+
+/* ======================================
+   PRINT STYLES
+   ====================================== */
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  
+  body {
+    @apply bg-white;
+  }
+  
+  .card {
+    @apply shadow-none border;
+  }
 }

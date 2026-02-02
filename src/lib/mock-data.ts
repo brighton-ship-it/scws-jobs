@@ -2,7 +2,8 @@
 import type { 
   User, Customer, Property, WellInfo, Job, Invoice, JobType, 
   Quote, QuoteItem, InvoiceItem, Payment, Product, 
-  QuoteWithDetails, InvoiceWithDetails, Task, TaskWithDetails
+  QuoteWithDetails, InvoiceWithDetails, Task, TaskWithDetails,
+  JobAssignment, JobAssignmentWithUser
 } from '@/types/database';
 
 export const mockUsers: User[] = [
@@ -45,6 +46,102 @@ export const mockUsers: User[] = [
     role: 'field',
     phone: '(760) 555-0104',
     created_at: '2024-04-01T00:00:00Z',
+  },
+  {
+    id: '6',
+    email: 'david@scwellservice.com',
+    name: 'David Chen',
+    role: 'field',
+    phone: '(760) 555-0105',
+    created_at: '2024-04-15T00:00:00Z',
+  },
+  {
+    id: '7',
+    email: 'tony@scwellservice.com',
+    name: 'Tony Rodriguez',
+    role: 'field',
+    phone: '(760) 555-0106',
+    created_at: '2024-05-01T00:00:00Z',
+  },
+  {
+    id: '8',
+    email: 'marcus@scwellservice.com',
+    name: 'Marcus Johnson',
+    role: 'field',
+    phone: '(760) 555-0107',
+    created_at: '2024-05-15T00:00:00Z',
+  },
+  {
+    id: '9',
+    email: 'ryan@scwellservice.com',
+    name: 'Ryan Patterson',
+    role: 'field',
+    phone: '(760) 555-0108',
+    created_at: '2024-06-01T00:00:00Z',
+  },
+  {
+    id: '10',
+    email: 'luis@scwellservice.com',
+    name: 'Luis Garcia',
+    role: 'field',
+    phone: '(760) 555-0109',
+    created_at: '2024-06-15T00:00:00Z',
+  },
+  {
+    id: '11',
+    email: 'jennifer@scwellservice.com',
+    name: 'Jennifer Lee',
+    role: 'office',
+    phone: '(760) 555-0110',
+    created_at: '2024-07-01T00:00:00Z',
+  },
+  {
+    id: '12',
+    email: 'kevin@scwellservice.com',
+    name: 'Kevin Brown',
+    role: 'field',
+    phone: '(760) 555-0111',
+    created_at: '2024-07-15T00:00:00Z',
+  },
+  {
+    id: '13',
+    email: 'steve@scwellservice.com',
+    name: 'Steve Mitchell',
+    role: 'field',
+    phone: '(760) 555-0112',
+    created_at: '2024-08-01T00:00:00Z',
+  },
+  {
+    id: '14',
+    email: 'alex@scwellservice.com',
+    name: 'Alex Hernandez',
+    role: 'field',
+    phone: '(760) 555-0113',
+    created_at: '2024-08-15T00:00:00Z',
+  },
+  {
+    id: '15',
+    email: 'jason@scwellservice.com',
+    name: 'Jason Miller',
+    role: 'field',
+    phone: '(760) 555-0114',
+    created_at: '2024-09-01T00:00:00Z',
+  },
+  {
+    id: '16',
+    email: 'tom@scwellservice.com',
+    name: 'Tom Anderson',
+    role: 'field',
+    phone: '(760) 555-0115',
+    created_at: '2024-09-15T00:00:00Z',
+  },
+  {
+    id: '17',
+    email: 'chris@scwellservice.com',
+    name: 'Chris Taylor',
+    role: 'field',
+    phone: '(760) 555-0116',
+    created_at: '2024-10-01T00:00:00Z',
   },
 ];
 
@@ -1108,6 +1205,90 @@ export const mockNotificationSettings = {
   paymentAlerts: true,
 };
 
+// Job Assignments (multiple assignees per job)
+export const mockJobAssignments: JobAssignment[] = [
+  {
+    id: 'ja1',
+    job_id: '1',
+    user_id: '3', // Mike Thompson
+    assigned_at: getDateStr(-1) + 'T08:00:00Z',
+    assigned_by: '1', // Brighton
+    notes: null,
+  },
+  {
+    id: 'ja2',
+    job_id: '2',
+    user_id: '3', // Mike Thompson
+    assigned_at: getDateStr(-1) + 'T09:00:00Z',
+    assigned_by: '1',
+    notes: 'Primary tech for emergency',
+  },
+  {
+    id: 'ja3',
+    job_id: '2',
+    user_id: '4', // Carlos Rivera (backup)
+    assigned_at: getDateStr(-1) + 'T09:30:00Z',
+    assigned_by: '1',
+    notes: 'Backup support',
+  },
+  {
+    id: 'ja4',
+    job_id: '3',
+    user_id: '4', // Carlos Rivera
+    assigned_at: getDateStr(-2) + 'T10:00:00Z',
+    assigned_by: '2', // Sarah
+    notes: null,
+  },
+  {
+    id: 'ja5',
+    job_id: '3',
+    user_id: '6', // David Chen (helper)
+    assigned_at: getDateStr(-2) + 'T10:00:00Z',
+    assigned_by: '2',
+    notes: 'Helper for pump replacement',
+  },
+  {
+    id: 'ja6',
+    job_id: '4',
+    user_id: '5', // Jake Wilson
+    assigned_at: getDateStr(-3) + 'T14:00:00Z',
+    assigned_by: '1',
+    notes: null,
+  },
+  {
+    id: 'ja7',
+    job_id: '7',
+    user_id: '3', // Mike Thompson
+    assigned_at: getDateStr(-1) + 'T11:00:00Z',
+    assigned_by: '1',
+    notes: null,
+  },
+  {
+    id: 'ja8',
+    job_id: '8',
+    user_id: '4', // Carlos Rivera
+    assigned_at: getDateStr(-2) + 'T16:00:00Z',
+    assigned_by: '2',
+    notes: null,
+  },
+  {
+    id: 'ja9',
+    job_id: '9',
+    user_id: '3', // Mike Thompson
+    assigned_at: getDateStr(-5) + 'T08:00:00Z',
+    assigned_by: '1',
+    notes: null,
+  },
+  {
+    id: 'ja10',
+    job_id: '10',
+    user_id: '5', // Jake Wilson
+    assigned_at: getDateStr(-7) + 'T09:00:00Z',
+    assigned_by: '1',
+    notes: null,
+  },
+];
+
 // Tasks
 export const mockTasks: Task[] = [
   {
@@ -1284,4 +1465,108 @@ export function getAllTasksWithDetails(): TaskWithDetails[] {
     related_job: task.related_job_id ? getJobById(task.related_job_id) || null : null,
     related_customer: task.related_customer_id ? getCustomerById(task.related_customer_id) || null : null,
   }));
+}
+
+// Job Assignment helpers
+export function getJobAssignments(jobId: string): JobAssignmentWithUser[] {
+  return mockJobAssignments
+    .filter(a => a.job_id === jobId)
+    .map(assignment => ({
+      ...assignment,
+      user: getUserById(assignment.user_id)!,
+      assigned_by_user: assignment.assigned_by ? getUserById(assignment.assigned_by) || null : null,
+    }))
+    .filter(a => a.user) // Filter out invalid assignments
+    .sort((a, b) => new Date(a.assigned_at).getTime() - new Date(b.assigned_at).getTime());
+}
+
+export function getJobsAssignedToUser(userId: string): Job[] {
+  const assignedJobIds = mockJobAssignments
+    .filter(a => a.user_id === userId)
+    .map(a => a.job_id);
+  
+  return mockJobs.filter(job => assignedJobIds.includes(job.id));
+}
+
+export function getActiveJobsAssignedToUser(userId: string): Job[] {
+  return getJobsAssignedToUser(userId).filter(
+    job => job.status === 'scheduled' || job.status === 'in_progress'
+  );
+}
+
+export function getTodaysJobsForUser(userId: string): Job[] {
+  const today = new Date().toISOString().split('T')[0];
+  return getJobsAssignedToUser(userId).filter(
+    job => job.scheduled_date === today && 
+           (job.status === 'scheduled' || job.status === 'in_progress')
+  );
+}
+
+export function getAssignedUsersForJob(jobId: string): User[] {
+  const userIds = mockJobAssignments
+    .filter(a => a.job_id === jobId)
+    .map(a => a.user_id);
+  
+  return userIds
+    .map(id => getUserById(id))
+    .filter((user): user is User => user !== undefined);
+}
+
+export function assignUserToJob(
+  jobId: string, 
+  userId: string, 
+  assignedBy: string | null = null,
+  notes: string | null = null
+): JobAssignment {
+  // Check if already assigned
+  const existing = mockJobAssignments.find(
+    a => a.job_id === jobId && a.user_id === userId
+  );
+  if (existing) return existing;
+
+  const newAssignment: JobAssignment = {
+    id: `ja${mockJobAssignments.length + 1}`,
+    job_id: jobId,
+    user_id: userId,
+    assigned_at: new Date().toISOString(),
+    assigned_by: assignedBy,
+    notes: notes,
+  };
+  
+  mockJobAssignments.push(newAssignment);
+  
+  // Also update the job's assigned_to to the primary assignee (first one)
+  const job = mockJobs.find(j => j.id === jobId);
+  if (job && !job.assigned_to) {
+    job.assigned_to = userId;
+  }
+  
+  return newAssignment;
+}
+
+export function unassignUserFromJob(jobId: string, userId: string): boolean {
+  const index = mockJobAssignments.findIndex(
+    a => a.job_id === jobId && a.user_id === userId
+  );
+  
+  if (index === -1) return false;
+  
+  mockJobAssignments.splice(index, 1);
+  
+  // Update job's assigned_to if this was the primary assignee
+  const job = mockJobs.find(j => j.id === jobId);
+  if (job && job.assigned_to === userId) {
+    const remaining = mockJobAssignments.filter(a => a.job_id === jobId);
+    job.assigned_to = remaining.length > 0 ? remaining[0].user_id : null;
+  }
+  
+  return true;
+}
+
+export function getAllTeamMembers(): User[] {
+  return mockUsers;
+}
+
+export function getTeamMembersByRole(role: 'admin' | 'office' | 'field'): User[] {
+  return mockUsers.filter(u => u.role === role);
 }

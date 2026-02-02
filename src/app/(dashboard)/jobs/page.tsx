@@ -11,7 +11,10 @@ import {
   getPropertyById,
   getCustomerById,
   getUserById,
+  getAssignedUsersForJob,
+  getFieldCrew,
 } from '@/lib/mock-data';
+import { AssignedTeamInline } from '@/components/scheduling';
 import {
   Search,
   Plus,
@@ -22,6 +25,9 @@ import {
   FileText,
   AlertTriangle,
   CalendarX,
+  Briefcase,
+  Users,
+  Filter,
 } from 'lucide-react';
 import { format, isPast, isToday, isFuture, addDays } from 'date-fns';
 
@@ -92,10 +98,12 @@ function useJobStats() {
 export default function JobsPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [assigneeFilter, setAssigneeFilter] = useState('all');
   const [sortField, setSortField] = useState<SortField>('schedule');
   const [sortDirection, setSortDirection] = useState<SortDirection>('desc');
   
   const stats = useJobStats();
+  const fieldCrew = getFieldCrew();
 
   // Get derived status for a job (Jobber-style)
   const getDerivedStatus = (job: typeof mockJobs[0]) => {
@@ -120,6 +128,7 @@ export default function JobsPage() {
     return mockJobs.filter((job) => {
       const property = getPropertyById(job.property_id);
       const customer = property ? getCustomerById(property.customer_id) : null;
+      const assignedUsers = getAssignedUsersForJob(job.id);
 
       const matchesSearch =
         search === '' ||
@@ -130,10 +139,16 @@ export default function JobsPage() {
 
       const derivedStatus = getDerivedStatus(job);
       const matchesStatus = statusFilter === 'all' || derivedStatus === statusFilter;
+      
+      // Assignee filter
+      const matchesAssignee = 
+        assigneeFilter === 'all' || 
+        (assigneeFilter === 'unassigned' && assignedUsers.length === 0) ||
+        assignedUsers.some(u => u.id === assigneeFilter);
 
-      return matchesSearch && matchesStatus;
+      return matchesSearch && matchesStatus && matchesAssignee;
     });
-  }, [search, statusFilter]);
+  }, [search, statusFilter, assigneeFilter]);
 
   // Sort jobs
   const sortedJobs = useMemo(() => {
@@ -203,76 +218,76 @@ export default function JobsPage() {
   };
 
   return (
-    <div className="flex gap-6">
-      {/* Sidebar - Quick Filters */}
+    <div className="flex gap-6 animate-fade-in">
+      {/* Sidebar - Quick Filters - Jobber Style */}
       <div className="hidden lg:block w-56 flex-shrink-0">
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-semibold text-gray-700">Overview</CardTitle>
+            <CardTitle className="text-sm font-semibold text-gray-600 uppercase tracking-wide">Overview</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-1">
+          <CardContent className="space-y-0.5 pt-0">
             <button
               onClick={() => setStatusFilter('all')}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
-                statusFilter === 'all' ? 'bg-green-50 text-green-700' : 'hover:bg-gray-50'
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                statusFilter === 'all' ? 'bg-emerald-50 text-emerald-700' : 'text-gray-700 hover:bg-gray-50'
               }`}
             >
               <span>All Jobs</span>
-              <span className="text-gray-500">{mockJobs.length}</span>
+              <span className={statusFilter === 'all' ? 'text-emerald-600' : 'text-gray-400'}>{mockJobs.length}</span>
             </button>
             
             <div className="h-px bg-gray-100 my-2" />
             
             <button
               onClick={() => setStatusFilter('late')}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
-                statusFilter === 'late' ? 'bg-red-50 text-red-700' : 'hover:bg-gray-50'
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                statusFilter === 'late' ? 'bg-red-50 text-red-700' : 'text-gray-700 hover:bg-gray-50'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2.5">
                 <AlertCircle className="h-4 w-4 text-red-500" />
                 Late
               </span>
-              <span className={stats.late > 0 ? 'text-red-600 font-medium' : 'text-gray-500'}>{stats.late}</span>
+              <span className={stats.late > 0 ? 'text-red-600 font-semibold' : 'text-gray-400'}>{stats.late}</span>
             </button>
             
             <button
               onClick={() => setStatusFilter('requires_invoicing')}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
-                statusFilter === 'requires_invoicing' ? 'bg-purple-50 text-purple-700' : 'hover:bg-gray-50'
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                statusFilter === 'requires_invoicing' ? 'bg-purple-50 text-purple-700' : 'text-gray-700 hover:bg-gray-50'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2.5">
                 <FileText className="h-4 w-4 text-purple-500" />
                 Requires Invoicing
               </span>
-              <span className={stats.requiresInvoicing > 0 ? 'text-purple-600 font-medium' : 'text-gray-500'}>{stats.requiresInvoicing}</span>
+              <span className={stats.requiresInvoicing > 0 ? 'text-purple-600 font-semibold' : 'text-gray-400'}>{stats.requiresInvoicing}</span>
             </button>
             
             <button
               onClick={() => setStatusFilter('action_required')}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
-                statusFilter === 'action_required' ? 'bg-orange-50 text-orange-700' : 'hover:bg-gray-50'
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                statusFilter === 'action_required' ? 'bg-orange-50 text-orange-700' : 'text-gray-700 hover:bg-gray-50'
               }`}
             >
-              <span className="flex items-center gap-2">
+              <span className="flex items-center gap-2.5">
                 <AlertTriangle className="h-4 w-4 text-orange-500" />
                 Action Required
               </span>
-              <span className={stats.actionRequired > 0 ? 'text-orange-600 font-medium' : 'text-gray-500'}>{stats.actionRequired}</span>
+              <span className={stats.actionRequired > 0 ? 'text-orange-600 font-semibold' : 'text-gray-400'}>{stats.actionRequired}</span>
             </button>
             
             <button
               onClick={() => setStatusFilter('unscheduled')}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm transition-colors ${
-                statusFilter === 'unscheduled' ? 'bg-yellow-50 text-yellow-700' : 'hover:bg-gray-50'
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${
+                statusFilter === 'unscheduled' ? 'bg-amber-50 text-amber-700' : 'text-gray-700 hover:bg-gray-50'
               }`}
             >
-              <span className="flex items-center gap-2">
-                <CalendarX className="h-4 w-4 text-yellow-500" />
+              <span className="flex items-center gap-2.5">
+                <CalendarX className="h-4 w-4 text-amber-500" />
                 Unscheduled
               </span>
-              <span className={stats.unscheduled > 0 ? 'text-yellow-600 font-medium' : 'text-gray-500'}>{stats.unscheduled}</span>
+              <span className={stats.unscheduled > 0 ? 'text-amber-600 font-semibold' : 'text-gray-400'}>{stats.unscheduled}</span>
             </button>
           </CardContent>
         </Card>
@@ -281,9 +296,9 @@ export default function JobsPage() {
         <div className="mt-4 space-y-3">
           <Card>
             <CardContent className="py-4">
-              <p className="text-xs font-medium text-gray-500 uppercase">Recent Visits</p>
-              <p className="text-sm text-gray-600">Past 30 days</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Recent Visits</p>
+              <p className="text-sm text-gray-500 mt-0.5">Past 30 days</p>
+              <p className="text-2xl font-bold text-gray-900 mt-2">
                 {mockJobs.filter(j => j.status === 'completed' || j.status === 'invoiced').length}
               </p>
             </CardContent>
@@ -291,9 +306,9 @@ export default function JobsPage() {
           
           <Card>
             <CardContent className="py-4">
-              <p className="text-xs font-medium text-gray-500 uppercase">Visits Scheduled</p>
-              <p className="text-sm text-gray-600">Next 30 days</p>
-              <p className="text-2xl font-bold text-gray-900 mt-1">
+              <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Visits Scheduled</p>
+              <p className="text-sm text-gray-500 mt-0.5">Next 30 days</p>
+              <p className="text-2xl font-bold text-gray-900 mt-2">
                 {mockJobs.filter(j => j.status === 'scheduled' && j.scheduled_date).length}
               </p>
             </CardContent>
@@ -302,12 +317,12 @@ export default function JobsPage() {
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 min-w-0 space-y-6">
+      <div className="flex-1 min-w-0 space-y-5">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Jobs</h1>
-            <p className="text-gray-600">{filteredJobs.length} of {mockJobs.length} jobs</p>
+            <p className="text-sm text-gray-500 mt-0.5">{filteredJobs.length} of {mockJobs.length} jobs</p>
           </div>
           <Button href="/jobs/new">
             <Plus className="h-4 w-4" />
@@ -315,19 +330,34 @@ export default function JobsPage() {
           </Button>
         </div>
 
-        {/* Filters Bar */}
+        {/* Filters Bar - Jobber Style */}
         <Card>
-          <CardContent className="py-4">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+          <CardContent className="py-3.5">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
               {/* Status dropdown */}
               <select
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="h-10 rounded-lg border border-gray-300 bg-white px-3 text-sm focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
               >
                 {statusFilters.map((filter) => (
                   <option key={filter.value} value={filter.value}>
                     {filter.label}
+                  </option>
+                ))}
+              </select>
+
+              {/* Assignee dropdown */}
+              <select
+                value={assigneeFilter}
+                onChange={(e) => setAssigneeFilter(e.target.value)}
+                className="h-10 rounded-lg border border-gray-200 bg-white px-3 text-sm font-medium text-gray-700 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
+              >
+                <option value="all">All Team Members</option>
+                <option value="unassigned">Unassigned</option>
+                {fieldCrew.map((member) => (
+                  <option key={member.id} value={member.id}>
+                    {member.name}
                   </option>
                 ))}
               </select>
@@ -340,7 +370,7 @@ export default function JobsPage() {
                   placeholder="Search jobs..."
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  className="h-10 w-full rounded-lg border border-gray-300 bg-white pl-10 pr-4 text-sm placeholder-gray-500 focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
+                  className="h-10 w-full rounded-lg border border-gray-200 bg-white pl-10 pr-4 text-sm placeholder-gray-400 focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 transition-all"
                 />
               </div>
             </div>
@@ -348,14 +378,14 @@ export default function JobsPage() {
         </Card>
 
         {/* Jobs Table - Jobber style */}
-        <Card>
-          <Table>
+        <Card className="overflow-hidden">
+          <Table className="border-0 rounded-none">
             <TableHeader>
-              <TableRow>
+              <TableRow className="bg-gray-50/80">
                 <TableCell header>
                   <button 
                     onClick={() => handleSort('client')}
-                    className="flex items-center gap-1 hover:text-gray-900"
+                    className="flex items-center gap-1.5 hover:text-gray-900 transition-colors"
                   >
                     Client <SortIcon field="client" />
                   </button>
@@ -363,7 +393,7 @@ export default function JobsPage() {
                 <TableCell header>
                   <button 
                     onClick={() => handleSort('job_number')}
-                    className="flex items-center gap-1 hover:text-gray-900"
+                    className="flex items-center gap-1.5 hover:text-gray-900 transition-colors"
                   >
                     Job # <SortIcon field="job_number" />
                   </button>
@@ -371,7 +401,7 @@ export default function JobsPage() {
                 <TableCell header>
                   <button 
                     onClick={() => handleSort('property')}
-                    className="flex items-center gap-1 hover:text-gray-900"
+                    className="flex items-center gap-1.5 hover:text-gray-900 transition-colors"
                   >
                     Property <SortIcon field="property" />
                   </button>
@@ -379,15 +409,21 @@ export default function JobsPage() {
                 <TableCell header>
                   <button 
                     onClick={() => handleSort('schedule')}
-                    className="flex items-center gap-1 hover:text-gray-900"
+                    className="flex items-center gap-1.5 hover:text-gray-900 transition-colors"
                   >
                     Schedule <SortIcon field="schedule" />
                   </button>
                 </TableCell>
                 <TableCell header>
+                  <span className="flex items-center gap-1.5">
+                    <Users className="h-4 w-4" />
+                    Assigned
+                  </span>
+                </TableCell>
+                <TableCell header>
                   <button 
                     onClick={() => handleSort('status')}
-                    className="flex items-center gap-1 hover:text-gray-900"
+                    className="flex items-center gap-1.5 hover:text-gray-900 transition-colors"
                   >
                     Status <SortIcon field="status" />
                   </button>
@@ -395,7 +431,7 @@ export default function JobsPage() {
                 <TableCell header className="text-right">
                   <button 
                     onClick={() => handleSort('total')}
-                    className="flex items-center gap-1 hover:text-gray-900 ml-auto"
+                    className="flex items-center gap-1.5 hover:text-gray-900 ml-auto transition-colors"
                   >
                     Total <SortIcon field="total" />
                   </button>
@@ -404,23 +440,27 @@ export default function JobsPage() {
             </TableHeader>
             <TableBody>
               {sortedJobs.length === 0 ? (
-                <TableEmpty message="No jobs found" />
+                <TableEmpty 
+                  message="No jobs found" 
+                  icon={<Briefcase className="h-8 w-8" />}
+                />
               ) : (
                 sortedJobs.map((job) => {
                   const property = getPropertyById(job.property_id);
                   const customer = property ? getCustomerById(property.customer_id) : null;
                   const derivedStatus = getDerivedStatus(job);
                   const mockTotal = (job.job_type.length * 100) + 250; // Mock pricing
+                  const assignedUsers = getAssignedUsersForJob(job.id);
 
                   return (
                     <TableRow key={job.id}>
                       <TableCell>
-                        <Link href={`/jobs/${job.id}`} className="hover:text-green-600">
+                        <Link href={`/jobs/${job.id}`} className="hover:text-emerald-600 transition-colors">
                           <p className="font-medium text-gray-900">{customer?.name || 'Unknown'}</p>
                         </Link>
                       </TableCell>
                       <TableCell>
-                        <Link href={`/jobs/${job.id}`} className="hover:text-green-600">
+                        <Link href={`/jobs/${job.id}`} className="hover:text-emerald-600 transition-colors">
                           <p className="font-medium text-gray-900">#{job.id}</p>
                           <p className="text-sm text-gray-500">{job.job_type}</p>
                         </Link>
@@ -432,9 +472,9 @@ export default function JobsPage() {
                       <TableCell>
                         {job.scheduled_date ? (
                           <>
-                            {job.status === 'completed' || job.status === 'invoiced' ? (
-                              <p className="text-xs font-medium text-gray-500 uppercase">Completed</p>
-                            ) : null}
+                            {(job.status === 'completed' || job.status === 'invoiced') && (
+                              <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wide">Completed</p>
+                            )}
                             <p className="text-gray-900">
                               {format(new Date(job.scheduled_date), 'MMM d, yyyy')}
                             </p>
@@ -443,14 +483,17 @@ export default function JobsPage() {
                             )}
                           </>
                         ) : (
-                          <span className="text-gray-400 italic">Unscheduled</span>
+                          <span className="text-gray-400 italic text-sm">Unscheduled</span>
                         )}
+                      </TableCell>
+                      <TableCell>
+                        <AssignedTeamInline users={assignedUsers} />
                       </TableCell>
                       <TableCell>
                         <JobStatusBadge status={derivedStatus} />
                       </TableCell>
                       <TableCell className="text-right">
-                        <p className="font-medium text-gray-900">
+                        <p className="font-semibold text-gray-900">
                           ${mockTotal.toLocaleString()}
                         </p>
                       </TableCell>

@@ -1,7 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { X, CheckCircle, AlertCircle, Info, AlertTriangle } from 'lucide-react';
+import { X, CheckCircle, XCircle, Info, AlertTriangle } from 'lucide-react';
 
 export type ToastType = 'success' | 'error' | 'info' | 'warning';
 
@@ -27,23 +27,38 @@ const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
 const icons = {
   success: CheckCircle,
-  error: AlertCircle,
+  error: XCircle,
   info: Info,
   warning: AlertTriangle,
 };
 
+// Jobber-style toast colors
 const colors = {
-  success: 'bg-green-50 border-green-200 text-green-800',
-  error: 'bg-red-50 border-red-200 text-red-800',
-  info: 'bg-blue-50 border-blue-200 text-blue-800',
-  warning: 'bg-yellow-50 border-yellow-200 text-yellow-800',
+  success: 'bg-emerald-50 border-emerald-200',
+  error: 'bg-red-50 border-red-200',
+  info: 'bg-blue-50 border-blue-200',
+  warning: 'bg-amber-50 border-amber-200',
 };
 
 const iconColors = {
-  success: 'text-green-500',
-  error: 'text-red-500',
-  info: 'text-blue-500',
-  warning: 'text-yellow-500',
+  success: 'text-emerald-600 bg-emerald-100',
+  error: 'text-red-600 bg-red-100',
+  info: 'text-blue-600 bg-blue-100',
+  warning: 'text-amber-600 bg-amber-100',
+};
+
+const textColors = {
+  success: 'text-emerald-900',
+  error: 'text-red-900',
+  info: 'text-blue-900',
+  warning: 'text-amber-900',
+};
+
+const subtextColors = {
+  success: 'text-emerald-700',
+  error: 'text-red-700',
+  info: 'text-blue-700',
+  warning: 'text-amber-700',
 };
 
 function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) {
@@ -51,19 +66,21 @@ function ToastItem({ toast, onRemove }: { toast: Toast; onRemove: () => void }) 
 
   return (
     <div
-      className={`flex items-start gap-3 rounded-lg border p-4 shadow-lg ${colors[toast.type]} animate-slide-in`}
+      className={`flex items-start gap-3 rounded-xl border p-4 shadow-lg animate-slide-in-right ${colors[toast.type]}`}
       role="alert"
     >
-      <Icon className={`h-5 w-5 flex-shrink-0 ${iconColors[toast.type]}`} />
+      <div className={`flex-shrink-0 p-1.5 rounded-lg ${iconColors[toast.type]}`}>
+        <Icon className="h-4 w-4" />
+      </div>
       <div className="flex-1 min-w-0">
-        <p className="font-medium">{toast.title}</p>
+        <p className={`font-semibold text-sm ${textColors[toast.type]}`}>{toast.title}</p>
         {toast.message && (
-          <p className="mt-1 text-sm opacity-90">{toast.message}</p>
+          <p className={`mt-0.5 text-sm ${subtextColors[toast.type]}`}>{toast.message}</p>
         )}
       </div>
       <button
         onClick={onRemove}
-        className="flex-shrink-0 opacity-50 hover:opacity-100 transition-opacity"
+        className={`flex-shrink-0 p-1 rounded-lg opacity-60 hover:opacity-100 hover:bg-black/5 transition-all ${subtextColors[toast.type]}`}
       >
         <X className="h-4 w-4" />
       </button>

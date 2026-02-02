@@ -59,7 +59,7 @@ export default function QuoteDetailPage() {
   const handleSendQuote = async () => {
     setSending(true);
     await new Promise(resolve => setTimeout(resolve, 1000));
-    console.log('Sending quote to:', sendEmail);
+    // TODO: Implement actual send logic
     setSending(false);
     setShowSendModal(false);
   };

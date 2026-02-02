@@ -58,6 +58,14 @@ export default function InvoiceDetailPage() {
 
   const invoiceData = getInvoiceWithDetails(invoiceId);
 
+  // Calculate derived values (must be before early return for hooks consistency)
+  const balanceDue = invoiceData ? invoiceData.total - invoiceData.amount_paid : 0;
+
+  const openPaymentModal = useCallback(() => {
+    setPaymentAmount(balanceDue.toFixed(2));
+    setShowPaymentModal(true);
+  }, [balanceDue]);
+
   if (!invoiceData) {
     return (
       <div className="text-center py-12">
@@ -71,7 +79,6 @@ export default function InvoiceDetailPage() {
   }
 
   const { customer, items, payments = [] } = invoiceData;
-  const balanceDue = invoiceData.total - invoiceData.amount_paid;
   const daysOverdue = invoiceData.due_date && invoiceData.status !== 'paid'
     ? differenceInDays(new Date(), new Date(invoiceData.due_date))
     : 0;
@@ -83,7 +90,7 @@ export default function InvoiceDetailPage() {
   const handleSendInvoice = async () => {
     setSending(true);
     await new Promise(resolve => setTimeout(resolve, 1000));
-    console.log('Sending invoice to:', sendEmail);
+    // TODO: Implement actual send logic
     setSending(false);
     setShowSendModal(false);
   };
@@ -97,14 +104,7 @@ export default function InvoiceDetailPage() {
     setSavingPayment(true);
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    console.log('Recording payment:', {
-      invoice_id: invoiceId,
-      amount: parseFloat(paymentAmount),
-      payment_method: paymentMethod || null,
-      reference_number: paymentReference || null,
-      payment_date: paymentDate,
-      notes: paymentNotes || null,
-    });
+    // TODO: Implement actual payment recording logic
 
     setSavingPayment(false);
     setShowPaymentModal(false);
@@ -118,11 +118,6 @@ export default function InvoiceDetailPage() {
     
     // In a real app, this would refresh the data
   };
-
-  const openPaymentModal = useCallback(() => {
-    setPaymentAmount(balanceDue.toFixed(2));
-    setShowPaymentModal(true);
-  }, [balanceDue]);
 
   const handlePrint = () => {
     window.print();

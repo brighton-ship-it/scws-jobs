@@ -92,20 +92,7 @@ export default function EditQuotePage() {
     
     await new Promise(resolve => setTimeout(resolve, 500));
     
-    console.log('Updating quote:', {
-      id: quoteId,
-      customer_id: customerId,
-      property_id: propertyId || null,
-      valid_until: validUntil || null,
-      notes,
-      internal_notes: internalNotes,
-      tax_rate: taxRate,
-      subtotal,
-      tax_amount: taxAmount,
-      total,
-      status: asDraft ? quoteData.status : 'sent',
-      line_items: lineItems,
-    });
+    // TODO: Implement actual update logic
 
     router.push(`/quotes/${quoteId}`);
   };

@@ -1,6 +1,7 @@
 'use client';
 
 import React, { forwardRef } from 'react';
+import { ChevronDown } from 'lucide-react';
 
 export interface SelectOption {
   value: string;
@@ -19,8 +20,8 @@ export interface SelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectE
 }
 
 const sizeClasses = {
-  sm: 'px-3 py-1.5 text-sm',
-  md: 'px-3 py-2 text-sm',
+  sm: 'px-3 py-2 text-sm',
+  md: 'px-3.5 py-2.5 text-sm',
   lg: 'px-4 py-3 text-base',
 };
 
@@ -48,10 +49,10 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
         {label && (
           <label
             htmlFor={selectId}
-            className="block text-sm font-medium text-slate-700 mb-1.5"
+            className="block text-sm font-medium text-gray-700 mb-1.5"
           >
             {label}
-            {props.required && <span className="text-red-500 ml-1">*</span>}
+            {props.required && <span className="text-red-500 ml-0.5">*</span>}
           </label>
         )}
         <div className="relative">
@@ -60,10 +61,15 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
             id={selectId}
             disabled={disabled}
             className={`
-              block rounded-lg border bg-white transition-colors appearance-none cursor-pointer
-              focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500
-              disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed
-              ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500/20' : 'border-slate-300'}
+              block rounded-lg border bg-white text-gray-900 
+              transition-all duration-150 appearance-none cursor-pointer
+              focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500
+              hover:border-gray-400
+              disabled:bg-gray-50 disabled:text-gray-500 disabled:cursor-not-allowed disabled:hover:border-gray-200
+              ${error 
+                ? 'border-red-400 focus:border-red-500 focus:ring-red-500/20' 
+                : 'border-gray-200'
+              }
               ${sizeClasses[size]}
               ${fullWidth ? 'w-full' : ''}
               pr-10
@@ -72,7 +78,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
             {...props}
           >
             {placeholder && (
-              <option value="" disabled>
+              <option value="" disabled className="text-gray-400">
                 {placeholder}
               </option>
             )}
@@ -82,14 +88,12 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(
               </option>
             ))}
           </select>
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-            </svg>
+          <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-gray-400">
+            <ChevronDown className="w-5 h-5" />
           </div>
         </div>
         {(error || hint) && (
-          <p className={`mt-1.5 text-sm ${error ? 'text-red-600' : 'text-slate-500'}`}>
+          <p className={`mt-1.5 text-sm ${error ? 'text-red-600' : 'text-gray-500'}`}>
             {error || hint}
           </p>
         )}
