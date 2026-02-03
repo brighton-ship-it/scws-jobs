@@ -1,2 +1,2 @@
 // Re-export form elements for convenient importing
-export { Input, Textarea, Select } from './Input';
+export { Input, Textarea, Select } from './input';
