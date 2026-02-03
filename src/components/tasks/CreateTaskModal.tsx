@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { X } from 'lucide-react';
-import { Button } from '@/components/ui/Button';
+import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/FormElements';
 import { mockUsers, mockCustomers } from '@/lib/mock-data';
 import { createTask, type CreateTaskInput } from '@/lib/tasks';

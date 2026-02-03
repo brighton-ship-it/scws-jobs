@@ -13,7 +13,7 @@ import {
   Trash2,
   Edit2,
 } from 'lucide-react';
-import { Button } from '@/components/ui/Button';
+import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/FormElements';
 import { TaskStatusBadge, TaskPriorityBadge } from './TaskStatusBadge';
 import { mockUsers, mockCustomers, getUserById, getCustomerById, getJobById } from '@/lib/mock-data';

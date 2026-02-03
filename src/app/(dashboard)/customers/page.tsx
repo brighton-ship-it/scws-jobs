@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Card, CardContent } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/Table';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
 import { Search, Plus, Phone, Mail, MapPin, MoreHorizontal, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 

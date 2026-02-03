@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Plus, Search, Package, AlertTriangle, ArrowDown, ArrowUp, Filter, Truck, DollarSign, MoreVertical } from 'lucide-react';
-import { Badge } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/badge';
 
 // Mock data - will be replaced with Supabase
 const mockInventory = [

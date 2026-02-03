@@ -1,8 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { Button } from '@/components/ui/Button';
-import { Card, CardContent } from '@/components/ui/Card';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Modal } from '@/components/feedback/Modal';
 import { TextArea } from '@/components/forms/TextArea';
 import { Input } from '@/components/forms/Input';

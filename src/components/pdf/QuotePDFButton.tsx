@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/Button';
+import { Button } from '@/components/ui/button';
 import { Download, Loader2 } from 'lucide-react';
 import type { QuoteWithDetails } from '@/types/database';
 

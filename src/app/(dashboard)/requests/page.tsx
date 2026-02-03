@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { Plus, Search, Inbox, CheckCircle, Clock, AlertTriangle, ArrowRight, Phone, Mail, MapPin } from 'lucide-react';
-import { Badge } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/badge';
 
 // Mock data - will be replaced with Supabase
 const mockRequests = [

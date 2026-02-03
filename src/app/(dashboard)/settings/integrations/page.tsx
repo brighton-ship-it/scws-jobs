@@ -1,10 +1,10 @@
 'use client';
 
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Button } from '@/components/forms/Button';
-import { Badge } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/badge';
 import { QuickBooksConnect } from '@/components/quickbooks/QuickBooksConnect';
 import { 
   CreditCard, 

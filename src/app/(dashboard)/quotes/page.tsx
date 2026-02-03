@@ -3,10 +3,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Card, CardContent } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/Table';
-import { QuoteStatusBadge } from '@/components/ui/Badge';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
+import { QuoteStatusBadge } from '@/components/ui/badge';
 import { mockQuotes, getCustomerById, getPropertyById } from '@/lib/mock-data';
 import { Search, Plus, MoreHorizontal, Eye, Edit, Copy, Send, FileText } from 'lucide-react';
 import { format } from 'date-fns';

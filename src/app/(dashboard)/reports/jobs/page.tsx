@@ -1,9 +1,9 @@
 'use client';
 
 
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
-import { JobStatusBadge } from '@/components/ui/Badge';
+import { JobStatusBadge } from '@/components/ui/badge';
 import { 
   Briefcase, 
   Clock, 

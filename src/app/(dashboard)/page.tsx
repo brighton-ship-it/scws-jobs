@@ -1,9 +1,9 @@
 'use client';
 
 import { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { JobStatusBadge } from '@/components/ui/Badge';
-import { Button } from '@/components/ui/Button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { JobStatusBadge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { ActivityFeed } from '@/components/dashboard/ActivityFeed';
 import { useAuth } from '@/contexts/AuthContext';
 import {

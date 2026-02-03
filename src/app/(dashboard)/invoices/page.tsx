@@ -3,10 +3,10 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { Card, CardContent } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/Table';
-import { InvoiceStatusBadge } from '@/components/ui/Badge';
+import { Card, CardContent } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
+import { InvoiceStatusBadge } from '@/components/ui/badge';
 import { mockInvoices, getCustomerById, getInvoiceAgingSummary } from '@/lib/mock-data';
 import { Search, Plus, MoreHorizontal, Eye, Edit, Send, DollarSign, AlertTriangle } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';

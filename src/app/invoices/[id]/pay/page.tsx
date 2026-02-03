@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
+import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { PaymentOptions } from '@/components/payment-options';
 import { getInvoiceWithDetails } from '@/lib/mock-data';
 import { format } from 'date-fns';
@@ -15,7 +15,7 @@ import {
   ArrowLeft
 } from 'lucide-react';
 import Link from 'next/link';
-import { Button } from '@/components/ui/Button';
+import { Button } from '@/components/ui/button';
 
 export default function InvoicePaymentPage() {
   const params = useParams();

@@ -3,7 +3,7 @@
 import type { Job } from '@/types/database';
 import { getPropertyById, getCustomerById, getJobTypeByName } from '@/lib/mock-data';
 import { Clock, MapPin, AlertTriangle, GripVertical } from 'lucide-react';
-import { Badge } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/badge';
 
 interface JobCardOverlayProps {
   job: Job;

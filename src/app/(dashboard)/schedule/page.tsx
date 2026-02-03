@@ -1,9 +1,9 @@
 'use client';
 
 import { useState, useMemo } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
-import { Button } from '@/components/ui/Button';
-import { JobStatusBadge } from '@/components/ui/Badge';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { JobStatusBadge } from '@/components/ui/badge';
 import { TaskList, CreateTaskModal } from '@/components/tasks';
 import { ScheduleMap } from '@/components/schedule/ScheduleMap';
 import { 

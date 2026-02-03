@@ -1,7 +1,7 @@
 'use client';
 
 
-import { Card, CardContent } from '@/components/ui/Card';
+import { Card, CardContent } from '@/components/ui/card';
 import { 
   Building2, 
   Users, 

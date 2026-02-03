@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { Plus, Search, Filter, CheckSquare, Clock, AlertCircle, User, Calendar } from 'lucide-react';
-import { Badge } from '@/components/ui/Badge';
+import { Badge } from '@/components/ui/badge';
 
 // Mock data - will be replaced with Supabase
 const mockTasks = [
