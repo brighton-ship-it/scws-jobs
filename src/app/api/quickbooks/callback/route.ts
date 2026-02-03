@@ -10,14 +10,15 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get('error');
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-  const redirectUrl = new URL('/settings/integrations', baseUrl);
 
   if (error) {
+    const redirectUrl = new URL('/settings/integrations', baseUrl);
     redirectUrl.searchParams.set('qb_error', error);
     return NextResponse.redirect(redirectUrl);
   }
 
   if (!code || !realmId) {
+    const redirectUrl = new URL('/settings/integrations', baseUrl);
     redirectUrl.searchParams.set('qb_error', 'Missing authorization code or realm ID');
     return NextResponse.redirect(redirectUrl);
   }
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
     // Validate state (CSRF protection)
     const storedState = request.cookies.get('qb_oauth_state')?.value;
     if (!storedState || storedState !== state) {
+      const redirectUrl = new URL('/settings/integrations', baseUrl);
       redirectUrl.searchParams.set('qb_error', 'Invalid state parameter');
       return NextResponse.redirect(redirectUrl);
     }
@@ -34,6 +36,7 @@ export async function GET(request: NextRequest) {
     
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
+      const redirectUrl = new URL('/settings/integrations', baseUrl);
       redirectUrl.searchParams.set('qb_error', 'Not authenticated');
       return NextResponse.redirect(redirectUrl);
     }
@@ -50,12 +53,12 @@ export async function GET(request: NextRequest) {
     // Calculate token expiration
     const tokenExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
     
-    // Determine environment based on realmId format or config
-    // In production, you might want to set this via env var
+    // Determine environment based on config
     const environment = process.env.QBO_ENVIRONMENT === 'production' ? 'production' : 'sandbox';
 
     // Upsert connection (replace existing if any)
-    const { error: upsertError } = await supabase
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { error: upsertError } = await (supabase as any)
       .from('quickbooks_connections')
       .upsert({
         user_id: user.id,
@@ -72,18 +75,22 @@ export async function GET(request: NextRequest) {
 
     if (upsertError) {
       console.error('Failed to save QuickBooks connection:', upsertError);
+      const redirectUrl = new URL('/settings/integrations', baseUrl);
       redirectUrl.searchParams.set('qb_error', 'Failed to save connection');
       return NextResponse.redirect(redirectUrl);
     }
 
-    // Clear state cookie and redirect with success
-    const response = NextResponse.redirect(redirectUrl);
-    response.cookies.delete('qb_oauth_state');
-    redirectUrl.searchParams.set('qb_success', 'true');
+    // Success - redirect with success param and clear state cookie
+    const successUrl = new URL('/settings/integrations', baseUrl);
+    successUrl.searchParams.set('qb_success', 'true');
     
-    return NextResponse.redirect(redirectUrl);
+    const response = NextResponse.redirect(successUrl);
+    response.cookies.delete('qb_oauth_state');
+    
+    return response;
   } catch (err) {
     console.error('QuickBooks callback error:', err);
+    const redirectUrl = new URL('/settings/integrations', baseUrl);
     redirectUrl.searchParams.set('qb_error', 'Failed to complete QuickBooks connection');
     return NextResponse.redirect(redirectUrl);
   }

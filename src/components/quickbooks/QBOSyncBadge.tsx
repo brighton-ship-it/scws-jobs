@@ -72,7 +72,7 @@ export function QBOSyncBadge({
         {showSyncButton && (
           <Button 
             variant="ghost" 
-            size="xs" 
+            size="sm" 
             onClick={handleSync}
             disabled={syncing}
             leftIcon={<RefreshCw className={`h-3 w-3 ${syncing ? 'animate-spin' : ''}`} />}
@@ -97,7 +97,7 @@ export function QBOSyncBadge({
     return (
       <Button 
         variant="outline" 
-        size="xs" 
+        size="sm" 
         onClick={handleSync}
         disabled={syncing}
         leftIcon={<Cloud className="h-3 w-3" />}

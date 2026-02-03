@@ -6,7 +6,7 @@ export type JobStatus = 'scheduled' | 'in_progress' | 'completed' | 'invoiced';
 export type LineItemType = 'labor' | 'part' | 'equipment' | 'service';
 export type InvoiceStatus = 'draft' | 'sent' | 'viewed' | 'paid' | 'overdue' | 'void';
 export type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'declined' | 'expired';
-export type PaymentMethod = 'cash' | 'check' | 'card' | 'transfer';
+export type PaymentMethod = 'cash' | 'check' | 'card' | 'transfer' | 'ach';
 
 export interface User {
   id: string;
@@ -202,6 +202,17 @@ export interface Payment {
   qb_payment_id?: string | null;  // QuickBooks payment ID
 }
 
+// Portal Tokens
+export interface PortalToken {
+  id: string;
+  customer_id: string;
+  token: string;
+  expires_at: string | null;
+  last_used_at: string | null;
+  created_at: string;
+  created_by: string | null;
+}
+
 export interface JobType {
   id: string;
   name: string;
@@ -314,6 +325,11 @@ export interface Database {
         Insert: Omit<JobType, 'id'>;
         Update: Partial<Omit<JobType, 'id'>>;
       };
+      portal_tokens: {
+        Row: PortalToken;
+        Insert: Omit<PortalToken, 'id' | 'created_at'>;
+        Update: Partial<Omit<PortalToken, 'id' | 'created_at'>>;
+      };
     };
   };
 }
@@ -398,4 +414,21 @@ export interface QuickBooksConnection {
   environment: 'sandbox' | 'production';
   connected_at: string;
   updated_at: string;
+}
+
+// Tech Location Tracking
+export interface TechLocation {
+  id: string;
+  tech_id: string;
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+  heading: number | null;
+  speed: number | null;
+  updated_at: string;
+  created_at: string;
+}
+
+export interface TechLocationWithUser extends TechLocation {
+  user: User;
 }

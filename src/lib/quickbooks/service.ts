@@ -105,7 +105,8 @@ export async function getQuickBooksClient(): Promise<{ client: QuickBooksClient;
       // Update tokens in database
       const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
       
-      await supabase
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await (supabase as any)
         .from('quickbooks_connections')
         .update({
           access_token: tokens.access_token,
@@ -197,7 +198,8 @@ export async function syncCustomerToQBO(customerId: string): Promise<string> {
   }
 
   // Store QBO customer ID in database
-  await supabase
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (supabase as any)
     .from('customers')
     .update({ qb_customer_id: qboCustomer.Id })
     .eq('id', customerId);
@@ -269,7 +271,8 @@ export async function syncInvoiceToQBO(invoiceId: string): Promise<string> {
   });
 
   // Store QBO invoice ID in database
-  await supabase
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (supabase as any)
     .from('invoices')
     .update({ qb_invoice_id: qboInvoice.Id })
     .eq('id', invoiceId);
@@ -342,7 +345,8 @@ export async function syncPaymentToQBO(paymentId: string): Promise<string> {
   });
 
   // Store QBO payment ID in database
-  await supabase
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await (supabase as any)
     .from('payments')
     .update({ qb_payment_id: qboPayment.Id })
     .eq('id', paymentId);
