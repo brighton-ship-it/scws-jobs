@@ -1,11 +1,12 @@
 'use client';
 
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input, Textarea } from '@/components/ui/Input';
+import { AddressAutocomplete } from '@/components/address-autocomplete';
 import { ArrowLeft, Save, Plus, Trash2 } from 'lucide-react';
 
 interface PropertyForm {
@@ -51,6 +52,20 @@ export default function NewCustomerPage() {
     });
   };
 
+  const handleAddressSelect = useCallback((index: number, components: { address: string; city: string; county: string; zip: string }) => {
+    setProperties((prev) => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        address: components.address,
+        city: components.city,
+        county: components.county,
+        zip: components.zip,
+      };
+      return updated;
+    });
+  }, []);
+
   const addProperty = () => {
     setProperties((prev) => [
       ...prev,
@@ -87,13 +102,35 @@ export default function NewCustomerPage() {
     if (!validate()) return;
 
     setLoading(true);
+    setErrors({});
     
-    // TODO: Replace with actual Supabase insert
-    // For now, simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    
-    // Redirect to customers list
-    router.push('/customers');
+    try {
+      const response = await fetch('/api/customers', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          customer: formData,
+          properties: properties.filter(p => p.address.trim()),
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setErrors({ submit: data.error || 'Failed to save customer' });
+        setLoading(false);
+        return;
+      }
+
+      // Success - redirect to customers list
+      router.push('/customers');
+    } catch (error) {
+      console.error('Error saving customer:', error);
+      setErrors({ submit: 'Network error. Please try again.' });
+      setLoading(false);
+    }
   };
 
   return (
@@ -200,12 +237,13 @@ export default function NewCustomerPage() {
                   </p>
                 </div>
 
-                <Input
+                <AddressAutocomplete
                   label="Street Address"
                   value={property.address}
-                  onChange={(e) => handlePropertyChange(index, 'address', e.target.value)}
+                  onChange={(value) => handlePropertyChange(index, 'address', value)}
+                  onAddressSelect={(components) => handleAddressSelect(index, components)}
                   required
-                  placeholder="123 Main St"
+                  placeholder="Start typing to search..."
                 />
 
                 <div className="grid gap-4 sm:grid-cols-3">
@@ -240,6 +278,13 @@ export default function NewCustomerPage() {
             ))}
           </CardContent>
         </Card>
+
+        {/* Error Message */}
+        {errors.submit && (
+          <div className="rounded-lg border border-red-200 bg-red-50 p-4">
+            <p className="text-sm text-red-600">{errors.submit}</p>
+          </div>
+        )}
 
         {/* Actions */}
         <div className="flex items-center justify-end gap-4">

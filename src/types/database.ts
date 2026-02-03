@@ -116,6 +116,7 @@ export interface Quote {
   tax_rate: number;
   tax_amount: number;
   total: number;
+  required_deposit: number | null;
   notes: string | null;
   internal_notes: string | null;
   sent_at: string | null;
@@ -124,14 +125,28 @@ export interface Quote {
   updated_at: string;
 }
 
+// Quote Change Requests
+export interface QuoteChangeRequest {
+  id: string;
+  quote_id: string;
+  customer_name: string;
+  customer_email: string | null;
+  message: string;
+  status: 'pending' | 'reviewed' | 'resolved';
+  created_at: string;
+  reviewed_at: string | null;
+}
+
 export interface QuoteItem {
   id: string;
   quote_id: string;
   description: string;
+  item_description: string | null;  // Extended description shown below the item name
   quantity: number;
   unit_price: number;
   total: number;
   item_type: LineItemType | null;
+  taxable: boolean;  // Whether this item is subject to tax (default true)
   sort_order: number;
 }
 
@@ -163,10 +178,12 @@ export interface InvoiceItem {
   id: string;
   invoice_id: string;
   description: string;
+  item_description: string | null;  // Extended description shown below the item name
   quantity: number;
   unit_price: number;
   total: number;
   item_type: LineItemType | null;
+  taxable: boolean;  // Whether this item is subject to tax (default true)
   sort_order: number;
 }
 

@@ -10,7 +10,7 @@ import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
 import { mockCustomers, getPropertiesByCustomerId, mockProducts, getQuoteWithDetails } from '@/lib/mock-data';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, DollarSign } from 'lucide-react';
 
 export default function EditQuotePage() {
   const router = useRouter();
@@ -25,6 +25,7 @@ export default function EditQuotePage() {
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
   const [taxRate, setTaxRate] = useState(8.75);
+  const [requiredDeposit, setRequiredDeposit] = useState<string>('');
   const [lineItems, setLineItems] = useState<LineItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -38,13 +39,16 @@ export default function EditQuotePage() {
       setNotes(quoteData.notes || '');
       setInternalNotes(quoteData.internal_notes || '');
       setTaxRate(quoteData.tax_rate);
+      setRequiredDeposit(quoteData.required_deposit ? quoteData.required_deposit.toFixed(2) : '');
       setLineItems(quoteData.items.map(item => ({
         id: item.id,
         description: item.description,
+        item_description: (item as any).item_description || null,
         quantity: item.quantity,
         unit_price: item.unit_price,
         total: item.total,
         item_type: item.item_type,
+        taxable: (item as any).taxable !== false, // Default to true if not set
         sort_order: item.sort_order,
       })));
       setLoaded(true);
@@ -75,7 +79,9 @@ export default function EditQuotePage() {
 
   // Calculate totals
   const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
-  const taxAmount = subtotal * (taxRate / 100);
+  // Only apply tax to taxable items
+  const taxableSubtotal = lineItems.filter(item => item.taxable).reduce((sum, item) => sum + item.total, 0);
+  const taxAmount = taxableSubtotal * (taxRate / 100);
   const total = subtotal + taxAmount;
 
   const formatCurrency = (amount: number) => {
@@ -157,6 +163,55 @@ export default function EditQuotePage() {
         </CardContent>
       </Card>
 
+      {/* Deposit Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <DollarSign className="h-5 w-5 text-green-600" />
+            Deposit Settings
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <Input
+                label="Required Deposit ($)"
+                type="number"
+                step="0.01"
+                min="0"
+                value={requiredDeposit}
+                onChange={(e) => setRequiredDeposit(e.target.value)}
+                placeholder="0.00"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Amount customer must pay before work begins
+              </p>
+            </div>
+            <div className="flex items-end">
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3 w-full">
+                <p className="text-sm text-green-700">
+                  <strong>Tip:</strong> A 50% deposit is common for larger jobs. 
+                  {total > 0 && (
+                    <span className="block mt-1">
+                      50% of this quote: <strong>{formatCurrency(total * 0.5)}</strong>
+                    </span>
+                  )}
+                </p>
+                {total > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setRequiredDeposit((total * 0.5).toFixed(2))}
+                    className="text-xs text-green-600 hover:text-green-800 underline mt-1"
+                  >
+                    Use 50% deposit
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Line Items */}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
@@ -176,6 +231,12 @@ export default function EditQuotePage() {
                 <span className="text-gray-500">Subtotal:</span>
                 <span className="font-medium">{formatCurrency(subtotal)}</span>
               </div>
+              {taxableSubtotal !== subtotal && (
+                <div className="flex justify-between w-64 text-sm">
+                  <span className="text-gray-400">Taxable amount:</span>
+                  <span className="text-gray-500">{formatCurrency(taxableSubtotal)}</span>
+                </div>
+              )}
               <div className="flex justify-between w-64">
                 <span className="text-gray-500">Tax ({taxRate}%):</span>
                 <span className="font-medium">{formatCurrency(taxAmount)}</span>

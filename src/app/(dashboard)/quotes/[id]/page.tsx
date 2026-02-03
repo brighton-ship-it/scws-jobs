@@ -1,25 +1,31 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
-// import dynamic from 'next/dynamic';
+import Image from 'next/image';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { QuoteStatusBadge } from '@/components/ui/Badge';
 import { Input } from '@/components/forms/Input';
 import { Modal } from '@/components/feedback/Modal';
-import { getQuoteWithDetails } from '@/lib/mock-data';
+import { QuotePDFButton } from '@/components/pdf/QuotePDFButton';
+import { DepositSidebar } from '@/components/quotes/DepositSidebar';
+import { getQuoteWithDetails, mockQuoteChangeRequests } from '@/lib/mock-data';
 import { 
-  ArrowLeft, Edit, Send, FileText, Download, Mail, 
-  Check, X, Clock, Printer, Building2, MapPin, Loader2
+  ArrowLeft, Edit, Send, FileText, Mail, 
+  Check, X, Clock, Printer, Building2, MapPin, DollarSign, Receipt
 } from 'lucide-react';
 import { format } from 'date-fns';
 
-// PDF components temporarily disabled for stability
-// TODO: Fix react-pdf compatibility issues
-const QuotePDF = null;
-const PDFDownloadLink = null;
+// Company info - could be fetched from settings in a real app
+const COMPANY_INFO = {
+  name: 'Southern California Well Service',
+  subtitle: 'Professional Well & Pump Services',
+  address: '74309 Highway 111, Palm Desert, CA 92260',
+  phone: '(760) 346-0086',
+  email: 'info@socalwellservice.com',
+};
 
 export default function QuoteDetailPage() {
   const router = useRouter();
@@ -30,11 +36,6 @@ export default function QuoteDetailPage() {
   const [showSendModal, setShowSendModal] = useState(false);
   const [sendEmail, setSendEmail] = useState('');
   const [sending, setSending] = useState(false);
-  const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
 
   const quoteData = getQuoteWithDetails(quoteId);
 
@@ -42,7 +43,7 @@ export default function QuoteDetailPage() {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900">Quote not found</h2>
-        <p className="text-gray-500 mt-2">The quote you're looking for doesn't exist.</p>
+        <p className="text-gray-500 mt-2">The quote you&apos;re looking for doesn&apos;t exist.</p>
         <Button href="/quotes" variant="outline" className="mt-4">
           Back to Quotes
         </Button>
@@ -72,6 +73,36 @@ export default function QuoteDetailPage() {
     router.push(`/invoices/new?from_quote=${quoteId}`);
   };
 
+  const handleApproveAndPay = () => {
+    // TODO: Implement payment flow
+    alert('Payment flow would open here. This will redirect to a payment processor.');
+  };
+
+  const handleRequestChanges = async (message: string, name: string, email: string) => {
+    // Simulate API call
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // In real implementation, this would save to database and notify the team
+    const newRequest = {
+      id: `qcr${mockQuoteChangeRequests.length + 1}`,
+      quote_id: quoteId,
+      customer_name: name,
+      customer_email: email,
+      message: message,
+      status: 'pending' as const,
+      created_at: new Date().toISOString(),
+      reviewed_at: null,
+    };
+    
+    mockQuoteChangeRequests.push(newRequest);
+    console.log('Change request submitted:', newRequest);
+    
+    // TODO: Send notification to team (email/slack/etc)
+  };
+
+  // Show sidebar for sent/expired quotes (customer-facing view)
+  const showDepositSidebar = quoteData.status === 'sent' || quoteData.status === 'expired';
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -84,6 +115,12 @@ export default function QuoteDetailPage() {
             <div className="flex items-center gap-3">
               <h2 className="text-2xl font-bold text-gray-900">Quote #{quoteData.quote_number}</h2>
               <QuoteStatusBadge status={quoteData.status} />
+              {quoteData.required_deposit && quoteData.required_deposit > 0 && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-50 text-green-700 text-xs font-medium rounded-full">
+                  <DollarSign className="h-3 w-3" />
+                  {formatCurrency(quoteData.required_deposit)} deposit
+                </span>
+              )}
             </div>
             <p className="text-gray-600">Created {format(new Date(quoteData.created_at), 'MMMM d, yyyy')}</p>
           </div>
@@ -129,26 +166,7 @@ export default function QuoteDetailPage() {
               Convert to Invoice
             </Button>
           )}
-          {mounted && PDFDownloadLink && (
-            <PDFDownloadLink 
-              document={<QuotePDF quote={quoteData} />} 
-              fileName={`quote-${quoteData.quote_number}.pdf`}
-            >
-              {({ loading }) =>
-                loading ? (
-                  <Button disabled variant="outline">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Loading...
-                  </Button>
-                ) : (
-                  <Button variant="outline">
-                    <Download className="h-4 w-4" />
-                    Download PDF
-                  </Button>
-                )
-              }
-            </PDFDownloadLink>
-          )}
+          <QuotePDFButton quote={quoteData} companyInfo={COMPANY_INFO} />
           <Button variant="outline" onClick={handlePrint}>
             <Printer className="h-4 w-4" />
             Print
@@ -207,31 +225,40 @@ export default function QuoteDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Quote Preview (Print-friendly) */}
-      <div ref={printRef} className="print:p-8">
+      {/* Main Content with Sidebar */}
+      <div className={`flex gap-6 ${showDepositSidebar ? 'flex-row' : 'flex-col'}`}>
+        {/* Quote Preview (Print-friendly) */}
+        <div ref={printRef} className={`print:p-8 ${showDepositSidebar ? 'flex-1' : 'w-full'}`}>
         <Card className="print:shadow-none print:border-none">
           <CardContent className="p-8">
-            {/* Header */}
+            {/* Header with Logo */}
             <div className="flex justify-between items-start mb-8">
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">QUOTE</h1>
                 <p className="text-lg text-gray-600">#{quoteData.quote_number}</p>
               </div>
               <div className="text-right">
-                <h2 className="text-xl font-bold text-blue-600">SCWS</h2>
-                <p className="text-gray-600">So Cal Well Service</p>
-                <p className="text-sm text-gray-500">
-                  123 Main Street<br />
-                  Palm Desert, CA 92260<br />
-                  (760) 555-0100
-                </p>
+                {/* Company Logo */}
+                <div className="mb-3">
+                  <Image 
+                    src="/logo.png" 
+                    alt="Southern California Well Service" 
+                    width={140} 
+                    height={70}
+                    className="ml-auto"
+                    priority
+                  />
+                </div>
+                <p className="text-sm text-gray-600 font-medium">{COMPANY_INFO.address}</p>
+                <p className="text-sm text-gray-500">{COMPANY_INFO.phone}</p>
+                <p className="text-sm text-gray-500">{COMPANY_INFO.email}</p>
               </div>
             </div>
 
             {/* Customer & Quote Info */}
             <div className="grid grid-cols-2 gap-8 mb-8">
               <div>
-                <h3 className="text-sm font-medium text-gray-500 uppercase mb-2">Bill To</h3>
+                <h3 className="text-sm font-medium text-gray-500 uppercase mb-2">Prepared For</h3>
                 <div className="flex items-start gap-2">
                   <Building2 className="h-4 w-4 text-gray-400 mt-0.5" />
                   <div>
@@ -285,25 +312,36 @@ export default function QuoteDetailPage() {
             <div className="mb-8">
               <table className="w-full">
                 <thead>
-                  <tr className="border-b-2 border-gray-200">
-                    <th className="text-left py-3 text-sm font-medium text-gray-500 uppercase">Description</th>
-                    <th className="text-right py-3 text-sm font-medium text-gray-500 uppercase w-20">Qty</th>
-                    <th className="text-right py-3 text-sm font-medium text-gray-500 uppercase w-28">Unit Price</th>
-                    <th className="text-right py-3 text-sm font-medium text-gray-500 uppercase w-28">Total</th>
+                  <tr className="border-b-2 border-sky-500">
+                    <th className="text-left py-3 text-sm font-medium text-gray-500 uppercase bg-gray-50 px-3">Description</th>
+                    <th className="text-right py-3 text-sm font-medium text-gray-500 uppercase w-20 bg-gray-50 px-3">Qty</th>
+                    <th className="text-right py-3 text-sm font-medium text-gray-500 uppercase w-28 bg-gray-50 px-3">Rate</th>
+                    <th className="text-right py-3 text-sm font-medium text-gray-500 uppercase w-28 bg-gray-50 px-3">Amount</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {items.map((item) => (
-                    <tr key={item.id} className="border-b border-gray-100">
-                      <td className="py-3">
-                        <p className="text-gray-900">{item.description}</p>
+                  {items.map((item, index) => (
+                    <tr key={item.id} className={`border-b border-gray-100 ${index % 2 === 1 ? 'bg-gray-50/50' : ''}`}>
+                      <td className="py-3 px-3">
+                        <div className="flex items-center gap-2">
+                          <p className="text-gray-900">{item.description}</p>
+                          {item.taxable === false && (
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs font-medium bg-amber-100 text-amber-700 print:bg-amber-50">
+                              <Receipt className="h-3 w-3" />
+                              Non-taxable
+                            </span>
+                          )}
+                        </div>
+                        {item.item_description && (
+                          <p className="text-sm text-gray-600 mt-1">{item.item_description}</p>
+                        )}
                         {item.item_type && (
-                          <p className="text-xs text-gray-500 capitalize">{item.item_type}</p>
+                          <p className="text-xs text-gray-400 capitalize mt-0.5">{item.item_type}</p>
                         )}
                       </td>
-                      <td className="text-right py-3 text-gray-600">{item.quantity}</td>
-                      <td className="text-right py-3 text-gray-600">{formatCurrency(item.unit_price)}</td>
-                      <td className="text-right py-3 font-medium text-gray-900">{formatCurrency(item.total)}</td>
+                      <td className="text-right py-3 text-gray-600 px-3 align-top">{item.quantity}</td>
+                      <td className="text-right py-3 text-gray-600 px-3 align-top">{formatCurrency(item.unit_price)}</td>
+                      <td className="text-right py-3 font-medium text-gray-900 px-3 align-top">{formatCurrency(item.total)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -312,18 +350,20 @@ export default function QuoteDetailPage() {
 
             {/* Totals */}
             <div className="flex justify-end">
-              <div className="w-64 space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Subtotal</span>
-                  <span className="font-medium">{formatCurrency(quoteData.subtotal)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Tax ({quoteData.tax_rate}%)</span>
-                  <span className="font-medium">{formatCurrency(quoteData.tax_amount)}</span>
-                </div>
-                <div className="flex justify-between text-lg border-t border-gray-200 pt-2">
-                  <span className="font-semibold">Total</span>
-                  <span className="font-bold text-gray-900">{formatCurrency(quoteData.total)}</span>
+              <div className="w-72 bg-gray-50 rounded-lg p-4">
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Subtotal</span>
+                    <span className="font-medium">{formatCurrency(quoteData.subtotal)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Tax ({quoteData.tax_rate}%)</span>
+                    <span className="font-medium">{formatCurrency(quoteData.tax_amount)}</span>
+                  </div>
+                  <div className="flex justify-between text-lg border-t-2 border-sky-500 pt-3 mt-2">
+                    <span className="font-bold">Total</span>
+                    <span className="font-bold text-sky-600">{formatCurrency(quoteData.total)}</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -331,35 +371,47 @@ export default function QuoteDetailPage() {
             {/* Notes */}
             {quoteData.notes && (
               <div className="mt-8 pt-6 border-t border-gray-200">
-                <h3 className="text-sm font-medium text-gray-500 uppercase mb-2">Notes</h3>
+                <h3 className="text-sm font-medium text-gray-500 uppercase mb-2">Notes & Terms</h3>
                 <p className="text-gray-600 whitespace-pre-wrap">{quoteData.notes}</p>
               </div>
             )}
 
             {/* Footer */}
             <div className="mt-8 pt-6 border-t border-gray-200 text-center">
-              <p className="text-sm text-gray-500">
-                Thank you for choosing So Cal Well Service!
+              <p className="text-sm font-medium text-gray-600">
+                Thank you for considering Southern California Well Service!
               </p>
               <p className="text-xs text-gray-400 mt-2">
-                Questions? Call us at (760) 555-0100 or email info@scwellservice.com
+                Questions? Call us at {COMPANY_INFO.phone} or email {COMPANY_INFO.email}
               </p>
             </div>
           </CardContent>
         </Card>
-      </div>
 
-      {/* Internal Notes (not printed) */}
-      {quoteData.internal_notes && (
-        <Card className="print:hidden">
-          <CardHeader>
-            <CardTitle className="text-sm">Internal Notes</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-gray-600 text-sm">{quoteData.internal_notes}</p>
-          </CardContent>
-        </Card>
-      )}
+        {/* Internal Notes (not printed) */}
+        {quoteData.internal_notes && (
+          <Card className="print:hidden mt-6">
+            <CardHeader>
+              <CardTitle className="text-sm">Internal Notes</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="text-gray-600 text-sm">{quoteData.internal_notes}</p>
+            </CardContent>
+          </Card>
+        )}
+        </div>
+
+        {/* Deposit Sidebar */}
+        {showDepositSidebar && (
+          <div className="w-80 print:hidden shrink-0">
+            <DepositSidebar 
+              quote={quoteData}
+              onApproveAndPay={handleApproveAndPay}
+              onRequestChanges={handleRequestChanges}
+            />
+          </div>
+        )}
+      </div>
 
       {/* Send Quote Modal */}
       <Modal

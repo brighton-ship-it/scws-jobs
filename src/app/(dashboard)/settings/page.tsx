@@ -10,6 +10,7 @@ import {
   Puzzle,
   ArrowRight,
   ChevronRight,
+  Wallet,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -41,6 +42,13 @@ const settingsLinks = [
     href: '/settings/billing',
     icon: CreditCard,
     color: 'bg-orange-100 text-orange-600',
+  },
+  {
+    title: 'Payments',
+    description: 'Payment methods and processing fees',
+    href: '/settings/payments',
+    icon: Wallet,
+    color: 'bg-teal-100 text-teal-600',
   },
   {
     title: 'Integrations',

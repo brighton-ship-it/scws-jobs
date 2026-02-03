@@ -39,7 +39,7 @@ export default function NewInvoicePage() {
   const [internalNotes, setInternalNotes] = useState('');
   const [taxRate, setTaxRate] = useState(8.75);
   const [lineItems, setLineItems] = useState<LineItem[]>([
-    { id: '1', description: '', quantity: 1, unit_price: 0, total: 0, item_type: null, sort_order: 0 }
+    { id: '1', description: '', item_description: null, quantity: 1, unit_price: 0, total: 0, item_type: null, taxable: true, sort_order: 0 }
   ]);
   const [showJobSelector, setShowJobSelector] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -60,10 +60,12 @@ export default function NewInvoicePage() {
         setLineItems(quote.items.map((item, idx) => ({
           id: item.id,
           description: item.description,
+          item_description: item.item_description || null,
           quantity: item.quantity,
           unit_price: item.unit_price,
           total: item.total,
           item_type: item.item_type,
+          taxable: item.taxable !== false,
           sort_order: idx,
         })));
       }
@@ -91,7 +93,12 @@ export default function NewInvoicePage() {
     lineItems.reduce((sum, item) => sum + item.total, 0), 
     [lineItems]
   );
-  const taxAmount = useMemo(() => subtotal * (taxRate / 100), [subtotal, taxRate]);
+  // Only apply tax to taxable items
+  const taxableSubtotal = useMemo(() =>
+    lineItems.filter(item => item.taxable).reduce((sum, item) => sum + item.total, 0),
+    [lineItems]
+  );
+  const taxAmount = useMemo(() => taxableSubtotal * (taxRate / 100), [taxableSubtotal, taxRate]);
   const total = useMemo(() => subtotal + taxAmount, [subtotal, taxAmount]);
 
   const formatCurrency = (amount: number) => {
@@ -106,19 +113,23 @@ export default function NewInvoicePage() {
         {
           id: Date.now().toString(),
           description: `${job.job_type} - Labor`,
+          item_description: null,
           quantity: parseInt(job.estimated_duration || '2'),
           unit_price: 125,
           total: parseInt(job.estimated_duration || '2') * 125,
           item_type: 'labor',
+          taxable: true,
           sort_order: 0,
         },
         {
           id: (Date.now() + 1).toString(),
           description: 'Service Call',
+          item_description: null,
           quantity: 1,
           unit_price: 95,
           total: 95,
           item_type: 'service',
+          taxable: true,
           sort_order: 1,
         },
       ];
@@ -247,6 +258,12 @@ export default function NewInvoicePage() {
                 <span className="text-gray-500">Subtotal:</span>
                 <span className="font-medium">{formatCurrency(subtotal)}</span>
               </div>
+              {taxableSubtotal !== subtotal && (
+                <div className="flex justify-between w-64 text-sm">
+                  <span className="text-gray-400">Taxable amount:</span>
+                  <span className="text-gray-500">{formatCurrency(taxableSubtotal)}</span>
+                </div>
+              )}
               <div className="flex justify-between w-64">
                 <span className="text-gray-500">Tax ({taxRate}%):</span>
                 <span className="font-medium">{formatCurrency(taxAmount)}</span>

@@ -44,6 +44,7 @@ import {
   Wrench,
   History,
 } from 'lucide-react';
+import { OnMyWayButton } from '@/components/jobs/OnMyWayButton';
 import { format, isPast, isToday } from 'date-fns';
 
 // Mock line items for the job
@@ -184,7 +185,16 @@ export default function JobDetailPage() {
           </div>
         </div>
         
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* On My Way Button - sends SMS to customer */}
+          {job.status !== 'completed' && job.status !== 'invoiced' && (
+            <OnMyWayButton
+              jobId={job.id}
+              customerName={customer?.name || 'Customer'}
+              customerPhone={customer?.phone || null}
+              techName={currentUser?.name || 'Your technician'}
+            />
+          )}
           {isLate && (
             <Button variant="outline" className="text-red-600 border-red-200 hover:bg-red-50">
               <AlertCircle className="h-4 w-4" />

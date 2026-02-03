@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Button } from '@/components/forms/Button';
 import { Badge } from '@/components/ui/Badge';
+import { QuickBooksConnect } from '@/components/quickbooks/QuickBooksConnect';
 import { 
   CreditCard, 
   FileSpreadsheet, 
@@ -26,15 +27,7 @@ const integrations = [
     connected: false,
     comingSoon: false,
   },
-  {
-    id: 'quickbooks',
-    name: 'QuickBooks',
-    description: 'Sync invoices and customers to QuickBooks Online',
-    icon: FileSpreadsheet,
-    color: 'bg-green-100 text-green-600',
-    connected: false,
-    comingSoon: true,
-  },
+  // QuickBooks is now handled by its own component below
   {
     id: 'google-calendar',
     name: 'Google Calendar',
@@ -95,6 +88,9 @@ export default function IntegrationsSettingsPage() {
         <h2 className="text-2xl font-bold text-gray-900">Integrations</h2>
         <p className="text-gray-600">Connect third-party services to extend functionality</p>
       </div>
+
+      {/* QuickBooks Integration */}
+      <QuickBooksConnect />
 
       <div className="grid gap-4 sm:grid-cols-2">
         {integrations.map((integration) => (

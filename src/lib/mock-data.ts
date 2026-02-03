@@ -3,7 +3,7 @@ import type {
   User, Customer, Property, WellInfo, Job, Invoice, JobType, 
   Quote, QuoteItem, InvoiceItem, Payment, Product, 
   QuoteWithDetails, InvoiceWithDetails, Task, TaskWithDetails,
-  JobAssignment, JobAssignmentWithUser
+  JobAssignment, JobAssignmentWithUser, QuoteChangeRequest
 } from '@/types/database';
 
 export const mockUsers: User[] = [
@@ -619,6 +619,7 @@ export const mockQuotes: Quote[] = [
     tax_rate: 8.75,
     tax_amount: 249.38,
     total: 3099.38,
+    required_deposit: 1550.00,
     notes: 'Quote valid for 30 days. 50% deposit required to begin work.',
     internal_notes: 'Customer is comparing with other contractors',
     sent_at: getDateStr(-5) + 'T10:00:00Z',
@@ -637,6 +638,7 @@ export const mockQuotes: Quote[] = [
     tax_rate: 8.75,
     tax_amount: 393.75,
     total: 4893.75,
+    required_deposit: 2446.88,
     notes: 'Includes pump, installation, and warranty.',
     internal_notes: null,
     sent_at: getDateStr(-10) + 'T14:00:00Z',
@@ -655,6 +657,7 @@ export const mockQuotes: Quote[] = [
     tax_rate: 8.75,
     tax_amount: 109.38,
     total: 1359.38,
+    required_deposit: 680.00,
     notes: null,
     internal_notes: 'Need to verify pump specs before sending',
     sent_at: null,
@@ -673,6 +676,7 @@ export const mockQuotes: Quote[] = [
     tax_rate: 8.75,
     tax_amount: 595.00,
     total: 7395.00,
+    required_deposit: 3697.50,
     notes: 'Complete well system upgrade',
     internal_notes: 'Customer went with cheaper competitor',
     sent_at: getDateStr(-20) + 'T10:00:00Z',
@@ -682,28 +686,42 @@ export const mockQuotes: Quote[] = [
   },
 ];
 
+// Quote Change Requests
+export const mockQuoteChangeRequests: QuoteChangeRequest[] = [
+  {
+    id: 'qcr1',
+    quote_id: 'q1',
+    customer_name: 'Johnson Ranch',
+    customer_email: 'mjohnson@johnsonranch.com',
+    message: 'Can we discuss using a different pump model? Also wondering if you can match the competitor quote of $2,800.',
+    status: 'pending',
+    created_at: getDateStr(-2) + 'T14:30:00Z',
+    reviewed_at: null,
+  },
+];
+
 export const mockQuoteItems: QuoteItem[] = [
   // Quote 1 items
-  { id: 'qi1', quote_id: 'q1', description: 'Submersible Pump - 3HP', quantity: 1, unit_price: 1450.00, total: 1450.00, item_type: 'part', sort_order: 0 },
-  { id: 'qi2', quote_id: 'q1', description: 'Pump installation labor', quantity: 4, unit_price: 125.00, total: 500.00, item_type: 'labor', sort_order: 1 },
-  { id: 'qi3', quote_id: 'q1', description: 'Drop pipe and fittings', quantity: 1, unit_price: 550.00, total: 550.00, item_type: 'part', sort_order: 2 },
-  { id: 'qi4', quote_id: 'q1', description: 'Equipment rental - pump hoist', quantity: 1, unit_price: 350.00, total: 350.00, item_type: 'equipment', sort_order: 3 },
+  { id: 'qi1', quote_id: 'q1', description: 'Submersible Pump - 3HP', item_description: 'Grundfos 3HP submersible pump with 5-year warranty', quantity: 1, unit_price: 1450.00, total: 1450.00, item_type: 'part', taxable: true, sort_order: 0 },
+  { id: 'qi2', quote_id: 'q1', description: 'Pump installation labor', item_description: 'Includes removal of old pump and installation of new unit', quantity: 4, unit_price: 125.00, total: 500.00, item_type: 'labor', taxable: true, sort_order: 1 },
+  { id: 'qi3', quote_id: 'q1', description: 'Drop pipe and fittings', item_description: null, quantity: 1, unit_price: 550.00, total: 550.00, item_type: 'part', taxable: true, sort_order: 2 },
+  { id: 'qi4', quote_id: 'q1', description: 'Equipment rental - pump hoist', item_description: 'Daily rental for pump pulling equipment', quantity: 1, unit_price: 350.00, total: 350.00, item_type: 'equipment', taxable: false, sort_order: 3 },
   
   // Quote 2 items
-  { id: 'qi5', quote_id: 'q2', description: 'Submersible Pump - 5HP', quantity: 1, unit_price: 2200.00, total: 2200.00, item_type: 'part', sort_order: 0 },
-  { id: 'qi6', quote_id: 'q2', description: 'Control Box', quantity: 1, unit_price: 175.00, total: 175.00, item_type: 'part', sort_order: 1 },
-  { id: 'qi7', quote_id: 'q2', description: 'Installation labor', quantity: 8, unit_price: 125.00, total: 1000.00, item_type: 'labor', sort_order: 2 },
-  { id: 'qi8', quote_id: 'q2', description: 'Drop pipe and fittings', quantity: 1, unit_price: 775.00, total: 775.00, item_type: 'part', sort_order: 3 },
-  { id: 'qi9', quote_id: 'q2', description: 'Equipment rental', quantity: 1, unit_price: 350.00, total: 350.00, item_type: 'equipment', sort_order: 4 },
+  { id: 'qi5', quote_id: 'q2', description: 'Submersible Pump - 5HP', item_description: 'Grundfos 5HP submersible pump - commercial grade', quantity: 1, unit_price: 2200.00, total: 2200.00, item_type: 'part', taxable: true, sort_order: 0 },
+  { id: 'qi6', quote_id: 'q2', description: 'Control Box', item_description: 'Franklin Electric control box with overload protection', quantity: 1, unit_price: 175.00, total: 175.00, item_type: 'part', taxable: true, sort_order: 1 },
+  { id: 'qi7', quote_id: 'q2', description: 'Installation labor', item_description: null, quantity: 8, unit_price: 125.00, total: 1000.00, item_type: 'labor', taxable: true, sort_order: 2 },
+  { id: 'qi8', quote_id: 'q2', description: 'Drop pipe and fittings', item_description: '200ft stainless steel drop pipe with brass fittings', quantity: 1, unit_price: 775.00, total: 775.00, item_type: 'part', taxable: true, sort_order: 3 },
+  { id: 'qi9', quote_id: 'q2', description: 'Equipment rental', item_description: null, quantity: 1, unit_price: 350.00, total: 350.00, item_type: 'equipment', taxable: false, sort_order: 4 },
   
   // Quote 3 items
-  { id: 'qi10', quote_id: 'q3', description: 'Pressure Tank - 44 Gallon', quantity: 1, unit_price: 425.00, total: 425.00, item_type: 'part', sort_order: 0 },
-  { id: 'qi11', quote_id: 'q3', description: 'Pressure Switch', quantity: 1, unit_price: 65.00, total: 65.00, item_type: 'part', sort_order: 1 },
-  { id: 'qi12', quote_id: 'q3', description: 'Installation labor', quantity: 3, unit_price: 125.00, total: 375.00, item_type: 'labor', sort_order: 2 },
-  { id: 'qi13', quote_id: 'q3', description: 'Fittings and materials', quantity: 1, unit_price: 385.00, total: 385.00, item_type: 'part', sort_order: 3 },
+  { id: 'qi10', quote_id: 'q3', description: 'Pressure Tank - 44 Gallon', item_description: 'Well-X-Trol 44 gallon pressure tank', quantity: 1, unit_price: 425.00, total: 425.00, item_type: 'part', taxable: true, sort_order: 0 },
+  { id: 'qi11', quote_id: 'q3', description: 'Pressure Switch', item_description: 'Square D pressure switch 30/50 PSI', quantity: 1, unit_price: 65.00, total: 65.00, item_type: 'part', taxable: true, sort_order: 1 },
+  { id: 'qi12', quote_id: 'q3', description: 'Installation labor', item_description: null, quantity: 3, unit_price: 125.00, total: 375.00, item_type: 'labor', taxable: true, sort_order: 2 },
+  { id: 'qi13', quote_id: 'q3', description: 'Fittings and materials', item_description: 'Misc. PVC fittings, unions, and mounting hardware', quantity: 1, unit_price: 385.00, total: 385.00, item_type: 'part', taxable: true, sort_order: 3 },
   
   // Quote 4 items
-  { id: 'qi14', quote_id: 'q4', description: 'Complete well system upgrade', quantity: 1, unit_price: 6800.00, total: 6800.00, item_type: 'service', sort_order: 0 },
+  { id: 'qi14', quote_id: 'q4', description: 'Complete well system upgrade', item_description: 'Full replacement of pump, tank, controls, and piping. Includes all labor and materials.', quantity: 1, unit_price: 6800.00, total: 6800.00, item_type: 'service', taxable: true, sort_order: 0 },
 ];
 
 // Invoices
@@ -1569,4 +1587,56 @@ export function getAllTeamMembers(): User[] {
 
 export function getTeamMembersByRole(role: 'admin' | 'office' | 'field'): User[] {
   return mockUsers.filter(u => u.role === role);
+}
+
+// Quote Change Request helpers
+export function getChangeRequestsByQuoteId(quoteId: string): QuoteChangeRequest[] {
+  return mockQuoteChangeRequests.filter(r => r.quote_id === quoteId);
+}
+
+export function getPendingChangeRequests(): QuoteChangeRequest[] {
+  return mockQuoteChangeRequests.filter(r => r.status === 'pending');
+}
+
+export function getAllChangeRequests(): QuoteChangeRequest[] {
+  return mockQuoteChangeRequests;
+}
+
+export function addChangeRequest(
+  quoteId: string,
+  customerName: string,
+  customerEmail: string | null,
+  message: string
+): QuoteChangeRequest {
+  const newRequest: QuoteChangeRequest = {
+    id: `qcr${mockQuoteChangeRequests.length + 1}`,
+    quote_id: quoteId,
+    customer_name: customerName,
+    customer_email: customerEmail,
+    message: message,
+    status: 'pending',
+    created_at: new Date().toISOString(),
+    reviewed_at: null,
+  };
+  
+  mockQuoteChangeRequests.push(newRequest);
+  return newRequest;
+}
+
+export function markChangeRequestReviewed(requestId: string): boolean {
+  const request = mockQuoteChangeRequests.find(r => r.id === requestId);
+  if (!request) return false;
+  
+  request.status = 'reviewed';
+  request.reviewed_at = new Date().toISOString();
+  return true;
+}
+
+export function resolveChangeRequest(requestId: string): boolean {
+  const request = mockQuoteChangeRequests.find(r => r.id === requestId);
+  if (!request) return false;
+  
+  request.status = 'resolved';
+  request.reviewed_at = new Date().toISOString();
+  return true;
 }
