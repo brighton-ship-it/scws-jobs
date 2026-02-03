@@ -21,14 +21,30 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 const useMockAuth = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
                     process.env.NEXT_PUBLIC_SUPABASE_URL === 'your-supabase-url';
 
+// Key for tracking mock auth session in localStorage
+const MOCK_AUTH_KEY = 'scws_mock_auth';
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (useMockAuth) {
-      // Use mock admin user for development
-      setUser(mockUsers[0]);
+      // Check if user explicitly signed out
+      const mockAuthState = typeof window !== 'undefined' 
+        ? localStorage.getItem(MOCK_AUTH_KEY) 
+        : null;
+      
+      if (mockAuthState === 'signed_out') {
+        // User signed out, stay signed out
+        setUser(null);
+      } else {
+        // Auto-login with mock admin user for development
+        setUser(mockUsers[0]);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(MOCK_AUTH_KEY, 'signed_in');
+        }
+      }
       setLoading(false);
       return;
     }
@@ -76,9 +92,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const mockUser = mockUsers.find(u => u.email === email);
       if (mockUser) {
         setUser(mockUser);
+        if (typeof window !== 'undefined') {
+          localStorage.setItem(MOCK_AUTH_KEY, 'signed_in');
+        }
         return { error: null };
       }
-      return { error: new Error('Invalid credentials') };
+      // In demo mode, accept any email/password
+      setUser(mockUsers[0]);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(MOCK_AUTH_KEY, 'signed_in');
+      }
+      return { error: null };
     }
 
     const supabase = createClient();
@@ -89,12 +113,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const signOut = async () => {
     if (useMockAuth) {
       setUser(null);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(MOCK_AUTH_KEY, 'signed_out');
+      }
+      // Redirect to login page
+      window.location.href = '/login';
       return;
     }
 
     const supabase = createClient();
     await supabase.auth.signOut();
     setUser(null);
+    window.location.href = '/login';
   };
 
   const value = {
