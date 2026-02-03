@@ -3,13 +3,16 @@ import { createClient } from '@/lib/supabase/server';
 import { getAuthorizationUrl, getOAuthConfig } from '@/lib/quickbooks/oauth';
 import { randomBytes } from 'crypto';
 
-export async function GET() {
+export const dynamic = 'force-dynamic';
+
+export async function GET(request: Request) {
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
   try {
     const supabase = await createClient();
     
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      return NextResponse.redirect(new URL('/login', process.env.NEXT_PUBLIC_APP_URL));
+      return NextResponse.redirect(new URL('/login', baseUrl));
     }
 
     const config = getOAuthConfig();
