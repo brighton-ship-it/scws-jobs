@@ -226,9 +226,9 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { apn, address, county, lat, lng } = body;
 
-    if (!apn && !address) {
+    if (!apn && !address && !lat && !lng) {
       return NextResponse.json(
-        { error: 'Either APN or address is required' },
+        { error: 'Either APN, address, or GPS coordinates are required' },
         { status: 400 }
       );
     }
