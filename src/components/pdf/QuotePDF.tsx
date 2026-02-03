@@ -1,7 +1,7 @@
 'use client';
 
 import { Document, Page, Text, View, StyleSheet, Image } from '@react-pdf/renderer';
-import type { QuoteWithDetails } from '@/types/database';
+import type { QuoteWithDetails, Signature } from '@/types/database';
 import { format } from 'date-fns';
 
 const styles = StyleSheet.create({
@@ -277,6 +277,57 @@ const styles = StyleSheet.create({
   acceptedBadge: {
     backgroundColor: '#d1fae5',
   },
+  signatureSection: {
+    marginTop: 30,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: '#e5e7eb',
+  },
+  signatureBox: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    marginTop: 16,
+  },
+  signatureImageContainer: {
+    flex: 1,
+    paddingRight: 24,
+  },
+  signatureImage: {
+    width: 200,
+    height: 60,
+    objectFit: 'contain',
+  },
+  signatureDetails: {
+    flex: 1,
+    alignItems: 'flex-end',
+  },
+  signatureLabel: {
+    fontSize: 9,
+    color: '#6b7280',
+    marginBottom: 2,
+  },
+  signatureName: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  signatureDate: {
+    fontSize: 9,
+    color: '#4b5563',
+  },
+  signedBadge: {
+    backgroundColor: '#d1fae5',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 4,
+    marginBottom: 8,
+  },
+  signedBadgeText: {
+    fontSize: 9,
+    color: '#047857',
+    fontWeight: 'bold',
+  },
 });
 
 const formatCurrency = (amount: number) => {
@@ -286,6 +337,7 @@ const formatCurrency = (amount: number) => {
 interface QuotePDFProps {
   quote: QuoteWithDetails;
   logoUrl?: string;
+  signature?: Signature | null;
   companyInfo?: {
     name: string;
     subtitle: string;
@@ -295,7 +347,7 @@ interface QuotePDFProps {
   };
 }
 
-export function QuotePDF({ quote, logoUrl, companyInfo }: QuotePDFProps) {
+export function QuotePDF({ quote, logoUrl, signature, companyInfo }: QuotePDFProps) {
   const company = companyInfo || {
     name: 'Southern California Well Service',
     subtitle: 'Professional Well & Pump Services',
@@ -434,6 +486,31 @@ export function QuotePDF({ quote, logoUrl, companyInfo }: QuotePDFProps) {
           <View style={styles.notes}>
             <Text style={styles.sectionTitle}>Notes & Terms</Text>
             <Text style={styles.notesText}>{quote.notes}</Text>
+          </View>
+        )}
+
+        {/* Signature Section */}
+        {signature && (
+          <View style={styles.signatureSection}>
+            <Text style={styles.sectionTitle}>Customer Acceptance</Text>
+            <View style={styles.signatureBox}>
+              <View style={styles.signatureImageContainer}>
+                <Image src={signature.signature_data} style={styles.signatureImage} />
+                <View style={{ borderTopWidth: 1, borderTopColor: '#374151', paddingTop: 4, marginTop: 4 }}>
+                  <Text style={{ fontSize: 8, color: '#6b7280' }}>Customer Signature</Text>
+                </View>
+              </View>
+              <View style={styles.signatureDetails}>
+                <View style={styles.signedBadge}>
+                  <Text style={styles.signedBadgeText}>✓ ACCEPTED</Text>
+                </View>
+                <Text style={styles.signatureLabel}>Signed by:</Text>
+                <Text style={styles.signatureName}>{signature.signer_name}</Text>
+                <Text style={styles.signatureDate}>
+                  {format(new Date(signature.signed_at), 'MMMM d, yyyy \'at\' h:mm a')}
+                </Text>
+              </View>
+            </View>
           </View>
         )}
 

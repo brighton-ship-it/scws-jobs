@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { 
   Plus, 
   Search, 
@@ -10,8 +11,10 @@ import {
   Calendar,
   Briefcase,
   Upload,
-  Filter,
-  Download
+  Download,
+  RefreshCw,
+  Trash2,
+  Edit
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -30,7 +33,6 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import {
@@ -40,66 +42,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
-
-// Mock expenses
-const mockExpenses = [
-  {
-    id: '1',
-    description: 'Grundfos SQFlex pump',
-    amount: 2450.00,
-    category: 'Materials',
-    vendor: 'Ransom Pump Supply',
-    expense_date: '2026-02-02',
-    job_title: 'Well Pump Replacement - Johnson Ranch',
-    receipt: true,
-    created_by: 'Travis Sego',
-  },
-  {
-    id: '2',
-    description: 'Fuel - Service truck',
-    amount: 125.00,
-    category: 'Fuel',
-    vendor: 'Chevron',
-    expense_date: '2026-02-02',
-    job_title: null,
-    receipt: true,
-    created_by: 'Brian Eads',
-  },
-  {
-    id: '3',
-    description: '4" PVC well casing (100ft)',
-    amount: 850.00,
-    category: 'Materials',
-    vendor: 'Ferguson Waterworks',
-    expense_date: '2026-02-01',
-    job_title: 'Well Drilling - Desert Oasis',
-    receipt: true,
-    created_by: 'Austin Tipton',
-  },
-  {
-    id: '4',
-    description: 'Permit fee - San Diego County',
-    amount: 275.00,
-    category: 'Permits',
-    vendor: 'SD County',
-    expense_date: '2026-02-01',
-    job_title: 'Well Drilling - Desert Oasis',
-    receipt: false,
-    created_by: 'Brighton Scala',
-  },
-  {
-    id: '5',
-    description: 'Backhoe rental (1 day)',
-    amount: 450.00,
-    category: 'Equipment Rental',
-    vendor: 'Sunbelt Rentals',
-    expense_date: '2026-01-31',
-    job_title: 'Septic Line Repair - Wilson',
-    receipt: true,
-    created_by: 'Jeff Gezewski',
-  },
-]
+import type { JobExpense } from '@/types/database'
+import { format, startOfMonth, endOfMonth } from 'date-fns'
 
 const categories = ['Materials', 'Fuel', 'Equipment Rental', 'Subcontractor', 'Permits', 'Disposal', 'Other']
 
@@ -116,25 +60,119 @@ function getCategoryColor(category: string) {
   return colors[category] || 'bg-gray-100 text-gray-800'
 }
 
-export default function ExpensesPage() {
-  const [searchQuery, setSearchQuery] = useState('')
-  const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [categoryFilter, setCategoryFilter] = useState('all')
-  const [dateRange, setDateRange] = useState('month')
+interface ExpenseWithJob extends JobExpense {
+  jobs?: { id: string; job_type: string; job_number?: string } | null;
+}
 
-  const filteredExpenses = mockExpenses.filter(exp => {
-    const matchesSearch = 
-      exp.description.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      exp.vendor.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesCategory = categoryFilter === 'all' || exp.category === categoryFilter
-    return matchesSearch && matchesCategory
+export default function ExpensesPage() {
+  const [expenses, setExpenses] = useState<ExpenseWithJob[]>([])
+  const [loading, setLoading] = useState(true)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [categoryFilter, setCategoryFilter] = useState('all')
+  
+  // Create modal
+  const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [form, setForm] = useState({
+    description: '',
+    amount: '',
+    category: 'Materials',
+    vendor: '',
+    expense_date: new Date().toISOString().split('T')[0],
+    job_id: '',
   })
 
+  const fetchExpenses = async () => {
+    try {
+      setLoading(true)
+      const params = new URLSearchParams()
+      if (categoryFilter !== 'all') params.set('category', categoryFilter)
+      if (searchQuery) params.set('search', searchQuery)
+      
+      const res = await fetch(`/api/expenses?${params}`)
+      if (res.ok) {
+        const data = await res.json()
+        setExpenses(data.expenses || [])
+      }
+    } catch (error) {
+      console.error('Failed to fetch expenses:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchExpenses()
+  }, [categoryFilter])
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchExpenses()
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [searchQuery])
+
+  const handleCreate = async () => {
+    if (!form.description || !form.amount || !form.category) return
+    
+    setSaving(true)
+    try {
+      const res = await fetch('/api/expenses', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...form,
+          amount: parseFloat(form.amount),
+          job_id: form.job_id || null,
+        }),
+      })
+      
+      if (res.ok) {
+        setIsCreateOpen(false)
+        setForm({
+          description: '',
+          amount: '',
+          category: 'Materials',
+          vendor: '',
+          expense_date: new Date().toISOString().split('T')[0],
+          job_id: '',
+        })
+        fetchExpenses()
+      }
+    } catch (error) {
+      console.error('Failed to create expense:', error)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Delete this expense?')) return
+    try {
+      const res = await fetch(`/api/expenses/${id}`, { method: 'DELETE' })
+      if (res.ok) {
+        fetchExpenses()
+      }
+    } catch (error) {
+      console.error('Failed to delete:', error)
+    }
+  }
+
+  // Calculate stats
+  const now = new Date()
+  const monthStart = startOfMonth(now)
+  const monthEnd = endOfMonth(now)
+  
   const stats = {
-    total: mockExpenses.reduce((sum, e) => sum + e.amount, 0),
-    thisMonth: mockExpenses.filter(e => e.expense_date.startsWith('2026-02')).reduce((sum, e) => sum + e.amount, 0),
-    materials: mockExpenses.filter(e => e.category === 'Materials').reduce((sum, e) => sum + e.amount, 0),
-    withoutReceipt: mockExpenses.filter(e => !e.receipt).length,
+    total: expenses.reduce((sum, e) => sum + Number(e.amount), 0),
+    thisMonth: expenses
+      .filter(e => {
+        const d = new Date(e.expense_date)
+        return d >= monthStart && d <= monthEnd
+      })
+      .reduce((sum, e) => sum + Number(e.amount), 0),
+    materials: expenses.filter(e => e.category === 'Materials').reduce((sum, e) => sum + Number(e.amount), 0),
+    withoutReceipt: expenses.filter(e => !e.receipt_url).length,
   }
 
   return (
@@ -148,91 +186,19 @@ export default function ExpensesPage() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline">
-            <Download className="mr-2 h-4 w-4" />
-            Export
+          <Button variant="outline" onClick={fetchExpenses}>
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
-          <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="mr-2 h-4 w-4" />
-                Add Expense
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[500px]">
-              <DialogHeader>
-                <DialogTitle>Add Expense</DialogTitle>
-                <DialogDescription>
-                  Log a job expense or general business cost
-                </DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                  <Label htmlFor="description">Description</Label>
-                  <Input id="description" placeholder="What was purchased?" />
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="amount">Amount</Label>
-                    <Input id="amount" type="number" placeholder="0.00" />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label>Category</Label>
-                    <Select>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {categories.map(cat => (
-                          <SelectItem key={cat} value={cat}>{cat}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="vendor">Vendor</Label>
-                    <Input id="vendor" placeholder="Supplier name" />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="date">Date</Label>
-                    <Input id="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} />
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Link to Job (Optional)</Label>
-                  <Select>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select job" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="none">No job - General expense</SelectItem>
-                      <SelectItem value="1">Well Pump Replacement - Johnson Ranch</SelectItem>
-                      <SelectItem value="2">Well Drilling - Desert Oasis</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Receipt</Label>
-                  <div className="border-2 border-dashed rounded-lg p-6 text-center">
-                    <Upload className="mx-auto h-8 w-8 text-muted-foreground mb-2" />
-                    <p className="text-sm text-muted-foreground">
-                      Drag & drop or click to upload receipt
-                    </p>
-                  </div>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setIsCreateOpen(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={() => setIsCreateOpen(false)}>
-                  Save Expense
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+          <Link href="/reports/expenses">
+            <Button variant="outline">
+              <Download className="mr-2 h-4 w-4" />
+              Reports
+            </Button>
+          </Link>
+          <Button onClick={() => setIsCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Expense
+          </Button>
         </div>
       </div>
 
@@ -255,7 +221,7 @@ export default function ExpensesPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold">${stats.thisMonth.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">February 2026</p>
+            <p className="text-xs text-muted-foreground">{format(now, 'MMMM yyyy')}</p>
           </CardContent>
         </Card>
         <Card>
@@ -307,13 +273,18 @@ export default function ExpensesPage() {
       {/* Expenses List */}
       <Card>
         <CardContent className="p-0">
-          {filteredExpenses.length === 0 ? (
+          {loading ? (
+            <div className="text-center py-12">
+              <RefreshCw className="h-6 w-6 mx-auto animate-spin text-gray-400" />
+              <p className="text-muted-foreground mt-2">Loading...</p>
+            </div>
+          ) : expenses.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               No expenses found
             </div>
           ) : (
             <div className="divide-y">
-              {filteredExpenses.map((expense) => (
+              {expenses.map((expense) => (
                 <div 
                   key={expense.id}
                   className="flex items-center justify-between p-4 hover:bg-muted/50 transition-colors"
@@ -328,22 +299,22 @@ export default function ExpensesPage() {
                         <Badge className={getCategoryColor(expense.category)}>
                           {expense.category}
                         </Badge>
-                        {!expense.receipt && (
+                        {!expense.receipt_url && (
                           <Badge variant="outline" className="text-yellow-600 border-yellow-600">
                             No Receipt
                           </Badge>
                         )}
                       </div>
                       <div className="text-sm text-muted-foreground flex items-center gap-3 mt-1">
-                        <span>{expense.vendor}</span>
-                        <span>•</span>
-                        <span>{new Date(expense.expense_date).toLocaleDateString()}</span>
-                        {expense.job_title && (
+                        {expense.vendor && <span>{expense.vendor}</span>}
+                        {expense.vendor && <span>•</span>}
+                        <span>{format(new Date(expense.expense_date), 'MMM d, yyyy')}</span>
+                        {expense.jobs && (
                           <>
                             <span>•</span>
                             <span className="flex items-center gap-1">
                               <Briefcase className="h-3 w-3" />
-                              {expense.job_title}
+                              Job #{expense.jobs.job_number || expense.jobs.id.slice(0, 8)}
                             </span>
                           </>
                         )}
@@ -352,8 +323,7 @@ export default function ExpensesPage() {
                   </div>
                   <div className="flex items-center gap-4">
                     <div className="text-right">
-                      <div className="text-xl font-bold">${expense.amount.toLocaleString()}</div>
-                      <div className="text-xs text-muted-foreground">by {expense.created_by}</div>
+                      <div className="text-xl font-bold">${Number(expense.amount).toLocaleString()}</div>
                     </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -362,10 +332,23 @@ export default function ExpensesPage() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem>Edit</DropdownMenuItem>
-                        <DropdownMenuItem>View Receipt</DropdownMenuItem>
-                        <DropdownMenuItem>Link to Job</DropdownMenuItem>
-                        <DropdownMenuItem className="text-destructive">Delete</DropdownMenuItem>
+                        <DropdownMenuItem>
+                          <Edit className="h-4 w-4 mr-2" />
+                          Edit
+                        </DropdownMenuItem>
+                        {expense.receipt_url && (
+                          <DropdownMenuItem>
+                            <Receipt className="h-4 w-4 mr-2" />
+                            View Receipt
+                          </DropdownMenuItem>
+                        )}
+                        <DropdownMenuItem 
+                          className="text-destructive"
+                          onClick={() => handleDelete(expense.id)}
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
@@ -375,6 +358,92 @@ export default function ExpensesPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Create Modal */}
+      <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle>Add Expense</DialogTitle>
+            <DialogDescription>
+              Log a job expense or general business cost
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="description">Description</Label>
+              <Input 
+                id="description" 
+                placeholder="What was purchased?"
+                value={form.description}
+                onChange={(e) => setForm({ ...form, description: e.target.value })}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="amount">Amount</Label>
+                <Input 
+                  id="amount" 
+                  type="number" 
+                  step="0.01"
+                  placeholder="0.00"
+                  value={form.amount}
+                  onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label>Category</Label>
+                <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map(cat => (
+                      <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="grid gap-2">
+                <Label htmlFor="vendor">Vendor</Label>
+                <Input 
+                  id="vendor" 
+                  placeholder="Supplier name"
+                  value={form.vendor}
+                  onChange={(e) => setForm({ ...form, vendor: e.target.value })}
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="date">Date</Label>
+                <Input 
+                  id="date" 
+                  type="date" 
+                  value={form.expense_date}
+                  onChange={(e) => setForm({ ...form, expense_date: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <Label>Receipt</Label>
+              <div className="border-2 border-dashed rounded-lg p-6 text-center">
+                <Upload className="mx-auto h-8 w-8 text-muted-foreground mb-2" />
+                <p className="text-sm text-muted-foreground">
+                  Drag & drop or click to upload receipt
+                </p>
+              </div>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setIsCreateOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreate} disabled={saving || !form.description || !form.amount}>
+              {saving ? 'Saving...' : 'Save Expense'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

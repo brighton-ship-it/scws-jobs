@@ -97,7 +97,7 @@ export default function InvoiceDetailPage() {
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isProcessingPayment, setIsProcessingPayment] = useState(false)
-  const [paymentMethod, setPaymentMethod] = useState<'card' | 'ach'>('card')
+  const [paymentMethod, setPaymentMethod] = useState<'credit' | 'debit' | 'ach'>('ach')
   const [paymentSuccess, setPaymentSuccess] = useState(false)
   const [paymentError, setPaymentError] = useState<string | null>(null)
 
@@ -119,6 +119,10 @@ export default function InvoiceDetailPage() {
     loadInvoice()
   }, [token, invoiceId])
 
+  // Fee percentages
+  const CREDIT_FEE = 0.025 // 2.5%
+  const DEBIT_FEE = 0.015  // 1.5%
+
   const handlePayment = async () => {
     if (!invoice) return
     
@@ -126,8 +130,13 @@ export default function InvoiceDetailPage() {
     setPaymentError(null)
     
     const amountDue = Number(invoice.total) - Number(invoice.amount_paid)
-    // Add 3% processing fee for card payments
-    const processingFee = paymentMethod === 'card' ? amountDue * 0.03 : 0
+    // Apply fee based on payment method
+    let processingFee = 0
+    if (paymentMethod === 'credit') {
+      processingFee = amountDue * CREDIT_FEE
+    } else if (paymentMethod === 'debit') {
+      processingFee = amountDue * DEBIT_FEE
+    }
     const totalPayment = amountDue + processingFee
     
     try {
@@ -390,20 +399,7 @@ export default function InvoiceDetailPage() {
             {/* Payment Method Selection */}
             <div className="space-y-3">
               <Label>Payment Method</Label>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod('card')}
-                  className={`p-4 rounded-lg border-2 transition-colors ${
-                    paymentMethod === 'card' 
-                      ? 'border-[#4e9271] bg-[#4e9271]/5' 
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <CreditCard className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'card' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
-                  <div className="font-medium">Credit Card</div>
-                  <div className="text-xs text-muted-foreground">3% processing fee</div>
-                </button>
+              <div className="grid grid-cols-3 gap-3">
                 <button
                   type="button"
                   onClick={() => setPaymentMethod('ach')}
@@ -414,8 +410,34 @@ export default function InvoiceDetailPage() {
                   }`}
                 >
                   <Building2 className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'ach' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
-                  <div className="font-medium">Bank Transfer</div>
-                  <div className="text-xs text-muted-foreground">No fee</div>
+                  <div className="font-medium text-sm">Bank Transfer</div>
+                  <div className="text-xs text-green-600 font-medium">No fee ✓</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod('debit')}
+                  className={`p-4 rounded-lg border-2 transition-colors ${
+                    paymentMethod === 'debit' 
+                      ? 'border-[#4e9271] bg-[#4e9271]/5' 
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <Banknote className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'debit' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
+                  <div className="font-medium text-sm">Debit Card</div>
+                  <div className="text-xs text-muted-foreground">1.5% fee</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentMethod('credit')}
+                  className={`p-4 rounded-lg border-2 transition-colors ${
+                    paymentMethod === 'credit' 
+                      ? 'border-[#4e9271] bg-[#4e9271]/5' 
+                      : 'border-gray-200 hover:border-gray-300'
+                  }`}
+                >
+                  <CreditCard className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'credit' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
+                  <div className="font-medium text-sm">Credit Card</div>
+                  <div className="text-xs text-muted-foreground">2.5% fee</div>
                 </button>
               </div>
             </div>
@@ -426,17 +448,31 @@ export default function InvoiceDetailPage() {
                 <span>Invoice Amount</span>
                 <span>${amountDue.toFixed(2)}</span>
               </div>
-              {paymentMethod === 'card' && (
+              {paymentMethod === 'credit' && (
                 <div className="flex justify-between text-muted-foreground">
-                  <span>Processing Fee (3%)</span>
-                  <span>${(amountDue * 0.03).toFixed(2)}</span>
+                  <span>Credit Card Fee (2.5%)</span>
+                  <span>${(amountDue * CREDIT_FEE).toFixed(2)}</span>
+                </div>
+              )}
+              {paymentMethod === 'debit' && (
+                <div className="flex justify-between text-muted-foreground">
+                  <span>Debit Card Fee (1.5%)</span>
+                  <span>${(amountDue * DEBIT_FEE).toFixed(2)}</span>
+                </div>
+              )}
+              {paymentMethod === 'ach' && (
+                <div className="flex justify-between text-green-600">
+                  <span>Processing Fee</span>
+                  <span>$0.00</span>
                 </div>
               )}
               <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
                 <span>Total</span>
                 <span>
-                  ${paymentMethod === 'card' 
-                    ? (amountDue * 1.03).toFixed(2) 
+                  ${paymentMethod === 'credit' 
+                    ? (amountDue * (1 + CREDIT_FEE)).toFixed(2) 
+                    : paymentMethod === 'debit'
+                    ? (amountDue * (1 + DEBIT_FEE)).toFixed(2)
                     : amountDue.toFixed(2)
                   }
                 </span>
@@ -463,8 +499,10 @@ export default function InvoiceDetailPage() {
               ) : (
                 <>
                   <Check className="h-5 w-5 mr-2" />
-                  Pay ${paymentMethod === 'card' 
-                    ? (amountDue * 1.03).toFixed(2) 
+                  Pay ${paymentMethod === 'credit' 
+                    ? (amountDue * (1 + CREDIT_FEE)).toFixed(2) 
+                    : paymentMethod === 'debit'
+                    ? (amountDue * (1 + DEBIT_FEE)).toFixed(2)
                     : amountDue.toFixed(2)
                   }
                 </>

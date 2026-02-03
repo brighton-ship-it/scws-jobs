@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import twilio from 'twilio';
+import { query } from '@/lib/db';
+import { logSMS } from '@/lib/communications';
 
 // Twilio credentials from environment variables
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
@@ -56,6 +58,31 @@ export async function POST(request: NextRequest) {
     });
 
     console.log(`[On My Way SMS] Sent to ${cleanPhone} for job ${jobId}: ${result.sid}`);
+
+    // Auto-log the communication
+    if (jobId) {
+      try {
+        // Get customer_id from job via property
+        const jobData = await query<{ customer_id: string }>(`
+          SELECT p.customer_id 
+          FROM jobs j 
+          JOIN properties p ON j.property_id = p.id 
+          WHERE j.id = $1
+        `, [jobId]);
+        
+        if (jobData[0]?.customer_id) {
+          await logSMS({
+            customerId: jobData[0].customer_id,
+            jobId,
+            message,
+            phone: cleanPhone,
+            messageId: result.sid,
+          });
+        }
+      } catch (err) {
+        console.error('[On My Way SMS] Failed to log communication:', err);
+      }
+    }
 
     return NextResponse.json({
       success: true,

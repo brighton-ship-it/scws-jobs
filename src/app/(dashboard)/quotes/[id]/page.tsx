@@ -1,20 +1,23 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { QuoteStatusBadge } from '@/components/ui/badge';
+import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/forms/Input';
 import { Modal } from '@/components/feedback/Modal';
 import { QuotePDFButton } from '@/components/pdf/QuotePDFButton';
 import { DepositSidebar } from '@/components/quotes/DepositSidebar';
+import { SignaturePad } from '@/components/signatures';
 import { getQuoteWithDetails, mockQuoteChangeRequests } from '@/lib/mock-data';
+import type { Signature } from '@/types/database';
 import { 
   ArrowLeft, Edit, Send, FileText, Mail, 
-  Check, X, Clock, Printer, Building2, MapPin, DollarSign, Receipt
+  Check, X, Clock, Printer, Building2, MapPin, DollarSign, Receipt, PenTool
 } from 'lucide-react';
 import { format } from 'date-fns';
 
@@ -36,8 +39,28 @@ export default function QuoteDetailPage() {
   const [showSendModal, setShowSendModal] = useState(false);
   const [sendEmail, setSendEmail] = useState('');
   const [sending, setSending] = useState(false);
+  const [signature, setSignature] = useState<Signature | null>(null);
+  const [signatureLoading, setSignatureLoading] = useState(true);
 
   const quoteData = getQuoteWithDetails(quoteId);
+
+  // Fetch signature on mount
+  useEffect(() => {
+    async function fetchSignature() {
+      try {
+        const res = await fetch(`/api/signatures?quote_id=${quoteId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setSignature(data.signature);
+        }
+      } catch (err) {
+        console.error('Failed to fetch signature:', err);
+      } finally {
+        setSignatureLoading(false);
+      }
+    }
+    fetchSignature();
+  }, [quoteId]);
 
   if (!quoteData) {
     return (
@@ -115,6 +138,12 @@ export default function QuoteDetailPage() {
             <div className="flex items-center gap-3">
               <h2 className="text-2xl font-bold text-gray-900">Quote #{quoteData.quote_number}</h2>
               <QuoteStatusBadge status={quoteData.status} />
+              {signature && (
+                <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-100 text-green-700 text-xs font-medium rounded-full">
+                  <PenTool className="h-3 w-3" />
+                  Signed
+                </span>
+              )}
               {quoteData.required_deposit && quoteData.required_deposit > 0 && (
                 <span className="inline-flex items-center gap-1 px-2 py-1 bg-green-50 text-green-700 text-xs font-medium rounded-full">
                   <DollarSign className="h-3 w-3" />
@@ -166,7 +195,7 @@ export default function QuoteDetailPage() {
               Convert to Invoice
             </Button>
           )}
-          <QuotePDFButton quote={quoteData} companyInfo={COMPANY_INFO} />
+          <QuotePDFButton quote={quoteData} signature={signature} companyInfo={COMPANY_INFO} />
           <Button variant="outline" onClick={handlePrint}>
             <Printer className="h-4 w-4" />
             Print
@@ -398,6 +427,33 @@ export default function QuoteDetailPage() {
               <p className="text-gray-600 text-sm">{quoteData.internal_notes}</p>
             </CardContent>
           </Card>
+        )}
+
+        {/* E-Signature Section (for sent/accepted quotes) */}
+        {(quoteData.status === 'sent' || quoteData.status === 'accepted') && !signatureLoading && (
+          <div className="print:hidden mt-6">
+            <SignaturePad
+              quoteId={quoteId}
+              existingSignature={signature ? {
+                signature_data: signature.signature_data,
+                signer_name: signature.signer_name,
+                signed_at: signature.signed_at,
+              } : null}
+              onSignatureComplete={(data) => {
+                setSignature({
+                  id: 'new',
+                  quote_id: quoteId,
+                  signature_data: data.signature_data,
+                  signer_name: data.signer_name,
+                  signer_email: data.signer_email || null,
+                  ip_address: null,
+                  user_agent: null,
+                  signed_at: new Date().toISOString(),
+                  created_at: new Date().toISOString(),
+                });
+              }}
+            />
+          </div>
         )}
         </div>
 

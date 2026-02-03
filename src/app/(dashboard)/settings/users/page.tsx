@@ -1,7 +1,10 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useAuth } from '@/contexts/AuthContext';
+import { roleInfo } from '@/lib/permissions';
+import type { UserRole } from '@/types/database';
 import { 
   Plus, 
   Mail, 
@@ -23,7 +26,8 @@ import {
   Building2,
   Bell,
   CreditCard,
-  Puzzle
+  Puzzle,
+  Loader2
 } from 'lucide-react';
 
 // Mock team data matching Jobber structure
@@ -133,12 +137,35 @@ const mockTeamMembers = [
 const roleColors: Record<string, string> = {
   owner: 'bg-amber-100 text-amber-800',
   admin: 'bg-purple-100 text-purple-700',
+  office: 'bg-blue-100 text-blue-700',
+  tech: 'bg-green-100 text-green-700',
+  field: 'bg-green-100 text-green-700',
   manager: 'bg-blue-100 text-blue-700',
   dispatcher: 'bg-cyan-100 text-cyan-700',
   worker: 'bg-green-100 text-green-700',
   worker_limited: 'bg-gray-100 text-gray-700',
 };
 
+// New role-based permission presets
+const rolePresets: { value: UserRole; label: string; description: string }[] = [
+  { 
+    value: 'tech', 
+    label: 'Technician', 
+    description: 'View assigned jobs, update job status, add notes and photos. Limited access.'
+  },
+  { 
+    value: 'office', 
+    label: 'Office Staff', 
+    description: 'Manage customers, jobs, invoices, reports. No access to settings.'
+  },
+  { 
+    value: 'admin', 
+    label: 'Administrator', 
+    description: 'Full access to everything including settings and user management.'
+  },
+];
+
+// Legacy presets for backward compatibility
 const permissionPresets = [
   { 
     value: 'worker_limited', 
@@ -178,9 +205,8 @@ export default function UsersSettingsPage() {
     name: '',
     email: '',
     phone: '',
-    role: 'worker_limited',
+    role: 'tech' as UserRole,
     laborCost: 0,
-    isAdmin: false,
   });
 
   const activeCount = teamMembers.length;
@@ -200,13 +226,14 @@ export default function UsersSettingsPage() {
   };
 
   const handleCreateUser = () => {
+    const roleLabel = rolePresets.find(p => p.value === newUserForm.role)?.label || 'Technician';
     const newUser = {
       id: Date.now().toString(),
       name: newUserForm.name,
       email: newUserForm.email,
       phone: newUserForm.phone,
-      role: newUserForm.isAdmin ? 'admin' : newUserForm.role,
-      roleLabel: newUserForm.isAdmin ? 'Admin' : permissionPresets.find(p => p.value === newUserForm.role)?.label || 'Worker',
+      role: newUserForm.role,
+      roleLabel,
       laborCost: newUserForm.laborCost,
       lastLogin: null as any,
       avatar: null,
@@ -222,7 +249,7 @@ export default function UsersSettingsPage() {
     };
     setTeamMembers(prev => [...prev, newUser]);
     setShowNewUserModal(false);
-    setNewUserForm({ name: '', email: '', phone: '', role: 'worker_limited', laborCost: 0, isAdmin: false });
+    setNewUserForm({ name: '', email: '', phone: '', role: 'tech', laborCost: 0 });
   };
 
   const getInitials = (name: string) => {
@@ -381,11 +408,11 @@ export default function UsersSettingsPage() {
         </div>
       </div>
 
-      {/* Permission Level Reference */}
+      {/* Role Reference */}
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <h3 className="font-semibold text-gray-900 mb-4">Permission Levels</h3>
+        <h3 className="font-semibold text-gray-900 mb-4">Role Permissions</h3>
         <div className="grid gap-3">
-          {permissionPresets.map((preset) => (
+          {rolePresets.map((preset) => (
             <div key={preset.value} className="flex items-start gap-3 p-3 bg-gray-50 rounded-lg">
               <div className={`px-2 py-1 rounded text-xs font-medium ${roleColors[preset.value] || 'bg-gray-100 text-gray-700'}`}>
                 {preset.label}
@@ -393,6 +420,12 @@ export default function UsersSettingsPage() {
               <p className="text-sm text-gray-600">{preset.description}</p>
             </div>
           ))}
+        </div>
+        <div className="mt-4 p-3 bg-blue-50 rounded-lg">
+          <p className="text-sm text-blue-800">
+            <strong>Note:</strong> Technicians can only see jobs assigned to them, update job status, and add notes/photos. 
+            Office staff has full access except settings. Admins have complete access.
+          </p>
         </div>
       </div>
 
@@ -473,52 +506,40 @@ export default function UsersSettingsPage() {
                 </div>
               </div>
 
-              {/* Permissions */}
+              {/* Role Selection */}
               <div>
-                <h3 className="font-semibold text-gray-900 mb-4">Permissions</h3>
-                <label className="flex items-start gap-3 p-3 border border-gray-200 rounded-lg hover:bg-gray-50 cursor-pointer mb-4">
-                  <input
-                    type="checkbox"
-                    checked={newUserForm.isAdmin}
-                    onChange={(e) => setNewUserForm(prev => ({ ...prev, isAdmin: e.target.checked }))}
-                    className="mt-1 h-4 w-4 text-green-600 rounded border-gray-300 focus:ring-green-500"
-                  />
-                  <div>
-                    <p className="font-medium text-gray-900">Make administrator</p>
-                    <p className="text-sm text-gray-500">This allows them access to everything within the account — including billing, reports, client list, editing all user permissions, etc.</p>
-                  </div>
-                </label>
-
-                {!newUserForm.isAdmin && (
-                  <div>
-                    <p className="text-sm text-gray-600 mb-3">Or start with a preset permission level:</p>
-                    <div className="space-y-2">
-                      {permissionPresets.filter(p => p.value !== 'admin').map((preset) => (
-                        <label 
-                          key={preset.value}
-                          className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
-                            newUserForm.role === preset.value 
-                              ? 'border-green-500 bg-green-50' 
-                              : 'border-gray-200 hover:bg-gray-50'
-                          }`}
-                        >
-                          <input
-                            type="radio"
-                            name="role"
-                            value={preset.value}
-                            checked={newUserForm.role === preset.value}
-                            onChange={(e) => setNewUserForm(prev => ({ ...prev, role: e.target.value }))}
-                            className="mt-1 h-4 w-4 text-green-600 border-gray-300 focus:ring-green-500"
-                          />
-                          <div>
-                            <p className="font-medium text-gray-900">{preset.label}</p>
-                            <p className="text-sm text-gray-500">{preset.description}</p>
-                          </div>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                )}
+                <h3 className="font-semibold text-gray-900 mb-4">Role & Permissions</h3>
+                <p className="text-sm text-gray-600 mb-3">Select the user's role to determine their access level:</p>
+                <div className="space-y-2">
+                  {rolePresets.map((preset) => (
+                    <label 
+                      key={preset.value}
+                      className={`flex items-start gap-3 p-3 border rounded-lg cursor-pointer transition-colors ${
+                        newUserForm.role === preset.value 
+                          ? 'border-green-500 bg-green-50' 
+                          : 'border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="role"
+                        value={preset.value}
+                        checked={newUserForm.role === preset.value}
+                        onChange={(e) => setNewUserForm(prev => ({ ...prev, role: e.target.value as UserRole }))}
+                        className="mt-1 h-4 w-4 text-green-600 border-gray-300 focus:ring-green-500"
+                      />
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-gray-900">{preset.label}</p>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${roleColors[preset.value]}`}>
+                            {preset.value}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-500 mt-0.5">{preset.description}</p>
+                      </div>
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
 

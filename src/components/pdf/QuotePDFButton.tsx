@@ -3,10 +3,11 @@
 import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Download, Loader2 } from 'lucide-react';
-import type { QuoteWithDetails } from '@/types/database';
+import type { QuoteWithDetails, Signature } from '@/types/database';
 
 interface QuotePDFButtonProps {
   quote: QuoteWithDetails;
+  signature?: Signature | null;
   companyInfo?: {
     name: string;
     subtitle: string;
@@ -25,7 +26,7 @@ const DEFAULT_COMPANY_INFO = {
   email: 'info@socalwellservice.com',
 };
 
-export function QuotePDFButton({ quote, companyInfo = DEFAULT_COMPANY_INFO }: QuotePDFButtonProps) {
+export function QuotePDFButton({ quote, signature, companyInfo = DEFAULT_COMPANY_INFO }: QuotePDFButtonProps) {
   const [isClient, setIsClient] = useState(false);
   const [PDFComponents, setPDFComponents] = useState<{
     PDFDownloadLink: React.ComponentType<any>;
@@ -71,7 +72,7 @@ export function QuotePDFButton({ quote, companyInfo = DEFAULT_COMPANY_INFO }: Qu
 
   return (
     <PDFDownloadLink
-      document={<QuotePDF quote={quote} logoUrl={logoUrl} companyInfo={companyInfo} />}
+      document={<QuotePDF quote={quote} logoUrl={logoUrl} companyInfo={companyInfo} signature={signature} />}
       fileName={`quote-${quote.quote_number}.pdf`}
     >
       {({ loading, error }: { loading: boolean; error?: Error | null }) => {

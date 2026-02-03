@@ -7,7 +7,8 @@ import { Input } from '@/components/forms/Input';
 import { Save, CreditCard } from 'lucide-react';
 
 interface PaymentSettings {
-  ccFeePercent: number;
+  creditCardFeePercent: number;
+  debitCardFeePercent: number;
   achEnabled: boolean;
   achFee: number;
   checksEnabled: boolean;
@@ -16,7 +17,8 @@ interface PaymentSettings {
 export default function PaymentSettingsPage() {
   const [saving, setSaving] = useState(false);
   const [settings, setSettings] = useState<PaymentSettings>({
-    ccFeePercent: 3,
+    creditCardFeePercent: 2.5,
+    debitCardFeePercent: 1.5,
     achEnabled: true,
     achFee: 0,
     checksEnabled: true,
@@ -82,25 +84,46 @@ export default function PaymentSettingsPage() {
           </div>
 
           {/* Credit Card Settings */}
-          <div className="space-y-3 border-t border-gray-200 pt-6">
+          <div className="space-y-4 border-t border-gray-200 pt-6">
             <div>
-              <h4 className="font-medium text-gray-900">Credit/Debit Card</h4>
-              <p className="text-sm text-gray-500">Convenience payment option with fee</p>
+              <h4 className="font-medium text-gray-900">Card Payment Fees</h4>
+              <p className="text-sm text-gray-500">Separate fees for credit and debit cards (auto-detected at payment)</p>
             </div>
-            <Input
-              label="Credit Card Fee"
-              type="number"
-              step="0.1"
-              min="0"
-              max="10"
-              value={settings.ccFeePercent}
-              onChange={(e) => setSettings({ ...settings, ccFeePercent: parseFloat(e.target.value) || 0 })}
-              rightIcon={<span className="text-gray-400">%</span>}
-              helpText="Percentage added to invoice total to cover processing fees"
-            />
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+            <div className="grid grid-cols-2 gap-4">
+              <Input
+                label="Credit Card Fee"
+                type="number"
+                step="0.1"
+                min="0"
+                max="10"
+                value={settings.creditCardFeePercent}
+                onChange={(e) => setSettings({ ...settings, creditCardFeePercent: parseFloat(e.target.value) || 0 })}
+                rightIcon={<span className="text-gray-400">%</span>}
+                helpText="Higher interchange fees"
+              />
+              <Input
+                label="Debit Card Fee"
+                type="number"
+                step="0.1"
+                min="0"
+                max="10"
+                value={settings.debitCardFeePercent}
+                onChange={(e) => setSettings({ ...settings, debitCardFeePercent: parseFloat(e.target.value) || 0 })}
+                rightIcon={<span className="text-gray-400">%</span>}
+                helpText="Lower interchange fees"
+              />
+            </div>
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-1">
               <p className="text-sm text-blue-700">
-                <strong>Example:</strong> A $1,000 invoice with {settings.ccFeePercent}% fee would charge the customer ${(1000 * (1 + settings.ccFeePercent / 100)).toFixed(2)} total when paying by card.
+                <strong>Credit card example:</strong> $1,000 invoice → ${(1000 * (1 + settings.creditCardFeePercent / 100)).toFixed(2)} total ({settings.creditCardFeePercent}% fee)
+              </p>
+              <p className="text-sm text-blue-700">
+                <strong>Debit card example:</strong> $1,000 invoice → ${(1000 * (1 + settings.debitCardFeePercent / 100)).toFixed(2)} total ({settings.debitCardFeePercent}% fee)
+              </p>
+            </div>
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <p className="text-sm text-amber-800">
+                <strong>Note:</strong> Card type is automatically detected when the customer enters their card number. The appropriate fee is applied before charging.
               </p>
             </div>
           </div>

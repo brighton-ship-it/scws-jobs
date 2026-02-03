@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button';
 import { JobStatusBadge, PriorityBadge, InvoiceStatusBadge } from '@/components/ui/badge';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
 import { TeamMemberMultiSelect, AssignmentHistory, AssignedTeamAvatars } from '@/components/scheduling';
+import { JobPhotoGallery } from '@/components/jobs/JobPhotoGallery';
+import { JobPartsExpenses } from '@/components/jobs/JobPartsExpenses';
 import {
   mockJobs,
   mockInvoices,
@@ -43,9 +45,13 @@ import {
   FileText,
   Wrench,
   History,
+  RefreshCw,
 } from 'lucide-react';
+import { MakeRecurringModal } from '@/components/jobs/MakeRecurringModal';
+import { RecurringBadge } from '@/components/ui/badge';
 import { OnMyWayButton } from '@/components/jobs/OnMyWayButton';
 import { format, isPast, isToday } from 'date-fns';
+import type { JobPhoto } from '@/types/database';
 
 // Mock line items for the job
 const mockLineItems = [
@@ -60,12 +66,6 @@ const mockLabor = [
   { id: '2', user: 'Carlos Rivera', date: '2024-01-31', hours: 1.5, rate: 125, total: 187.50, notes: 'Parts replacement' },
 ];
 
-// Mock expenses
-const mockExpenses = [
-  { id: '1', description: 'Pump gasket kit', amount: 45.00, date: '2024-01-30', reimbursable: true },
-  { id: '2', description: 'Pipe fittings', amount: 28.50, date: '2024-01-31', reimbursable: true },
-];
-
 // Mock visits
 const mockVisits = [
   { id: 'v1', date: '2024-01-30', time: '09:00', status: 'completed', assignedTo: 'Mike Thompson', description: 'Initial inspection' },
@@ -78,6 +78,7 @@ export default function JobDetailPage() {
   const id = params.id as string;
   const [showProfitability, setShowProfitability] = useState(true);
   const [showAssignmentHistory, setShowAssignmentHistory] = useState(false);
+  const [showRecurringModal, setShowRecurringModal] = useState(false);
   const { user: currentUser } = useAuth();
   
   const job = mockJobs.find(j => j.id === id);
@@ -87,6 +88,10 @@ export default function JobDetailPage() {
   const [assignments, setAssignments] = useState(job ? getJobAssignments(id) : []);
   const teamMembers = getAllTeamMembers();
   
+  // State for photos
+  const [photos, setPhotos] = useState<JobPhoto[]>([]);
+  const [photosLoading, setPhotosLoading] = useState(true);
+  
   // Initialize assigned user IDs
   useEffect(() => {
     if (job) {
@@ -95,6 +100,24 @@ export default function JobDetailPage() {
       setAssignments(getJobAssignments(id));
     }
   }, [id, job]);
+  
+  // Fetch photos
+  useEffect(() => {
+    const fetchPhotos = async () => {
+      try {
+        const res = await fetch(`/api/jobs/${id}/photos`);
+        if (res.ok) {
+          const data = await res.json();
+          setPhotos(data.photos || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch photos:', err);
+      } finally {
+        setPhotosLoading(false);
+      }
+    };
+    fetchPhotos();
+  }, [id]);
 
   // Handle assignment changes
   const handleAssignmentChange = (newSelectedIds: string[]) => {
@@ -179,6 +202,7 @@ export default function JobDetailPage() {
               {job.priority && job.priority !== 'normal' && (
                 <PriorityBadge priority={job.priority} />
               )}
+              {job.recurring_schedule_id && <RecurringBadge />}
               <span className="text-gray-500">Job #{job.id}</span>
             </div>
             <h1 className="text-2xl font-bold text-gray-900 mt-1">{job.job_type}</h1>
@@ -392,49 +416,8 @@ export default function JobDetailPage() {
             </Table>
           </Card>
 
-          {/* Expenses Table */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <Wrench className="h-5 w-5 text-gray-400" />
-                Expenses
-              </CardTitle>
-              <Button variant="outline" size="sm">
-                <Plus className="h-4 w-4" />
-                New Expense
-              </Button>
-            </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableCell header>Description</TableCell>
-                  <TableCell header>Date</TableCell>
-                  <TableCell header className="text-center">Reimbursable</TableCell>
-                  <TableCell header className="text-right">Amount</TableCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {mockExpenses.length === 0 ? (
-                  <TableEmpty message="No expenses" />
-                ) : (
-                  mockExpenses.map((expense) => (
-                    <TableRow key={expense.id}>
-                      <TableCell className="font-medium text-gray-900">{expense.description}</TableCell>
-                      <TableCell>{format(new Date(expense.date), 'MMM d, yyyy')}</TableCell>
-                      <TableCell className="text-center">
-                        {expense.reimbursable ? (
-                          <CheckCircle2 className="h-4 w-4 text-green-500 mx-auto" />
-                        ) : (
-                          <span className="text-gray-400">—</span>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-medium">${expense.amount.toFixed(2)}</TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </Card>
+          {/* Parts & Expenses - Real data from Supabase */}
+          <JobPartsExpenses jobId={id} />
 
           {/* Visits Section */}
           <Card>
@@ -496,6 +479,15 @@ export default function JobDetailPage() {
               })}
             </CardContent>
           </Card>
+
+          {/* Photos Section */}
+          {!photosLoading && (
+            <JobPhotoGallery
+              jobId={id}
+              photos={photos}
+              onPhotosChange={setPhotos}
+            />
+          )}
 
           {/* Invoices Section */}
           <Card>
@@ -705,10 +697,39 @@ export default function JobDetailPage() {
                 <Mail className="h-4 w-4" />
                 Email Client
               </Button>
+              {!job.recurring_schedule_id && (
+                <Button 
+                  className="w-full justify-start" 
+                  variant="outline"
+                  onClick={() => setShowRecurringModal(true)}
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Make Recurring
+                </Button>
+              )}
             </CardContent>
           </Card>
         </div>
       </div>
+
+      {/* Make Recurring Modal */}
+      {property && customer && (
+        <MakeRecurringModal
+          open={showRecurringModal}
+          onOpenChange={setShowRecurringModal}
+          jobId={job.id}
+          customerId={customer.id}
+          propertyId={property.id}
+          jobType={job.job_type}
+          description={job.description}
+          assignedTo={job.assigned_to}
+          estimatedDuration={job.estimated_duration}
+          onSuccess={(scheduleId) => {
+            console.log('Created recurring schedule:', scheduleId);
+            // Could refresh the page or show a toast
+          }}
+        />
+      )}
     </div>
   );
 }

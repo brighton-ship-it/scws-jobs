@@ -1,7 +1,9 @@
 // Database types for SCWS Job Management System
 // These types mirror the Supabase schema
 
-export type UserRole = 'admin' | 'office' | 'field';
+export type UserRole = 'admin' | 'office' | 'tech' | 'field';
+export type CommunicationType = 'email' | 'sms' | 'call' | 'note';
+export type CommunicationDirection = 'inbound' | 'outbound';
 export type JobStatus = 'scheduled' | 'in_progress' | 'completed' | 'invoiced';
 export type LineItemType = 'labor' | 'part' | 'equipment' | 'service';
 export type InvoiceStatus = 'draft' | 'sent' | 'viewed' | 'paid' | 'overdue' | 'void';
@@ -431,4 +433,220 @@ export interface TechLocation {
 
 export interface TechLocationWithUser extends TechLocation {
   user: User;
+}
+
+// E-Signatures
+export interface Signature {
+  id: string;
+  quote_id: string;
+  signature_data: string;  // Base64 encoded PNG image
+  signer_name: string;
+  signer_email: string | null;
+  ip_address: string | null;
+  user_agent: string | null;
+  signed_at: string;
+  created_at: string;
+}
+
+export interface QuoteWithSignature extends QuoteWithDetails {
+  signature: Signature | null;
+}
+
+// Job Photos with Categories
+export type PhotoCategory = 'before' | 'after' | 'documentation';
+
+export interface JobPhoto {
+  id: string;
+  job_id: string;
+  url: string;
+  thumbnail_url: string | null;
+  filename: string | null;
+  file_size: number | null;
+  category: PhotoCategory;
+  sort_order: number;
+  caption: string | null;
+  uploaded_by: string | null;
+  uploaded_at: string;
+  created_at: string;
+}
+
+// Customer Equipment
+export interface CustomerEquipment {
+  id: string;
+  customer_id: string;
+  property_id: string | null;
+  equipment_type: string;
+  manufacturer: string | null;
+  model: string | null;
+  serial_number: string | null;
+  install_date: string | null;
+  warranty_expires: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  created_by: string | null;
+}
+
+export interface CustomerEquipmentWithProperty extends CustomerEquipment {
+  property?: Property;
+}
+
+// Warranty status for alerts
+export type WarrantyStatus = 'expired' | 'expiring_soon' | 'valid';
+
+export interface EquipmentWarrantyAlert extends CustomerEquipment {
+  customer_name: string;
+  customer_phone: string | null;
+  customer_email: string | null;
+  property_address: string | null;
+  warranty_status: WarrantyStatus;
+  days_until_expiry: number;
+}
+
+// ==================== INVENTORY MANAGEMENT ====================
+
+export type InventoryCategory = 'Pumps' | 'Motors' | 'Tanks' | 'Fittings' | 'Wire' | 'Controls' | 'Misc';
+
+export interface InventoryItem {
+  id: string;
+  name: string;
+  sku: string | null;
+  category: InventoryCategory;
+  quantity: number;
+  unit_cost: number;
+  reorder_level: number;
+  location: string | null;
+  vendor: string | null;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type StockAdjustmentReason = 'purchase' | 'job_usage' | 'manual_adjustment' | 'return' | 'damaged' | 'inventory_count';
+
+export interface StockAdjustment {
+  id: string;
+  inventory_item_id: string;
+  quantity_change: number;
+  reason: StockAdjustmentReason;
+  notes: string | null;
+  job_id: string | null;
+  adjusted_by: string | null;
+  created_at: string;
+}
+
+export interface StockAdjustmentWithDetails extends StockAdjustment {
+  inventory_item?: InventoryItem;
+  job?: Job;
+  adjusted_by_user?: User;
+}
+
+export interface JobPart {
+  id: string;
+  job_id: string;
+  inventory_item_id: string;
+  quantity_used: number;
+  unit_price: number;
+  created_at: string;
+}
+
+export interface JobPartWithDetails extends JobPart {
+  inventory_item: InventoryItem;
+}
+
+// ==================== EXPENSE TRACKING ====================
+
+export type ExpenseCategory = 'Fuel' | 'Materials' | 'Permits' | 'Disposal' | 'Subcontractor' | 'Equipment Rental' | 'Other';
+
+export interface JobExpense {
+  id: string;
+  job_id: string | null;
+  category: ExpenseCategory;
+  description: string;
+  amount: number;
+  vendor: string | null;
+  expense_date: string;
+  receipt_url: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface JobExpenseWithDetails extends JobExpense {
+  job?: Job;
+  created_by_user?: User;
+}
+
+// Recurring Jobs
+export type RecurringFrequency = 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'biannual' | 'annual';
+
+export interface RecurringSchedule {
+  id: string;
+  job_id: string;  // Template job this is based on
+  customer_id: string;
+  property_id: string;
+  frequency: RecurringFrequency;
+  next_run: string;  // Date of next scheduled job
+  last_run: string | null;  // Date of last generated job
+  active: boolean;
+  job_type: string;
+  description: string | null;
+  estimated_duration: string | null;
+  assigned_to: string | null;
+  price: number | null;
+  internal_notes: string | null;
+  created_at: string;
+  updated_at: string;
+  jobs_created: number;
+}
+
+export interface RecurringScheduleWithDetails extends RecurringSchedule {
+  customer?: Customer;
+  property?: Property;
+  assigned_user?: User | null;
+  template_job?: Job;
+}
+
+// Online Booking / Service Requests
+export type BookingStatus = 'pending' | 'confirmed' | 'scheduled' | 'cancelled';
+
+// Communications
+export interface Communication {
+  id: string;
+  customer_id: string;
+  job_id: string | null;
+  type: CommunicationType;
+  direction: CommunicationDirection;
+  subject: string | null;
+  body: string;
+  sent_at: string;
+  sent_by: string | null;
+  metadata: Record<string, any>;
+  created_at: string;
+}
+
+export interface CommunicationWithDetails extends Communication {
+  customer?: Customer;
+  job?: Job;
+  sent_by_user?: User;
+}
+
+export interface BookingRequest {
+  id: string;
+  service_type: string;
+  customer_name: string;
+  phone: string;
+  email: string | null;
+  address: string;
+  city: string;
+  preferred_date: string | null;
+  preferred_time: string | null;
+  notes: string | null;
+  status: BookingStatus;
+  customer_id: string | null;  // Linked customer if matched/created
+  job_id: string | null;  // Created job if scheduled
+  source: 'website' | 'embed' | 'manual';
+  ip_address: string | null;
+  created_at: string;
+  updated_at: string;
 }

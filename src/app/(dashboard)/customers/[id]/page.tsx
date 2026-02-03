@@ -1,7 +1,7 @@
 'use client';
 
 
-import { use } from 'react';
+import { use, useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -26,8 +26,13 @@ import {
   Briefcase,
   Calendar,
   ChevronRight,
+  Wrench,
+  AlertTriangle,
+  MessageSquare,
 } from 'lucide-react';
-import { format } from 'date-fns';
+import CommunicationTimeline from '@/components/customers/CommunicationTimeline';
+import { format, differenceInDays, parseISO } from 'date-fns';
+import type { CustomerEquipment } from '@/types/database';
 
 export default function CustomerDetailPage({
   params,
@@ -36,7 +41,53 @@ export default function CustomerDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const [equipment, setEquipment] = useState<CustomerEquipment[]>([]);
+  const [equipmentLoading, setEquipmentLoading] = useState(true);
+  
   const customer = getCustomerById(id);
+
+  // Fetch equipment data
+  useEffect(() => {
+    const fetchEquipment = async () => {
+      try {
+        const res = await fetch(`/api/customers/${id}/equipment`);
+        if (res.ok) {
+          const data = await res.json();
+          setEquipment(data.equipment || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch equipment:', err);
+      } finally {
+        setEquipmentLoading(false);
+      }
+    };
+    if (customer) {
+      fetchEquipment();
+    } else {
+      setEquipmentLoading(false);
+    }
+  }, [id, customer]);
+
+  // Count expiring warranties - safely compute even when customer is null
+  const expiringWarranties = equipment.filter((e) => {
+    if (!e.warranty_expires) return false;
+    try {
+      const daysLeft = differenceInDays(parseISO(e.warranty_expires), new Date());
+      return daysLeft >= 0 && daysLeft <= 30;
+    } catch {
+      return false;
+    }
+  }).length;
+
+  const expiredWarranties = equipment.filter((e) => {
+    if (!e.warranty_expires) return false;
+    try {
+      const daysLeft = differenceInDays(parseISO(e.warranty_expires), new Date());
+      return daysLeft < 0;
+    } catch {
+      return false;
+    }
+  }).length;
 
   if (!customer) {
     return (
@@ -77,6 +128,15 @@ export default function CustomerDetailPage({
             Customer since {format(new Date(customer.created_at), 'MMMM yyyy')}
           </p>
         </div>
+        <Button variant="outline" href={`/customers/${id}/equipment`}>
+          <Wrench className="h-4 w-4" />
+          Equipment
+          {(expiringWarranties > 0 || expiredWarranties > 0) && (
+            <span className="ml-1 bg-amber-100 text-amber-700 text-xs px-1.5 py-0.5 rounded-full">
+              {expiringWarranties + expiredWarranties}
+            </span>
+          )}
+        </Button>
         <Button variant="outline" href={`/customers/${id}/edit`}>
           <Edit className="h-4 w-4" />
           Edit
@@ -227,6 +287,84 @@ export default function CustomerDetailPage({
           </CardContent>
         </Card>
       </div>
+
+      {/* Equipment Summary */}
+      {!equipmentLoading && equipment.length > 0 && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div className="flex items-center gap-3">
+              <CardTitle className="flex items-center gap-2">
+                <Wrench className="h-5 w-5 text-gray-400" />
+                Equipment ({equipment.length})
+              </CardTitle>
+              {(expiringWarranties > 0 || expiredWarranties > 0) && (
+                <Badge variant="warning">
+                  <AlertTriangle className="h-3 w-3 mr-1" />
+                  {expiringWarranties + expiredWarranties} warranty alert{expiringWarranties + expiredWarranties > 1 ? 's' : ''}
+                </Badge>
+              )}
+            </div>
+            <Button variant="outline" size="sm" href={`/customers/${id}/equipment`}>
+              View All
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {equipment.slice(0, 6).map((item) => {
+                const warrantyStatus = item.warranty_expires
+                  ? differenceInDays(parseISO(item.warranty_expires), new Date()) < 0
+                    ? 'expired'
+                    : differenceInDays(parseISO(item.warranty_expires), new Date()) <= 30
+                    ? 'expiring'
+                    : 'valid'
+                  : null;
+                
+                return (
+                  <div
+                    key={item.id}
+                    className={`rounded-lg border p-3 ${
+                      warrantyStatus === 'expired'
+                        ? 'border-red-200 bg-red-50'
+                        : warrantyStatus === 'expiring'
+                        ? 'border-amber-200 bg-amber-50'
+                        : 'border-gray-200'
+                    }`}
+                  >
+                    <p className="font-medium text-gray-900">{item.equipment_type}</p>
+                    {(item.manufacturer || item.model) && (
+                      <p className="text-sm text-gray-600">
+                        {[item.manufacturer, item.model].filter(Boolean).join(' ')}
+                      </p>
+                    )}
+                    {item.warranty_expires && (
+                      <p className={`text-xs mt-1 ${
+                        warrantyStatus === 'expired'
+                          ? 'text-red-600'
+                          : warrantyStatus === 'expiring'
+                          ? 'text-amber-600'
+                          : 'text-gray-500'
+                      }`}>
+                        Warranty: {format(parseISO(item.warranty_expires), 'MMM d, yyyy')}
+                        {warrantyStatus === 'expired' && ' (Expired)'}
+                        {warrantyStatus === 'expiring' && ' (Expiring soon)'}
+                      </p>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {equipment.length > 6 && (
+              <p className="text-sm text-gray-500 mt-3 text-center">
+                + {equipment.length - 6} more items
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Communication Timeline */}
+      <CommunicationTimeline customerId={id} />
 
       {/* Job History */}
       <Card>

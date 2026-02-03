@@ -5,6 +5,7 @@ import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSidebar } from '@/contexts/SidebarContext';
+import { hasAnyPermission, type Permission } from '@/lib/permissions';
 import {
   LayoutDashboard,
   Users,
@@ -30,51 +31,60 @@ import {
   MessageSquare,
   RefreshCw,
   DollarSign,
+  Search,
 } from 'lucide-react';
 
-// Jobber-style navigation groups
-const navigationGroups = [
+interface NavItemDef {
+  name: string;
+  href: string;
+  icon: any;
+  permissions?: Permission[];
+}
+
+// Jobber-style navigation groups with permissions
+const navigationGroups: { name: string; items: NavItemDef[] }[] = [
   {
     name: 'Core',
     items: [
-      { name: 'Home', href: '/', icon: LayoutDashboard },
-      { name: 'Schedule', href: '/schedule', icon: Calendar },
+      { name: 'Home', href: '/', icon: LayoutDashboard, permissions: ['view_dashboard'] },
+      { name: 'Schedule', href: '/schedule', icon: Calendar, permissions: ['view_schedule'] },
     ],
   },
   {
     name: 'Work Management',
     items: [
-      { name: 'Customers', href: '/customers', icon: Users },
-      { name: 'Requests', href: '/requests', icon: Inbox },
-      { name: 'Quotes', href: '/quotes', icon: ClipboardList },
-      { name: 'Jobs', href: '/jobs', icon: Briefcase },
-      { name: 'My Jobs', href: '/jobs/my-jobs', icon: User },
-      { name: 'Invoices', href: '/invoices', icon: FileText },
+      { name: 'Customers', href: '/customers', icon: Users, permissions: ['view_customers'] },
+      { name: 'Requests', href: '/requests', icon: Inbox, permissions: ['view_requests'] },
+      { name: 'Quotes', href: '/quotes', icon: ClipboardList, permissions: ['view_quotes'] },
+      { name: 'Jobs', href: '/jobs', icon: Briefcase, permissions: ['view_jobs'] },
+      { name: 'My Jobs', href: '/jobs/my-jobs', icon: User, permissions: ['view_own_jobs'] },
+      { name: 'Invoices', href: '/invoices', icon: FileText, permissions: ['view_invoices'] },
     ],
   },
   {
     name: 'Operations',
     items: [
-      { name: 'Dispatch', href: '/dispatch', icon: Truck },
-      { name: 'Tasks', href: '/tasks', icon: CheckSquare },
-      { name: 'Messages', href: '/messages', icon: MessageSquare },
-      { name: 'Recurring', href: '/recurring', icon: RefreshCw },
-      { name: 'Marketing', href: '/marketing', icon: Megaphone },
-      { name: 'Reports', href: '/reports', icon: BarChart3 },
+      { name: 'Dispatch', href: '/dispatch', icon: Truck, permissions: ['view_dispatch'] },
+      { name: 'Tasks', href: '/tasks', icon: CheckSquare, permissions: ['view_tasks'] },
+      { name: 'Messages', href: '/messages', icon: MessageSquare, permissions: ['view_messages'] },
+      { name: 'Recurring', href: '/recurring', icon: RefreshCw, permissions: ['view_recurring'] },
+      { name: 'Marketing', href: '/marketing', icon: Megaphone, permissions: ['view_marketing'] },
+      { name: 'Permit Research', href: '/permits/research', icon: Search, permissions: ['view_permit_research'] },
+      { name: 'Reports', href: '/reports', icon: BarChart3, permissions: ['view_reports'] },
     ],
   },
   {
     name: 'SCWS Tools',
     items: [
-      { name: 'Inventory', href: '/inventory', icon: Package },
-      { name: 'Expenses', href: '/expenses', icon: DollarSign },
-      { name: 'Well Tools', href: '/well-tools', icon: Droplets },
+      { name: 'Inventory', href: '/inventory', icon: Package, permissions: ['view_inventory'] },
+      { name: 'Expenses', href: '/expenses', icon: DollarSign, permissions: ['view_expenses'] },
+      { name: 'Well Tools', href: '/well-tools', icon: Droplets, permissions: ['view_well_tools'] },
     ],
   },
 ];
 
-const adminNavigation = [
-  { name: 'Settings', href: '/settings', icon: Settings },
+const adminNavigation: NavItemDef[] = [
+  { name: 'Settings', href: '/settings', icon: Settings, permissions: ['view_settings'] },
 ];
 
 export default function Sidebar() {
@@ -143,43 +153,54 @@ export default function Sidebar() {
 
         {/* Navigation */}
         <nav className="flex-1 overflow-y-auto py-4">
-          {navigationGroups.map((group, idx) => (
-            <div key={group.name} className={idx > 0 ? 'mt-5' : ''}>
-              {/* Group label - hidden when collapsed */}
-              {!isCollapsed && (
-                <div className="px-5 mb-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-                    {group.name}
-                  </span>
+          {navigationGroups.map((group, idx) => {
+            // Filter items based on user role permissions
+            const visibleItems = group.items.filter(item => 
+              !item.permissions || hasAnyPermission(user?.role, item.permissions)
+            );
+            
+            // Skip empty groups
+            if (visibleItems.length === 0) return null;
+            
+            return (
+              <div key={group.name} className={idx > 0 ? 'mt-5' : ''}>
+                {/* Group label - hidden when collapsed */}
+                {!isCollapsed && (
+                  <div className="px-5 mb-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                      {group.name}
+                    </span>
+                  </div>
+                )}
+                {isCollapsed && idx > 0 && (
+                  <div className="mx-3 my-2 border-t border-gray-200" />
+                )}
+                <div className="space-y-0.5 px-3">
+                  {visibleItems.map((item) => (
+                    <Link
+                      key={item.name}
+                      href={item.href}
+                      onClick={handleNavClick}
+                      title={isCollapsed ? item.name : undefined}
+                      className={`
+                        flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all
+                        ${isCollapsed ? 'justify-center' : ''}
+                        ${isActive(item.href)
+                          ? 'bg-emerald-50 text-emerald-700' 
+                          : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}
+                      `}
+                    >
+                      <item.icon className={`h-5 w-5 flex-shrink-0 ${isActive(item.href) ? 'text-emerald-600' : ''}`} />
+                      {!isCollapsed && item.name}
+                    </Link>
+                  ))}
                 </div>
-              )}
-              {isCollapsed && idx > 0 && (
-                <div className="mx-3 my-2 border-t border-gray-200" />
-              )}
-              <div className="space-y-0.5 px-3">
-                {group.items.map((item) => (
-                  <Link
-                    key={item.name}
-                    href={item.href}
-                    onClick={handleNavClick}
-                    title={isCollapsed ? item.name : undefined}
-                    className={`
-                      flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-all
-                      ${isCollapsed ? 'justify-center' : ''}
-                      ${isActive(item.href)
-                        ? 'bg-emerald-50 text-emerald-700' 
-                        : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}
-                    `}
-                  >
-                    <item.icon className={`h-5 w-5 flex-shrink-0 ${isActive(item.href) ? 'text-emerald-600' : ''}`} />
-                    {!isCollapsed && item.name}
-                  </Link>
-                ))}
               </div>
-            </div>
-          ))}
+            );
+          })}
 
-          {isAdmin && (
+          {/* Admin section - only show if user has settings permissions */}
+          {hasAnyPermission(user?.role, ['view_settings']) && (
             <>
               {isCollapsed ? (
                 <div className="mx-3 my-4 border-t border-gray-200" />
@@ -249,14 +270,24 @@ export default function Sidebar() {
                 </div>
                 <button
                   onClick={() => signOut()}
-                  className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600 transition-colors"
-                  title="Sign out"
+                  className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm font-medium text-gray-500 hover:bg-red-50 hover:text-red-600 transition-colors border border-transparent hover:border-red-200"
+                  title="Sign out and return to login"
                 >
-                  <LogOut className="h-5 w-5" />
+                  <LogOut className="h-4 w-4" />
+                  <span className="text-xs">Sign Out</span>
                 </button>
               </>
             )}
           </div>
+          {isCollapsed && (
+            <button
+              onClick={() => signOut()}
+              className="mt-2 w-full flex items-center justify-center rounded-lg p-2 text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+              title="Sign out"
+            >
+              <LogOut className="h-5 w-5" />
+            </button>
+          )}
         </div>
       </div>
     </>

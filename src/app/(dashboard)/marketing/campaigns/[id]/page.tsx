@@ -49,16 +49,11 @@ import {
   TabsTrigger,
 } from '@/components/ui/tabs'
 
-// Mock segments for selection
-const mockSegments = [
-  { id: '1', name: 'All Customers', count: 16826 },
-  { id: '2', name: 'Active Customers', count: 4521 },
-  { id: '3', name: 'Last Service > 6 Months', count: 2847 },
-  { id: '4', name: 'Ramona Area', count: 3456 },
-  { id: '5', name: 'High Value Customers', count: 892 },
-  { id: '6', name: 'Anza Service Area', count: 1234 },
-  { id: '7', name: 'Open Quotes > 7 Days', count: 34 },
-]
+interface Segment {
+  id: string
+  name: string
+  customer_count: number
+}
 
 // Mock templates
 const mockTemplates = {
@@ -95,9 +90,55 @@ export default function CampaignPage() {
   const [showSendConfirm, setShowSendConfirm] = useState(false)
   const [scheduledDate, setScheduledDate] = useState('')
   const [scheduledTime, setScheduledTime] = useState('')
+  const [segments, setSegments] = useState<Segment[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null)
 
-  const selectedSegment = mockSegments.find(s => s.id === segment)
-  const recipientCount = selectedSegment?.count || 0
+  // Load segments and campaign data on mount
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        // Load segments
+        const segRes = await fetch('/api/marketing/segments')
+        if (segRes.ok) {
+          const data = await segRes.json()
+          setSegments(data.segments || [])
+        }
+
+        // Check provider status
+        const statusRes = await fetch('/api/marketing/status')
+        if (statusRes.ok) {
+          const status = await statusRes.json()
+          setProviderConfigured(type === 'sms' ? status.smsReady : status.emailReady)
+        }
+
+        // Load existing campaign if editing
+        if (!isNew) {
+          const campRes = await fetch(`/api/marketing/campaigns?limit=100`)
+          if (campRes.ok) {
+            const { campaigns } = await campRes.json()
+            const campaign = campaigns.find((c: any) => c.id === params.id)
+            if (campaign) {
+              setName(campaign.name)
+              setType(campaign.type)
+              setSubject(campaign.subject || '')
+              setContent(campaign.content || '')
+              setSegment(campaign.segment?.id || '')
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load data:', error)
+      } finally {
+        setIsLoading(false)
+      }
+    }
+    
+    loadData()
+  }, [isNew, params.id, type])
+
+  const selectedSegment = segments.find(s => s.id === segment)
+  const recipientCount = selectedSegment?.customer_count || 0
 
   const handleTemplateSelect = (templateId: string) => {
     setTemplate(templateId)
@@ -108,20 +149,104 @@ export default function CampaignPage() {
     }
   }
 
-  const handleSaveDraft = () => {
-    // TODO: Save to Supabase
-    console.log('Saving draft...')
-    router.push('/marketing')
+  const handleSaveDraft = async () => {
+    try {
+      if (isNew) {
+        // Create new campaign
+        const res = await fetch('/api/marketing/campaigns', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name || `${type} Campaign - ${new Date().toLocaleDateString()}`,
+            type,
+            status: 'draft',
+            subject: type === 'email' ? subject : null,
+            content,
+            segment_id: segment,
+            recipient_count: recipientCount,
+          }),
+        })
+        
+        if (!res.ok) {
+          throw new Error('Failed to save campaign')
+        }
+      } else {
+        // Update existing campaign
+        const res = await fetch(`/api/marketing/campaigns/${params.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name,
+            subject: type === 'email' ? subject : null,
+            content,
+            segment_id: segment,
+            recipient_count: recipientCount,
+          }),
+        })
+        
+        if (!res.ok) {
+          throw new Error('Failed to update campaign')
+        }
+      }
+      
+      router.push('/marketing')
+    } catch (error: any) {
+      console.error('Save error:', error)
+      alert(`Failed to save: ${error.message}`)
+    }
   }
 
-  const handleSendNow = () => {
+  const handleSendNow = async () => {
     setIsSending(true)
-    // TODO: Trigger actual send via API
-    setTimeout(() => {
+    try {
+      // First save/create the campaign if new
+      let campaignIdToSend = params.id as string
+      
+      if (isNew) {
+        // Create campaign first
+        const createRes = await fetch('/api/marketing/campaigns', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: name || `${type} Campaign - ${new Date().toLocaleDateString()}`,
+            type,
+            status: 'draft',
+            subject: type === 'email' ? subject : null,
+            content,
+            segment_id: segment,
+            recipient_count: recipientCount,
+          }),
+        })
+        
+        if (!createRes.ok) {
+          throw new Error('Failed to create campaign')
+        }
+        
+        const { campaign } = await createRes.json()
+        campaignIdToSend = campaign.id
+      }
+
+      // Send the campaign
+      const sendRes = await fetch(`/api/marketing/campaigns/${campaignIdToSend}/send`, {
+        method: 'POST',
+      })
+      
+      const data = await sendRes.json()
+      
+      if (!sendRes.ok) {
+        alert(`Failed to send: ${data.error}${data.details ? '\n' + data.details : ''}`)
+        return
+      }
+      
+      alert(`Campaign sent successfully!\n${data.stats.sent} delivered, ${data.stats.failed} failed`)
+      router.push('/marketing')
+    } catch (error: any) {
+      console.error('Send error:', error)
+      alert(`Failed to send campaign: ${error.message}`)
+    } finally {
       setIsSending(false)
       setShowSendConfirm(false)
-      router.push('/marketing')
-    }, 2000)
+    }
   }
 
   const handleSchedule = () => {
@@ -163,6 +288,19 @@ export default function CampaignPage() {
           </Button>
         </div>
       </div>
+
+      {providerConfigured === false && (
+        <Alert variant="destructive">
+          <AlertCircle className="h-4 w-4" />
+          <AlertTitle>{type === 'sms' ? 'Twilio' : 'Resend'} Not Configured</AlertTitle>
+          <AlertDescription>
+            {type === 'sms' 
+              ? 'SMS sending requires TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_FROM_NUMBER environment variables.'
+              : 'Email sending requires RESEND_API_KEY environment variable.'
+            }
+          </AlertDescription>
+        </Alert>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Main Content */}
@@ -282,12 +420,12 @@ export default function CampaignPage() {
                     <SelectValue placeholder="Select a segment" />
                   </SelectTrigger>
                   <SelectContent>
-                    {mockSegments.map((s) => (
+                    {segments.map((s) => (
                       <SelectItem key={s.id} value={s.id}>
                         <div className="flex items-center justify-between w-full">
                           <span>{s.name}</span>
                           <Badge variant="secondary" className="ml-2">
-                            {s.count.toLocaleString()}
+                            {(s.customer_count || 0).toLocaleString()}
                           </Badge>
                         </div>
                       </SelectItem>

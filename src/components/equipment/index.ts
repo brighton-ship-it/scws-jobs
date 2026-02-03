@@ -1,0 +1,1 @@
+export { EquipmentList } from './EquipmentList';

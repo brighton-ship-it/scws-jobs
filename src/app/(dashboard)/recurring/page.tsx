@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { 
   Plus, 
@@ -14,7 +14,8 @@ import {
   MapPin,
   Clock,
   DollarSign,
-  ChevronRight
+  ChevronRight,
+  Loader2
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -44,58 +45,20 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import type { RecurringScheduleWithDetails } from '@/types/database'
 
-// Mock data - will be replaced with API
-const mockRecurringJobs = [
-  {
-    id: '1',
-    title: 'Annual Well Inspection',
-    customer_name: 'Johnson Ranch',
-    property_address: '45678 Desert View Rd, Borrego Springs',
-    frequency: 'annual',
-    next_scheduled: '2026-03-15',
-    price: 250,
-    status: 'active',
-    jobs_created: 3,
-    assigned_to: 'Travis Sego',
-  },
-  {
-    id: '2',
-    title: 'Quarterly Pump Check',
-    customer_name: 'Desert Oasis HOA',
-    property_address: '12345 Palm Canyon Dr, Palm Desert',
-    frequency: 'quarterly',
-    next_scheduled: '2026-04-01',
-    price: 175,
-    status: 'active',
-    jobs_created: 8,
-    assigned_to: 'Brian Eads',
-  },
-  {
-    id: '3',
-    title: 'Monthly Water Quality Test',
-    customer_name: 'Sunrise Vineyard',
-    property_address: '789 Wine Country Rd, Temecula',
-    frequency: 'monthly',
-    next_scheduled: '2026-03-01',
-    price: 125,
-    status: 'active',
-    jobs_created: 14,
-    assigned_to: 'Austin Tipton',
-  },
-  {
-    id: '4',
-    title: 'Biannual Pressure Tank Service',
-    customer_name: 'Mountain View Ranch',
-    property_address: '5678 High Desert Rd, Julian',
-    frequency: 'biannual',
-    next_scheduled: '2026-06-01',
-    price: 350,
-    status: 'paused',
-    jobs_created: 2,
-    assigned_to: 'Jeff Gezewski',
-  },
-]
+interface RecurringJob {
+  id: string
+  job_type: string
+  customer?: { id: string; name: string } | null
+  property?: { id: string; address: string; city: string } | null
+  frequency: string
+  next_run: string
+  price: number | null
+  active: boolean
+  jobs_created: number
+  assigned_user?: { id: string; name: string } | null
+}
 
 const frequencyLabels: Record<string, string> = {
   weekly: 'Weekly',
@@ -125,21 +88,82 @@ export default function RecurringJobsPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [isCreateOpen, setIsCreateOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState('all')
+  const [schedules, setSchedules] = useState<RecurringJob[]>([])
+  const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
 
-  const filteredJobs = mockRecurringJobs.filter(job => {
+  // Fetch recurring schedules
+  useEffect(() => {
+    fetchSchedules()
+  }, [])
+
+  const fetchSchedules = async () => {
+    try {
+      const res = await fetch('/api/recurring')
+      if (res.ok) {
+        const data = await res.json()
+        setSchedules(data.schedules || [])
+      }
+    } catch (error) {
+      console.error('Failed to fetch schedules:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const togglePause = async (id: string, currentlyActive: boolean) => {
+    setActionLoading(id)
+    try {
+      const res = await fetch(`/api/recurring/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: !currentlyActive }),
+      })
+      if (res.ok) {
+        fetchSchedules()
+      }
+    } catch (error) {
+      console.error('Failed to toggle pause:', error)
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const generateJobNow = async (id: string) => {
+    setActionLoading(id)
+    try {
+      const res = await fetch(`/api/recurring/${id}/generate`, { method: 'POST' })
+      if (res.ok) {
+        const data = await res.json()
+        alert(`Job created! Job ID: ${data.job.id}`)
+        fetchSchedules()
+      } else {
+        const data = await res.json()
+        alert(data.error || 'Failed to create job')
+      }
+    } catch (error) {
+      console.error('Failed to generate job:', error)
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const filteredJobs = schedules.filter(job => {
     const matchesSearch = 
-      job.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      job.customer_name.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesStatus = statusFilter === 'all' || job.status === statusFilter
+      job.job_type.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (job.customer?.name || '').toLowerCase().includes(searchQuery.toLowerCase())
+    const matchesStatus = statusFilter === 'all' || 
+      (statusFilter === 'active' && job.active) ||
+      (statusFilter === 'paused' && !job.active)
     return matchesSearch && matchesStatus
   })
 
   const stats = {
-    active: mockRecurringJobs.filter(j => j.status === 'active').length,
-    paused: mockRecurringJobs.filter(j => j.status === 'paused').length,
-    totalRevenue: mockRecurringJobs
-      .filter(j => j.status === 'active')
-      .reduce((sum, j) => sum + (j.price * (j.frequency === 'monthly' ? 12 : j.frequency === 'quarterly' ? 4 : j.frequency === 'biannual' ? 2 : 1)), 0),
+    active: schedules.filter(j => j.active).length,
+    paused: schedules.filter(j => !j.active).length,
+    totalRevenue: schedules
+      .filter(j => j.active)
+      .reduce((sum, j) => sum + ((j.price || 0) * (j.frequency === 'monthly' ? 12 : j.frequency === 'quarterly' ? 4 : j.frequency === 'biannual' ? 2 : 1)), 0),
   }
 
   return (
@@ -308,7 +332,11 @@ export default function RecurringJobsPage() {
       {/* Jobs List */}
       <Card>
         <CardContent className="p-0">
-          {filteredJobs.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : filteredJobs.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground">
               No recurring jobs found
             </div>
@@ -325,59 +353,65 @@ export default function RecurringJobsPage() {
                     </div>
                     <div>
                       <div className="flex items-center gap-2">
-                        <h4 className="font-medium">{job.title}</h4>
-                        {getStatusBadge(job.status)}
+                        <h4 className="font-medium">{job.job_type}</h4>
+                        {getStatusBadge(job.active ? 'active' : 'paused')}
                       </div>
                       <div className="text-sm text-muted-foreground flex items-center gap-3 mt-1">
                         <span className="flex items-center gap-1">
                           <User className="h-3 w-3" />
-                          {job.customer_name}
+                          {job.customer?.name || 'Unknown'}
                         </span>
                         <span className="flex items-center gap-1">
                           <Calendar className="h-3 w-3" />
-                          {frequencyLabels[job.frequency]}
+                          {frequencyLabels[job.frequency] || job.frequency}
                         </span>
                       </div>
                       <div className="text-xs text-muted-foreground mt-1 flex items-center gap-1">
                         <MapPin className="h-3 w-3" />
-                        {job.property_address}
+                        {job.property?.address}{job.property?.city ? `, ${job.property.city}` : ''}
                       </div>
                     </div>
                   </div>
                   <div className="flex items-center gap-6">
                     <div className="text-right">
-                      <div className="font-medium">${job.price}</div>
+                      <div className="font-medium">${job.price || 0}</div>
                       <div className="text-xs text-muted-foreground">per visit</div>
                     </div>
                     <div className="text-right">
-                      <div className="text-sm">Next: {new Date(job.next_scheduled).toLocaleDateString()}</div>
+                      <div className="text-sm">Next: {new Date(job.next_run).toLocaleDateString()}</div>
                       <div className="text-xs text-muted-foreground">{job.jobs_created} jobs created</div>
                     </div>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon">
-                          <MoreVertical className="h-4 w-4" />
+                        <Button variant="ghost" size="icon" disabled={actionLoading === job.id}>
+                          {actionLoading === job.id ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <MoreVertical className="h-4 w-4" />
+                          )}
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        <DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => generateJobNow(job.id)}>
                           <Calendar className="mr-2 h-4 w-4" />
                           Create Job Now
                         </DropdownMenuItem>
                         <DropdownMenuItem>
                           Edit Schedule
                         </DropdownMenuItem>
-                        {job.status === 'active' ? (
-                          <DropdownMenuItem>
-                            <Pause className="mr-2 h-4 w-4" />
-                            Pause
-                          </DropdownMenuItem>
-                        ) : (
-                          <DropdownMenuItem>
-                            <Play className="mr-2 h-4 w-4" />
-                            Resume
-                          </DropdownMenuItem>
-                        )}
+                        <DropdownMenuItem onClick={() => togglePause(job.id, job.active)}>
+                          {job.active ? (
+                            <>
+                              <Pause className="mr-2 h-4 w-4" />
+                              Pause
+                            </>
+                          ) : (
+                            <>
+                              <Play className="mr-2 h-4 w-4" />
+                              Resume
+                            </>
+                          )}
+                        </DropdownMenuItem>
                         <DropdownMenuItem className="text-destructive">
                           Cancel Schedule
                         </DropdownMenuItem>

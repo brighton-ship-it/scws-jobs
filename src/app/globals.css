@@ -514,3 +514,67 @@ textarea:disabled {
     @apply shadow-none border;
   }
 }
+
+/* ======================================
+   MOBILE / PWA STYLES
+   ====================================== */
+
+/* Safe area insets for notched phones */
+.safe-area-inset-top {
+  padding-top: env(safe-area-inset-top, 0);
+}
+
+.safe-area-inset-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
+/* Disable pull-to-refresh in PWA */
+html {
+  overscroll-behavior-y: contain;
+}
+
+/* Touch-friendly tap targets */
+.touch-target {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Mobile button styles - larger touch targets */
+@media (max-width: 640px) {
+  .mobile-btn {
+    @apply min-h-[48px] text-base;
+  }
+}
+
+/* Prevent text selection on interactive elements */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Smooth scrolling for mobile */
+.scroll-smooth {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+}
+
+/* Hide scrollbar but keep scrollable */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* PWA standalone mode detection */
+@media all and (display-mode: standalone) {
+  .pwa-only {
+    display: block;
+  }
+  .browser-only {
+    display: none;
+  }
+}

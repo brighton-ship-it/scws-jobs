@@ -75,10 +75,44 @@ export default function BookingPage() {
 
   const availableSlots = generateTimeSlots()
 
-  const handleSubmit = () => {
-    // TODO: Submit to API
-    console.log('Booking:', { selectedService, selectedDate, selectedTime, ...formData })
-    setIsSubmitted(true)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+
+  const handleSubmit = async () => {
+    setIsSubmitting(true)
+    setSubmitError(null)
+
+    try {
+      const response = await fetch('/api/booking', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          service_type: selectedService,
+          customer_name: formData.name,
+          phone: formData.phone,
+          email: formData.email || null,
+          address: formData.address,
+          city: formData.city,
+          preferred_date: selectedDate,
+          preferred_time: selectedTime,
+          notes: formData.description || null,
+          source: 'website',
+        }),
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to submit request')
+      }
+
+      setIsSubmitted(true)
+    } catch (error) {
+      console.error('Booking submission error:', error)
+      setSubmitError(error instanceof Error ? error.message : 'Something went wrong')
+    } finally {
+      setIsSubmitting(false)
+    }
   }
 
   if (isSubmitted) {
@@ -380,6 +414,12 @@ export default function BookingPage() {
               </CardContent>
             </Card>
 
+            {submitError && (
+              <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+                {submitError}
+              </div>
+            )}
+
             <div className="mt-8 flex justify-between">
               <Button variant="outline" onClick={() => setStep(2)}>
                 <ChevronLeft className="mr-2 h-4 w-4" />
@@ -387,11 +427,20 @@ export default function BookingPage() {
               </Button>
               <Button 
                 onClick={handleSubmit} 
-                disabled={!formData.name || !formData.phone || !formData.address || !formData.city}
+                disabled={!formData.name || !formData.phone || !formData.address || !formData.city || isSubmitting}
                 className="bg-[#4e9271] hover:bg-[#3d7a5c]"
               >
-                <CheckCircle className="mr-2 h-4 w-4" />
-                Submit Request
+                {isSubmitting ? (
+                  <>
+                    <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
+                    Submitting...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="mr-2 h-4 w-4" />
+                    Submit Request
+                  </>
+                )}
               </Button>
             </div>
           </div>
