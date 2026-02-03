@@ -1,7 +1,6 @@
 'use client';
 
-
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,31 +17,38 @@ import {
   MapPin,
   Clock,
   Navigation,
-  AlertCircle,
   Car,
   Loader2,
+  CheckCircle,
+  ArrowUpDown,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import Link from 'next/link';
-
-// Google Maps API placeholder - Brighton will add the key
-const GOOGLE_MAPS_API_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+import { RouteOptimizationMap, isGoogleMapsConfigured } from '@/components/maps';
 
 interface RouteStop {
   job: Job;
   property: Property;
-  customer: { name: string };
+  customerName: string;
   order: number;
   estimatedArrival?: string;
-  drivingTime?: number; // minutes from previous stop
-  distance?: number; // miles from previous stop
+  drivingTime?: string;
+  distance?: string;
+  color?: string;
+}
+
+interface RouteSegment {
+  distance: string;
+  duration: string;
 }
 
 export default function RouteOptimizationPage() {
   const [selectedCrew, setSelectedCrew] = useState<string>('');
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [optimizedRoute, setOptimizedRoute] = useState<RouteStop[]>([]);
-  const mapRef = useRef<HTMLDivElement>(null);
+  const [routeSegments, setRouteSegments] = useState<RouteSegment[]>([]);
+  const [totalDistance, setTotalDistance] = useState<string>('');
+  const [totalDuration, setTotalDuration] = useState<string>('');
 
   const fieldCrew = useMemo(() => getFieldCrew(), []);
   const today = format(new Date(), 'yyyy-MM-dd');
@@ -64,12 +70,14 @@ export default function RouteOptimizationPage() {
       .map((job, index) => {
         const property = getPropertyById(job.property_id);
         const customer = property ? getCustomerById(property.customer_id) : null;
+        const jobType = getJobTypeByName(job.job_type);
         if (!property) return null;
         return {
           job,
           property,
-          customer: { name: customer?.name || 'Unknown' },
+          customerName: customer?.name || 'Unknown',
           order: index + 1,
+          color: jobType?.color || '#3B82F6',
         };
       })
       .filter((stop): stop is RouteStop => stop !== null)
@@ -81,51 +89,60 @@ export default function RouteOptimizationPage() {
       });
   }, [crewJobs]);
 
-  // Simulated route optimization
+  // Handle route calculation callback
+  const handleRouteCalculated = useCallback((
+    segments: RouteSegment[],
+    totalDist: string,
+    totalDur: string,
+    optimizedOrder?: number[]
+  ) => {
+    setRouteSegments(segments);
+    setTotalDistance(totalDist);
+    setTotalDuration(totalDur);
+
+    if (optimizedOrder && optimizedOrder.length > 0 && isOptimizing) {
+      // Reorder stops based on Google's optimization
+      const newOrder: RouteStop[] = [];
+      optimizedOrder.forEach((originalIndex, newIndex) => {
+        const stop = routeStops[originalIndex + 1]; // +1 because first stop is origin
+        if (stop) {
+          newOrder.push({ ...stop, order: newIndex + 2 }); // +2 to account for origin
+        }
+      });
+      // Add first (origin) and last (destination) stops
+      if (routeStops.length > 0) {
+        newOrder.unshift({ ...routeStops[0], order: 1 });
+        newOrder.push({ ...routeStops[routeStops.length - 1], order: newOrder.length + 1 });
+      }
+      
+      // Update with driving info from segments
+      const stopsWithDriving = newOrder.map((stop, index) => ({
+        ...stop,
+        drivingTime: segments[index]?.duration || '',
+        distance: segments[index]?.distance || '',
+      }));
+      
+      setOptimizedRoute(stopsWithDriving);
+      setIsOptimizing(false);
+    } else if (segments.length > 0 && !isOptimizing) {
+      // Just update driving info without reordering
+      const stopsWithDriving = routeStops.map((stop, index) => ({
+        ...stop,
+        drivingTime: segments[index]?.duration || '',
+        distance: segments[index]?.distance || '',
+      }));
+      setOptimizedRoute(stopsWithDriving);
+    }
+  }, [routeStops, isOptimizing]);
+
+  // Simulated route optimization (triggers Google Maps optimization)
   const optimizeRoute = async () => {
     setIsOptimizing(true);
-    
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1500));
-
-    // In a real implementation, this would:
-    // 1. Send coordinates to Google Directions API
-    // 2. Use the Directions API to optimize waypoint order
-    // 3. Calculate driving times and distances
-
-    // For now, simulate optimized route with mock driving data
-    const optimized = routeStops.map((stop, index) => ({
-      ...stop,
-      order: index + 1,
-      drivingTime: index === 0 ? 15 : Math.floor(Math.random() * 30) + 10,
-      distance: index === 0 ? 8 : Math.floor(Math.random() * 20) + 5,
-      estimatedArrival: calculateArrivalTime(stop.job.scheduled_time || '08:00', index),
-    }));
-
-    setOptimizedRoute(optimized);
-    setIsOptimizing(false);
+    // The actual optimization happens in RouteOptimizationMap with optimizeOrder=true
+    // This is just to trigger the state change
   };
-
-  const calculateArrivalTime = (baseTime: string, index: number): string => {
-    const [hours, minutes] = baseTime.split(':').map(Number);
-    const totalMinutes = hours * 60 + minutes + index * 90; // ~90 min per job
-    const newHours = Math.floor(totalMinutes / 60) % 24;
-    const newMinutes = totalMinutes % 60;
-    return `${newHours.toString().padStart(2, '0')}:${newMinutes.toString().padStart(2, '0')}`;
-  };
-
-  // Initialize map when API key is available
-  useEffect(() => {
-    if (!GOOGLE_MAPS_API_KEY || !mapRef.current) return;
-
-    // This would load the Google Maps script and initialize the map
-    // For now, we show a placeholder
-    // Map initialization would go here when API key is provided
-  }, []);
 
   const displayRoute = optimizedRoute.length > 0 ? optimizedRoute : routeStops;
-  const totalDistance = displayRoute.reduce((sum, stop) => sum + (stop.distance || 0), 0);
-  const totalDrivingTime = displayRoute.reduce((sum, stop) => sum + (stop.drivingTime || 0), 0);
 
   return (
     <div className="space-y-6">
@@ -140,23 +157,6 @@ export default function RouteOptimizationPage() {
         </Link>
       </div>
 
-      {/* API Key Warning */}
-      {!GOOGLE_MAPS_API_KEY && (
-        <Card className="border-yellow-300 bg-yellow-50">
-          <CardContent className="py-4">
-            <div className="flex items-center gap-3">
-              <AlertCircle className="h-5 w-5 text-yellow-600 flex-shrink-0" />
-              <div>
-                <p className="font-medium text-yellow-800">Google Maps API Key Required</p>
-                <p className="text-sm text-yellow-700">
-                  Add NEXT_PUBLIC_GOOGLE_MAPS_API_KEY to your .env.local file to enable map features.
-                </p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
       {/* Crew Selection */}
       <Card>
         <CardContent className="py-4">
@@ -169,6 +169,8 @@ export default function RouteOptimizationPage() {
               onChange={(e) => {
                 setSelectedCrew(e.target.value);
                 setOptimizedRoute([]);
+                setRouteSegments([]);
+                setIsOptimizing(false);
               }}
               className="flex-1 max-w-xs h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
             >
@@ -180,7 +182,7 @@ export default function RouteOptimizationPage() {
               ))}
             </select>
             
-            {selectedCrew && routeStops.length > 1 && (
+            {selectedCrew && routeStops.length > 2 && (
               <Button
                 onClick={optimizeRoute}
                 disabled={isOptimizing}
@@ -192,8 +194,8 @@ export default function RouteOptimizationPage() {
                   </>
                 ) : (
                   <>
-                    <Route className="h-4 w-4" />
-                    Optimize Route
+                    <ArrowUpDown className="h-4 w-4" />
+                    Optimize Order
                   </>
                 )}
               </Button>
@@ -251,7 +253,7 @@ export default function RouteOptimizationPage() {
                                     {stop.job.job_type}
                                   </p>
                                   <p className="text-sm text-gray-600">
-                                    {stop.customer.name}
+                                    {stop.customerName}
                                   </p>
                                 </div>
                                 {stop.job.priority === 'urgent' && (
@@ -262,7 +264,7 @@ export default function RouteOptimizationPage() {
                               <div className="mt-2 flex flex-wrap items-center gap-3 text-sm text-gray-500">
                                 <div className="flex items-center gap-1">
                                   <MapPin className="h-3 w-3" />
-                                  <span>{stop.property.address}</span>
+                                  <span className="truncate max-w-[200px]">{stop.property.address}</span>
                                 </div>
                                 {stop.job.scheduled_time && (
                                   <div className="flex items-center gap-1">
@@ -272,19 +274,17 @@ export default function RouteOptimizationPage() {
                                 )}
                               </div>
 
-                              {/* Driving info (after optimization) */}
+                              {/* Driving info (after route calculation) */}
                               {stop.drivingTime && (
                                 <div className="mt-2 flex items-center gap-4 text-xs text-gray-400">
                                   <div className="flex items-center gap-1">
                                     <Car className="h-3 w-3" />
-                                    <span>{stop.drivingTime} min drive</span>
+                                    <span>{stop.drivingTime}</span>
                                   </div>
-                                  <span>·</span>
-                                  <span>{stop.distance} miles</span>
-                                  {stop.estimatedArrival && (
+                                  {stop.distance && (
                                     <>
                                       <span>·</span>
-                                      <span>ETA: {stop.estimatedArrival}</span>
+                                      <span>{stop.distance}</span>
                                     </>
                                   )}
                                 </div>
@@ -315,38 +315,29 @@ export default function RouteOptimizationPage() {
             </CardContent>
             
             {/* Route Summary */}
-            {displayRoute.length > 0 && optimizedRoute.length > 0 && (
+            {displayRoute.length > 0 && (totalDistance || totalDuration) && (
               <div className="border-t bg-gray-50 px-4 py-3">
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex items-center gap-4">
-                    <div>
-                      <span className="text-gray-500">Total Distance:</span>
-                      <span className="ml-1 font-medium">{totalDistance} mi</span>
-                    </div>
-                    <div>
-                      <span className="text-gray-500">Driving Time:</span>
-                      <span className="ml-1 font-medium">
-                        {Math.floor(totalDrivingTime / 60)}h {totalDrivingTime % 60}m
-                      </span>
-                    </div>
+                    {totalDistance && (
+                      <div>
+                        <span className="text-gray-500">Total Distance:</span>
+                        <span className="ml-1 font-medium">{totalDistance}</span>
+                      </div>
+                    )}
+                    {totalDuration && (
+                      <div>
+                        <span className="text-gray-500">Driving Time:</span>
+                        <span className="ml-1 font-medium">{totalDuration}</span>
+                      </div>
+                    )}
                   </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      // Generate full route link
-                      const waypoints = displayRoute.map(s => 
-                        `${s.property.address}, ${s.property.city}, ${s.property.zip}`
-                      ).join('|');
-                      window.open(
-                        `https://www.google.com/maps/dir/${waypoints}`,
-                        '_blank'
-                      );
-                    }}
-                  >
-                    <Navigation className="h-4 w-4" />
-                    Open Full Route
-                  </Button>
+                  {optimizedRoute.length > 0 && (
+                    <div className="flex items-center gap-1 text-green-600">
+                      <CheckCircle className="h-4 w-4" />
+                      <span className="text-xs font-medium">Optimized</span>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -356,53 +347,18 @@ export default function RouteOptimizationPage() {
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
-                <MapPin className="h-4 w-4" />
-                Map View
+                <Route className="h-4 w-4" />
+                Route Map
               </CardTitle>
             </CardHeader>
             <CardContent className="p-0">
-              <div
-                ref={mapRef}
-                className="h-[500px] bg-gray-100 rounded-b-xl flex items-center justify-center"
-              >
-                {GOOGLE_MAPS_API_KEY ? (
-                  <div className="text-center text-gray-500">
-                    <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
-                    <p>Loading map...</p>
-                  </div>
-                ) : (
-                  <div className="text-center text-gray-400 p-6">
-                    <MapPin className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-                    <p className="font-medium text-gray-500">Map Preview Unavailable</p>
-                    <p className="text-sm mt-1">
-                      Add your Google Maps API key to enable the interactive map.
-                    </p>
-                    {displayRoute.length > 0 && (
-                      <div className="mt-4">
-                        <p className="text-xs text-gray-400 mb-2">Scheduled locations:</p>
-                        <div className="space-y-1 text-xs">
-                          {displayRoute.map(stop => (
-                            <div key={stop.job.id} className="flex items-center gap-2">
-                              <div
-                                className="w-4 h-4 rounded-full text-white text-[10px] flex items-center justify-center"
-                                style={{ backgroundColor: getJobTypeByName(stop.job.job_type)?.color || '#3B82F6' }}
-                              >
-                                {stop.order}
-                              </div>
-                              <span>{stop.property.city}</span>
-                              {stop.property.lat && stop.property.lng && (
-                                <span className="text-gray-300">
-                                  ({stop.property.lat.toFixed(2)}, {stop.property.lng.toFixed(2)})
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
+              <RouteOptimizationMap
+                stops={displayRoute}
+                height="500px"
+                showRoute={true}
+                optimizeOrder={isOptimizing}
+                onRouteCalculated={handleRouteCalculated}
+              />
             </CardContent>
           </Card>
         </div>
