@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import Image from 'next/image';
 import { usePathname } from 'next/navigation';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSidebar } from '@/contexts/SidebarContext';
@@ -113,17 +114,22 @@ export default function Sidebar() {
       `}>
         {/* Logo - Light branded area */}
         <div className={`flex h-16 items-center ${isCollapsed ? 'justify-center px-2' : 'justify-between px-5'} border-b border-gray-200`}>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-emerald-600">
-              <Wrench className="h-5 w-5 text-white" />
-            </div>
+          <Link href="/" className="flex items-center gap-3">
+            <Image
+              src="/logo.png"
+              alt="SCWS Logo"
+              width={isCollapsed ? 40 : 48}
+              height={isCollapsed ? 40 : 48}
+              className="rounded-lg"
+              priority
+            />
             {!isCollapsed && (
               <div>
                 <h1 className="text-lg font-bold text-gray-900 tracking-tight">SCWS</h1>
                 <p className="text-xs text-gray-500">Job Management</p>
               </div>
             )}
-          </div>
+          </Link>
           {/* Close button - mobile only */}
           {!isCollapsed && (
             <button
