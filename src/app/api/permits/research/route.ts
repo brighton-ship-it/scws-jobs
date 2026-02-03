@@ -204,21 +204,34 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
 }
 
 /**
- * Fetch parcel by coordinates (spatial query) - San Diego
+ * Fetch parcel by coordinates using identify operation - San Diego
  */
 async function fetchSanDiegoParcelByCoords(lat: number, lng: number): Promise<ParcelInfo | null> {
   try {
-    const result = await queryArcGIS(GIS_ENDPOINTS.san_diego.parcels, {
-      geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
+    // Use identify operation instead of query (query doesn't support point spatial)
+    const baseUrl = 'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/PARCELS_ALL/MapServer/identify';
+    const params = new URLSearchParams({
+      f: 'json',
+      geometry: JSON.stringify({ x: lng, y: lat }),
       geometryType: 'esriGeometryPoint',
-      spatialRel: 'esriSpatialRelIntersects',
-      outFields: 'APN,OWN_NAME1,OWN_NAME2,OWN_ADDR1,OWN_ADDR2,SITUS_ADDRESS,SITUS_STREET,SITUS_SUFFIX,SITUS_COMMUNITY,SITUS_ZIP,ACREAGE,NUCLEUS_USE_CD,NUCLEUS_ZONE_CD',
+      sr: '4326',
+      layers: 'all:0',
+      tolerance: '10',
+      mapExtent: `${lng - 0.01},${lat - 0.01},${lng + 0.01},${lat + 0.01}`,
+      imageDisplay: '400,400,96',
       returnGeometry: 'true',
-      outSR: '4326',
     });
 
-    if (result.features && result.features.length > 0) {
-      const feature = result.features[0];
+    const response = await fetch(`${baseUrl}?${params.toString()}`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    
+    if (!response.ok) throw new Error(`Identify failed: ${response.status}`);
+    
+    const result = await response.json();
+
+    if (result.results && result.results.length > 0) {
+      const feature = result.results[0];
       const attrs = feature.attributes;
       
       const rawApn = attrs.APN || '';
@@ -231,10 +244,10 @@ async function fetchSanDiegoParcelByCoords(lat: number, lng: number): Promise<Pa
       return {
         apn: formattedApn,
         ownerName: [attrs.OWN_NAME1, attrs.OWN_NAME2].filter(Boolean).join(' '),
-        ownerAddress: [attrs.OWN_ADDR1, attrs.OWN_ADDR2].filter(Boolean).join(', '),
+        ownerAddress: [attrs.OWN_ADDR1, attrs.OWN_ADDR2, attrs.OWN_ADDR3].filter(Boolean).join(', '),
         siteAddress: [siteAddr, attrs.SITUS_COMMUNITY, attrs.SITUS_ZIP].filter(Boolean).join(', '),
-        lotSizeAcres: attrs.ACREAGE,
-        lotSizeSqFt: attrs.ACREAGE ? Math.round(attrs.ACREAGE * 43560) : undefined,
+        lotSizeAcres: parseFloat(attrs.ACREAGE) || undefined,
+        lotSizeSqFt: attrs.ACREAGE ? Math.round(parseFloat(attrs.ACREAGE) * 43560) : undefined,
         geometry: feature.geometry,
         landUse: attrs.NUCLEUS_USE_CD,
         zoning: attrs.NUCLEUS_ZONE_CD,
