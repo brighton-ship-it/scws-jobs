@@ -25,6 +25,7 @@ import {
   Inbox,
   Package,
   Droplets,
+  Megaphone,
 } from 'lucide-react';
 
 // Jobber-style navigation groups
@@ -52,6 +53,7 @@ const navigationGroups = [
     items: [
       { name: 'Dispatch', href: '/dispatch', icon: Truck },
       { name: 'Tasks', href: '/tasks', icon: CheckSquare },
+      { name: 'Marketing', href: '/marketing', icon: Megaphone },
       { name: 'Reports', href: '/reports', icon: BarChart3 },
     ],
   },
