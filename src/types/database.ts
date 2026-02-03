@@ -26,6 +26,7 @@ export interface Customer {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  qb_customer_id?: string | null;  // QuickBooks customer ID
 }
 
 export interface Property {
@@ -172,6 +173,7 @@ export interface Invoice {
   paid_at: string | null;
   created_at: string;
   updated_at: string;
+  qb_invoice_id?: string | null;  // QuickBooks invoice ID
 }
 
 export interface InvoiceItem {
@@ -197,6 +199,7 @@ export interface Payment {
   payment_date: string;
   notes: string | null;
   created_at: string;
+  qb_payment_id?: string | null;  // QuickBooks payment ID
 }
 
 export interface JobType {
@@ -382,4 +385,17 @@ export interface JobAssignmentWithUser extends JobAssignment {
 // Extended JobWithDetails to include assignments
 export interface JobWithAssignments extends JobWithDetails {
   assignments: JobAssignmentWithUser[];
+}
+
+// QuickBooks Integration
+export interface QuickBooksConnection {
+  id: string;
+  user_id: string;
+  realm_id: string;
+  access_token: string;
+  refresh_token: string;
+  token_expires_at: string;
+  environment: 'sandbox' | 'production';
+  connected_at: string;
+  updated_at: string;
 }
