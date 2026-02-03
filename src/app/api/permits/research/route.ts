@@ -204,7 +204,143 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
 }
 
 /**
- * Generate mock septic data (APIs not available)
+ * Fetch parcel by coordinates (spatial query) - San Diego
+ */
+async function fetchSanDiegoParcelByCoords(lat: number, lng: number): Promise<ParcelInfo | null> {
+  try {
+    const result = await queryArcGIS(GIS_ENDPOINTS.san_diego.parcels, {
+      geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
+      geometryType: 'esriGeometryPoint',
+      spatialRel: 'esriSpatialRelIntersects',
+      outFields: 'APN,OWN_NAME1,OWN_NAME2,OWN_ADDR1,OWN_ADDR2,SITUS_ADDRESS,SITUS_STREET,SITUS_SUFFIX,SITUS_COMMUNITY,SITUS_ZIP,ACREAGE,NUCLEUS_USE_CD,NUCLEUS_ZONE_CD',
+      returnGeometry: 'true',
+      outSR: '4326',
+    });
+
+    if (result.features && result.features.length > 0) {
+      const feature = result.features[0];
+      const attrs = feature.attributes;
+      
+      const rawApn = attrs.APN || '';
+      const formattedApn = rawApn.length === 10 
+        ? `${rawApn.slice(0,3)}-${rawApn.slice(3,6)}-${rawApn.slice(6,8)}-${rawApn.slice(8,10)}`
+        : rawApn;
+      
+      const siteAddr = [attrs.SITUS_ADDRESS, attrs.SITUS_STREET, attrs.SITUS_SUFFIX].filter(Boolean).join(' ');
+      
+      return {
+        apn: formattedApn,
+        ownerName: [attrs.OWN_NAME1, attrs.OWN_NAME2].filter(Boolean).join(' '),
+        ownerAddress: [attrs.OWN_ADDR1, attrs.OWN_ADDR2].filter(Boolean).join(', '),
+        siteAddress: [siteAddr, attrs.SITUS_COMMUNITY, attrs.SITUS_ZIP].filter(Boolean).join(', '),
+        lotSizeAcres: attrs.ACREAGE,
+        lotSizeSqFt: attrs.ACREAGE ? Math.round(attrs.ACREAGE * 43560) : undefined,
+        geometry: feature.geometry,
+        landUse: attrs.NUCLEUS_USE_CD,
+        zoning: attrs.NUCLEUS_ZONE_CD,
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('San Diego parcel by coords error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch parcel by coordinates (spatial query) - Riverside
+ */
+async function fetchRiversideParcelByCoords(lat: number, lng: number): Promise<ParcelInfo | null> {
+  try {
+    const result = await queryArcGIS(GIS_ENDPOINTS.riverside.parcels, {
+      geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
+      geometryType: 'esriGeometryPoint',
+      spatialRel: 'esriSpatialRelIntersects',
+      outFields: '*',
+      returnGeometry: 'true',
+      outSR: '4326',
+    });
+
+    if (result.features && result.features.length > 0) {
+      const feature = result.features[0];
+      const attrs = feature.attributes;
+      
+      return {
+        apn: attrs.APN,
+        ownerName: attrs.OWNERNAME || attrs.OWNER_NAME,
+        ownerAddress: attrs.OWNERADDR || attrs.OWNER_ADDR,
+        siteAddress: attrs.SITEADDR || attrs.SITE_ADDRESS,
+        lotSizeAcres: attrs.ACRES || attrs.ACREAGE,
+        lotSizeSqFt: attrs.SQ_FEET || attrs.SHAPE_Area,
+        geometry: feature.geometry,
+        landUse: attrs.LANDUSE || attrs.LAND_USE,
+        zoning: attrs.ZONING,
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('Riverside parcel by coords error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Fetch infrastructure status from our database
+ */
+async function fetchInfrastructureStatus(supabase: any, apn: string, lat?: number, lng?: number): Promise<any> {
+  try {
+    // Try by APN first
+    if (apn) {
+      const cleanApn = apn.replace(/-/g, '');
+      const { data } = await supabase
+        .from('parcel_infrastructure')
+        .select('*')
+        .eq('apn', cleanApn)
+        .single();
+      
+      if (data) {
+        return {
+          status: 'found',
+          type: data.sewer_septic_designation?.toLowerCase().includes('septic') ? 'SEPTIC' : 
+                data.sewer_septic_designation?.toLowerCase().includes('sewer') ? 'SEWER' : 'UNKNOWN',
+          designation: data.sewer_septic_designation,
+          source: 'San Diego County SANGIS',
+        };
+      }
+    }
+    
+    // Try by coordinates if no APN match
+    if (lat && lng) {
+      const { data } = await supabase
+        .from('parcel_infrastructure')
+        .select('*')
+        .gte('latitude', lat - 0.001)
+        .lte('latitude', lat + 0.001)
+        .gte('longitude', lng - 0.001)
+        .lte('longitude', lng + 0.001)
+        .limit(1)
+        .single();
+      
+      if (data) {
+        return {
+          status: 'found',
+          type: data.sewer_septic_designation?.toLowerCase().includes('septic') ? 'SEPTIC' : 
+                data.sewer_septic_designation?.toLowerCase().includes('sewer') ? 'SEWER' : 'UNKNOWN',
+          designation: data.sewer_septic_designation,
+          source: 'San Diego County SANGIS',
+        };
+      }
+    }
+    
+    return null;
+  } catch (error) {
+    console.error('Infrastructure lookup error:', error);
+    return null;
+  }
+}
+
+/**
+ * Generate mock septic data (when no data found)
  */
 function getMockSepticData(): any {
   return {
@@ -266,13 +402,21 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Fetch parcel data
+    // Fetch parcel data - by APN or by coordinates
     try {
-      if (targetCounty === 'san_diego' && apn) {
-        result.parcel = await fetchSanDiegoParcel(apn);
+      if (targetCounty === 'san_diego') {
+        if (apn) {
+          result.parcel = await fetchSanDiegoParcel(apn);
+        } else if (lat && lng) {
+          result.parcel = await fetchSanDiegoParcelByCoords(lat, lng);
+        }
         sources.push({ name: 'San Diego County GIS', status: result.parcel ? 'success' : 'error', message: result.parcel ? undefined : 'Parcel not found' });
-      } else if (targetCounty === 'riverside' && apn) {
-        result.parcel = await fetchRiversideParcel(apn);
+      } else if (targetCounty === 'riverside') {
+        if (apn) {
+          result.parcel = await fetchRiversideParcel(apn);
+        } else if (lat && lng) {
+          result.parcel = await fetchRiversideParcelByCoords(lat, lng);
+        }
         sources.push({ name: 'Riverside County GIS', status: result.parcel ? 'success' : 'error', message: result.parcel ? undefined : 'Parcel not found' });
       }
     } catch (error) {
@@ -317,9 +461,25 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Septic data (mock - no API available)
-    result.septic = getMockSepticData();
-    sources.push({ name: 'Septic Records', status: 'mock', message: 'Manual lookup required' });
+    // Septic/Sewer infrastructure data - check our database first
+    const infrastructureData = await fetchInfrastructureStatus(
+      supabase, 
+      result.parcel?.apn || apn || '', 
+      searchLat, 
+      searchLng
+    );
+    
+    if (infrastructureData && infrastructureData.status === 'found') {
+      result.septic = infrastructureData;
+      sources.push({ 
+        name: 'Infrastructure Data', 
+        status: 'success', 
+        message: `Property is on ${infrastructureData.type}` 
+      });
+    } else {
+      result.septic = getMockSepticData();
+      sources.push({ name: 'Septic Records', status: 'mock', message: 'Manual lookup required' });
+    }
 
     // Zoning data (from parcel if available)
     if (result.parcel?.zoning || result.parcel?.landUse) {
