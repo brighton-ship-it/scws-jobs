@@ -1,42 +1,79 @@
 'use client';
 
-import { Loader } from '@googlemaps/js-api-loader';
+const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
 
-// Singleton loader to prevent multiple script loads
-let loaderInstance: Loader | null = null;
+// Track initialization state
+let initPromise: Promise<void> | null = null;
+
+// Cache promises for libraries
 let mapsLibraryPromise: Promise<google.maps.MapsLibrary> | null = null;
 let markerLibraryPromise: Promise<google.maps.MarkerLibrary> | null = null;
 let directionsLibraryPromise: Promise<google.maps.DirectionsLibrary> | null = null;
 
-const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY || '';
-
-function getLoader(): Loader {
-  if (!loaderInstance) {
-    loaderInstance = new Loader({
-      apiKey,
-      version: 'weekly',
-      libraries: ['places', 'marker', 'routes'],
-    });
-  }
-  return loaderInstance;
+function loadGoogleMaps(): Promise<void> {
+  if (initPromise) return initPromise;
+  
+  initPromise = new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') {
+      reject(new Error('Cannot load Google Maps on server'));
+      return;
+    }
+    
+    // Check if already loaded
+    if (typeof google !== 'undefined' && google.maps) {
+      resolve();
+      return;
+    }
+    
+    // Create callback name
+    const callbackName = '__googleMapsCallback';
+    (window as any)[callbackName] = () => {
+      delete (window as any)[callbackName];
+      resolve();
+    };
+    
+    // Load the script
+    const script = document.createElement('script');
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places,marker&v=weekly&callback=${callbackName}`;
+    script.async = true;
+    script.defer = true;
+    script.onerror = () => reject(new Error('Failed to load Google Maps'));
+    document.head.appendChild(script);
+  });
+  
+  return initPromise;
 }
 
-export function getMapsLibrary(): Promise<google.maps.MapsLibrary> {
+export async function getMapsLibrary(): Promise<google.maps.MapsLibrary> {
   if (mapsLibraryPromise) return mapsLibraryPromise;
-  mapsLibraryPromise = getLoader().importLibrary('maps');
+  
+  mapsLibraryPromise = (async () => {
+    await loadGoogleMaps();
+    return google.maps.importLibrary('maps') as Promise<google.maps.MapsLibrary>;
+  })();
+  
   return mapsLibraryPromise;
 }
 
-export function getMarkerLibrary(): Promise<google.maps.MarkerLibrary> {
+export async function getMarkerLibrary(): Promise<google.maps.MarkerLibrary> {
   if (markerLibraryPromise) return markerLibraryPromise;
-  markerLibraryPromise = getLoader().importLibrary('marker');
+  
+  markerLibraryPromise = (async () => {
+    await loadGoogleMaps();
+    return google.maps.importLibrary('marker') as Promise<google.maps.MarkerLibrary>;
+  })();
+  
   return markerLibraryPromise;
 }
 
-export function getDirectionsLibrary(): Promise<google.maps.DirectionsLibrary> {
+export async function getDirectionsLibrary(): Promise<google.maps.DirectionsLibrary> {
   if (directionsLibraryPromise) return directionsLibraryPromise;
-  // Directions is part of routes
-  directionsLibraryPromise = getLoader().importLibrary('routes') as unknown as Promise<google.maps.DirectionsLibrary>;
+  
+  directionsLibraryPromise = (async () => {
+    await loadGoogleMaps();
+    return google.maps.importLibrary('routes') as unknown as Promise<google.maps.DirectionsLibrary>;
+  })();
+  
   return directionsLibraryPromise;
 }
 
