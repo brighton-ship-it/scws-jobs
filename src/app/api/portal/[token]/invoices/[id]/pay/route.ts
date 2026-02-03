@@ -4,6 +4,10 @@ import { createServiceClient } from '@/lib/supabase/service';
 interface PaymentRequest {
   paymentMethod: 'card' | 'ach';
   amount: number;
+  // Processing fee (3% for card, 0 for ACH)
+  processingFee?: number;
+  // Total amount to charge (amount + processingFee)
+  totalCharged?: number;
   // Card details (for Stax)
   cardToken?: string;
   // ACH details (for Stax)
@@ -87,12 +91,16 @@ export async function POST(
       );
     }
 
+    // Calculate processing fee if not provided (3% for card)
+    const processingFee = body.processingFee ?? (body.paymentMethod === 'card' ? body.amount * 0.03 : 0);
+    const totalToCharge = body.totalCharged ?? (body.amount + processingFee);
+    
     // TODO: Integrate with Stax Payment Gateway
     // For now, we'll process a mock payment and record it
     // 
     // Real Stax integration would:
     // 1. Create payment method from card/ACH token
-    // 2. Charge the payment method
+    // 2. Charge the payment method (totalToCharge includes fee)
     // 3. Handle success/failure
     // 4. Record the payment in our database
     
@@ -113,8 +121,10 @@ export async function POST(
             meta: {
               invoice_id: id,
               customer_id: portalToken.customer_id,
+              processing_fee: processingFee,
             },
-            total: body.amount,
+            // Charge the TOTAL including fee
+            total: totalToCharge,
             payment_method_id: body.cardToken || body.accountToken,
           }),
         });
@@ -144,16 +154,21 @@ export async function POST(
     }
 
     if (paymentSuccessful) {
-      // Record payment in database
+      // Build payment notes with fee info
+      const feeNote = processingFee > 0 
+        ? ` | Processing fee: $${processingFee.toFixed(2)} | Total charged: $${totalToCharge.toFixed(2)}`
+        : '';
+      
+      // Record payment in database (amount is the invoice amount, fee is tracked in notes)
       const { data: payment, error: paymentError } = await supabase
         .from('payments')
         .insert({
           invoice_id: id,
-          amount: body.amount,
+          amount: body.amount, // Invoice amount (what gets credited to invoice)
           payment_method: body.paymentMethod,
           reference_number: staxPaymentId,
           payment_date: new Date().toISOString().split('T')[0],
-          notes: `Online payment via customer portal`,
+          notes: `Online payment via customer portal${feeNote}`,
         })
         .select()
         .single();

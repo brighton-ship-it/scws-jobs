@@ -126,6 +126,9 @@ export default function InvoiceDetailPage() {
     setPaymentError(null)
     
     const amountDue = Number(invoice.total) - Number(invoice.amount_paid)
+    // Add 3% processing fee for card payments
+    const processingFee = paymentMethod === 'card' ? amountDue * 0.03 : 0
+    const totalPayment = amountDue + processingFee
     
     try {
       const res = await fetch(`/api/portal/${token}/invoices/${invoiceId}/pay`, {
@@ -134,6 +137,8 @@ export default function InvoiceDetailPage() {
         body: JSON.stringify({
           paymentMethod,
           amount: amountDue,
+          processingFee: processingFee,
+          totalCharged: totalPayment,
         }),
       })
       
