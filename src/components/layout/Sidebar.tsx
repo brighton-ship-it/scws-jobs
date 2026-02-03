@@ -28,6 +28,7 @@ import {
   Megaphone,
   MessageSquare,
   RefreshCw,
+  DollarSign,
 } from 'lucide-react';
 
 // Jobber-style navigation groups
@@ -65,6 +66,7 @@ const navigationGroups = [
     name: 'SCWS Tools',
     items: [
       { name: 'Inventory', href: '/inventory', icon: Package },
+      { name: 'Expenses', href: '/expenses', icon: DollarSign },
       { name: 'Well Tools', href: '/well-tools', icon: Droplets },
     ],
   },
