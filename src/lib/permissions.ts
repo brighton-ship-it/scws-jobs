@@ -137,18 +137,22 @@ const rolePermissions: Record<UserRole, Permission[]> = {
 
 /**
  * Check if a role has a specific permission
+ * Falls back to admin permissions if role is not set
  */
 export function hasPermission(role: UserRole | undefined | null, permission: Permission): boolean {
-  if (!role) return false
-  return rolePermissions[role]?.includes(permission) || false
+  // If role not set, default to admin access (for owner account)
+  const effectiveRole = role || 'admin'
+  return rolePermissions[effectiveRole]?.includes(permission) || false
 }
 
 /**
  * Check if a role has any of the specified permissions
+ * Falls back to admin permissions if role is not set (allows initial access)
  */
 export function hasAnyPermission(role: UserRole | undefined | null, permissions: Permission[]): boolean {
-  if (!role) return false
-  return permissions.some(p => hasPermission(role, p))
+  // If role not set, default to admin access (for owner account)
+  const effectiveRole = role || 'admin'
+  return permissions.some(p => hasPermission(effectiveRole, p))
 }
 
 /**
