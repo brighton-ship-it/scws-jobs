@@ -188,10 +188,9 @@ export default function PermitResearchPage() {
         const map = new Map(mapRef.current, {
           center: SOCAL_CENTER,
           zoom: 10,
-          mapId: 'permit-research-map',
           mapTypeControl: true,
           streetViewControl: false,
-          mapTypeId: 'hybrid',
+          mapTypeId: 'satellite',
         });
         
         mapInstanceRef.current = map;
