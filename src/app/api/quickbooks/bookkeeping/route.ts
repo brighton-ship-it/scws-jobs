@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getQuickBooksClient, getQuickBooksClientAdmin } from '@/lib/quickbooks/service';
+import { getQuickBooksClient, getQuickBooksClientAdmin, withQBORetry } from '@/lib/quickbooks/service';
+import { QuickBooksClient } from '@/lib/quickbooks/client';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 30; // Allow up to 30 seconds for retries
 
 // Bookkeeping API - query QuickBooks data
 export async function GET(request: NextRequest) {
@@ -11,11 +13,14 @@ export async function GET(request: NextRequest) {
     const apiKey = request.headers.get('x-api-key') || request.nextUrl.searchParams.get('api_key');
     const isAdmin = apiKey === process.env.ADMIN_API_KEY;
 
+    // For admin access, always force token refresh for reliability
+    const forceRefresh = isAdmin && request.nextUrl.searchParams.get('fresh') !== 'false';
+    
     let result;
     
     if (isAdmin) {
-      // Admin access - use service-level auth
-      result = await getQuickBooksClientAdmin();
+      // Admin access - use service-level auth with fresh token
+      result = await getQuickBooksClientAdmin(forceRefresh);
     } else {
       // Regular user access
       const supabase = await createClient();

@@ -138,8 +138,9 @@ export async function getQuickBooksClient(): Promise<{ client: QuickBooksClient;
 /**
  * Get QuickBooks client for admin/service use (no user auth required)
  * Uses the first available connection in the database
+ * Always refreshes token to avoid stale token issues in serverless
  */
-export async function getQuickBooksClientAdmin(): Promise<{ client: QuickBooksClient; connection: QBOConnection } | null> {
+export async function getQuickBooksClientAdmin(forceRefresh = false): Promise<{ client: QuickBooksClient; connection: QBOConnection } | null> {
   const { createClient: createServiceClient } = await import('@supabase/supabase-js');
   
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
@@ -149,9 +150,12 @@ export async function getQuickBooksClientAdmin(): Promise<{ client: QuickBooksCl
     throw new Error('Service role key not configured for admin access');
   }
   
-  const supabase = createServiceClient(supabaseUrl, supabaseServiceKey);
+  // Create fresh Supabase client each time (no caching)
+  const supabase = createServiceClient(supabaseUrl, supabaseServiceKey, {
+    auth: { persistSession: false }
+  });
 
-  // Get the first active connection
+  // Get the first active connection - always fetch fresh
   const { data, error } = await supabase
     .from('quickbooks_connections')
     .select('*')
@@ -164,14 +168,18 @@ export async function getQuickBooksClientAdmin(): Promise<{ client: QuickBooksCl
   
   const connection = data as unknown as QBOConnection;
 
-  // Check if token needs refresh (5 min buffer)
+  // Check if token needs refresh (30 min buffer for serverless reliability)
   const expiresAt = new Date(connection.token_expires_at);
   const now = new Date();
-  const bufferMs = 5 * 60 * 1000;
+  const bufferMs = 30 * 60 * 1000; // 30 minutes - more aggressive refresh
 
   let accessToken = connection.access_token;
 
-  if (expiresAt.getTime() - now.getTime() < bufferMs) {
+  // Always refresh if forceRefresh is true, or if within buffer window
+  const needsRefresh = forceRefresh || (expiresAt.getTime() - now.getTime() < bufferMs);
+  
+  if (needsRefresh) {
+    console.log(`QBO token refresh: forceRefresh=${forceRefresh}, expiresIn=${Math.round((expiresAt.getTime() - now.getTime()) / 60000)}min`);
     try {
       const config = getOAuthConfig();
       const tokens = await refreshAccessToken({
@@ -209,6 +217,45 @@ export async function getQuickBooksClientAdmin(): Promise<{ client: QuickBooksCl
   });
 
   return { client, connection };
+}
+
+/**
+ * Execute a QBO API call with automatic retry on 401 errors
+ * Refreshes token and retries once if we get an auth error
+ */
+export async function withQBORetry<T>(
+  operation: (client: QuickBooksClient) => Promise<T>,
+  maxRetries = 1
+): Promise<T> {
+  let lastError: Error | null = null;
+  
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      // Force refresh on retry attempts
+      const result = await getQuickBooksClientAdmin(attempt > 0);
+      if (!result) {
+        throw new Error('QuickBooks not connected');
+      }
+      
+      return await operation(result.client);
+    } catch (error) {
+      lastError = error as Error;
+      const errorMsg = lastError.message || '';
+      
+      // Check if it's an auth error worth retrying
+      if (errorMsg.includes('401') || errorMsg.includes('AuthenticationFailed')) {
+        console.log(`QBO auth error on attempt ${attempt + 1}, will ${attempt < maxRetries ? 'retry with fresh token' : 'fail'}`);
+        if (attempt < maxRetries) {
+          continue; // Retry with forced token refresh
+        }
+      }
+      
+      // Non-auth error or max retries reached
+      throw error;
+    }
+  }
+  
+  throw lastError || new Error('QBO operation failed');
 }
 
 /**
