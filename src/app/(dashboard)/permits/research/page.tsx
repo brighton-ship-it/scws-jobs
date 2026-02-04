@@ -1110,8 +1110,24 @@ export default function PermitResearchPage() {
       if (originalWidth < 800) {
         container.style.minWidth = '900px';
         container.style.width = '900px';
-        // Let the browser reflow
-        await new Promise(resolve => setTimeout(resolve, 300));
+        container.style.overflow = 'visible';
+        
+        // Trigger Google Maps resize so it redraws at new size
+        if (mapInstanceRef.current) {
+          google.maps.event.trigger(mapInstanceRef.current, 'resize');
+          // Re-center on parcel after resize
+          if (result?.parcel?.geometry) {
+            const bounds = new google.maps.LatLngBounds();
+            const coords = result.parcel.geometry.coordinates[0];
+            coords.forEach((coord: number[]) => {
+              bounds.extend({ lat: coord[1], lng: coord[0] });
+            });
+            mapInstanceRef.current.fitBounds(bounds, 50);
+          }
+        }
+        
+        // Let the browser reflow and map redraw
+        await new Promise(resolve => setTimeout(resolve, 800));
       }
       
       // Capture the map with mobile-friendly options
