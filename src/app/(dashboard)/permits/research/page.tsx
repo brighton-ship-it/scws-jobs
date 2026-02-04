@@ -799,22 +799,22 @@ export default function PermitResearchPage() {
       const col3X = 180;
       
       pdf.text(`APN: ${result.parcel?.apn || 'N/A'}`, col1X, infoY + 16);
-      // Build clean address - detect and reject corrupted data
-      const looksCorrupted = (str: string) => {
+      // Build clean address - ALWAYS use user input or APN, never API siteAddress
+      // Corruption shows patterns like "CENTZRrift" - uppercase run then lowercase
+      const isCorrupted = (str: string) => {
         if (!str) return true;
-        // Corruption patterns: mixed case gibberish, encoding artifacts
-        return /[A-Z]{2,}[a-z]{2,}[0-9]/.test(str) || 
-               /[0-9][A-Z]{2}[0-9]/.test(str) ||
-               str.includes('rift') || 
-               str.includes('9ZI') ||
-               str.includes('ZR');
+        // Pattern: 3+ uppercase immediately followed by 2+ lowercase = corrupted
+        if (/[A-Z]{3,}[a-z]{2,}/.test(str)) return true;
+        // Or lowercase immediately followed by uppercase mid-word  
+        if (/[a-z][A-Z]/.test(str.replace(/\s+/g, ''))) return true;
+        return false;
       };
       let cleanAddr: string;
-      if (address?.trim() && !looksCorrupted(address)) {
-        // User typed a clean address
-        cleanAddr = address.trim();
+      const userAddr = address?.trim();
+      if (userAddr && userAddr.length > 5 && !isCorrupted(userAddr)) {
+        cleanAddr = userAddr;
       } else {
-        // Fallback to APN reference
+        // Always safe: just show APN
         cleanAddr = `See APN ${result.parcel?.apn || 'N/A'}`;
       }
       // Truncate address to fit in column (max ~70 chars to avoid overflow into col2)
