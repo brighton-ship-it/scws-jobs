@@ -225,29 +225,37 @@ export async function getQuickBooksClientAdmin(forceRefresh = false): Promise<{ 
  */
 export async function withQBORetry<T>(
   operation: (client: QuickBooksClient) => Promise<T>,
-  maxRetries = 1
+  maxRetries = 2
 ): Promise<T> {
   let lastError: Error | null = null;
+  let client: QuickBooksClient | null = null;
   
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       // Force refresh on retry attempts
-      const result = await getQuickBooksClientAdmin(attempt > 0);
+      const forceRefresh = attempt > 0;
+      console.log(`QBO withRetry attempt ${attempt + 1}/${maxRetries + 1}, forceRefresh=${forceRefresh}`);
+      
+      const result = await getQuickBooksClientAdmin(forceRefresh);
       if (!result) {
         throw new Error('QuickBooks not connected');
       }
       
-      return await operation(result.client);
+      client = result.client;
+      return await operation(client);
     } catch (error) {
       lastError = error as Error;
       const errorMsg = lastError.message || '';
+      const is401 = errorMsg.includes('401') || errorMsg.includes('AuthenticationFailed') || (error as any).status === 401;
+      
+      console.log(`QBO error on attempt ${attempt + 1}: ${is401 ? '401 AUTH ERROR' : 'OTHER ERROR'} - ${errorMsg.substring(0, 100)}`);
       
       // Check if it's an auth error worth retrying
-      if (errorMsg.includes('401') || errorMsg.includes('AuthenticationFailed')) {
-        console.log(`QBO auth error on attempt ${attempt + 1}, will ${attempt < maxRetries ? 'retry with fresh token' : 'fail'}`);
-        if (attempt < maxRetries) {
-          continue; // Retry with forced token refresh
-        }
+      if (is401 && attempt < maxRetries) {
+        console.log('Will retry with forced token refresh...');
+        // Small delay before retry
+        await new Promise(r => setTimeout(r, 500));
+        continue;
       }
       
       // Non-auth error or max retries reached

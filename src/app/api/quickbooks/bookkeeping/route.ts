@@ -4,7 +4,23 @@ import { getQuickBooksClient, getQuickBooksClientAdmin, withQBORetry } from '@/l
 import { QuickBooksClient } from '@/lib/quickbooks/client';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 30; // Allow up to 30 seconds for retries
+export const maxDuration = 60; // Allow up to 60 seconds for retries
+
+// Helper to execute QBO operation with automatic retry on 401
+async function executeWithRetry<T>(
+  isAdmin: boolean,
+  operation: (client: QuickBooksClient) => Promise<T>
+): Promise<T> {
+  if (isAdmin) {
+    // Use the retry wrapper for admin requests
+    return withQBORetry(operation, 2);
+  } else {
+    // For regular users, single attempt
+    const result = await getQuickBooksClient();
+    if (!result) throw new Error('QuickBooks not connected');
+    return operation(result.client);
+  }
+}
 
 // Bookkeeping API - query QuickBooks data
 export async function GET(request: NextRequest) {
@@ -13,59 +29,57 @@ export async function GET(request: NextRequest) {
     const apiKey = request.headers.get('x-api-key') || request.nextUrl.searchParams.get('api_key');
     const isAdmin = apiKey === process.env.ADMIN_API_KEY;
 
-    // For admin access, always force token refresh for reliability
-    const forceRefresh = isAdmin && request.nextUrl.searchParams.get('fresh') !== 'false';
-    
-    let result;
-    
-    if (isAdmin) {
-      // Admin access - use service-level auth with fresh token
-      result = await getQuickBooksClientAdmin(forceRefresh);
-    } else {
-      // Regular user access
+    if (!isAdmin) {
+      // Regular user access - verify auth
       const supabase = await createClient();
       const { data: { user } } = await supabase.auth.getUser();
       
       if (!user) {
         return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
       }
-      result = await getQuickBooksClient();
     }
 
-    if (!result) {
-      return NextResponse.json({ error: 'QuickBooks not connected' }, { status: 400 });
-    }
-
-    const { client, connection } = result;
     const action = request.nextUrl.searchParams.get('action') || 'info';
 
     switch (action) {
       case 'info': {
-        const info = await client.getCompanyInfo();
+        const data = await executeWithRetry(isAdmin, async (client) => {
+          const info = await client.getCompanyInfo();
+          // Get connection info separately
+          const result = await getQuickBooksClientAdmin(false);
+          return { info, connection: result?.connection };
+        });
         return NextResponse.json({ 
-          company: info,
-          environment: connection.environment,
-          connectedAt: connection.connected_at
+          company: data.info,
+          environment: data.connection?.environment,
+          connectedAt: data.connection?.connected_at
         });
       }
 
       case 'accounts': {
-        const accounts = await client.query("SELECT * FROM Account WHERE Active = true MAXRESULTS 100");
+        const accounts = await executeWithRetry(isAdmin, async (client) => {
+          return client.query("SELECT * FROM Account WHERE Active = true MAXRESULTS 100");
+        });
         return NextResponse.json({ accounts: accounts.QueryResponse?.Account || [] });
       }
 
       case 'bank_accounts': {
-        const accounts = await client.query("SELECT * FROM Account WHERE AccountType = 'Bank' AND Active = true");
+        const accounts = await executeWithRetry(isAdmin, async (client) => {
+          return client.query("SELECT * FROM Account WHERE AccountType = 'Bank' AND Active = true");
+        });
         return NextResponse.json({ accounts: accounts.QueryResponse?.Account || [] });
       }
 
       case 'recent_transactions': {
         const startDate = request.nextUrl.searchParams.get('start') || getDateNDaysAgo(30);
-        const txns = await client.query(`SELECT * FROM Purchase WHERE TxnDate >= '${startDate}' ORDERBY TxnDate DESC MAXRESULTS 50`);
-        const deposits = await client.query(`SELECT * FROM Deposit WHERE TxnDate >= '${startDate}' ORDERBY TxnDate DESC MAXRESULTS 50`);
+        const data = await executeWithRetry(isAdmin, async (client) => {
+          const txns = await client.query(`SELECT * FROM Purchase WHERE TxnDate >= '${startDate}' ORDERBY TxnDate DESC MAXRESULTS 50`);
+          const deposits = await client.query(`SELECT * FROM Deposit WHERE TxnDate >= '${startDate}' ORDERBY TxnDate DESC MAXRESULTS 50`);
+          return { txns, deposits };
+        });
         return NextResponse.json({ 
-          purchases: txns.QueryResponse?.Purchase || [],
-          deposits: deposits.QueryResponse?.Deposit || []
+          purchases: data.txns.QueryResponse?.Purchase || [],
+          deposits: data.deposits.QueryResponse?.Deposit || []
         });
       }
 
@@ -78,7 +92,7 @@ export async function GET(request: NextRequest) {
           query += " WHERE Balance = '0'";
         }
         query += " ORDERBY TxnDate DESC MAXRESULTS 50";
-        const invoices = await client.query(query);
+        const invoices = await executeWithRetry(isAdmin, (client) => client.query(query));
         return NextResponse.json({ invoices: invoices.QueryResponse?.Invoice || [] });
       }
 
@@ -89,20 +103,24 @@ export async function GET(request: NextRequest) {
           query += " WHERE Balance > '0'";
         }
         query += " ORDERBY TxnDate DESC MAXRESULTS 50";
-        const bills = await client.query(query);
+        const bills = await executeWithRetry(isAdmin, (client) => client.query(query));
         return NextResponse.json({ bills: bills.QueryResponse?.Bill || [] });
       }
 
       case 'profit_loss': {
         const startDate = request.nextUrl.searchParams.get('start') || getStartOfYear();
         const endDate = request.nextUrl.searchParams.get('end') || getToday();
-        const report = await client.getReport('ProfitAndLoss', { start_date: startDate, end_date: endDate });
+        const report = await executeWithRetry(isAdmin, (client) => 
+          client.getReport('ProfitAndLoss', { start_date: startDate, end_date: endDate })
+        );
         return NextResponse.json({ report });
       }
 
       case 'balance_sheet': {
         const asOf = request.nextUrl.searchParams.get('date') || getToday();
-        const report = await client.getReport('BalanceSheet', { date: asOf });
+        const report = await executeWithRetry(isAdmin, (client) => 
+          client.getReport('BalanceSheet', { date: asOf })
+        );
         return NextResponse.json({ report });
       }
 
@@ -112,11 +130,14 @@ export async function GET(request: NextRequest) {
           return NextResponse.json({ error: 'accountId required' }, { status: 400 });
         }
         // Get recent uncleared transactions for the account
-        const txns = await client.query(`SELECT * FROM Purchase WHERE AccountRef = '${accountId}' ORDERBY TxnDate DESC MAXRESULTS 100`);
-        const deposits = await client.query(`SELECT * FROM Deposit WHERE DepositToAccountRef = '${accountId}' ORDERBY TxnDate DESC MAXRESULTS 100`);
+        const data = await executeWithRetry(isAdmin, async (client) => {
+          const purchases = await client.query(`SELECT * FROM Purchase WHERE AccountRef = '${accountId}' ORDERBY TxnDate DESC MAXRESULTS 100`);
+          const deposits = await client.query(`SELECT * FROM Deposit WHERE DepositToAccountRef = '${accountId}' ORDERBY TxnDate DESC MAXRESULTS 100`);
+          return { purchases, deposits };
+        });
         return NextResponse.json({
-          purchases: txns.QueryResponse?.Purchase || [],
-          deposits: deposits.QueryResponse?.Deposit || []
+          purchases: data.purchases.QueryResponse?.Purchase || [],
+          deposits: data.deposits.QueryResponse?.Deposit || []
         });
       }
 
@@ -126,7 +147,7 @@ export async function GET(request: NextRequest) {
         if (!purchaseId) {
           return NextResponse.json({ error: 'id required' }, { status: 400 });
         }
-        const purchaseResult = await client.getPurchase(purchaseId);
+        const purchaseResult = await executeWithRetry(isAdmin, (client) => client.getPurchase(purchaseId));
         return NextResponse.json(purchaseResult);
       }
 
@@ -140,11 +161,13 @@ export async function GET(request: NextRequest) {
         }
 
         // Use GeneralLedger report to get all transactions for an account
-        const report = await client.getReport('GeneralLedger', {
-          start_date: startDate,
-          end_date: endDate,
-          account: acctId,
-        });
+        const report = await executeWithRetry(isAdmin, (client) => 
+          client.getReport('GeneralLedger', {
+            start_date: startDate,
+            end_date: endDate,
+            account: acctId,
+          })
+        );
         
         // Parse the report rows into transactions
         const transactions: Array<{date: string, type: string, num: string, name: string, memo: string, amount: number, balance: number}> = [];

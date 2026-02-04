@@ -131,8 +131,10 @@ export class QuickBooksClient {
     this.baseUrl = environment === 'production' ? QBO_BASE_URL : QBO_SANDBOX_URL;
   }
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}, retryCount = 0): Promise<T> {
     const url = `${this.baseUrl}/v3/company/${this.realmId}${endpoint}`;
+    
+    console.log(`QBO Request [${retryCount}]: ${options.method || 'GET'} ${endpoint}`);
     
     const response = await fetch(url, {
       ...options,
@@ -146,11 +148,25 @@ export class QuickBooksClient {
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('QuickBooks API Error:', error);
+      console.error(`QuickBooks API Error [${response.status}]:`, error.substring(0, 200));
+      
+      // If 401 and haven't retried, throw special error for retry handling
+      if (response.status === 401 && retryCount === 0) {
+        const err = new Error(`QuickBooks API Error: ${response.status} - ${error}`);
+        (err as any).status = 401;
+        (err as any).retryable = true;
+        throw err;
+      }
+      
       throw new Error(`QuickBooks API Error: ${response.status} - ${error}`);
     }
 
     return response.json();
+  }
+  
+  // Method to update token for retries
+  updateToken(newToken: string): void {
+    this.accessToken = newToken;
   }
 
   // ============= CUSTOMERS =============
