@@ -93,10 +93,14 @@ async function lookupParcelCentroidsByAPNs(apns: string[]): Promise<Map<string, 
   try {
     const supabase = await createClient();
     
-    // Normalize APNs - remove dashes and spaces
+    // Normalize APNs - remove dashes/spaces and pad to 10 digits
     const normalizedAPNs = apns
-      .filter(apn => apn && apn.length >= 8) // Filter out invalid APNs
-      .map(apn => apn.replace(/[-\s]/g, ''));
+      .filter(apn => apn && apn.length >= 7) // Filter out invalid APNs
+      .map(apn => {
+        const cleaned = apn.replace(/[-\s]/g, '');
+        // Pad to 10 digits (SD County format) - add trailing zeros
+        return cleaned.padEnd(10, '0');
+      });
     
     if (normalizedAPNs.length === 0) return results;
     
@@ -289,7 +293,7 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
           // Try to enhance coordinates using parcel centroid
           const apn = f.attributes.APN;
           if (apn) {
-            const normalizedApn = apn.replace(/[-\s]/g, '');
+            const normalizedApn = apn.replace(/[-\s]/g, '').padEnd(10, '0');
             const parcelCoords = parcelCentroids.get(normalizedApn);
             if (parcelCoords) {
               wellLat = parcelCoords.latitude;
