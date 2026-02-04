@@ -303,7 +303,13 @@ export default function PermitResearchPage() {
     // Clear existing markers and polygons
     markersRef.current.forEach(m => m.map = null);
     markersRef.current = [];
-    septicPermitMarkersRef.current.forEach(m => m.setMap(null));
+    septicPermitMarkersRef.current.forEach(m => {
+      // Also remove the attached circle
+      if ((m as any)._septicCircle) {
+        (m as any)._septicCircle.setMap(null);
+      }
+      m.setMap(null);
+    });
     septicPermitMarkersRef.current = [];
     if (parcelPolygonRef.current) {
       parcelPolygonRef.current.setMap(null);
@@ -395,18 +401,32 @@ export default function PermitResearchPage() {
       result.septicPermits.forEach((permit, index) => {
         if (!permit.latitude || !permit.longitude) return;
         
+        const position = { lat: permit.latitude, lng: permit.longitude };
+        
+        // Create circle showing 50ft setback radius around septic
+        const circle = new google.maps.Circle({
+          map,
+          center: position,
+          radius: 15.24, // 50 feet in meters
+          fillColor: '#F97316', // Orange
+          fillOpacity: 0.25,
+          strokeColor: '#F97316',
+          strokeWeight: 2,
+          strokeOpacity: 0.8,
+        });
+        
+        // Create small center marker for clicking
         const marker = new google.maps.Marker({
           map,
-          position: { lat: permit.latitude, lng: permit.longitude },
-          title: `Septic - ${permit.full_address || permit.apn}`,
+          position,
+          title: `Septic - ${permit.apn}`,
           icon: {
-            path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+            path: google.maps.SymbolPath.CIRCLE,
             scale: 6,
             fillColor: '#F97316', // Orange
-            fillOpacity: 0.9,
+            fillOpacity: 1,
             strokeColor: '#ffffff',
             strokeWeight: 2,
-            rotation: 180,
           },
         });
         
@@ -416,9 +436,9 @@ export default function PermitResearchPage() {
             <div style="padding: 8px; min-width: 180px;">
               <strong style="font-size: 14px; color: #F97316;">🚽 Septic Parcel</strong><br/>
               <b>APN:</b> ${permit.apn}<br/>
-              ${permit.full_address ? `<b>Address:</b> ${permit.full_address}<br/>` : ''}
               <b>Status:</b> ${permit.designation}<br/>
-              ${permit.distance_feet ? `<b>Distance:</b> ${permit.distance_feet.toLocaleString()}ft` : ''}
+              <b>Setback:</b> 50ft radius shown<br/>
+              ${permit.distance_feet ? `<b>Distance:</b> ${permit.distance_feet.toLocaleString()}ft from subject` : ''}
             </div>
           `,
         });
@@ -427,6 +447,8 @@ export default function PermitResearchPage() {
           infoWindow.open(map, marker);
         });
         
+        // Store both circle and marker for cleanup
+        (marker as any)._septicCircle = circle;
         septicPermitMarkersRef.current.push(marker);
       });
       console.log('Added', septicPermitMarkersRef.current.length, 'septic permit markers');
