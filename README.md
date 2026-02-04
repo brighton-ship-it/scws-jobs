@@ -192,3 +192,4 @@ Private - Southern California Well Service
 
 For issues or questions, contact the development team.
 # Deployed Tue Feb  3 21:31:05 PST 2026
+# Redeploy with fixed Supabase key - Tue Feb  3 21:37:14 PST 2026
