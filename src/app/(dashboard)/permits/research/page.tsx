@@ -407,6 +407,9 @@ export default function PermitResearchPage() {
     utilityMarkersRef.current = [];
     
     // Draw utility features
+    console.log('Drawing utility features:', utilityFeatures.length, 'total');
+    let linesDrawn = 0;
+    let pointsDrawn = 0;
     utilityFeatures.forEach((feature) => {
       const utilityType = feature.properties.utility_type;
       const color = UTILITY_COLORS[utilityType as keyof typeof UTILITY_COLORS] || '#888888';
@@ -414,7 +417,10 @@ export default function PermitResearchPage() {
       // Check if this type is enabled
       if (!utilityLayers[utilityType as keyof typeof utilityLayers]) return;
       
-      if (!feature.geometry) return;
+      if (!feature.geometry) {
+        console.log('Feature missing geometry:', feature.properties.id);
+        return;
+      }
       
       const geom = typeof feature.geometry === 'string' 
         ? JSON.parse(feature.geometry) 
@@ -430,11 +436,12 @@ export default function PermitResearchPage() {
           const polyline = new google.maps.Polyline({
             path,
             strokeColor: color,
-            strokeOpacity: 0.8,
-            strokeWeight: utilityType === 'electric' ? 3 : 2,
+            strokeOpacity: 1.0,
+            strokeWeight: utilityType === 'electric' ? 4 : 3,
             map,
           });
           utilityPolylinesRef.current.push(polyline);
+          linesDrawn++;
         });
       } else if (geom.type === 'Point') {
         const marker = new google.maps.Marker({
@@ -451,8 +458,10 @@ export default function PermitResearchPage() {
           title: `${utilityType} - ${feature.properties.source_table}`,
         });
         utilityMarkersRef.current.push(marker);
+        pointsDrawn++;
       }
     });
+    console.log('Utility rendering complete:', { linesDrawn, pointsDrawn, polylinesInRef: utilityPolylinesRef.current.length });
   }, [utilityFeatures, utilityLayers, mapReady]);
 
   // Update map when results change
