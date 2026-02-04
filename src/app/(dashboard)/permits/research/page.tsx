@@ -1098,12 +1098,35 @@ export default function PermitResearchPage() {
     setIsExportingPdf(true);
     
     try {
-      // Capture the map
+      // Wait for map tiles to fully load (important for mobile)
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // Force the container to a minimum width for consistent PDF output
+      const container = mapContainerRef.current;
+      const originalStyle = container.style.cssText;
+      const originalWidth = container.offsetWidth;
+      
+      // On mobile, temporarily expand container for better capture
+      if (originalWidth < 800) {
+        container.style.minWidth = '900px';
+        container.style.width = '900px';
+        // Let the browser reflow
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      
+      // Capture the map with mobile-friendly options
       const canvas = await html2canvas(mapContainerRef.current, {
         useCORS: true,
-        scale: 2,
+        allowTaint: true,
+        scale: window.devicePixelRatio > 1 ? 1.5 : 2, // Lower scale on high-DPI mobile
         logging: false,
+        imageTimeout: 5000,
+        windowWidth: Math.max(container.scrollWidth, 900),
+        windowHeight: container.scrollHeight,
       });
+      
+      // Restore original styling
+      container.style.cssText = originalStyle;
       
       const pdf = new jsPDF('landscape', 'mm', 'letter');
       const pageWidth = pdf.internal.pageSize.getWidth();
