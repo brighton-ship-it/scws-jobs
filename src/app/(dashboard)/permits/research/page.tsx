@@ -721,11 +721,24 @@ export default function PermitResearchPage() {
       const col3X = 180;
       
       pdf.text(`APN: ${result.parcel?.apn || 'N/A'}`, col1X, infoY + 16);
-      // Use the clean address from user input, ignore corrupted API data
-      console.log('PDF EXPORT - address state:', JSON.stringify(address));
-      console.log('PDF EXPORT - siteAddress:', JSON.stringify(result.parcel?.siteAddress));
-      const cleanAddr = address?.trim() || 'See APN for property lookup';
-      console.log('PDF EXPORT - cleanAddr:', JSON.stringify(cleanAddr));
+      // Build clean address - detect and reject corrupted data
+      const looksCorrupted = (str: string) => {
+        if (!str) return true;
+        // Corruption patterns: mixed case gibberish, encoding artifacts
+        return /[A-Z]{2,}[a-z]{2,}[0-9]/.test(str) || 
+               /[0-9][A-Z]{2}[0-9]/.test(str) ||
+               str.includes('rift') || 
+               str.includes('9ZI') ||
+               str.includes('ZR');
+      };
+      let cleanAddr: string;
+      if (address?.trim() && !looksCorrupted(address)) {
+        // User typed a clean address
+        cleanAddr = address.trim();
+      } else {
+        // Fallback to APN reference
+        cleanAddr = `See APN ${result.parcel?.apn || 'N/A'}`;
+      }
       pdf.text(`Address: ${cleanAddr.toUpperCase()}`, col1X, infoY + 23);
       pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
       pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col2X, infoY + 23);
