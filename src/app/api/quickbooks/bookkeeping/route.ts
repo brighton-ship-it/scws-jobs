@@ -115,6 +115,16 @@ export async function GET(request: NextRequest) {
         });
       }
 
+      case 'purchase': {
+        // Get single purchase by ID (not cached like queries)
+        const purchaseId = request.nextUrl.searchParams.get('id');
+        if (!purchaseId) {
+          return NextResponse.json({ error: 'id required' }, { status: 400 });
+        }
+        const purchaseResult = await client.getPurchase(purchaseId);
+        return NextResponse.json(purchaseResult);
+      }
+
       case 'transactions_by_account': {
         const acctId = request.nextUrl.searchParams.get('account_id');
         const startDate = request.nextUrl.searchParams.get('start') || '2020-01-01';
