@@ -479,7 +479,7 @@ async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number,
     // Query parcels with septic designation within bounding box
     const { data, error } = await supabase
       .from('parcel_infrastructure')
-      .select('apn, sewer_septic_designation, latitude, longitude, full_address')
+      .select('apn, sewer_septic_designation, latitude, longitude')
       .gte('latitude', lat - latOffset)
       .lte('latitude', lat + latOffset)
       .gte('longitude', lng - lngOffset)
@@ -524,7 +524,7 @@ async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number,
           type: 'SEPTIC' as const,
           latitude: septicLat,
           longitude: septicLng,
-          full_address: record.full_address,
+          full_address: undefined, // Not in current import
           distance_feet: distanceFeet,
         };
       })
