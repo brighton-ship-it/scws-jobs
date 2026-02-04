@@ -36,6 +36,8 @@ interface WellInfo {
   latitude: number;
   longitude: number;
   distance_from_parcel?: number;
+  apn?: string;
+  coords_enhanced?: boolean; // True if coords came from parcel lookup vs DWR section centroid
 }
 
 interface SepticInfo {
@@ -77,6 +79,55 @@ async function queryArcGIS(url: string, params: Record<string, string>): Promise
   }
 
   return response.json();
+}
+
+/**
+ * Look up parcel centroids by APNs from our Supabase parcel_infrastructure table
+ * Returns a map of normalized APN -> { latitude, longitude }
+ */
+async function lookupParcelCentroidsByAPNs(apns: string[]): Promise<Map<string, { latitude: number; longitude: number }>> {
+  const results = new Map<string, { latitude: number; longitude: number }>();
+  
+  if (apns.length === 0) return results;
+  
+  try {
+    const supabase = await createClient();
+    
+    // Normalize APNs - remove dashes and spaces
+    const normalizedAPNs = apns
+      .filter(apn => apn && apn.length >= 8) // Filter out invalid APNs
+      .map(apn => apn.replace(/[-\s]/g, ''));
+    
+    if (normalizedAPNs.length === 0) return results;
+    
+    // Query in batches of 50 to avoid query limits
+    const batchSize = 50;
+    for (let i = 0; i < normalizedAPNs.length; i += batchSize) {
+      const batch = normalizedAPNs.slice(i, i + batchSize);
+      
+      const { data, error } = await supabase
+        .from('parcel_infrastructure')
+        .select('apn, latitude, longitude')
+        .in('apn', batch);
+      
+      if (!error && data) {
+        data.forEach(parcel => {
+          if (parcel.latitude && parcel.longitude) {
+            results.set(parcel.apn, {
+              latitude: parcel.latitude,
+              longitude: parcel.longitude
+            });
+          }
+        });
+      }
+    }
+    
+    console.log(`Parcel centroid lookup: ${results.size}/${apns.length} APNs matched`);
+  } catch (error) {
+    console.error('Parcel centroid lookup error:', error);
+  }
+  
+  return results;
 }
 
 /**
@@ -199,7 +250,7 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
       geometry: JSON.stringify(envelope),
       geometryType: 'esriGeometryEnvelope',
       spatialRel: 'esriSpatialRelIntersects',
-      outFields: 'WCRNumber,DateWorkEnded,TotalCompletedDepth,TopOfPerforatedInterval,BottomofPerforatedInterval,StaticWaterLevel,PlannedUseFormerUse,DecimalLatitude,DecimalLongitude',
+      outFields: 'WCRNumber,APN,DateWorkEnded,TotalCompletedDepth,TopOfPerforatedInterval,BottomofPerforatedInterval,StaticWaterLevel,PlannedUseFormerUse,DecimalLatitude,DecimalLongitude',
       returnGeometry: 'false',
       resultRecordCount: '100', // Limit to 100 wells max
     });
@@ -207,24 +258,51 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
     console.log('DWR wells response:', result.features?.length || 0, 'wells found');
 
     if (result.features) {
+      // Collect APNs for parcel centroid lookup
+      const apns = result.features
+        .map((f: any) => f.attributes.APN)
+        .filter((apn: string) => apn && apn.length >= 8);
+      
+      // Look up parcel centroids for better coordinates
+      const parcelCentroids = await lookupParcelCentroidsByAPNs(apns);
+      
+      // Helper to calculate Haversine distance
+      const calcDistance = (lat1: number, lng1: number, lat2: number, lng2: number) => {
+        const R = 6371000; // Earth radius in meters
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLng = (lng2 - lng1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        return R * c;
+      };
+      
       // Filter to only wells with valid coordinates and calculate distance
       const wellsWithDistance = result.features
         .filter((f: any) => f.attributes.DecimalLatitude && f.attributes.DecimalLongitude)
         .map((f: any) => {
-          const wellLat = f.attributes.DecimalLatitude;
-          const wellLng = f.attributes.DecimalLongitude;
-          // Calculate distance in meters using Haversine
-          const R = 6371000; // Earth radius in meters
-          const dLat = (wellLat - lat) * Math.PI / 180;
-          const dLng = (wellLng - lng) * Math.PI / 180;
-          const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                    Math.cos(lat * Math.PI / 180) * Math.cos(wellLat * Math.PI / 180) *
-                    Math.sin(dLng/2) * Math.sin(dLng/2);
-          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-          const distance = R * c;
+          let wellLat = f.attributes.DecimalLatitude;
+          let wellLng = f.attributes.DecimalLongitude;
+          let coordsEnhanced = false;
+          
+          // Try to enhance coordinates using parcel centroid
+          const apn = f.attributes.APN;
+          if (apn) {
+            const normalizedApn = apn.replace(/[-\s]/g, '');
+            const parcelCoords = parcelCentroids.get(normalizedApn);
+            if (parcelCoords) {
+              wellLat = parcelCoords.latitude;
+              wellLng = parcelCoords.longitude;
+              coordsEnhanced = true;
+            }
+          }
+          
+          const distance = calcDistance(lat, lng, wellLat, wellLng);
           
           return {
             wcr_number: f.attributes.WCRNumber,
+            apn: f.attributes.APN,
             date_work_ended: f.attributes.DateWorkEnded ? new Date(f.attributes.DateWorkEnded).toISOString().split('T')[0] : undefined,
             total_completed_depth: f.attributes.TotalCompletedDepth,
             top_of_perforations: f.attributes.TopOfPerforatedInterval,
@@ -234,6 +312,7 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
             latitude: wellLat,
             longitude: wellLng,
             distance_from_parcel: Math.round(distance * 3.28084), // Convert to feet
+            coords_enhanced: coordsEnhanced,
           };
         })
         // Filter to actual radius (envelope is square, so some may be outside circle)
@@ -241,7 +320,8 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
         // Sort by distance
         .sort((a: WellInfo, b: WellInfo) => (a.distance_from_parcel || 0) - (b.distance_from_parcel || 0));
       
-      console.log('DWR wells after filtering:', wellsWithDistance.length, 'wells within radius');
+      const enhancedCount = wellsWithDistance.filter((w: WellInfo) => w.coords_enhanced).length;
+      console.log(`DWR wells after filtering: ${wellsWithDistance.length} wells within radius (${enhancedCount} with enhanced coords)`);
       return wellsWithDistance;
     }
     
