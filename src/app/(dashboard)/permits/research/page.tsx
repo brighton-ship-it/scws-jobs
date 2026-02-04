@@ -104,7 +104,7 @@ interface ResearchResult {
   cached?: boolean;
 }
 
-type County = 'san_diego' | 'riverside';
+type County = 'san_diego' | 'riverside' | 'san_bernardino';
 type SearchType = 'apn' | 'address' | 'gps';
 
 interface SepticLocation {
@@ -126,16 +126,18 @@ interface PermitFormData {
 const COUNTY_OPTIONS: { value: County; label: string }[] = [
   { value: 'san_diego', label: 'San Diego County' },
   { value: 'riverside', label: 'Riverside County' },
+  { value: 'san_bernardino', label: 'San Bernardino County' },
 ];
 
 // County boundaries (approximate)
 const COUNTY_BOUNDARIES = {
   san_diego: { minLat: 32.5, maxLat: 33.5, minLng: -117.6, maxLng: -116.0 },
   riverside: { minLat: 33.4, maxLat: 34.1, minLng: -117.7, maxLng: -114.4 },
+  san_bernardino: { minLat: 34.0, maxLat: 35.8, minLng: -117.7, maxLng: -114.1 },
 };
 
 function detectCountyFromCoords(lat: number, lng: number): County {
-  const { san_diego, riverside } = COUNTY_BOUNDARIES;
+  const { san_diego, riverside, san_bernardino } = COUNTY_BOUNDARIES;
   if (lat >= san_diego.minLat && lat <= san_diego.maxLat && 
       lng >= san_diego.minLng && lng <= san_diego.maxLng) {
     return 'san_diego';
@@ -143,6 +145,10 @@ function detectCountyFromCoords(lat: number, lng: number): County {
   if (lat >= riverside.minLat && lat <= riverside.maxLat && 
       lng >= riverside.minLng && lng <= riverside.maxLng) {
     return 'riverside';
+  }
+  if (lat >= san_bernardino.minLat && lat <= san_bernardino.maxLat && 
+      lng >= san_bernardino.minLng && lng <= san_bernardino.maxLng) {
+    return 'san_bernardino';
   }
   return 'san_diego'; // Default
 }
@@ -836,8 +842,8 @@ export default function PermitResearchPage() {
   function drawPropertyLineSetback(parcelCoords: { lat: number; lng: number }[], map: google.maps.Map) {
     if (parcelCoords.length < 3) return;
     
-    // County-specific setback distances
-    const setbackFeet = county === 'san_diego' ? 10 : 50;
+    // County-specific setback distances (property line setbacks)
+    const setbackFeet = county === 'san_diego' ? 10 : county === 'san_bernardino' ? 20 : 50;
     // Convert feet to degrees at ~33° latitude (~364000 ft per degree)
     const offsetDeg = setbackFeet / 364000;
     
@@ -1148,7 +1154,7 @@ export default function PermitResearchPage() {
       pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
       pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col3X, infoY + 16);
       
-      pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X + 20, infoY + 16);
+      pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : county === 'san_bernardino' ? 'San Bernardino' : 'Riverside'}`, col3X + 20, infoY + 16);
       
       // Owner name on its own line to avoid overlap
       const ownerName = result.parcel?.ownerName || '';
