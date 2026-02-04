@@ -485,12 +485,15 @@ export default function PermitResearchPage() {
     }
   }, [wellLocation, showSetbacks]);
 
-  // Draw property line setback (50ft inward) using proper edge offset
+  // Draw property line setback using proper edge offset
+  // San Diego: 10ft setback, Riverside: 50ft setback
   function drawPropertyLineSetback(parcelCoords: { lat: number; lng: number }[], map: google.maps.Map) {
     if (parcelCoords.length < 3) return;
     
-    // 50ft in degrees at ~33° latitude
-    const offsetDeg = 50 / 364000;
+    // County-specific setback distances
+    const setbackFeet = county === 'san_diego' ? 10 : 50;
+    // Convert feet to degrees at ~33° latitude (~364000 ft per degree)
+    const offsetDeg = setbackFeet / 364000;
     
     // Helper: get perpendicular unit vector (inward) for an edge
     const getInwardNormal = (p1: {lat: number, lng: number}, p2: {lat: number, lng: number}, centroid: {lat: number, lng: number}) => {
@@ -532,11 +535,14 @@ export default function PermitResearchPage() {
       });
     }
     
-    // Find intersection of consecutive offset edges
+    // Find intersection of consecutive offset edges with bounds checking
     const insetCoords: {lat: number, lng: number}[] = [];
+    const maxOffsetDeg = offsetDeg * 3; // Max 3x the setback distance to catch wild points
+    
     for (let i = 0; i < n; i++) {
       const edge1 = offsetEdges[i];
       const edge2 = offsetEdges[(i + 1) % n];
+      const originalVertex = parcelCoords[(i + 1) % n];
       
       // Line intersection formula
       const x1 = edge1.p1.lng, y1 = edge1.p1.lat;
@@ -550,10 +556,35 @@ export default function PermitResearchPage() {
         insetCoords.push(edge1.p2);
       } else {
         const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
-        insetCoords.push({
+        const intersection = {
           lng: x1 + t * (x2 - x1),
           lat: y1 + t * (y2 - y1)
-        });
+        };
+        
+        // Check if intersection is too far from original vertex (wild corner)
+        const dist = Math.sqrt(
+          Math.pow(intersection.lat - originalVertex.lat, 2) + 
+          Math.pow(intersection.lng - originalVertex.lng, 2)
+        );
+        
+        if (dist < maxOffsetDeg) {
+          insetCoords.push(intersection);
+        } else {
+          // Wild intersection - fall back to simple inward offset from vertex
+          const toCenter = {
+            lat: (centroid.lat - originalVertex.lat),
+            lng: (centroid.lng - originalVertex.lng)
+          };
+          const toCenterLen = Math.sqrt(toCenter.lat * toCenter.lat + toCenter.lng * toCenter.lng);
+          if (toCenterLen > 0) {
+            insetCoords.push({
+              lat: originalVertex.lat + (toCenter.lat / toCenterLen) * offsetDeg,
+              lng: originalVertex.lng + (toCenter.lng / toCenterLen) * offsetDeg
+            });
+          } else {
+            insetCoords.push(edge1.p2);
+          }
+        }
       }
     }
     
