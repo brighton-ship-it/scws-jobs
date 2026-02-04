@@ -431,22 +431,32 @@ export default function PermitResearchPage() {
           ? geom.coordinates 
           : [geom.coordinates];
         
+        // Debug: log first LineString raw data
+        if (linesDrawn === 0) {
+          console.log('First LineString geom:', JSON.stringify(geom).slice(0, 500));
+          console.log('coords array length:', coords.length);
+        }
+        
         coords.forEach((line: number[][], idx: number) => {
+          if (linesDrawn === 0) {
+            console.log('First line data:', JSON.stringify(line).slice(0, 300));
+          }
           if (!Array.isArray(line) || line.length < 2) {
-            console.log('Invalid line:', line);
+            console.log('Invalid line - skipping:', typeof line, line?.length);
             return;
           }
           const path = line.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }));
-          if (linesDrawn === 0) {
-            console.log('First polyline path sample:', path.slice(0, 3), 'color:', color);
+          if (linesDrawn < 3) {
+            console.log(`Polyline ${linesDrawn} path:`, path.slice(0, 2), 'total points:', path.length, 'color:', color);
           }
           const polyline = new google.maps.Polyline({
             path,
             strokeColor: color,
             strokeOpacity: 1.0,
-            strokeWeight: 4, // Thicker for visibility
+            strokeWeight: 5, // Even thicker
             map,
-            zIndex: 100, // Ensure it's on top
+            zIndex: 1000, // Very high z-index
+            clickable: true,
           });
           utilityPolylinesRef.current.push(polyline);
           linesDrawn++;
