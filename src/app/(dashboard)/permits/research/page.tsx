@@ -86,12 +86,12 @@ interface UtilityCoverage {
   note?: string;
 }
 
-// Utility colors for map layers
+// Utility colors for map layers - bright for visibility on satellite
 const UTILITY_COLORS = {
-  sewer: '#8B4513', // brown
-  water: '#0066CC', // blue
-  storm: '#228B22', // green
-  electric: '#FFD700', // yellow
+  sewer: '#FF6600', // bright orange for visibility
+  water: '#00BFFF', // bright cyan blue
+  storm: '#00FF00', // bright green
+  electric: '#FFFF00', // bright yellow
 };
 
 interface ResearchResult {
@@ -427,18 +427,26 @@ export default function PermitResearchPage() {
         : feature.geometry;
       
       if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
-        const coordinates = geom.type === 'MultiLineString' 
+        const coords = geom.type === 'MultiLineString' 
           ? geom.coordinates 
           : [geom.coordinates];
         
-        coordinates.forEach((line: number[][]) => {
+        coords.forEach((line: number[][], idx: number) => {
+          if (!Array.isArray(line) || line.length < 2) {
+            console.log('Invalid line:', line);
+            return;
+          }
           const path = line.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }));
+          if (linesDrawn === 0) {
+            console.log('First polyline path sample:', path.slice(0, 3), 'color:', color);
+          }
           const polyline = new google.maps.Polyline({
             path,
             strokeColor: color,
             strokeOpacity: 1.0,
-            strokeWeight: utilityType === 'electric' ? 4 : 3,
+            strokeWeight: 4, // Thicker for visibility
             map,
+            zIndex: 100, // Ensure it's on top
           });
           utilityPolylinesRef.current.push(polyline);
           linesDrawn++;
