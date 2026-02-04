@@ -1,0 +1,48 @@
+
+      case 'transactions_by_account': {
+        const acctId = request.nextUrl.searchParams.get('account_id');
+        const startDate = request.nextUrl.searchParams.get('start') || '2020-01-01';
+        const endDate = request.nextUrl.searchParams.get('end') || getToday();
+        
+        if (!acctId) {
+          return NextResponse.json({ error: 'account_id required' }, { status: 400 });
+        }
+
+        // Use GeneralLedger report to get all transactions for an account
+        const report = await client.getReport('GeneralLedger', {
+          start_date: startDate,
+          end_date: endDate,
+          account: acctId,
+        });
+        
+        // Parse the report rows into transactions
+        const transactions: Array<{date: string, type: string, num: string, name: string, memo: string, amount: number, balance: number}> = [];
+        
+        const rows = report?.Rows?.Row || [];
+        for (const section of rows) {
+          if (section.Rows?.Row) {
+            for (const row of section.Rows.Row) {
+              if (row.type === 'Data' && row.ColData) {
+                const cols = row.ColData;
+                transactions.push({
+                  date: cols[0]?.value || '',
+                  type: cols[1]?.value || '',
+                  num: cols[2]?.value || '',
+                  name: cols[3]?.value || '',
+                  memo: cols[4]?.value || '',
+                  amount: parseFloat(cols[5]?.value || '0'),
+                  balance: parseFloat(cols[6]?.value || '0'),
+                });
+              }
+            }
+          }
+        }
+        
+        return NextResponse.json({ 
+          account_id: acctId,
+          start: startDate,
+          end: endDate,
+          transactions,
+          raw: report 
+        });
+      }
