@@ -786,7 +786,12 @@ export default function PermitResearchPage() {
         // Fallback to APN reference
         cleanAddr = `See APN ${result.parcel?.apn || 'N/A'}`;
       }
-      pdf.text(`Address: ${cleanAddr.toUpperCase()}`, col1X, infoY + 23);
+      // Truncate address to fit in column (max ~70 chars to avoid overflow into col2)
+      const maxAddrLen = 50;
+      const truncatedAddr = cleanAddr.length > maxAddrLen 
+        ? cleanAddr.substring(0, maxAddrLen - 3) + '...'
+        : cleanAddr;
+      pdf.text(`Address: ${truncatedAddr.toUpperCase()}`, col1X, infoY + 23);
       pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
       pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col2X, infoY + 23);
       pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X, infoY + 16);
