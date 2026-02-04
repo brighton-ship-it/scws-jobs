@@ -485,35 +485,82 @@ export default function PermitResearchPage() {
     }
   }, [wellLocation, showSetbacks]);
 
-  // Draw property line setback (50ft inward)
+  // Draw property line setback (50ft inward) using proper edge offset
   function drawPropertyLineSetback(parcelCoords: { lat: number; lng: number }[], map: google.maps.Map) {
+    if (parcelCoords.length < 3) return;
+    
+    // 50ft in degrees at ~33° latitude
+    const offsetDeg = 50 / 364000;
+    
+    // Helper: get perpendicular unit vector (inward) for an edge
+    const getInwardNormal = (p1: {lat: number, lng: number}, p2: {lat: number, lng: number}, centroid: {lat: number, lng: number}) => {
+      const dx = p2.lng - p1.lng;
+      const dy = p2.lat - p1.lat;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len === 0) return { lat: 0, lng: 0 };
+      
+      // Perpendicular vectors (two options)
+      const n1 = { lat: dx / len, lng: -dy / len };
+      const n2 = { lat: -dx / len, lng: dy / len };
+      
+      // Pick the one pointing toward centroid (inward)
+      const mid = { lat: (p1.lat + p2.lat) / 2, lng: (p1.lng + p2.lng) / 2 };
+      const toCentroid = { lat: centroid.lat - mid.lat, lng: centroid.lng - mid.lng };
+      const dot1 = n1.lat * toCentroid.lat + n1.lng * toCentroid.lng;
+      
+      return dot1 > 0 ? n1 : n2;
+    };
+    
     // Calculate centroid
     const centroid = parcelCoords.reduce(
       (acc, coord) => ({ lat: acc.lat + coord.lat / parcelCoords.length, lng: acc.lng + coord.lng / parcelCoords.length }),
       { lat: 0, lng: 0 }
     );
     
-    // Create inset polygon (approximate - move each point 50ft toward centroid)
-    const insetCoords = parcelCoords.map(coord => {
-      const dx = centroid.lng - coord.lng;
-      const dy = centroid.lat - coord.lat;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist === 0) return coord;
+    // Offset each edge inward and find intersections
+    const n = parcelCoords.length;
+    const offsetEdges: Array<{p1: {lat: number, lng: number}, p2: {lat: number, lng: number}}> = [];
+    
+    for (let i = 0; i < n; i++) {
+      const p1 = parcelCoords[i];
+      const p2 = parcelCoords[(i + 1) % n];
+      const normal = getInwardNormal(p1, p2, centroid);
       
-      // 50ft in degrees (approximate at this latitude)
-      const offsetDeg = 50 / 364000; // ~364000 ft per degree at ~33° latitude
-      const scale = offsetDeg / dist;
+      offsetEdges.push({
+        p1: { lat: p1.lat + normal.lat * offsetDeg, lng: p1.lng + normal.lng * offsetDeg },
+        p2: { lat: p2.lat + normal.lat * offsetDeg, lng: p2.lng + normal.lng * offsetDeg }
+      });
+    }
+    
+    // Find intersection of consecutive offset edges
+    const insetCoords: {lat: number, lng: number}[] = [];
+    for (let i = 0; i < n; i++) {
+      const edge1 = offsetEdges[i];
+      const edge2 = offsetEdges[(i + 1) % n];
       
-      return {
-        lat: coord.lat + dy * scale,
-        lng: coord.lng + dx * scale,
-      };
-    });
+      // Line intersection formula
+      const x1 = edge1.p1.lng, y1 = edge1.p1.lat;
+      const x2 = edge1.p2.lng, y2 = edge1.p2.lat;
+      const x3 = edge2.p1.lng, y3 = edge2.p1.lat;
+      const x4 = edge2.p2.lng, y4 = edge2.p2.lat;
+      
+      const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+      if (Math.abs(denom) < 1e-10) {
+        // Parallel edges, use endpoint
+        insetCoords.push(edge1.p2);
+      } else {
+        const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+        insetCoords.push({
+          lng: x1 + t * (x2 - x1),
+          lat: y1 + t * (y2 - y1)
+        });
+      }
+    }
     
     propertyLineSetbackRef.current = new google.maps.Polygon({
       paths: insetCoords,
       strokeColor: '#3B82F6',
-      strokeOpacity: 0.6,
+      strokeOpacity: 0.8,
       strokeWeight: 2,
       fillColor: 'transparent',
       fillOpacity: 0,
