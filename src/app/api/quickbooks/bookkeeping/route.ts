@@ -108,12 +108,19 @@ export async function GET(request: NextRequest) {
       }
 
       case 'profit_loss': {
-        const startDate = request.nextUrl.searchParams.get('start') || getStartOfYear();
-        const endDate = request.nextUrl.searchParams.get('end') || getToday();
-        const report = await executeWithRetry(isAdmin, (client) => 
-          client.getReport('ProfitAndLoss', { start_date: startDate, end_date: endDate })
-        );
-        return NextResponse.json({ report });
+        const startParam = request.nextUrl.searchParams.get('start');
+        const endParam = request.nextUrl.searchParams.get('end');
+        const startDate = startParam || getStartOfYear();
+        const endDate = endParam || getToday();
+        
+        console.log(`P&L Request - startParam: "${startParam}", startDate: "${startDate}", endDate: "${endDate}"`);
+        console.log(`Param provided: ${startParam !== null}, Using default: ${startParam === null}`);
+        
+        const report = await executeWithRetry(isAdmin, (client) => {
+          console.log(`Calling QBO report with start_date=${startDate}, end_date=${endDate}`);
+          return client.getReport('ProfitAndLoss', { start_date: startDate, end_date: endDate });
+        });
+        return NextResponse.json({ report, debug: { startParam, startDate, endDate } });
       }
 
       case 'balance_sheet': {
