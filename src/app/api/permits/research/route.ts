@@ -177,22 +177,22 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
       spatialRel: 'esriSpatialRelIntersects',
       distance: radiusMeters.toString(),
       units: 'esriSRUnit_Meter',
-      outFields: 'WCRNUMBER,DateWorkEnded,TotalCompletedDepth,TopOfPerforations,BottomOfPerforations,StaticWaterLevel,PlannedUseFormerUse,LATITUDE,LONGITUDE',
+      outFields: 'WCRNumber,DateWorkEnded,TotalCompletedDepth,TopOfPerforatedInterval,BottomofPerforatedInterval,StaticWaterLevel,PlannedUseFormerUse,DecimalLatitude,DecimalLongitude',
       returnGeometry: 'false',
       outSR: '4326',
     });
 
     if (result.features) {
       return result.features.map((f: any) => ({
-        wcr_number: f.attributes.WCRNUMBER,
+        wcr_number: f.attributes.WCRNumber,
         date_work_ended: f.attributes.DateWorkEnded ? new Date(f.attributes.DateWorkEnded).toISOString().split('T')[0] : undefined,
         total_completed_depth: f.attributes.TotalCompletedDepth,
-        top_of_perforations: f.attributes.TopOfPerforations,
-        bottom_of_perforations: f.attributes.BottomOfPerforations,
+        top_of_perforations: f.attributes.TopOfPerforatedInterval,
+        bottom_of_perforations: f.attributes.BottomofPerforatedInterval,
         static_water_level: f.attributes.StaticWaterLevel,
         well_use: f.attributes.PlannedUseFormerUse,
-        latitude: f.attributes.LATITUDE,
-        longitude: f.attributes.LONGITUDE,
+        latitude: f.attributes.DecimalLatitude,
+        longitude: f.attributes.DecimalLongitude,
       }));
     }
     
@@ -208,17 +208,17 @@ async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 16
  */
 async function fetchSanDiegoParcelByCoords(lat: number, lng: number): Promise<ParcelInfo | null> {
   try {
-    // Use identify operation instead of query (query doesn't support point spatial)
+    // Use identify operation - SD County doesn't support spatial queries on points
     const baseUrl = 'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/PARCELS_ALL/MapServer/identify';
     const params = new URLSearchParams({
       f: 'json',
-      geometry: JSON.stringify({ x: lng, y: lat }),
+      geometry: JSON.stringify({ x: lng, y: lat, spatialReference: { wkid: 4326 } }),
       geometryType: 'esriGeometryPoint',
       sr: '4326',
       layers: 'all:0',
-      tolerance: '10',
-      mapExtent: `${lng - 0.01},${lat - 0.01},${lng + 0.01},${lat + 0.01}`,
-      imageDisplay: '400,400,96',
+      tolerance: '1',
+      mapExtent: `${lng - 0.001},${lat - 0.001},${lng + 0.001},${lat + 0.001}`,
+      imageDisplay: '1000,1000,96',
       returnGeometry: 'true',
     });
 
@@ -248,16 +248,55 @@ async function fetchSanDiegoParcelByCoords(lat: number, lng: number): Promise<Pa
         siteAddress: [siteAddr, attrs.SITUS_COMMUNITY, attrs.SITUS_ZIP].filter(Boolean).join(', '),
         lotSizeAcres: parseFloat(attrs.ACREAGE) || undefined,
         lotSizeSqFt: attrs.ACREAGE ? Math.round(parseFloat(attrs.ACREAGE) * 43560) : undefined,
-        geometry: feature.geometry,
+        geometry: convertGeometryToWGS84(feature.geometry),
         landUse: attrs.NUCLEUS_USE_CD,
         zoning: attrs.NUCLEUS_ZONE_CD,
       };
     }
     return null;
   } catch (error) {
-    console.error('San Diego parcel by coords error:', error);
+    console.error('San Diego parcel identify error:', error);
     throw error;
   }
+}
+
+/**
+ * Convert geometry from Web Mercator (102100/3857) to WGS84 (4326) if needed
+ */
+function convertGeometryToWGS84(geometry: any): any {
+  if (!geometry || !geometry.rings) return geometry;
+  
+  // Check if already in WGS84 (coordinates will be small decimal values)
+  const firstPoint = geometry.rings[0]?.[0];
+  if (!firstPoint) return geometry;
+  
+  // WGS84 coordinates are roughly: lng -180 to 180, lat -90 to 90
+  // Web Mercator coordinates are roughly: x -20M to 20M, y -20M to 20M
+  const isWebMercator = Math.abs(firstPoint[0]) > 180 || Math.abs(firstPoint[1]) > 90;
+  
+  if (!isWebMercator) {
+    console.log('Geometry already in WGS84');
+    return geometry;
+  }
+  
+  console.log('Converting geometry from Web Mercator to WGS84');
+  
+  // Convert each ring
+  const convertedRings = geometry.rings.map((ring: number[][]) => 
+    ring.map((pt: number[]) => {
+      // Web Mercator to WGS84 conversion
+      const lng = (pt[0] / 20037508.34) * 180;
+      let lat = (pt[1] / 20037508.34) * 180;
+      lat = (180 / Math.PI) * (2 * Math.atan(Math.exp(lat * Math.PI / 180)) - Math.PI / 2);
+      return [lng, lat];
+    })
+  );
+  
+  return {
+    ...geometry,
+    rings: convertedRings,
+    spatialReference: { wkid: 4326 },
+  };
 }
 
 /**

@@ -141,8 +141,12 @@ export default function PermitResearchPage() {
   
   // Setback visualization state
   const [septicLocation, setSepticLocation] = useState<SepticLocation | null>(null);
+  const [wellLocation, setWellLocation] = useState<SepticLocation | null>(null); // Proposed well location
   const [showSetbacks, setShowSetbacks] = useState(true);
   const [isPlacingSeptic, setIsPlacingSeptic] = useState(false);
+  const [isPlacingWell, setIsPlacingWell] = useState(false);
+  const isPlacingSepticRef = useRef(false); // Ref to track current state in click handler
+  const isPlacingWellRef = useRef(false);
   
   // PDF Export state
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -168,55 +172,118 @@ export default function PermitResearchPage() {
   const parcelPolygonRef = useRef<google.maps.Polygon | null>(null);
   const setbackCirclesRef = useRef<google.maps.Circle[]>([]);
   const propertyLineSetbackRef = useRef<google.maps.Polygon | null>(null);
-  const septicMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(null);
+  const septicMarkerRef = useRef<google.maps.Marker | null>(null);
   
   // Coordinates for search
   const [coordinates, setCoordinates] = useState<{ lat: number; lng: number } | null>(null);
+  
+  // Map ready state (to trigger drawing useEffect)
+  const [mapReady, setMapReady] = useState(false);
 
-  // Initialize map
+  // Initialize map - runs when result changes (which makes mapRef available)
   useEffect(() => {
     let isMounted = true;
     
     async function initMap() {
-      if (!isGoogleMapsConfigured() || !mapRef.current) return;
+      // Only init when we have results (which renders the map container)
+      if (!isGoogleMapsConfigured() || !mapRef.current) {
+        console.log('Map init skipped - no config or no mapRef');
+        return;
+      }
+      
+      // Already initialized
+      if (mapInstanceRef.current) {
+        console.log('Map already initialized');
+        return;
+      }
       
       try {
+        console.log('Initializing map...');
         const { Map } = await getMapsLibrary();
         
         if (!isMounted || !mapRef.current) return;
         
         const map = new Map(mapRef.current, {
-          center: SOCAL_CENTER,
-          zoom: 10,
+          center: coordinates || SOCAL_CENTER,
+          zoom: coordinates ? 17 : 10,
           mapTypeControl: true,
           streetViewControl: false,
           mapTypeId: 'satellite',
         });
         
         mapInstanceRef.current = map;
+        setMapReady(true);
+        console.log('Map instance created successfully, mapReady set to true');
         
-        // Click handler for placing septic
-        map.addListener('click', (e: google.maps.MapMouseEvent) => {
-          if (isPlacingSeptic && e.latLng) {
-            setSepticLocation({ lat: e.latLng.lat(), lng: e.latLng.lng() });
-            setIsPlacingSeptic(false);
-          }
-        });
+        // Click handler added - but we'll use a separate useEffect for placement
+        // to avoid stale closure issues
       } catch (err) {
         console.error('Error initializing map:', err);
       }
     }
     
-    initMap();
+    // Small delay to ensure DOM is ready after result renders
+    const timer = setTimeout(initMap, 100);
     
     return () => {
       isMounted = false;
+      clearTimeout(timer);
     };
-  }, []);
+  }, [result, coordinates]); // Re-run when result changes (which renders the map container)
+
+  // Handle map clicks for placing septic/well
+  const mapClickListenerRef = useRef<google.maps.MapsEventListener | null>(null);
+  
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    if (!map) {
+      console.log('Map click effect: no map instance');
+      return;
+    }
+    
+    // Remove old listener
+    if (mapClickListenerRef.current) {
+      google.maps.event.removeListener(mapClickListenerRef.current);
+    }
+    
+    // Only add listener if in placement mode
+    if (!isPlacingSeptic && !isPlacingWell) {
+      console.log('Map click effect: not in placement mode');
+      return;
+    }
+    
+    console.log('Map click effect: attaching listener', { isPlacingSeptic, isPlacingWell });
+    
+    mapClickListenerRef.current = google.maps.event.addListener(map, 'click', (e: google.maps.MapMouseEvent) => {
+      console.log('MAP CLICKED!', e.latLng?.toJSON());
+      
+      if (isPlacingSeptic && e.latLng) {
+        setSepticLocation({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+        setIsPlacingSeptic(false);
+      }
+      
+      if (isPlacingWell && e.latLng) {
+        setWellLocation({ lat: e.latLng.lat(), lng: e.latLng.lng() });
+        setIsPlacingWell(false);
+      }
+    });
+    
+    return () => {
+      if (mapClickListenerRef.current) {
+        google.maps.event.removeListener(mapClickListenerRef.current);
+        mapClickListenerRef.current = null;
+      }
+    };
+  }, [isPlacingSeptic, isPlacingWell, mapReady]);
 
   // Update map when results change
   useEffect(() => {
-    if (!mapInstanceRef.current || !result) return;
+    console.log('Drawing useEffect triggered:', { mapReady, hasResult: !!result, hasMap: !!mapInstanceRef.current });
+    if (!mapInstanceRef.current || !result) {
+      console.log('Drawing skipped - map or result missing');
+      return;
+    }
+    console.log('Drawing parcel and wells...');
     
     const map = mapInstanceRef.current;
     
@@ -258,41 +325,54 @@ export default function PermitResearchPage() {
       }
     }
     
-    // Add well markers with depth labels
+    // Add well markers with depth labels (using regular Marker, not AdvancedMarker)
     if (result.wells.length > 0) {
-      result.wells.forEach(async (well, index) => {
-        try {
-          const { AdvancedMarkerElement } = await google.maps.importLibrary('marker') as google.maps.MarkerLibrary;
-          
-          const markerContent = document.createElement('div');
-          markerContent.className = 'well-marker-container';
-          markerContent.innerHTML = `
-            <div style="display: flex; flex-direction: column; align-items: center;">
-              <div style="background: #3B82F6; color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 8px rgba(0,0,0,0.3); border: 2px solid white;">
-                ${index + 1}
-              </div>
-              ${well.total_completed_depth ? `
-                <div style="background: rgba(0,0,0,0.75); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-top: 4px; white-space: nowrap;">
-                  ${well.total_completed_depth}ft
-                </div>
-              ` : ''}
+      console.log('Adding', result.wells.length, 'well markers');
+      result.wells.forEach((well, index) => {
+        if (!well.latitude || !well.longitude) return;
+        
+        const marker = new google.maps.Marker({
+          map,
+          position: { lat: well.latitude, lng: well.longitude },
+          title: `Well #${well.wcr_number} - ${well.total_completed_depth || 'Unknown'}ft deep`,
+          label: {
+            text: String(index + 1),
+            color: 'white',
+            fontSize: '11px',
+            fontWeight: 'bold',
+          },
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 14,
+            fillColor: '#3B82F6',
+            fillOpacity: 1,
+            strokeColor: '#ffffff',
+            strokeWeight: 2,
+          },
+        });
+        
+        // Add info window with well details
+        const infoWindow = new google.maps.InfoWindow({
+          content: `
+            <div style="padding: 8px; min-width: 180px;">
+              <strong style="font-size: 14px;">Well #${well.wcr_number}</strong><br/>
+              ${well.total_completed_depth ? `<b>Depth:</b> ${well.total_completed_depth}ft<br/>` : ''}
+              ${well.static_water_level ? `<b>Static Level:</b> ${well.static_water_level}ft<br/>` : ''}
+              ${well.well_use ? `<b>Use:</b> ${well.well_use}<br/>` : ''}
+              ${well.date_work_ended ? `<b>Date:</b> ${well.date_work_ended}` : ''}
             </div>
-          `;
-          
-          const marker = new AdvancedMarkerElement({
-            map,
-            position: { lat: well.latitude, lng: well.longitude },
-            content: markerContent,
-            title: `Well ${well.wcr_number} - ${well.total_completed_depth || 'Unknown'}ft`,
-          });
-          
-          markersRef.current.push(marker);
-        } catch (err) {
-          console.error('Error adding marker:', err);
-        }
+          `,
+        });
+        
+        marker.addListener('click', () => {
+          infoWindow.open(map, marker);
+        });
+        
+        markersRef.current.push(marker as any);
       });
+      console.log('Added', markersRef.current.length, 'markers');
     }
-  }, [result, showSetbacks]);
+  }, [result, showSetbacks, mapReady]); // Include mapReady to trigger when map becomes available
 
   // Update septic marker and setback circles
   useEffect(() => {
@@ -301,41 +381,33 @@ export default function PermitResearchPage() {
     
     // Clear existing septic marker and circles
     if (septicMarkerRef.current) {
-      septicMarkerRef.current.map = null;
+      septicMarkerRef.current.setMap(null);
+      septicMarkerRef.current = null;
     }
     setbackCirclesRef.current.forEach(c => c.setMap(null));
     setbackCirclesRef.current = [];
     
     if (septicLocation && showSetbacks) {
-      // Add septic marker
-      (async () => {
-        try {
-          const { AdvancedMarkerElement } = await google.maps.importLibrary('marker') as google.maps.MarkerLibrary;
-          
-          const septicContent = document.createElement('div');
-          septicContent.innerHTML = `
-            <div style="display: flex; flex-direction: column; align-items: center;">
-              <div style="background: #F59E0B; color: white; border-radius: 8px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; font-size: 18px; box-shadow: 0 2px 8px rgba(0,0,0,0.3); border: 2px solid white;">
-                🚽
-              </div>
-              <div style="background: rgba(0,0,0,0.75); color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; margin-top: 4px;">
-                Septic
-              </div>
-            </div>
-          `;
-          
-          const marker = new AdvancedMarkerElement({
-            map,
-            position: septicLocation,
-            content: septicContent,
-            title: 'Septic System Location',
-          });
-          
-          septicMarkerRef.current = marker;
-        } catch (err) {
-          console.error('Error adding septic marker:', err);
-        }
-      })();
+      // Add septic marker (using regular Marker)
+      const marker = new google.maps.Marker({
+        map,
+        position: septicLocation,
+        title: 'Septic System Location',
+        label: {
+          text: '🚽',
+          fontSize: '18px',
+        },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 18,
+          fillColor: '#F59E0B',
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        },
+      });
+      
+      septicMarkerRef.current = marker;
       
       // Draw setback circles from septic
       // 50ft radius (red dashed)
@@ -365,6 +437,53 @@ export default function PermitResearchPage() {
       setbackCirclesRef.current.push(circle100);
     }
   }, [septicLocation, showSetbacks]);
+
+  // Update proposed well marker
+  const wellMarkerRef = useRef<google.maps.Marker | null>(null);
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    
+    // Clear existing well marker
+    if (wellMarkerRef.current) {
+      wellMarkerRef.current.setMap(null);
+    }
+    
+    if (wellLocation) {
+      // Add proposed well marker (small precise crosshair - blue to match legend)
+      const marker = new google.maps.Marker({
+        map,
+        position: wellLocation,
+        title: 'Proposed Well Location',
+        icon: {
+          path: 'M 0,-8 L 0,8 M -8,0 L 8,0', // Crosshair shape
+          scale: 1,
+          fillColor: '#3B82F6',
+          fillOpacity: 1,
+          strokeColor: '#3B82F6',
+          strokeWeight: 3,
+        },
+      });
+      
+      wellMarkerRef.current = marker;
+      
+      // Draw setback circles from proposed well if showSetbacks
+      if (showSetbacks) {
+        // 50ft setback from well (blue to match legend)
+        const wellCircle50 = new google.maps.Circle({
+          center: wellLocation,
+          radius: feetToMeters(50),
+          strokeColor: '#3B82F6',
+          strokeOpacity: 0.8,
+          strokeWeight: 2,
+          fillColor: '#3B82F6',
+          fillOpacity: 0.1,
+          map,
+        });
+        setbackCirclesRef.current.push(wellCircle50);
+      }
+    }
+  }, [wellLocation, showSetbacks]);
 
   // Draw property line setback (50ft inward)
   function drawPropertyLineSetback(parcelCoords: { lat: number; lng: number }[], map: google.maps.Map) {
@@ -601,7 +720,12 @@ export default function PermitResearchPage() {
       const col3X = 180;
       
       pdf.text(`APN: ${result.parcel?.apn || 'N/A'}`, col1X, infoY + 16);
-      pdf.text(`Address: ${result.parcel?.siteAddress || 'N/A'}`, col1X, infoY + 23);
+      // Use the clean address from user input, ignore corrupted API data
+      console.log('PDF EXPORT - address state:', JSON.stringify(address));
+      console.log('PDF EXPORT - siteAddress:', JSON.stringify(result.parcel?.siteAddress));
+      const cleanAddr = address?.trim() || 'See APN for property lookup';
+      console.log('PDF EXPORT - cleanAddr:', JSON.stringify(cleanAddr));
+      pdf.text(`Address: ${cleanAddr.toUpperCase()}`, col1X, infoY + 23);
       pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
       pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col2X, infoY + 23);
       pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X, infoY + 16);
@@ -1230,7 +1354,12 @@ export default function PermitResearchPage() {
                 </label>
                 
                 <button
-                  onClick={() => setIsPlacingSeptic(true)}
+                  onClick={() => {
+                    setIsPlacingSeptic(true);
+                    isPlacingSepticRef.current = true;
+                    setIsPlacingWell(false);
+                    isPlacingWellRef.current = false;
+                  }}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
                     isPlacingSeptic 
                       ? 'bg-amber-100 text-amber-700 border border-amber-300' 
@@ -1250,6 +1379,32 @@ export default function PermitResearchPage() {
                   </button>
                 )}
                 
+                <button
+                  onClick={() => {
+                    setIsPlacingWell(true);
+                    isPlacingWellRef.current = true;
+                    setIsPlacingSeptic(false);
+                    isPlacingSepticRef.current = false;
+                  }}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition-colors ${
+                    isPlacingWell 
+                      ? 'bg-green-100 text-green-700 border border-green-300' 
+                      : 'bg-white text-gray-700 border border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <Target className="h-4 w-4" />
+                  {isPlacingWell ? 'Click map to place well...' : 'Place Well Location'}
+                </button>
+                
+                {wellLocation && (
+                  <button
+                    onClick={() => setWellLocation(null)}
+                    className="text-sm text-red-600 hover:text-red-700"
+                  >
+                    Clear Well
+                  </button>
+                )}
+                
                 {/* North Arrow */}
                 <div className="ml-auto flex items-center gap-2 text-gray-500">
                   <Navigation className="h-5 w-5 transform rotate-0" />
@@ -1258,7 +1413,41 @@ export default function PermitResearchPage() {
               </div>
               
               <div className="relative">
-                <div ref={mapRef} className="h-[500px] w-full bg-gray-100" />
+                <div 
+                  ref={mapRef} 
+                  className="h-[500px] w-full bg-gray-100"
+                  onClick={(e) => {
+                    // Fallback click handler for placement
+                    if (!mapInstanceRef.current) return;
+                    if (!isPlacingSeptic && !isPlacingWell) return;
+                    
+                    const map = mapInstanceRef.current;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const x = e.clientX - rect.left;
+                    const y = e.clientY - rect.top;
+                    
+                    // Convert pixel to lat/lng
+                    const bounds = map.getBounds();
+                    const ne = bounds?.getNorthEast();
+                    const sw = bounds?.getSouthWest();
+                    if (!ne || !sw) return;
+                    
+                    const lat = ne.lat() - (y / rect.height) * (ne.lat() - sw.lat());
+                    const lng = sw.lng() + (x / rect.width) * (ne.lng() - sw.lng());
+                    
+                    console.log('DIV CLICKED - placing at:', lat, lng);
+                    
+                    if (isPlacingSeptic) {
+                      setSepticLocation({ lat, lng });
+                      setIsPlacingSeptic(false);
+                    }
+                    if (isPlacingWell) {
+                      setWellLocation({ lat, lng });
+                      setIsPlacingWell(false);
+                    }
+                  }}
+                  style={{ cursor: (isPlacingSeptic || isPlacingWell) ? 'crosshair' : undefined }}
+                />
                 
                 {/* Scale Bar Overlay */}
                 <div className="absolute bottom-4 left-4 bg-white/90 backdrop-blur-sm rounded px-3 py-2 shadow-lg">
