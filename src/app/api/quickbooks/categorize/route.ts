@@ -13,22 +13,104 @@ const DEPOSIT_RULES = [
 ];
 
 const EXPENSE_RULES = [
-  { pattern: /federated insurance/i, account: 'Insurance Expense', vendor: 'Federated Insurance' },
-  { pattern: /blue shield/i, account: 'Health Insurance', vendor: 'Blue Shield' },
+  // Fuel vendors
+  { pattern: /flyers energy/i, account: 'Car & Truck:Fuel', accountId: '16', vendor: 'Flyers Energy LLC' },
+  { pattern: /ccrc lodging/i, account: 'Car & Truck:Fuel', accountId: '16', vendor: 'CCRC Lodging' },
+  { pattern: /shell oil|shell service/i, account: 'Car & Truck:Fuel', accountId: '16', vendor: 'Shell' },
+  { pattern: /chevron/i, account: 'Car & Truck:Fuel', accountId: '16', vendor: 'Chevron' },
+  { pattern: /arco/i, account: 'Car & Truck:Fuel', accountId: '16', vendor: 'Arco' },
+  { pattern: /76 station/i, account: 'Car & Truck:Fuel', accountId: '16', vendor: '76' },
+  
+  // Job supplies
+  { pattern: /ewater|e-water/i, account: 'Job Supplies', accountId: '17', vendor: 'eWater Solutions' },
+  { pattern: /headwater/i, account: 'Job Supplies', accountId: '17', vendor: 'Headwater Companies' },
+  { pattern: /western hydro/i, account: 'Job Supplies', accountId: '17', vendor: 'Western Hydro' },
+  { pattern: /mitchell lewis/i, account: 'Job Supplies', accountId: '17', vendor: 'Mitchell Lewis' },
+  { pattern: /preferred pump/i, account: 'Job Supplies', accountId: '17', vendor: 'Preferred Pump' },
+  { pattern: /hole products/i, account: 'Job Supplies', accountId: '17', vendor: 'Hole Products' },
+  
+  // Insurance
+  { pattern: /federated insurance/i, account: 'INSURANCE:Liability & Workers comp Insurance', accountId: '69', vendor: 'Federated Insurance' },
+  { pattern: /blue shield/i, account: 'INSURANCE:Health Insurance', accountId: '70', vendor: 'Blue Shield' },
+  
+  // Utilities & communications
   { pattern: /verizon/i, account: 'Phone & Communications', vendor: 'Verizon' },
+  { pattern: /sdg&?e|san diego gas/i, account: 'Utilities', vendor: 'SDG&E' },
+  { pattern: /anza gas/i, account: 'Utilities', vendor: 'Anza Gas Service' },
+  
+  // Marketing
   { pattern: /google/i, account: 'Advertising & Marketing', vendor: 'Google' },
   { pattern: /yelp/i, account: 'Advertising & Marketing', vendor: 'Yelp Inc' },
+  
+  // Software
   { pattern: /twilio/i, account: 'Software & Subscriptions', vendor: 'Twilio' },
   { pattern: /anthropic/i, account: 'Software & Subscriptions', vendor: 'Anthropic' },
-  { pattern: /anza gas/i, account: 'Utilities', vendor: 'Anza Gas Service' },
-  { pattern: /hole products/i, account: 'Materials & Supplies', vendor: 'Hole Products' },
+  
+  // Other
   { pattern: /payroll|adp|gusto/i, account: 'Payroll Expenses', vendor: 'Payroll' },
   { pattern: /bank.*fee|service fee|maintenance fee/i, account: 'Bank Charges & Fees', vendor: 'Bank of America' },
-  { pattern: /sdg&?e|san diego gas/i, account: 'Utilities', vendor: 'SDG&E' },
   { pattern: /home depot/i, account: 'Materials & Supplies', vendor: 'Home Depot' },
   { pattern: /amazon/i, account: 'Office Supplies', vendor: 'Amazon' },
 ];
 
+// POST - Apply categorization to a specific transaction
+export async function POST(request: NextRequest) {
+  try {
+    const apiKey = request.headers.get('x-api-key') || request.nextUrl.searchParams.get('api_key');
+    if (apiKey !== process.env.ADMIN_API_KEY) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
+    const result = await getQuickBooksClientAdmin();
+    if (!result) {
+      return NextResponse.json({ error: 'QuickBooks not connected' }, { status: 400 });
+    }
+
+    const { client } = result;
+    const body = await request.json();
+    const { purchaseId, accountId, accountName } = body;
+
+    if (!purchaseId || !accountId) {
+      return NextResponse.json({ error: 'purchaseId and accountId required' }, { status: 400 });
+    }
+
+    // Get the existing purchase
+    const purchaseResult = await client.getPurchase(purchaseId);
+    const purchase = purchaseResult.Purchase;
+
+    if (!purchase) {
+      return NextResponse.json({ error: 'Purchase not found' }, { status: 404 });
+    }
+
+    // Update the account on each line
+    for (const line of purchase.Line || []) {
+      if (line.DetailType === 'AccountBasedExpenseLineDetail' && line.AccountBasedExpenseLineDetail) {
+        line.AccountBasedExpenseLineDetail.AccountRef = {
+          value: accountId,
+          name: accountName || undefined
+        };
+      }
+    }
+
+    // Update the purchase
+    const updated = await client.updatePurchase(purchase);
+
+    return NextResponse.json({
+      success: true,
+      purchaseId,
+      newAccountId: accountId,
+      newAccountName: accountName,
+      updated
+    });
+
+  } catch (error) {
+    console.error('Categorization update error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to update';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+// GET - Analyze and suggest categorizations
 export async function GET(request: NextRequest) {
   try {
     const apiKey = request.headers.get('x-api-key') || request.nextUrl.searchParams.get('api_key');

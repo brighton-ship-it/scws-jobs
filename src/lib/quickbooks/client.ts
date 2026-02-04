@@ -283,6 +283,22 @@ export class QuickBooksClient {
     return result.CompanyInfo;
   }
 
+  // ============= PURCHASES (EXPENSES) =============
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async getPurchase(id: string): Promise<any> {
+    return this.request(`/purchase/${id}`);
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async updatePurchase(purchase: any): Promise<any> {
+    const result = await this.request('/purchase', {
+      method: 'POST',
+      body: JSON.stringify(purchase),
+    });
+    return result.Purchase;
+  }
+
   // ============= GENERIC QUERY =============
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
