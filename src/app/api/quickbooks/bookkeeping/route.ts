@@ -1,20 +1,32 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
-import { getQuickBooksClient } from '@/lib/quickbooks/service';
+import { getQuickBooksClient, getQuickBooksClientAdmin } from '@/lib/quickbooks/service';
 
 export const dynamic = 'force-dynamic';
 
 // Bookkeeping API - query QuickBooks data
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
-    const { data: { user } } = await supabase.auth.getUser();
+    // Check for admin API key first
+    const apiKey = request.headers.get('x-api-key') || request.nextUrl.searchParams.get('api_key');
+    const isAdmin = apiKey === process.env.ADMIN_API_KEY;
+
+    let result;
     
-    if (!user) {
-      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    if (isAdmin) {
+      // Admin access - use service-level auth
+      result = await getQuickBooksClientAdmin();
+    } else {
+      // Regular user access
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      }
+      result = await getQuickBooksClient();
     }
 
-    const result = await getQuickBooksClient();
     if (!result) {
       return NextResponse.json({ error: 'QuickBooks not connected' }, { status: 400 });
     }

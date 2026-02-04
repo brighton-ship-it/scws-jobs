@@ -136,6 +136,82 @@ export async function getQuickBooksClient(): Promise<{ client: QuickBooksClient;
 }
 
 /**
+ * Get QuickBooks client for admin/service use (no user auth required)
+ * Uses the first available connection in the database
+ */
+export async function getQuickBooksClientAdmin(): Promise<{ client: QuickBooksClient; connection: QBOConnection } | null> {
+  const { createClient: createServiceClient } = await import('@supabase/supabase-js');
+  
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  
+  if (!supabaseServiceKey) {
+    throw new Error('Service role key not configured for admin access');
+  }
+  
+  const supabase = createServiceClient(supabaseUrl, supabaseServiceKey);
+
+  // Get the first active connection
+  const { data, error } = await supabase
+    .from('quickbooks_connections')
+    .select('*')
+    .limit(1)
+    .single();
+
+  if (error || !data) {
+    return null;
+  }
+  
+  const connection = data as unknown as QBOConnection;
+
+  // Check if token needs refresh (5 min buffer)
+  const expiresAt = new Date(connection.token_expires_at);
+  const now = new Date();
+  const bufferMs = 5 * 60 * 1000;
+
+  let accessToken = connection.access_token;
+
+  if (expiresAt.getTime() - now.getTime() < bufferMs) {
+    try {
+      const config = getOAuthConfig();
+      const tokens = await refreshAccessToken({
+        refreshToken: connection.refresh_token,
+        clientId: config.clientId,
+        clientSecret: config.clientSecret,
+      });
+
+      const newExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
+      
+      await supabase
+        .from('quickbooks_connections')
+        .update({
+          access_token: tokens.access_token,
+          refresh_token: tokens.refresh_token,
+          token_expires_at: newExpiresAt.toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', connection.id);
+
+      accessToken = tokens.access_token;
+      connection.access_token = tokens.access_token;
+      connection.refresh_token = tokens.refresh_token;
+      connection.token_expires_at = newExpiresAt.toISOString();
+    } catch (error) {
+      console.error('Failed to refresh QuickBooks token:', error);
+      throw new Error('QuickBooks token expired and refresh failed. Please reconnect.');
+    }
+  }
+
+  const client = new QuickBooksClient({
+    accessToken,
+    realmId: connection.realm_id,
+    environment: connection.environment,
+  });
+
+  return { client, connection };
+}
+
+/**
  * Sync a customer to QuickBooks
  * Returns the QBO customer ID
  */
