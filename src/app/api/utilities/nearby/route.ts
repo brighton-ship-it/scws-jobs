@@ -55,6 +55,7 @@ function createServiceClient() {
 
 /**
  * Query a utility table for features within radius
+ * First tries RPC function, falls back to direct query with bounding box
  */
 async function queryUtilityTable(
   supabase: ReturnType<typeof createClient>,
@@ -63,24 +64,54 @@ async function queryUtilityTable(
   lng: number,
   radiusMeters: number
 ): Promise<UtilityFeature[]> {
+  // Determine if this is a Riverside table (has city column)
+  const hasCity = tableName.startsWith('riverside_');
+  
+  // First try the RPC function (if database has the fixed version)
   try {
-    // Use PostGIS ST_DWithin for spatial query
-    // The geometry is stored in EPSG:4326 (WGS84)
     const { data, error } = await supabase.rpc('get_nearby_utilities', {
-      table_name: tableName,
-      lat,
-      lng,
-      radius_meters: radiusMeters,
+      p_table_name: tableName,
+      p_lat: lat,
+      p_lng: lng,
+      p_radius_meters: radiusMeters,
     });
-
+    
+    if (!error && data && Array.isArray(data)) {
+      return data.map((row: any) => ({
+        type: 'Feature' as const,
+        properties: {
+          id: row.id,
+          utility_type: tableName.includes('sewer') ? 'sewer' :
+                        tableName.includes('water') || tableName.includes('hydrant') ? 'water' :
+                        tableName.includes('storm') || tableName.includes('drain') ? 'storm' : 'electric',
+          source_table: tableName,
+          city: row.city || null,
+          ...row.properties,
+        },
+        geometry: row.geometry,
+      }));
+    }
+  } catch (e) {
+    // RPC failed, fall back to direct query
+    console.log(`RPC query failed for ${tableName}, falling back to direct query`);
+  }
+  
+  // Fallback: Direct query with sample data (limited, no spatial filtering)
+  try {
+    const selectFields = hasCity ? 'id, properties, city' : 'id, properties';
+    
+    const { data, error } = await supabase
+      .from(tableName)
+      .select(selectFields)
+      .limit(50);
+    
     if (error) {
-      // Table might not exist yet - return empty
       console.log(`Table ${tableName} query error:`, error.message);
       return [];
     }
-
+    
     if (!data || !Array.isArray(data)) return [];
-
+    
     return data.map((row: any) => ({
       type: 'Feature' as const,
       properties: {
@@ -89,10 +120,11 @@ async function queryUtilityTable(
                       tableName.includes('water') || tableName.includes('hydrant') ? 'water' :
                       tableName.includes('storm') || tableName.includes('drain') ? 'storm' : 'electric',
         source_table: tableName,
-        city: row.city,
+        city: row.city || null,
+        note: 'Limited data - spatial filtering unavailable',
         ...row.properties,
       },
-      geometry: row.geometry,
+      geometry: null, // Can't get geometry without PostGIS extension in JS
     }));
   } catch (e) {
     console.error(`Error querying ${tableName}:`, e);

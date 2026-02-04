@@ -135,27 +135,59 @@ RETURNS TABLE (
 LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
+DECLARE
+    has_city_col BOOLEAN;
 BEGIN
-    RETURN QUERY EXECUTE format(
-        'SELECT 
-            t.id,
-            t.properties,
-            ST_AsGeoJSON(t.geometry)::jsonb as geometry,
-            COALESCE(t.city, NULL) as city,
-            ST_Distance(
+    -- Check if table has city column
+    SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = get_nearby_utilities.table_name 
+        AND column_name = 'city'
+    ) INTO has_city_col;
+    
+    IF has_city_col THEN
+        RETURN QUERY EXECUTE format(
+            'SELECT 
+                t.id,
+                t.properties,
+                ST_AsGeoJSON(t.geometry)::jsonb as geometry,
+                t.city,
+                ST_Distance(
+                    t.geometry::geography,
+                    ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography
+                ) as distance_meters
+            FROM %I t
+            WHERE ST_DWithin(
                 t.geometry::geography,
-                ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography
-            ) as distance_meters
-        FROM %I t
-        WHERE ST_DWithin(
-            t.geometry::geography,
-            ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
-            $3
-        )
-        ORDER BY distance_meters
-        LIMIT 500',
-        table_name
-    ) USING lat, lng, radius_meters;
+                ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
+                $3
+            )
+            ORDER BY distance_meters
+            LIMIT 500',
+            table_name
+        ) USING lat, lng, radius_meters;
+    ELSE
+        RETURN QUERY EXECUTE format(
+            'SELECT 
+                t.id,
+                t.properties,
+                ST_AsGeoJSON(t.geometry)::jsonb as geometry,
+                NULL::VARCHAR(100) as city,
+                ST_Distance(
+                    t.geometry::geography,
+                    ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography
+                ) as distance_meters
+            FROM %I t
+            WHERE ST_DWithin(
+                t.geometry::geography,
+                ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
+                $3
+            )
+            ORDER BY distance_meters
+            LIMIT 500',
+            table_name
+        ) USING lat, lng, radius_meters;
+    END IF;
 END;
 $$;
 
