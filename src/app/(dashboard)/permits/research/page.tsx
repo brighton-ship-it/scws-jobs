@@ -347,17 +347,55 @@ export default function PermitResearchPage() {
     }
     
     // Add well markers with depth labels (using regular Marker, not AdvancedMarker)
+    // Declutter overlapping wells by spreading them in a spiral pattern
     if (result.wells.length > 0) {
       console.log('Adding', result.wells.length, 'well markers');
+      
+      // Group wells by location (round to 5 decimal places ~1m precision)
+      const locationGroups = new Map<string, { wells: typeof result.wells; indices: number[] }>();
       result.wells.forEach((well, index) => {
         if (!well.latitude || !well.longitude) return;
+        const key = `${well.latitude.toFixed(5)},${well.longitude.toFixed(5)}`;
+        if (!locationGroups.has(key)) {
+          locationGroups.set(key, { wells: [], indices: [] });
+        }
+        locationGroups.get(key)!.wells.push(well);
+        locationGroups.get(key)!.indices.push(index);
+      });
+      
+      // Calculate offset positions for overlapping wells (spiral pattern)
+      const getOffsetPosition = (lat: number, lng: number, index: number, total: number) => {
+        if (total === 1) return { lat, lng };
+        // Spiral offset: ~30 meters per step at this latitude
+        const offsetMeters = 25; // Distance between markers
+        const angle = (index * 2 * Math.PI) / Math.min(total, 8) + (index >= 8 ? Math.PI / 8 : 0);
+        const radius = offsetMeters * (1 + Math.floor(index / 8) * 0.5); // Expand radius for outer rings
+        const latOffset = (radius / 111000) * Math.cos(angle);
+        const lngOffset = (radius / (111000 * Math.cos(lat * Math.PI / 180))) * Math.sin(angle);
+        return { lat: lat + latOffset, lng: lng + lngOffset };
+      };
+      
+      // Track which wells we've processed
+      const processedIndices = new Set<number>();
+      
+      locationGroups.forEach(({ wells: groupWells, indices }) => {
+        const baseLat = groupWells[0].latitude;
+        const baseLng = groupWells[0].longitude;
         
-        const marker = new google.maps.Marker({
-          map,
-          position: { lat: well.latitude, lng: well.longitude },
-          title: `Well #${well.wcr_number} - ${well.total_completed_depth || 'Unknown'}ft deep`,
+        groupWells.forEach((well, groupIndex) => {
+          const originalIndex = indices[groupIndex];
+          if (processedIndices.has(originalIndex)) return;
+          processedIndices.add(originalIndex);
+          
+          const position = getOffsetPosition(baseLat, baseLng, groupIndex, groupWells.length);
+          const isOffset = groupWells.length > 1;
+          
+          const marker = new google.maps.Marker({
+            map,
+            position,
+            title: `Well #${well.wcr_number} - ${well.total_completed_depth || 'Unknown'}ft deep${isOffset ? ' (position approximate)' : ''}`,
           label: {
-            text: String(index + 1),
+            text: String(originalIndex + 1),
             color: 'white',
             fontSize: '11px',
             fontWeight: 'bold',
@@ -381,7 +419,8 @@ export default function PermitResearchPage() {
               ${well.static_water_level ? `<b>Static Level:</b> ${well.static_water_level}ft<br/>` : ''}
               ${well.well_use ? `<b>Use:</b> ${well.well_use}<br/>` : ''}
               ${well.date_work_ended ? `<b>Date:</b> ${well.date_work_ended}<br/>` : ''}
-              ${well.distance_from_parcel ? `<b>Distance:</b> ${well.distance_from_parcel.toLocaleString()}ft` : ''}
+              ${well.distance_from_parcel ? `<b>Distance:</b> ${well.distance_from_parcel.toLocaleString()}ft<br/>` : ''}
+              ${isOffset ? `<i style="color: #666; font-size: 11px;">⚠️ ${groupWells.length} wells at this location<br/>Position spread for visibility</i>` : ''}
             </div>
           `,
         });
@@ -391,6 +430,7 @@ export default function PermitResearchPage() {
         });
         
         markersRef.current.push(marker as any);
+        });
       });
       console.log('Added', markersRef.current.length, 'well markers');
     }
