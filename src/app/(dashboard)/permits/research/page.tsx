@@ -228,6 +228,7 @@ export default function PermitResearchPage() {
   const setbackCirclesRef = useRef<google.maps.Circle[]>([]);
   const propertyLineSetbackRef = useRef<google.maps.Polygon | null>(null);
   const septicMarkerRef = useRef<google.maps.Marker | null>(null);
+  const proposedWellSetbackRef = useRef<google.maps.Circle | null>(null); // Separate ref for proposed well setback
   
   // Coordinates for search
   const [coordinates, setCoordinates] = useState<{ lat: number; lng: number } | null>(null);
@@ -736,6 +737,13 @@ export default function PermitResearchPage() {
     // Clear existing well marker
     if (wellMarkerRef.current) {
       wellMarkerRef.current.setMap(null);
+      wellMarkerRef.current = null;
+    }
+    
+    // Clear existing proposed well setback circle
+    if (proposedWellSetbackRef.current) {
+      proposedWellSetbackRef.current.setMap(null);
+      proposedWellSetbackRef.current = null;
     }
     
     if (wellLocation) {
@@ -769,7 +777,8 @@ export default function PermitResearchPage() {
           fillOpacity: 0.1,
           map,
         });
-        setbackCirclesRef.current.push(wellCircle50);
+        // Store in separate ref so it clears properly when well is removed
+        proposedWellSetbackRef.current = wellCircle50;
       }
     }
   }, [wellLocation, showSetbacks]);
