@@ -64,6 +64,36 @@ interface SepticPermit {
   distance_feet?: number;
 }
 
+interface UtilityFeature {
+  type: 'Feature';
+  properties: {
+    id: number;
+    utility_type: string;
+    source_table: string;
+    city?: string;
+    [key: string]: any;
+  };
+  geometry: any;
+}
+
+interface UtilityCoverage {
+  hasCoverage: boolean;
+  county?: string;
+  availableTypes: string[];
+  missingTypes: string[];
+  recommendation: string;
+  call811: boolean;
+  note?: string;
+}
+
+// Utility colors for map layers
+const UTILITY_COLORS = {
+  sewer: '#8B4513', // brown
+  water: '#0066CC', // blue
+  storm: '#228B22', // green
+  electric: '#FFD700', // yellow
+};
+
 interface ResearchResult {
   parcel: ParcelInfo | null;
   wells: WellInfo[];
@@ -198,6 +228,19 @@ export default function PermitResearchPage() {
   
   // Map ready state (to trigger drawing useEffect)
   const [mapReady, setMapReady] = useState(false);
+  
+  // Utility infrastructure state
+  const [utilityLayers, setUtilityLayers] = useState<{
+    sewer: boolean;
+    water: boolean;
+    storm: boolean;
+    electric: boolean;
+  }>({ sewer: true, water: true, storm: false, electric: false });
+  const [utilityFeatures, setUtilityFeatures] = useState<UtilityFeature[]>([]);
+  const [utilityCoverage, setUtilityCoverage] = useState<UtilityCoverage | null>(null);
+  const [isLoadingUtilities, setIsLoadingUtilities] = useState(false);
+  const utilityPolylinesRef = useRef<google.maps.Polyline[]>([]);
+  const utilityMarkersRef = useRef<google.maps.Marker[]>([]);
 
   // Initialize map - runs when result changes (which makes mapRef available)
   useEffect(() => {
@@ -304,6 +347,107 @@ export default function PermitResearchPage() {
       }
     };
   }, [isPlacingSeptic, isPlacingWell, isPlacingManualWell, manualWells.length, mapReady]);
+
+  // Fetch utility data when coordinates change
+  useEffect(() => {
+    if (!coordinates) return;
+    
+    async function fetchUtilities() {
+      setIsLoadingUtilities(true);
+      try {
+        // Fetch coverage info
+        const coverageRes = await fetch(
+          `/api/utilities/coverage?lat=${coordinates.lat}&lng=${coordinates.lng}`
+        );
+        if (coverageRes.ok) {
+          const coverageData = await coverageRes.json();
+          setUtilityCoverage(coverageData);
+        }
+        
+        // Fetch nearby utilities
+        const enabledTypes = Object.entries(utilityLayers)
+          .filter(([_, enabled]) => enabled)
+          .map(([type]) => type)
+          .join(',');
+        
+        if (enabledTypes) {
+          const nearbyRes = await fetch(
+            `/api/utilities/nearby?lat=${coordinates.lat}&lng=${coordinates.lng}&radius=500&types=${enabledTypes}`
+          );
+          if (nearbyRes.ok) {
+            const nearbyData = await nearbyRes.json();
+            setUtilityFeatures(nearbyData.features || []);
+          }
+        }
+      } catch (err) {
+        console.error('Error fetching utilities:', err);
+      } finally {
+        setIsLoadingUtilities(false);
+      }
+    }
+    
+    fetchUtilities();
+  }, [coordinates, utilityLayers]);
+
+  // Render utility layers on map
+  useEffect(() => {
+    if (!mapInstanceRef.current || !mapReady) return;
+    const map = mapInstanceRef.current;
+    
+    // Clear existing utility layers
+    utilityPolylinesRef.current.forEach(p => p.setMap(null));
+    utilityPolylinesRef.current = [];
+    utilityMarkersRef.current.forEach(m => m.setMap(null));
+    utilityMarkersRef.current = [];
+    
+    // Draw utility features
+    utilityFeatures.forEach((feature) => {
+      const utilityType = feature.properties.utility_type;
+      const color = UTILITY_COLORS[utilityType as keyof typeof UTILITY_COLORS] || '#888888';
+      
+      // Check if this type is enabled
+      if (!utilityLayers[utilityType as keyof typeof utilityLayers]) return;
+      
+      if (!feature.geometry) return;
+      
+      const geom = typeof feature.geometry === 'string' 
+        ? JSON.parse(feature.geometry) 
+        : feature.geometry;
+      
+      if (geom.type === 'LineString' || geom.type === 'MultiLineString') {
+        const coordinates = geom.type === 'MultiLineString' 
+          ? geom.coordinates 
+          : [geom.coordinates];
+        
+        coordinates.forEach((line: number[][]) => {
+          const path = line.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }));
+          const polyline = new google.maps.Polyline({
+            path,
+            strokeColor: color,
+            strokeOpacity: 0.8,
+            strokeWeight: utilityType === 'electric' ? 3 : 2,
+            map,
+          });
+          utilityPolylinesRef.current.push(polyline);
+        });
+      } else if (geom.type === 'Point') {
+        const marker = new google.maps.Marker({
+          map,
+          position: { lat: geom.coordinates[1], lng: geom.coordinates[0] },
+          icon: {
+            path: google.maps.SymbolPath.CIRCLE,
+            scale: 5,
+            fillColor: color,
+            fillOpacity: 0.8,
+            strokeColor: '#ffffff',
+            strokeWeight: 1,
+          },
+          title: `${utilityType} - ${feature.properties.source_table}`,
+        });
+        utilityMarkersRef.current.push(marker);
+      }
+    });
+  }, [utilityFeatures, utilityLayers, mapReady]);
 
   // Update map when results change
   useEffect(() => {
@@ -1604,6 +1748,66 @@ export default function PermitResearchPage() {
         </div>
       </div>
 
+      {/* Coverage Alert Banner */}
+      {utilityCoverage && !utilityCoverage.hasCoverage && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="h-6 w-6 text-amber-600 flex-shrink-0 mt-0.5" />
+            <div>
+              <h3 className="font-semibold text-amber-800">Limited Utility Data Available</h3>
+              <p className="text-amber-700 mt-1">{utilityCoverage.recommendation}</p>
+              {utilityCoverage.note && (
+                <p className="text-sm text-amber-600 mt-1">{utilityCoverage.note}</p>
+              )}
+              {utilityCoverage.call811 && (
+                <div className="mt-3 flex items-center gap-3">
+                  <a
+                    href="tel:811"
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 transition-colors"
+                  >
+                    📞 Call 811
+                  </a>
+                  <a
+                    href="https://call811.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-amber-700 hover:text-amber-800 underline text-sm"
+                  >
+                    call811.com
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Utility Coverage Info */}
+      {utilityCoverage && utilityCoverage.hasCoverage && utilityFeatures.length > 0 && (
+        <div className="bg-green-50 border border-green-200 rounded-xl p-4">
+          <div className="flex items-start gap-3">
+            <CheckCircle2 className="h-5 w-5 text-green-600 flex-shrink-0 mt-0.5" />
+            <div className="flex-1">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-green-800">Utility Data Available</h3>
+                <span className="text-sm text-green-600">
+                  {utilityFeatures.length} features within 500m
+                </span>
+              </div>
+              <p className="text-sm text-green-700 mt-1">
+                {utilityCoverage.availableTypes.join(', ')} data available for {utilityCoverage.county} County.
+                {utilityCoverage.missingTypes.length > 0 && (
+                  <span className="text-amber-600"> Missing: {utilityCoverage.missingTypes.join(', ')}</span>
+                )}
+              </p>
+              <p className="text-xs text-green-600 mt-1">
+                Always verify with 811 before excavation for safety.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Results Grid */}
       {result && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -1721,6 +1925,56 @@ export default function PermitResearchPage() {
                   <CircleDot className="h-3 w-3" />
                   {isPlacingManualWell ? 'Click map...' : 'Add Existing Well'}
                 </button>
+                
+                {/* Utility Layer Toggles */}
+                <span className="text-gray-300">|</span>
+                <span className="text-xs text-gray-500 uppercase tracking-wider">Utilities:</span>
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={utilityLayers.sewer}
+                    onChange={(e) => setUtilityLayers(prev => ({ ...prev, sewer: e.target.checked }))}
+                    className="rounded border-gray-300 text-amber-700 focus:ring-amber-500"
+                  />
+                  <span className="w-2 h-2 rounded" style={{ backgroundColor: UTILITY_COLORS.sewer }}></span>
+                  Sewer
+                </label>
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={utilityLayers.water}
+                    onChange={(e) => setUtilityLayers(prev => ({ ...prev, water: e.target.checked }))}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  />
+                  <span className="w-2 h-2 rounded" style={{ backgroundColor: UTILITY_COLORS.water }}></span>
+                  Water
+                </label>
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={utilityLayers.storm}
+                    onChange={(e) => setUtilityLayers(prev => ({ ...prev, storm: e.target.checked }))}
+                    className="rounded border-gray-300 text-green-600 focus:ring-green-500"
+                  />
+                  <span className="w-2 h-2 rounded" style={{ backgroundColor: UTILITY_COLORS.storm }}></span>
+                  Storm
+                </label>
+                <label className="flex items-center gap-1.5 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={utilityLayers.electric}
+                    onChange={(e) => setUtilityLayers(prev => ({ ...prev, electric: e.target.checked }))}
+                    className="rounded border-gray-300 text-yellow-600 focus:ring-yellow-500"
+                  />
+                  <span className="w-2 h-2 rounded" style={{ backgroundColor: UTILITY_COLORS.electric }}></span>
+                  Electric
+                </label>
+                {isLoadingUtilities && (
+                  <span className="text-xs text-gray-500 flex items-center gap-1">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading utilities...
+                  </span>
+                )}
                 
                 {manualWells.length > 0 && (
                   <button
@@ -2284,6 +2538,7 @@ export default function PermitResearchPage() {
               <li><strong>Well Data:</strong> California DWR Well Completion Reports (real-time)</li>
               <li><strong>Septic Data:</strong> Requires manual lookup with County DEH</li>
               <li><strong>Zoning:</strong> From County Assessor data - verify with local planning for official zoning</li>
+              <li><strong>Utilities:</strong> City of San Diego, City of Riverside, CA Energy Commission - <em className="text-blue-600">always call 811 before excavation</em></li>
             </ul>
           </div>
         </div>
