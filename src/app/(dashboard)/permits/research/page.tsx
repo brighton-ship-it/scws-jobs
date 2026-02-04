@@ -704,9 +704,10 @@ export default function PermitResearchPage() {
       // Property Info Box
       const infoY = 30 + finalMapHeight + 5;
       pdf.setFillColor(249, 250, 251);
-      pdf.rect(15, infoY, pageWidth - 30, 35, 'F');
+      const infoBoxHeight = wellLocation ? 42 : 35;
+      pdf.rect(15, infoY, pageWidth - 30, infoBoxHeight, 'F');
       pdf.setDrawColor(229, 231, 235);
-      pdf.rect(15, infoY, pageWidth - 30, 35);
+      pdf.rect(15, infoY, pageWidth - 30, infoBoxHeight);
       
       pdf.setTextColor(31, 41, 55);
       pdf.setFontSize(12);
@@ -731,8 +732,16 @@ export default function PermitResearchPage() {
       pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X, infoY + 16);
       pdf.text(`Wells Found: ${result.wells.length}`, col3X, infoY + 23);
       
+      // Proposed Well GPS Coordinates (if placed)
+      if (wellLocation) {
+        pdf.setFont('helvetica', 'bold');
+        pdf.text('Proposed Well Location:', col1X, infoY + 30);
+        pdf.setFont('helvetica', 'normal');
+        pdf.text(`GPS: ${wellLocation.lat.toFixed(6)}, ${wellLocation.lng.toFixed(6)}`, col1X + 45, infoY + 30);
+      }
+      
       // Legend
-      const legendY = infoY + 28;
+      const legendY = infoY + (wellLocation ? 35 : 28);
       pdf.setFontSize(8);
       pdf.setFont('helvetica', 'bold');
       pdf.text('Legend:', 20, legendY);
