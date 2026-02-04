@@ -407,9 +407,6 @@ export default function PermitResearchPage() {
     utilityMarkersRef.current = [];
     
     // Draw utility features
-    console.log('Drawing utility features:', utilityFeatures.length, 'total');
-    let linesDrawn = 0;
-    let pointsDrawn = 0;
     utilityFeatures.forEach((feature) => {
       const utilityType = feature.properties.utility_type;
       const color = UTILITY_COLORS[utilityType as keyof typeof UTILITY_COLORS] || '#888888';
@@ -417,10 +414,7 @@ export default function PermitResearchPage() {
       // Check if this type is enabled
       if (!utilityLayers[utilityType as keyof typeof utilityLayers]) return;
       
-      if (!feature.geometry) {
-        console.log('Feature missing geometry:', feature.properties.id);
-        return;
-      }
+      if (!feature.geometry) return;
       
       const geom = typeof feature.geometry === 'string' 
         ? JSON.parse(feature.geometry) 
@@ -431,35 +425,18 @@ export default function PermitResearchPage() {
           ? geom.coordinates 
           : [geom.coordinates];
         
-        // Debug: log first LineString raw data
-        if (linesDrawn === 0) {
-          console.log('First LineString geom:', JSON.stringify(geom).slice(0, 500));
-          console.log('coords array length:', coords.length);
-        }
-        
-        coords.forEach((line: number[][], idx: number) => {
-          if (linesDrawn === 0) {
-            console.log('First line data:', JSON.stringify(line).slice(0, 300));
-          }
-          if (!Array.isArray(line) || line.length < 2) {
-            console.log('Invalid line - skipping:', typeof line, line?.length);
-            return;
-          }
+        coords.forEach((line: number[][]) => {
+          if (!Array.isArray(line) || line.length < 2) return;
           const path = line.map((coord: number[]) => ({ lat: coord[1], lng: coord[0] }));
-          if (linesDrawn < 3) {
-            console.log(`Polyline ${linesDrawn} path:`, path.slice(0, 2), 'total points:', path.length, 'color:', color);
-          }
           const polyline = new google.maps.Polyline({
             path,
             strokeColor: color,
             strokeOpacity: 1.0,
-            strokeWeight: 5, // Even thicker
+            strokeWeight: 4,
             map,
-            zIndex: 1000, // Very high z-index
-            clickable: true,
+            zIndex: 100,
           });
           utilityPolylinesRef.current.push(polyline);
-          linesDrawn++;
         });
       } else if (geom.type === 'Point') {
         const marker = new google.maps.Marker({
@@ -476,10 +453,8 @@ export default function PermitResearchPage() {
           title: `${utilityType} - ${feature.properties.source_table}`,
         });
         utilityMarkersRef.current.push(marker);
-        pointsDrawn++;
       }
     });
-    console.log('Utility rendering complete:', { linesDrawn, pointsDrawn, polylinesInRef: utilityPolylinesRef.current.length });
   }, [utilityFeatures, utilityLayers, mapReady]);
 
   // Update map when results change
