@@ -92,16 +92,39 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Update the purchase
-    const updated = await client.updatePurchase(purchase);
-
-    return NextResponse.json({
-      success: true,
-      purchaseId,
+    // Log what we're sending
+    console.log('Updating purchase:', JSON.stringify({
+      Id: purchase.Id,
+      SyncToken: purchase.SyncToken,
       newAccountId: accountId,
-      newAccountName: accountName,
-      updated
-    });
+      lineCount: purchase.Line?.length
+    }));
+
+    // Update the purchase - QBO requires sparse: false for full updates
+    try {
+      const updated = await client.updatePurchase(purchase);
+      
+      // Verify the update by checking the returned SyncToken
+      const newSyncToken = updated?.SyncToken;
+      const oldSyncToken = purchase.SyncToken;
+      
+      if (newSyncToken === oldSyncToken) {
+        console.warn('SyncToken unchanged - update may not have persisted');
+      }
+
+      return NextResponse.json({
+        success: true,
+        purchaseId,
+        newAccountId: accountId,
+        newAccountName: accountName,
+        syncTokenBefore: oldSyncToken,
+        syncTokenAfter: newSyncToken,
+        updated
+      });
+    } catch (updateError) {
+      console.error('QBO update failed:', updateError);
+      throw updateError;
+    }
 
   } catch (error) {
     console.error('Categorization update error:', error);

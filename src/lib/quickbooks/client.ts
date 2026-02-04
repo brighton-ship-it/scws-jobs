@@ -292,10 +292,16 @@ export class QuickBooksClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async updatePurchase(purchase: any): Promise<any> {
+    console.log('updatePurchase called with Id:', purchase.Id, 'SyncToken:', purchase.SyncToken);
     const result = await this.request('/purchase', {
       method: 'POST',
       body: JSON.stringify(purchase),
     });
+    console.log('updatePurchase result:', JSON.stringify(result).substring(0, 500));
+    if (!result.Purchase) {
+      console.error('No Purchase in response:', result);
+      throw new Error('QuickBooks did not return updated Purchase');
+    }
     return result.Purchase;
   }
 
