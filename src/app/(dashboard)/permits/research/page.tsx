@@ -799,30 +799,11 @@ export default function PermitResearchPage() {
       const col3X = 180;
       
       pdf.text(`APN: ${result.parcel?.apn || 'N/A'}`, col1X, infoY + 16);
-      // Build clean address - ALWAYS use user input or APN, never API siteAddress
-      // Corruption shows patterns like "CENTZRrift" - uppercase run then lowercase
-      const isCorrupted = (str: string) => {
-        if (!str) return true;
-        // Pattern: 3+ uppercase immediately followed by 2+ lowercase = corrupted
-        if (/[A-Z]{3,}[a-z]{2,}/.test(str)) return true;
-        // Or lowercase immediately followed by uppercase mid-word  
-        if (/[a-z][A-Z]/.test(str.replace(/\s+/g, ''))) return true;
-        return false;
-      };
-      let cleanAddr: string;
-      const userAddr = address?.trim();
-      if (userAddr && userAddr.length > 5 && !isCorrupted(userAddr)) {
-        cleanAddr = userAddr;
-      } else {
-        // Always safe: just show APN
-        cleanAddr = `See APN ${result.parcel?.apn || 'N/A'}`;
+      // Show owner name if available, otherwise blank
+      const ownerName = result.parcel?.ownerName || '';
+      if (ownerName && ownerName.length < 40) {
+        pdf.text(`Owner: ${ownerName}`, col1X, infoY + 23);
       }
-      // Truncate address to fit in column (max ~70 chars to avoid overflow into col2)
-      const maxAddrLen = 50;
-      const truncatedAddr = cleanAddr.length > maxAddrLen 
-        ? cleanAddr.substring(0, maxAddrLen - 3) + '...'
-        : cleanAddr;
-      pdf.text(`Address: ${truncatedAddr.toUpperCase()}`, col1X, infoY + 23);
       pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
       pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col2X, infoY + 23);
       pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X, infoY + 16);
