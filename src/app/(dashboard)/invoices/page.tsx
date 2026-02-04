@@ -1,15 +1,36 @@
 'use client';
 
-
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
 import { InvoiceStatusBadge } from '@/components/ui/badge';
-import { mockInvoices, getCustomerById, getInvoiceAgingSummary } from '@/lib/mock-data';
-import { Search, Plus, MoreHorizontal, Eye, Edit, Send, DollarSign, AlertTriangle } from 'lucide-react';
+import { Search, Plus, MoreHorizontal, Eye, Edit, Send, DollarSign, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';
+
+interface Invoice {
+  id: string;
+  invoice_number: number;
+  customer_id: string;
+  customer?: {
+    id: string;
+    name: string;
+    email: string;
+    phone: string;
+  };
+  job_id?: string;
+  status: 'draft' | 'sent' | 'viewed' | 'paid' | 'overdue' | 'void';
+  issue_date: string;
+  due_date?: string;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  amount_paid: number;
+  created_at: string;
+  items?: any[];
+}
 
 const statusFilters = [
   { value: 'all', label: 'All' },
@@ -20,15 +41,96 @@ const statusFilters = [
 ];
 
 export default function InvoicesPage() {
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [sendingId, setSendingId] = useState<string | null>(null);
 
-  const agingSummary = getInvoiceAgingSummary();
+  const fetchInvoices = useCallback(async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      const params = new URLSearchParams();
+      if (statusFilter !== 'all') {
+        params.set('status', statusFilter === 'sent' ? 'sent' : statusFilter);
+      }
+      params.set('limit', '100');
 
-  const filteredInvoices = mockInvoices.filter((invoice) => {
-    const customer = getCustomerById(invoice.customer_id);
-    const matchesSearch = customer?.name.toLowerCase().includes(search.toLowerCase()) ||
+      const response = await fetch(`/api/invoices?${params}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch invoices');
+      }
+
+      const data = await response.json();
+      setInvoices(data.invoices || []);
+    } catch (err) {
+      console.error('Error fetching invoices:', err);
+      setError(err instanceof Error ? err.message : 'Failed to load invoices');
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
+  useEffect(() => {
+    fetchInvoices();
+  }, [fetchInvoices]);
+
+  const handleSendInvoice = async (invoiceId: string) => {
+    try {
+      setSendingId(invoiceId);
+      const response = await fetch(`/api/invoices/${invoiceId}/send`, { method: 'POST' });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to send invoice');
+      }
+      // Refresh the list
+      fetchInvoices();
+      setOpenMenu(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : 'Failed to send invoice');
+    } finally {
+      setSendingId(null);
+    }
+  };
+
+  // Calculate aging summary
+  const agingSummary = {
+    current: 0,
+    days30: 0,
+    days60: 0,
+    days90Plus: 0,
+  };
+
+  invoices.forEach((invoice) => {
+    if (invoice.status === 'paid' || invoice.status === 'void') return;
+    const amountDue = invoice.total - invoice.amount_paid;
+    if (amountDue <= 0) return;
+
+    if (!invoice.due_date) {
+      agingSummary.current += amountDue;
+      return;
+    }
+
+    const daysOverdue = differenceInDays(new Date(), new Date(invoice.due_date));
+    if (daysOverdue <= 0) {
+      agingSummary.current += amountDue;
+    } else if (daysOverdue <= 30) {
+      agingSummary.days30 += amountDue;
+    } else if (daysOverdue <= 60) {
+      agingSummary.days60 += amountDue;
+    } else {
+      agingSummary.days90Plus += amountDue;
+    }
+  });
+
+  const filteredInvoices = invoices.filter((invoice) => {
+    const customerName = invoice.customer?.name || '';
+    const matchesSearch = 
+      customerName.toLowerCase().includes(search.toLowerCase()) ||
       invoice.invoice_number.toString().includes(search);
     
     let matchesStatus = true;
@@ -41,7 +143,6 @@ export default function InvoicesPage() {
     return matchesSearch && matchesStatus;
   });
 
-  // Sort by date descending
   const sortedInvoices = [...filteredInvoices].sort((a, b) => 
     new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
   );
@@ -50,11 +151,11 @@ export default function InvoicesPage() {
     return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
   };
 
-  const getAmountDue = (invoice: typeof mockInvoices[0]) => {
+  const getAmountDue = (invoice: Invoice) => {
     return invoice.total - invoice.amount_paid;
   };
 
-  const getDaysOverdue = (invoice: typeof mockInvoices[0]) => {
+  const getDaysOverdue = (invoice: Invoice) => {
     if (!invoice.due_date || invoice.status === 'paid') return 0;
     const today = new Date();
     const dueDate = new Date(invoice.due_date);
@@ -67,12 +168,17 @@ export default function InvoicesPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Invoices</h2>
-          <p className="text-gray-600">{mockInvoices.length} total invoices</p>
+          <p className="text-gray-600">{invoices.length} total invoices</p>
         </div>
-        <Button href="/invoices/new">
-          <Plus className="h-4 w-4" />
-          New Invoice
-        </Button>
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={fetchInvoices} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
+          <Button href="/invoices/new">
+            <Plus className="h-4 w-4" />
+            New Invoice
+          </Button>
+        </div>
       </div>
 
       {/* Aging Summary */}
@@ -140,141 +246,170 @@ export default function InvoicesPage() {
         </CardContent>
       </Card>
 
-      {/* Invoices Table */}
-      <Card>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableCell header>Invoice #</TableCell>
-              <TableCell header>Customer</TableCell>
-              <TableCell header>Amount</TableCell>
-              <TableCell header>Paid</TableCell>
-              <TableCell header>Balance</TableCell>
-              <TableCell header>Status</TableCell>
-              <TableCell header>Due Date</TableCell>
-              <TableCell header></TableCell>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sortedInvoices.length === 0 ? (
-              <TableEmpty message="No invoices found" />
-            ) : (
-              sortedInvoices.map((invoice) => {
-                const customer = getCustomerById(invoice.customer_id);
-                const amountDue = getAmountDue(invoice);
-                const daysOverdue = getDaysOverdue(invoice);
+      {/* Error State */}
+      {error && (
+        <Card className="border-red-200 bg-red-50">
+          <CardContent className="py-4">
+            <p className="text-red-600">{error}</p>
+            <Button variant="outline" size="sm" onClick={fetchInvoices} className="mt-2">
+              Try Again
+            </Button>
+          </CardContent>
+        </Card>
+      )}
 
-                return (
-                  <TableRow key={invoice.id}>
-                    <TableCell>
-                      <Link
-                        href={`/invoices/${invoice.id}`}
-                        className="font-medium text-blue-600 hover:text-blue-800"
-                      >
-                        #{invoice.invoice_number}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-medium text-gray-900">{customer?.name || 'Unknown'}</span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="font-medium">{formatCurrency(invoice.total)}</span>
-                    </TableCell>
-                    <TableCell>
-                      <span className={invoice.amount_paid > 0 ? 'text-green-600' : 'text-gray-400'}>
-                        {formatCurrency(invoice.amount_paid)}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span className={`font-medium ${amountDue > 0 ? 'text-gray-900' : 'text-green-600'}`}>
-                        {formatCurrency(amountDue)}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <InvoiceStatusBadge status={invoice.status} />
-                        {daysOverdue > 0 && invoice.status !== 'paid' && (
-                          <span className="text-xs text-red-600 flex items-center gap-1">
-                            <AlertTriangle className="h-3 w-3" />
-                            {daysOverdue}d
-                          </span>
-                        )}
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {invoice.due_date ? (
-                        <span className={`text-sm ${
-                          daysOverdue > 0 && invoice.status !== 'paid' ? 'text-red-600 font-medium' : 'text-gray-500'
-                        }`}>
-                          {format(new Date(invoice.due_date), 'MMM d, yyyy')}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">-</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <div className="relative">
-                        <button 
-                          onClick={() => setOpenMenu(openMenu === invoice.id ? null : invoice.id)}
-                          className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+      {/* Loading State */}
+      {loading && (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <Loader2 className="h-8 w-8 animate-spin text-gray-400 mx-auto" />
+            <p className="text-gray-500 mt-2">Loading invoices...</p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Invoices Table */}
+      {!loading && (
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableCell header>Invoice #</TableCell>
+                <TableCell header>Customer</TableCell>
+                <TableCell header>Amount</TableCell>
+                <TableCell header>Paid</TableCell>
+                <TableCell header>Balance</TableCell>
+                <TableCell header>Status</TableCell>
+                <TableCell header>Due Date</TableCell>
+                <TableCell header></TableCell>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {sortedInvoices.length === 0 ? (
+                <TableEmpty message={invoices.length === 0 ? "No invoices yet. Create your first invoice!" : "No invoices match your search"} />
+              ) : (
+                sortedInvoices.map((invoice) => {
+                  const amountDue = getAmountDue(invoice);
+                  const daysOverdue = getDaysOverdue(invoice);
+
+                  return (
+                    <TableRow key={invoice.id}>
+                      <TableCell>
+                        <Link
+                          href={`/invoices/${invoice.id}`}
+                          className="font-medium text-blue-600 hover:text-blue-800"
                         >
-                          <MoreHorizontal className="h-4 w-4" />
-                        </button>
-                        {openMenu === invoice.id && (
-                          <>
-                            <div 
-                              className="fixed inset-0 z-10" 
-                              onClick={() => setOpenMenu(null)}
-                            />
-                            <div className="absolute right-0 top-8 z-20 w-48 rounded-lg border border-gray-200 bg-white shadow-lg py-1">
-                              <Link
-                                href={`/invoices/${invoice.id}`}
-                                className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                          #{invoice.invoice_number}
+                        </Link>
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-medium text-gray-900">{invoice.customer?.name || 'Unknown'}</span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="font-medium">{formatCurrency(invoice.total)}</span>
+                      </TableCell>
+                      <TableCell>
+                        <span className={invoice.amount_paid > 0 ? 'text-green-600' : 'text-gray-400'}>
+                          {formatCurrency(invoice.amount_paid)}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className={`font-medium ${amountDue > 0 ? 'text-gray-900' : 'text-green-600'}`}>
+                          {formatCurrency(amountDue)}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <InvoiceStatusBadge status={invoice.status} />
+                          {daysOverdue > 0 && invoice.status !== 'paid' && (
+                            <span className="text-xs text-red-600 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" />
+                              {daysOverdue}d
+                            </span>
+                          )}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        {invoice.due_date ? (
+                          <span className={`text-sm ${
+                            daysOverdue > 0 && invoice.status !== 'paid' ? 'text-red-600 font-medium' : 'text-gray-500'
+                          }`}>
+                            {format(new Date(invoice.due_date), 'MMM d, yyyy')}
+                          </span>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="relative">
+                          <button 
+                            onClick={() => setOpenMenu(openMenu === invoice.id ? null : invoice.id)}
+                            className="rounded-lg p-2 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                          >
+                            <MoreHorizontal className="h-4 w-4" />
+                          </button>
+                          {openMenu === invoice.id && (
+                            <>
+                              <div 
+                                className="fixed inset-0 z-10" 
                                 onClick={() => setOpenMenu(null)}
-                              >
-                                <Eye className="h-4 w-4" />
-                                View Invoice
-                              </Link>
-                              {invoice.status === 'draft' && (
+                              />
+                              <div className="absolute right-0 top-8 z-20 w-48 rounded-lg border border-gray-200 bg-white shadow-lg py-1">
                                 <Link
-                                  href={`/invoices/${invoice.id}/edit`}
+                                  href={`/invoices/${invoice.id}`}
                                   className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
                                   onClick={() => setOpenMenu(null)}
                                 >
-                                  <Edit className="h-4 w-4" />
-                                  Edit Invoice
+                                  <Eye className="h-4 w-4" />
+                                  View Invoice
                                 </Link>
-                              )}
-                              {invoice.status === 'draft' && (
-                                <button
-                                  className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                                  onClick={() => setOpenMenu(null)}
-                                >
-                                  <Send className="h-4 w-4" />
-                                  Send Invoice
-                                </button>
-                              )}
-                              {invoice.status !== 'paid' && invoice.status !== 'void' && (
-                                <button
-                                  className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                                  onClick={() => setOpenMenu(null)}
-                                >
-                                  <DollarSign className="h-4 w-4" />
-                                  Record Payment
-                                </button>
-                              )}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                );
-              })
-            )}
-          </TableBody>
-        </Table>
-      </Card>
+                                {invoice.status === 'draft' && (
+                                  <Link
+                                    href={`/invoices/${invoice.id}/edit`}
+                                    className="flex items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                                    onClick={() => setOpenMenu(null)}
+                                  >
+                                    <Edit className="h-4 w-4" />
+                                    Edit Invoice
+                                  </Link>
+                                )}
+                                {invoice.status === 'draft' && (
+                                  <button
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                    onClick={() => handleSendInvoice(invoice.id)}
+                                    disabled={sendingId === invoice.id}
+                                  >
+                                    {sendingId === invoice.id ? (
+                                      <Loader2 className="h-4 w-4 animate-spin" />
+                                    ) : (
+                                      <Send className="h-4 w-4" />
+                                    )}
+                                    Send Invoice
+                                  </button>
+                                )}
+                                {invoice.status !== 'paid' && invoice.status !== 'void' && (
+                                  <Link
+                                    href={`/invoices/${invoice.id}?action=payment`}
+                                    className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                                    onClick={() => setOpenMenu(null)}
+                                  >
+                                    <DollarSign className="h-4 w-4" />
+                                    Record Payment
+                                  </Link>
+                                )}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
     </div>
   );
 }

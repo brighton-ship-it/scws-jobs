@@ -144,13 +144,57 @@ export default function NewInvoicePage() {
       return;
     }
 
+    if (lineItems.length === 0 || lineItems.every(item => !item.description)) {
+      alert('Please add at least one line item');
+      return;
+    }
+
     setSaving(true);
     
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // TODO: Implement actual save logic
+    try {
+      const response = await fetch('/api/invoices', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: customerId,
+          job_id: jobId || null,
+          quote_id: quoteId || null,
+          issue_date: issueDate,
+          due_date: dueDate,
+          tax_rate: taxRate,
+          notes,
+          internal_notes: internalNotes,
+          status: asDraft ? 'draft' : 'sent',
+          items: lineItems.filter(item => item.description).map(item => ({
+            description: item.description,
+            item_description: item.item_description,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            item_type: item.item_type,
+            taxable: item.taxable,
+          })),
+        }),
+      });
 
-    router.push('/invoices');
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to create invoice');
+      }
+
+      const { invoice } = await response.json();
+      
+      // If not draft, send the invoice email
+      if (!asDraft && invoice?.id) {
+        await fetch(`/api/invoices/${invoice.id}/send`, { method: 'POST' });
+      }
+
+      router.push('/invoices');
+    } catch (error) {
+      console.error('Error creating invoice:', error);
+      alert(error instanceof Error ? error.message : 'Failed to create invoice');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
