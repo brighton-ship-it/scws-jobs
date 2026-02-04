@@ -51,12 +51,24 @@ interface WellInfo {
   well_use?: string;
   latitude: number;
   longitude: number;
+  distance_from_parcel?: number;
+}
+
+interface SepticPermit {
+  apn: string;
+  designation: string;
+  type: 'SEPTIC' | 'SEWER' | 'UNKNOWN';
+  latitude: number;
+  longitude: number;
+  full_address?: string;
+  distance_feet?: number;
 }
 
 interface ResearchResult {
   parcel: ParcelInfo | null;
   wells: WellInfo[];
   septic: any | null;
+  septicPermits: SepticPermit[];
   zoning: any | null;
   sources: { name: string; status: 'success' | 'error' | 'mock'; message?: string }[];
   cached?: boolean;
@@ -169,6 +181,7 @@ export default function PermitResearchPage() {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.marker.AdvancedMarkerElement[]>([]);
+  const septicPermitMarkersRef = useRef<google.maps.Marker[]>([]); // Orange markers for septic parcels
   const parcelPolygonRef = useRef<google.maps.Polygon | null>(null);
   const setbackCirclesRef = useRef<google.maps.Circle[]>([]);
   const propertyLineSetbackRef = useRef<google.maps.Polygon | null>(null);
@@ -283,13 +296,15 @@ export default function PermitResearchPage() {
       console.log('Drawing skipped - map or result missing');
       return;
     }
-    console.log('Drawing parcel and wells...');
+    console.log('Drawing parcel, wells, and septic permits...');
     
     const map = mapInstanceRef.current;
     
     // Clear existing markers and polygons
     markersRef.current.forEach(m => m.map = null);
     markersRef.current = [];
+    septicPermitMarkersRef.current.forEach(m => m.setMap(null));
+    septicPermitMarkersRef.current = [];
     if (parcelPolygonRef.current) {
       parcelPolygonRef.current.setMap(null);
     }
@@ -359,7 +374,8 @@ export default function PermitResearchPage() {
               ${well.total_completed_depth ? `<b>Depth:</b> ${well.total_completed_depth}ft<br/>` : ''}
               ${well.static_water_level ? `<b>Static Level:</b> ${well.static_water_level}ft<br/>` : ''}
               ${well.well_use ? `<b>Use:</b> ${well.well_use}<br/>` : ''}
-              ${well.date_work_ended ? `<b>Date:</b> ${well.date_work_ended}` : ''}
+              ${well.date_work_ended ? `<b>Date:</b> ${well.date_work_ended}<br/>` : ''}
+              ${well.distance_from_parcel ? `<b>Distance:</b> ${well.distance_from_parcel.toLocaleString()}ft` : ''}
             </div>
           `,
         });
@@ -370,7 +386,50 @@ export default function PermitResearchPage() {
         
         markersRef.current.push(marker as any);
       });
-      console.log('Added', markersRef.current.length, 'markers');
+      console.log('Added', markersRef.current.length, 'well markers');
+    }
+    
+    // Add septic permit markers (orange squares)
+    if (result.septicPermits && result.septicPermits.length > 0) {
+      console.log('Adding', result.septicPermits.length, 'septic permit markers');
+      result.septicPermits.forEach((permit, index) => {
+        if (!permit.latitude || !permit.longitude) return;
+        
+        const marker = new google.maps.Marker({
+          map,
+          position: { lat: permit.latitude, lng: permit.longitude },
+          title: `Septic - ${permit.full_address || permit.apn}`,
+          icon: {
+            path: google.maps.SymbolPath.BACKWARD_CLOSED_ARROW,
+            scale: 6,
+            fillColor: '#F97316', // Orange
+            fillOpacity: 0.9,
+            strokeColor: '#ffffff',
+            strokeWeight: 2,
+            rotation: 180,
+          },
+        });
+        
+        // Add info window with septic details
+        const infoWindow = new google.maps.InfoWindow({
+          content: `
+            <div style="padding: 8px; min-width: 180px;">
+              <strong style="font-size: 14px; color: #F97316;">🚽 Septic Parcel</strong><br/>
+              <b>APN:</b> ${permit.apn}<br/>
+              ${permit.full_address ? `<b>Address:</b> ${permit.full_address}<br/>` : ''}
+              <b>Status:</b> ${permit.designation}<br/>
+              ${permit.distance_feet ? `<b>Distance:</b> ${permit.distance_feet.toLocaleString()}ft` : ''}
+            </div>
+          `,
+        });
+        
+        marker.addListener('click', () => {
+          infoWindow.open(map, marker);
+        });
+        
+        septicPermitMarkersRef.current.push(marker);
+      });
+      console.log('Added', septicPermitMarkersRef.current.length, 'septic permit markers');
     }
   }, [result, showSetbacks, mapReady]); // Include mapReady to trigger when map becomes available
 
@@ -1639,12 +1698,19 @@ export default function PermitResearchPage() {
                             </span>
                             <span className="font-mono text-sm font-medium">WCR #{well.wcr_number}</span>
                           </span>
-                          {well.date_work_ended && (
-                            <span className="text-xs text-gray-500 flex items-center gap-1">
-                              <Calendar className="h-3 w-3" />
-                              {well.date_work_ended}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-2">
+                            {well.distance_from_parcel && (
+                              <span className="text-xs text-blue-600 font-medium">
+                                {well.distance_from_parcel.toLocaleString()}ft
+                              </span>
+                            )}
+                            {well.date_work_ended && (
+                              <span className="text-xs text-gray-500 flex items-center gap-1">
+                                <Calendar className="h-3 w-3" />
+                                {well.date_work_ended}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div className="grid grid-cols-3 gap-2 text-sm">
                           <div>
@@ -1681,34 +1747,97 @@ export default function PermitResearchPage() {
             >
               <div className="flex items-center gap-2">
                 <div className="h-5 w-5 text-amber-600">🚽</div>
-                <h3 className="font-semibold text-gray-900">Septic System</h3>
+                <h3 className="font-semibold text-gray-900">
+                  Septic System
+                  {result.septicPermits && result.septicPermits.length > 0 && (
+                    <span className="ml-2 px-2 py-0.5 bg-orange-100 text-orange-700 text-xs rounded-full">
+                      {result.septicPermits.length} nearby
+                    </span>
+                  )}
+                </h3>
               </div>
               {expandedSections.septic ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
             </button>
             {expandedSections.septic && (
-              <div className="p-4">
-                {result.septic?.status === 'mock' ? (
+              <div className="p-4 space-y-4">
+                {/* Property Designation */}
+                {result.septic?.status === 'found' ? (
+                  <div className={`p-4 rounded-lg border ${
+                    result.septic.type === 'SEPTIC' 
+                      ? 'bg-orange-50 border-orange-200' 
+                      : result.septic.type === 'SEWER'
+                      ? 'bg-blue-50 border-blue-200'
+                      : 'bg-gray-50 border-gray-200'
+                  }`}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className={`text-lg ${result.septic.type === 'SEPTIC' ? 'text-orange-600' : 'text-blue-600'}`}>
+                        {result.septic.type === 'SEPTIC' ? '🚽' : '🏭'}
+                      </span>
+                      <span className={`font-semibold ${
+                        result.septic.type === 'SEPTIC' ? 'text-orange-800' : 'text-blue-800'
+                      }`}>
+                        This Property: {result.septic.type}
+                      </span>
+                    </div>
+                    <p className="text-sm text-gray-600">{result.septic.designation}</p>
+                    <p className="text-xs text-gray-500 mt-1">Source: {result.septic.source}</p>
+                  </div>
+                ) : result.septic?.status === 'mock' ? (
                   <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <div className="flex items-start gap-3">
                       <Info className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="font-medium text-yellow-800">Manual Research Required</p>
+                        <p className="font-medium text-yellow-800">Property Designation Unknown</p>
                         <p className="text-sm text-yellow-700 mt-1">{result.septic.message}</p>
-                        <div className="mt-3 space-y-1 text-sm text-yellow-700">
+                        <div className="mt-2 text-sm text-yellow-700">
                           <p><strong>San Diego County DEH:</strong> (858) 505-6700</p>
                           <p><strong>Riverside County DEH:</strong> (951) 358-5172</p>
-                        </div>
-                        <div className="mt-3 pt-3 border-t border-yellow-200">
-                          <p className="text-sm text-yellow-700">
-                            <strong>Tip:</strong> Use "Place Septic Location" above to mark the septic on the map and view setback circles.
-                          </p>
                         </div>
                       </div>
                     </div>
                   </div>
-                ) : (
-                  <p className="text-gray-500 text-center py-4">No septic data available</p>
+                ) : null}
+                
+                {/* Nearby Septic Parcels */}
+                {result.septicPermits && result.septicPermits.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">
+                      Nearby Septic Parcels (within 1 mile)
+                    </h4>
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {result.septicPermits.slice(0, 10).map((permit, i) => (
+                        <div key={i} className="p-2 bg-orange-50 rounded border border-orange-100 text-sm">
+                          <div className="flex items-center justify-between">
+                            <span className="font-mono text-xs text-gray-600">{permit.apn}</span>
+                            {permit.distance_feet && (
+                              <span className="text-xs text-orange-600 font-medium">
+                                {permit.distance_feet.toLocaleString()}ft away
+                              </span>
+                            )}
+                          </div>
+                          {permit.full_address && (
+                            <p className="text-xs text-gray-500 truncate">{permit.full_address}</p>
+                          )}
+                        </div>
+                      ))}
+                      {result.septicPermits.length > 10 && (
+                        <p className="text-xs text-gray-500 text-center py-1">
+                          +{result.septicPermits.length - 10} more septic parcels
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-xs text-orange-600 mt-2">
+                      🔶 Orange markers on map show nearby septic parcels
+                    </p>
+                  </div>
                 )}
+                
+                {/* Tip for manual placement */}
+                <div className="pt-2 border-t border-gray-200">
+                  <p className="text-xs text-gray-500">
+                    <strong>Tip:</strong> Use "Place Septic Location" above to manually mark septic tank location and view setback circles.
+                  </p>
+                </div>
               </div>
             )}
           </div>

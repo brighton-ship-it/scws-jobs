@@ -38,10 +38,22 @@ interface WellInfo {
   distance_from_parcel?: number;
 }
 
+interface SepticInfo {
+  status: 'found' | 'mock';
+  type?: 'SEPTIC' | 'SEWER' | 'UNKNOWN';
+  designation?: string;
+  source?: string;
+  latitude?: number;
+  longitude?: number;
+  message?: string;
+  info?: any;
+}
+
 interface ResearchResult {
   parcel: ParcelInfo | null;
   wells: WellInfo[];
-  septic: any | null;
+  septic: SepticInfo | null;
+  septicPermits: SepticPermit[]; // Nearby septic parcels for mapping
   zoning: any | null;
   sources: { name: string; status: 'success' | 'error' | 'mock'; message?: string }[];
 }
@@ -160,40 +172,77 @@ async function fetchRiversideParcel(apn: string): Promise<ParcelInfo | null> {
 
 /**
  * Fetch wells from DWR Well Completion Reports
+ * Uses envelope (bounding box) query in WGS84 for reliable results
  */
 async function fetchDWRWells(lat: number, lng: number, radiusMeters: number = 1609): Promise<WellInfo[]> {
   try {
-    // Convert lat/lng to Web Mercator for buffer
-    const x = lng * 20037508.34 / 180;
-    const y = Math.log(Math.tan((90 + lat) * Math.PI / 360)) / (Math.PI / 180) * 20037508.34 / 180;
+    // Convert radius from meters to approximate degrees
+    // At ~33° latitude: 1 degree ≈ 111km lat, ~93km lng
+    const latDegPerMeter = 1 / 111000;
+    const lngDegPerMeter = 1 / (111000 * Math.cos(lat * Math.PI / 180));
+    
+    const latOffset = radiusMeters * latDegPerMeter;
+    const lngOffset = radiusMeters * lngDegPerMeter;
+    
+    // Create bounding box envelope in WGS84
+    const envelope = {
+      xmin: lng - lngOffset,
+      ymin: lat - latOffset,
+      xmax: lng + lngOffset,
+      ymax: lat + latOffset,
+      spatialReference: { wkid: 4326 }
+    };
+    
+    console.log('DWR wells query envelope:', envelope);
     
     const result = await queryArcGIS(GIS_ENDPOINTS.dwr_wells, {
-      geometry: JSON.stringify({
-        x: x,
-        y: y,
-        spatialReference: { wkid: 102100 }
-      }),
-      geometryType: 'esriGeometryPoint',
+      geometry: JSON.stringify(envelope),
+      geometryType: 'esriGeometryEnvelope',
       spatialRel: 'esriSpatialRelIntersects',
-      distance: radiusMeters.toString(),
-      units: 'esriSRUnit_Meter',
       outFields: 'WCRNumber,DateWorkEnded,TotalCompletedDepth,TopOfPerforatedInterval,BottomofPerforatedInterval,StaticWaterLevel,PlannedUseFormerUse,DecimalLatitude,DecimalLongitude',
       returnGeometry: 'false',
-      outSR: '4326',
+      resultRecordCount: '100', // Limit to 100 wells max
     });
 
+    console.log('DWR wells response:', result.features?.length || 0, 'wells found');
+
     if (result.features) {
-      return result.features.map((f: any) => ({
-        wcr_number: f.attributes.WCRNumber,
-        date_work_ended: f.attributes.DateWorkEnded ? new Date(f.attributes.DateWorkEnded).toISOString().split('T')[0] : undefined,
-        total_completed_depth: f.attributes.TotalCompletedDepth,
-        top_of_perforations: f.attributes.TopOfPerforatedInterval,
-        bottom_of_perforations: f.attributes.BottomofPerforatedInterval,
-        static_water_level: f.attributes.StaticWaterLevel,
-        well_use: f.attributes.PlannedUseFormerUse,
-        latitude: f.attributes.DecimalLatitude,
-        longitude: f.attributes.DecimalLongitude,
-      }));
+      // Filter to only wells with valid coordinates and calculate distance
+      const wellsWithDistance = result.features
+        .filter((f: any) => f.attributes.DecimalLatitude && f.attributes.DecimalLongitude)
+        .map((f: any) => {
+          const wellLat = f.attributes.DecimalLatitude;
+          const wellLng = f.attributes.DecimalLongitude;
+          // Calculate distance in meters using Haversine
+          const R = 6371000; // Earth radius in meters
+          const dLat = (wellLat - lat) * Math.PI / 180;
+          const dLng = (wellLng - lng) * Math.PI / 180;
+          const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                    Math.cos(lat * Math.PI / 180) * Math.cos(wellLat * Math.PI / 180) *
+                    Math.sin(dLng/2) * Math.sin(dLng/2);
+          const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+          const distance = R * c;
+          
+          return {
+            wcr_number: f.attributes.WCRNumber,
+            date_work_ended: f.attributes.DateWorkEnded ? new Date(f.attributes.DateWorkEnded).toISOString().split('T')[0] : undefined,
+            total_completed_depth: f.attributes.TotalCompletedDepth,
+            top_of_perforations: f.attributes.TopOfPerforatedInterval,
+            bottom_of_perforations: f.attributes.BottomofPerforatedInterval,
+            static_water_level: f.attributes.StaticWaterLevel,
+            well_use: f.attributes.PlannedUseFormerUse,
+            latitude: wellLat,
+            longitude: wellLng,
+            distance_from_parcel: Math.round(distance * 3.28084), // Convert to feet
+          };
+        })
+        // Filter to actual radius (envelope is square, so some may be outside circle)
+        .filter((w: WellInfo) => (w.distance_from_parcel || 0) <= radiusMeters * 3.28084)
+        // Sort by distance
+        .sort((a: WellInfo, b: WellInfo) => (a.distance_from_parcel || 0) - (b.distance_from_parcel || 0));
+      
+      console.log('DWR wells after filtering:', wellsWithDistance.length, 'wells within radius');
+      return wellsWithDistance;
     }
     
     return [];
@@ -336,6 +385,16 @@ async function fetchRiversideParcelByCoords(lat: number, lng: number): Promise<P
   }
 }
 
+interface SepticPermit {
+  apn: string;
+  designation: string;
+  type: 'SEPTIC' | 'SEWER' | 'UNKNOWN';
+  latitude: number;
+  longitude: number;
+  full_address?: string;
+  distance_feet?: number;
+}
+
 /**
  * Fetch infrastructure status from our database
  */
@@ -357,6 +416,8 @@ async function fetchInfrastructureStatus(supabase: any, apn: string, lat?: numbe
                 data.sewer_septic_designation?.toLowerCase().includes('sewer') ? 'SEWER' : 'UNKNOWN',
           designation: data.sewer_septic_designation,
           source: 'San Diego County SANGIS',
+          latitude: data.latitude,
+          longitude: data.longitude,
         };
       }
     }
@@ -380,6 +441,8 @@ async function fetchInfrastructureStatus(supabase: any, apn: string, lat?: numbe
                 data.sewer_septic_designation?.toLowerCase().includes('sewer') ? 'SEWER' : 'UNKNOWN',
           designation: data.sewer_septic_designation,
           source: 'San Diego County SANGIS',
+          latitude: data.latitude,
+          longitude: data.longitude,
         };
       }
     }
@@ -388,6 +451,84 @@ async function fetchInfrastructureStatus(supabase: any, apn: string, lat?: numbe
   } catch (error) {
     console.error('Infrastructure lookup error:', error);
     return null;
+  }
+}
+
+/**
+ * Fetch nearby septic permits within radius
+ * Returns parcels marked as "septic" within the search radius for mapping
+ */
+async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number, radiusMeters: number = 1609): Promise<SepticPermit[]> {
+  try {
+    // Convert radius to approximate degrees (1 mile ≈ 0.0145 degrees at CA latitude)
+    const latDegPerMeter = 1 / 111000;
+    const lngDegPerMeter = 1 / (111000 * Math.cos(lat * Math.PI / 180));
+    
+    const latOffset = radiusMeters * latDegPerMeter;
+    const lngOffset = radiusMeters * lngDegPerMeter;
+    
+    console.log('Fetching nearby septic permits within', radiusMeters, 'm of', lat, lng);
+    
+    // Query parcels with septic designation within bounding box
+    const { data, error } = await supabase
+      .from('parcel_infrastructure')
+      .select('apn, sewer_septic_designation, latitude, longitude, full_address')
+      .gte('latitude', lat - latOffset)
+      .lte('latitude', lat + latOffset)
+      .gte('longitude', lng - lngOffset)
+      .lte('longitude', lng + lngOffset)
+      .ilike('sewer_septic_designation', '%septic%')
+      .not('latitude', 'is', null)
+      .not('longitude', 'is', null)
+      .limit(50);
+    
+    if (error) {
+      console.error('Septic permits query error:', error);
+      return [];
+    }
+    
+    if (!data || data.length === 0) {
+      console.log('No septic permits found in database');
+      return [];
+    }
+    
+    console.log('Found', data.length, 'septic parcels in bounding box');
+    
+    // Calculate distance and filter to actual radius
+    const permits = data
+      .map((record: any) => {
+        const septicLat = parseFloat(record.latitude);
+        const septicLng = parseFloat(record.longitude);
+        
+        // Calculate distance using Haversine
+        const R = 6371000; // Earth radius in meters
+        const dLat = (septicLat - lat) * Math.PI / 180;
+        const dLng = (septicLng - lng) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                  Math.cos(lat * Math.PI / 180) * Math.cos(septicLat * Math.PI / 180) *
+                  Math.sin(dLng/2) * Math.sin(dLng/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const distanceMeters = R * c;
+        const distanceFeet = Math.round(distanceMeters * 3.28084);
+        
+        return {
+          apn: record.apn,
+          designation: record.sewer_septic_designation,
+          type: 'SEPTIC' as const,
+          latitude: septicLat,
+          longitude: septicLng,
+          full_address: record.full_address,
+          distance_feet: distanceFeet,
+        };
+      })
+      .filter((p: SepticPermit) => (p.distance_feet || 0) <= radiusMeters * 3.28084)
+      .sort((a: SepticPermit, b: SepticPermit) => (a.distance_feet || 0) - (b.distance_feet || 0));
+    
+    console.log('Septic permits within radius:', permits.length);
+    return permits;
+  } catch (error) {
+    console.error('Fetch nearby septic permits error:', error);
+    return [];
   }
 }
 
@@ -427,6 +568,7 @@ export async function POST(request: NextRequest) {
       parcel: null,
       wells: [],
       septic: null,
+      septicPermits: [], // Nearby septic parcels for mapping
       zoning: null,
       sources: [],
     };
@@ -442,13 +584,24 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (cached) {
+        const cachedData = cached as any;
+        // Fetch fresh septic permits (not cached)
+        let septicPermits: SepticPermit[] = [];
+        if (lat && lng) {
+          try {
+            septicPermits = await fetchNearbySepticPermits(supabase, lat, lng, 1609);
+          } catch (e) {
+            console.error('Failed to fetch septic permits for cached result:', e);
+          }
+        }
         return NextResponse.json({
           ...result,
-          parcel: cached.parcel_data,
-          wells: cached.wells_data || [],
-          septic: cached.septic_data,
-          zoning: cached.zoning_data,
-          sources: cached.data_sources || [],
+          parcel: cachedData.parcel_data,
+          wells: cachedData.wells_data || [],
+          septic: cachedData.septic_data,
+          septicPermits,
+          zoning: cachedData.zoning_data,
+          sources: cachedData.data_sources || [],
           cached: true,
         });
       }
@@ -532,6 +685,23 @@ export async function POST(request: NextRequest) {
       result.septic = getMockSepticData();
       sources.push({ name: 'Septic Records', status: 'mock', message: 'Manual lookup required' });
     }
+    
+    // Fetch nearby septic permits for mapping (within 1 mile)
+    if (searchLat && searchLng) {
+      try {
+        result.septicPermits = await fetchNearbySepticPermits(supabase, searchLat, searchLng, 1609);
+        if (result.septicPermits.length > 0) {
+          sources.push({ 
+            name: 'Nearby Septic Parcels', 
+            status: 'success',
+            message: `Found ${result.septicPermits.length} septic parcels within 1 mile`
+          });
+        }
+      } catch (error) {
+        console.error('Septic permits fetch error:', error);
+        // Non-fatal - we still return other data
+      }
+    }
 
     // Zoning data (from parcel if available)
     if (result.parcel?.zoning || result.parcel?.landUse) {
@@ -548,7 +718,7 @@ export async function POST(request: NextRequest) {
 
     result.sources = sources;
 
-    // Cache the results
+    // Cache the results (septicPermits not cached - always queried fresh)
     if (apn && result.parcel) {
       await supabase.from('permit_research_cache').upsert({
         apn,
@@ -560,7 +730,7 @@ export async function POST(request: NextRequest) {
         zoning_data: result.zoning,
         data_sources: sources,
         expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
-      }, {
+      } as any, {
         onConflict: 'apn,county',
       });
     }
