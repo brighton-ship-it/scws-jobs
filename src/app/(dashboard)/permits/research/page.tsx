@@ -158,6 +158,12 @@ export default function PermitResearchPage() {
   const [isPlacingSeptic, setIsPlacingSeptic] = useState(false);
   const [isPlacingWell, setIsPlacingWell] = useState(false);
   const isPlacingSepticRef = useRef(false); // Ref to track current state in click handler
+  
+  // Manual wells (known wells not in DWR database)
+  const [manualWells, setManualWells] = useState<Array<{ lat: number; lng: number; label: string; depth?: number }>>([]);
+  const [isPlacingManualWell, setIsPlacingManualWell] = useState(false);
+  const isPlacingManualWellRef = useRef(false);
+  const manualWellMarkersRef = useRef<google.maps.Marker[]>([]);
   const isPlacingWellRef = useRef(false);
   
   // PDF Export state
@@ -260,12 +266,12 @@ export default function PermitResearchPage() {
     }
     
     // Only add listener if in placement mode
-    if (!isPlacingSeptic && !isPlacingWell) {
+    if (!isPlacingSeptic && !isPlacingWell && !isPlacingManualWell) {
       console.log('Map click effect: not in placement mode');
       return;
     }
     
-    console.log('Map click effect: attaching listener', { isPlacingSeptic, isPlacingWell });
+    console.log('Map click effect: attaching listener', { isPlacingSeptic, isPlacingWell, isPlacingManualWell });
     
     mapClickListenerRef.current = google.maps.event.addListener(map, 'click', (e: google.maps.MapMouseEvent) => {
       console.log('MAP CLICKED!', e.latLng?.toJSON());
@@ -279,6 +285,16 @@ export default function PermitResearchPage() {
         setWellLocation({ lat: e.latLng.lat(), lng: e.latLng.lng() });
         setIsPlacingWell(false);
       }
+      
+      if (isPlacingManualWell && e.latLng) {
+        const newWell = {
+          lat: e.latLng.lat(),
+          lng: e.latLng.lng(),
+          label: `Manual ${manualWells.length + 1}`,
+        };
+        setManualWells(prev => [...prev, newWell]);
+        setIsPlacingManualWell(false);
+      }
     });
     
     return () => {
@@ -287,7 +303,7 @@ export default function PermitResearchPage() {
         mapClickListenerRef.current = null;
       }
     };
-  }, [isPlacingSeptic, isPlacingWell, mapReady]);
+  }, [isPlacingSeptic, isPlacingWell, isPlacingManualWell, manualWells.length, mapReady]);
 
   // Update map when results change
   useEffect(() => {
@@ -605,6 +621,71 @@ export default function PermitResearchPage() {
       }
     }
   }, [wellLocation, showSetbacks]);
+
+  // Update manual well markers (known wells not in DWR)
+  useEffect(() => {
+    if (!mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    
+    // Clear existing manual well markers
+    manualWellMarkersRef.current.forEach(m => m.setMap(null));
+    manualWellMarkersRef.current = [];
+    
+    // Add markers for each manual well
+    manualWells.forEach((well, index) => {
+      const marker = new google.maps.Marker({
+        map,
+        position: { lat: well.lat, lng: well.lng },
+        title: `${well.label}${well.depth ? ` - ${well.depth}ft deep` : ''}`,
+        label: {
+          text: `E${index + 1}`, // E for "Existing"
+          color: 'white',
+          fontSize: '10px',
+          fontWeight: 'bold',
+        },
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 12,
+          fillColor: '#8B5CF6', // Purple for manual/existing wells
+          fillOpacity: 1,
+          strokeColor: '#ffffff',
+          strokeWeight: 2,
+        },
+      });
+      
+      const infoWindow = new google.maps.InfoWindow({
+        content: `
+          <div style="padding: 8px; min-width: 150px;">
+            <strong style="font-size: 14px;">Existing Well (Manual)</strong><br/>
+            ${well.depth ? `<b>Depth:</b> ${well.depth}ft<br/>` : ''}
+            <b>GPS:</b> ${well.lat.toFixed(6)}, ${well.lng.toFixed(6)}<br/>
+            <i style="color: #666; font-size: 11px;">Not in DWR database</i>
+          </div>
+        `,
+      });
+      
+      marker.addListener('click', () => {
+        infoWindow.open(map, marker);
+      });
+      
+      manualWellMarkersRef.current.push(marker);
+      
+      // Draw 50ft setback circle if showSetbacks
+      if (showSetbacks) {
+        const circle = new google.maps.Circle({
+          center: { lat: well.lat, lng: well.lng },
+          radius: feetToMeters(50),
+          strokeColor: '#8B5CF6',
+          strokeOpacity: 0.8,
+          strokeWeight: 2,
+          fillColor: '#8B5CF6',
+          fillOpacity: 0.1,
+          map,
+        });
+        setbackCirclesRef.current.push(circle);
+      }
+    });
+  }, [manualWells, showSetbacks]);
 
   // Draw property line setback using proper edge offset
   // San Diego: 10ft setback, Riverside: 50ft setback
@@ -931,7 +1012,8 @@ export default function PermitResearchPage() {
         const truncatedOwner = ownerName.length > 60 ? ownerName.substring(0, 57) + '...' : ownerName;
         pdf.text(`Owner: ${truncatedOwner}`, col1X, infoY + 23);
       }
-      pdf.text(`Wells Found: ${result.wells.length}`, col3X + 20, infoY + 23);
+      const totalWells = result.wells.length + manualWells.length;
+      pdf.text(`Wells Found: ${totalWells}${manualWells.length > 0 ? ` (${manualWells.length} manual)` : ''}`, col3X + 20, infoY + 23);
       
       // Proposed Well GPS Coordinates (if placed)
       if (wellLocation) {
@@ -957,6 +1039,13 @@ export default function PermitResearchPage() {
       pdf.setFillColor(59, 130, 246);
       pdf.circle(92, legendY - 1.5, 2, 'F');
       pdf.text('Well Location', 96, legendY);
+      
+      // Purple circle - Existing/Manual Well (if any)
+      if (manualWells.length > 0) {
+        pdf.setFillColor(139, 92, 246);
+        pdf.circle(145, legendY - 1.5, 2, 'F');
+        pdf.text('Existing (Manual)', 149, legendY);
+      }
       
       // Orange - Septic
       pdf.setFillColor(249, 115, 22);
@@ -1615,6 +1704,33 @@ export default function PermitResearchPage() {
                   </button>
                 )}
                 
+                {/* Manual/Existing Wells */}
+                <span className="text-gray-300">|</span>
+                <button
+                  onClick={() => {
+                    setIsPlacingManualWell(true);
+                    setIsPlacingSeptic(false);
+                    setIsPlacingWell(false);
+                  }}
+                  className={`flex items-center gap-1 px-3 py-1 border rounded text-sm ${
+                    isPlacingManualWell 
+                      ? 'bg-purple-100 border-purple-500 text-purple-700' 
+                      : 'border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <CircleDot className="h-3 w-3" />
+                  {isPlacingManualWell ? 'Click map...' : 'Add Existing Well'}
+                </button>
+                
+                {manualWells.length > 0 && (
+                  <button
+                    onClick={() => setManualWells([])}
+                    className="text-sm text-red-600 hover:text-red-700"
+                  >
+                    Clear ({manualWells.length})
+                  </button>
+                )}
+                
                 {/* North Arrow */}
                 <div className="ml-auto flex items-center gap-2 text-gray-500">
                   <Navigation className="h-5 w-5 transform rotate-0" />
@@ -1629,7 +1745,7 @@ export default function PermitResearchPage() {
                   onClick={(e) => {
                     // Fallback click handler for placement
                     if (!mapInstanceRef.current) return;
-                    if (!isPlacingSeptic && !isPlacingWell) return;
+                    if (!isPlacingSeptic && !isPlacingWell && !isPlacingManualWell) return;
                     
                     const map = mapInstanceRef.current;
                     const rect = e.currentTarget.getBoundingClientRect();
@@ -1655,8 +1771,12 @@ export default function PermitResearchPage() {
                       setWellLocation({ lat, lng });
                       setIsPlacingWell(false);
                     }
+                    if (isPlacingManualWell) {
+                      setManualWells(prev => [...prev, { lat, lng, label: `Manual ${prev.length + 1}` }]);
+                      setIsPlacingManualWell(false);
+                    }
                   }}
-                  style={{ cursor: (isPlacingSeptic || isPlacingWell) ? 'crosshair' : undefined }}
+                  style={{ cursor: (isPlacingSeptic || isPlacingWell || isPlacingManualWell) ? 'crosshair' : undefined }}
                 />
                 
                 {/* Scale Bar Overlay */}
