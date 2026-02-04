@@ -458,16 +458,23 @@ async function fetchInfrastructureStatus(supabase: any, apn: string, lat?: numbe
  * Fetch nearby septic permits within radius
  * Returns parcels marked as "septic" within the search radius for mapping
  */
-async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number, radiusMeters: number = 1609): Promise<SepticPermit[]> {
+async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number, radiusMeters: number = 152): Promise<SepticPermit[]> {
   try {
-    // Convert radius to approximate degrees (1 mile ≈ 0.0145 degrees at CA latitude)
+    // Convert radius to approximate degrees
     const latDegPerMeter = 1 / 111000;
     const lngDegPerMeter = 1 / (111000 * Math.cos(lat * Math.PI / 180));
     
     const latOffset = radiusMeters * latDegPerMeter;
     const lngOffset = radiusMeters * lngDegPerMeter;
     
-    console.log('Fetching nearby septic permits within', radiusMeters, 'm of', lat, lng);
+    console.log('Fetching nearby septic permits within', radiusMeters, 'm (', Math.round(radiusMeters * 3.28084), 'ft) of', lat, lng);
+    console.log('Bounding box:', lat - latOffset, 'to', lat + latOffset, '/', lng - lngOffset, 'to', lng + lngOffset);
+    
+    // First, check how many records exist in the table at all
+    const { count: totalCount } = await supabase
+      .from('parcel_infrastructure')
+      .select('*', { count: 'exact', head: true });
+    console.log('Total records in parcel_infrastructure:', totalCount);
     
     // Query parcels with septic designation within bounding box
     const { data, error } = await supabase
@@ -480,7 +487,7 @@ async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number,
       .ilike('sewer_septic_designation', '%septic%')
       .not('latitude', 'is', null)
       .not('longitude', 'is', null)
-      .limit(50);
+      .limit(100);
     
     if (error) {
       console.error('Septic permits query error:', error);
@@ -686,20 +693,33 @@ export async function POST(request: NextRequest) {
       sources.push({ name: 'Septic Records', status: 'mock', message: 'Manual lookup required' });
     }
     
-    // Fetch nearby septic permits for mapping (within 1 mile)
+    // Fetch nearby septic permits for mapping (default: 500 feet = 152m)
     if (searchLat && searchLng) {
       try {
-        result.septicPermits = await fetchNearbySepticPermits(supabase, searchLat, searchLng, 1609);
+        // Default to 500 feet (152m), can be overridden by request
+        const septicRadiusFeet = body.septicRadiusFeet || 500;
+        const septicRadiusMeters = septicRadiusFeet * 0.3048;
+        result.septicPermits = await fetchNearbySepticPermits(supabase, searchLat, searchLng, septicRadiusMeters);
         if (result.septicPermits.length > 0) {
           sources.push({ 
             name: 'Nearby Septic Parcels', 
             status: 'success',
-            message: `Found ${result.septicPermits.length} septic parcels within 1 mile`
+            message: `Found ${result.septicPermits.length} septic parcels within ${septicRadiusFeet} ft`
+          });
+        } else {
+          sources.push({
+            name: 'Nearby Septic Parcels',
+            status: 'success',
+            message: `No septic parcels within ${septicRadiusFeet} ft`
           });
         }
       } catch (error) {
         console.error('Septic permits fetch error:', error);
-        // Non-fatal - we still return other data
+        sources.push({
+          name: 'Nearby Septic Parcels',
+          status: 'error',
+          message: error instanceof Error ? error.message : 'Query failed'
+        });
       }
     }
 
