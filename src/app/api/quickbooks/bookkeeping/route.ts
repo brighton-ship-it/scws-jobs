@@ -1,0 +1,129 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@/lib/supabase/server';
+import { getQuickBooksClient } from '@/lib/quickbooks/service';
+
+export const dynamic = 'force-dynamic';
+
+// Bookkeeping API - query QuickBooks data
+export async function GET(request: NextRequest) {
+  try {
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    
+    if (!user) {
+      return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+    }
+
+    const result = await getQuickBooksClient();
+    if (!result) {
+      return NextResponse.json({ error: 'QuickBooks not connected' }, { status: 400 });
+    }
+
+    const { client, connection } = result;
+    const action = request.nextUrl.searchParams.get('action') || 'info';
+
+    switch (action) {
+      case 'info': {
+        const info = await client.getCompanyInfo();
+        return NextResponse.json({ 
+          company: info,
+          environment: connection.environment,
+          connectedAt: connection.connected_at
+        });
+      }
+
+      case 'accounts': {
+        const accounts = await client.query("SELECT * FROM Account WHERE Active = true MAXRESULTS 100");
+        return NextResponse.json({ accounts: accounts.QueryResponse?.Account || [] });
+      }
+
+      case 'bank_accounts': {
+        const accounts = await client.query("SELECT * FROM Account WHERE AccountType = 'Bank' AND Active = true");
+        return NextResponse.json({ accounts: accounts.QueryResponse?.Account || [] });
+      }
+
+      case 'recent_transactions': {
+        const startDate = request.nextUrl.searchParams.get('start') || getDateNDaysAgo(30);
+        const txns = await client.query(`SELECT * FROM Purchase WHERE TxnDate >= '${startDate}' ORDERBY TxnDate DESC MAXRESULTS 50`);
+        const deposits = await client.query(`SELECT * FROM Deposit WHERE TxnDate >= '${startDate}' ORDERBY TxnDate DESC MAXRESULTS 50`);
+        return NextResponse.json({ 
+          purchases: txns.QueryResponse?.Purchase || [],
+          deposits: deposits.QueryResponse?.Deposit || []
+        });
+      }
+
+      case 'invoices': {
+        const status = request.nextUrl.searchParams.get('status') || 'all';
+        let query = "SELECT * FROM Invoice";
+        if (status === 'unpaid') {
+          query += " WHERE Balance > '0'";
+        } else if (status === 'paid') {
+          query += " WHERE Balance = '0'";
+        }
+        query += " ORDERBY TxnDate DESC MAXRESULTS 50";
+        const invoices = await client.query(query);
+        return NextResponse.json({ invoices: invoices.QueryResponse?.Invoice || [] });
+      }
+
+      case 'bills': {
+        const status = request.nextUrl.searchParams.get('status') || 'all';
+        let query = "SELECT * FROM Bill";
+        if (status === 'unpaid') {
+          query += " WHERE Balance > '0'";
+        }
+        query += " ORDERBY TxnDate DESC MAXRESULTS 50";
+        const bills = await client.query(query);
+        return NextResponse.json({ bills: bills.QueryResponse?.Bill || [] });
+      }
+
+      case 'profit_loss': {
+        const startDate = request.nextUrl.searchParams.get('start') || getStartOfYear();
+        const endDate = request.nextUrl.searchParams.get('end') || getToday();
+        const report = await client.getReport('ProfitAndLoss', { start_date: startDate, end_date: endDate });
+        return NextResponse.json({ report });
+      }
+
+      case 'balance_sheet': {
+        const asOf = request.nextUrl.searchParams.get('date') || getToday();
+        const report = await client.getReport('BalanceSheet', { date: asOf });
+        return NextResponse.json({ report });
+      }
+
+      case 'reconcile': {
+        const accountId = request.nextUrl.searchParams.get('accountId');
+        if (!accountId) {
+          return NextResponse.json({ error: 'accountId required' }, { status: 400 });
+        }
+        // Get recent uncleared transactions for the account
+        const txns = await client.query(`SELECT * FROM Purchase WHERE AccountRef = '${accountId}' ORDERBY TxnDate DESC MAXRESULTS 100`);
+        const deposits = await client.query(`SELECT * FROM Deposit WHERE DepositToAccountRef = '${accountId}' ORDERBY TxnDate DESC MAXRESULTS 100`);
+        return NextResponse.json({
+          purchases: txns.QueryResponse?.Purchase || [],
+          deposits: deposits.QueryResponse?.Deposit || []
+        });
+      }
+
+      default:
+        return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Bookkeeping API error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to fetch data';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
+function getDateNDaysAgo(n: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().split('T')[0];
+}
+
+function getStartOfYear(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-01-01`;
+}
+
+function getToday(): string {
+  return new Date().toISOString().split('T')[0];
+}

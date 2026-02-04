@@ -282,6 +282,22 @@ export class QuickBooksClient {
     const result = await this.request<{ CompanyInfo: QBOCompanyInfo }>(`/companyinfo/${this.realmId}`);
     return result.CompanyInfo;
   }
+
+  // ============= GENERIC QUERY =============
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async query(queryString: string): Promise<any> {
+    return this.request(`/query?query=${encodeURIComponent(queryString)}`);
+  }
+
+  // ============= REPORTS =============
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async getReport(reportName: string, params: Record<string, string> = {}): Promise<any> {
+    const queryParams = new URLSearchParams(params).toString();
+    const endpoint = `/reports/${reportName}${queryParams ? '?' + queryParams : ''}`;
+    return this.request(endpoint);
+  }
 }
 
 export default QuickBooksClient;
