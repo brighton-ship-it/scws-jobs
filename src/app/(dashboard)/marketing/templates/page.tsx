@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { 
   Mail, 
@@ -12,10 +12,11 @@ import {
   Edit,
   Trash,
   Clock,
-  Calendar,
   Bell,
   Star,
-  FileText
+  FileText,
+  Loader2,
+  AlertCircle
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -29,7 +30,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import {
   Tabs,
-  TabsContent,
   TabsList,
   TabsTrigger,
 } from '@/components/ui/tabs'
@@ -42,6 +42,16 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import {
@@ -51,118 +61,20 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import { toast } from 'sonner'
 
-// Mock templates
-const mockTemplates = {
-  email: [
-    {
-      id: 'e1',
-      name: 'Appointment Reminder - 24hr',
-      category: 'reminders',
-      subject: 'Reminder: Your well service appointment is tomorrow',
-      preview: 'Hi {{customer_name}}, this is a reminder that your appointment with Southern California Well Service is scheduled for tomorrow...',
-      variables: ['customer_name', 'appointment_date', 'appointment_time', 'service_type'],
-      lastUsed: '2026-02-01',
-      timesUsed: 156,
-    },
-    {
-      id: 'e2',
-      name: 'Appointment Confirmation',
-      category: 'reminders',
-      subject: 'Your appointment is confirmed!',
-      preview: 'Thank you for scheduling with Southern California Well Service. Your appointment has been confirmed for...',
-      variables: ['customer_name', 'appointment_date', 'appointment_time', 'tech_name'],
-      lastUsed: '2026-02-02',
-      timesUsed: 234,
-    },
-    {
-      id: 'e3',
-      name: 'Quote Follow-up',
-      category: 'follow-ups',
-      subject: 'Following up on your well service quote',
-      preview: 'Hi {{customer_name}}, we wanted to follow up on the quote we sent for {{service_type}}. Do you have any questions?',
-      variables: ['customer_name', 'service_type', 'quote_amount', 'quote_date'],
-      lastUsed: '2026-01-28',
-      timesUsed: 89,
-    },
-    {
-      id: 'e4',
-      name: 'Annual Maintenance Reminder',
-      category: 'promotions',
-      subject: "It's time for your annual well inspection",
-      preview: "Hi {{customer_name}}, it's been a year since your last well service. Regular maintenance helps prevent costly emergency repairs...",
-      variables: ['customer_name', 'last_service_date', 'address'],
-      lastUsed: '2026-01-15',
-      timesUsed: 1247,
-    },
-    {
-      id: 'e5',
-      name: 'Invoice Sent',
-      category: 'transactional',
-      subject: 'Invoice #{{invoice_number}} from Southern California Well Service',
-      preview: 'Hi {{customer_name}}, please find attached your invoice for the recent service at {{address}}...',
-      variables: ['customer_name', 'invoice_number', 'amount', 'address'],
-      lastUsed: '2026-02-02',
-      timesUsed: 2341,
-    },
-    {
-      id: 'e6',
-      name: 'Payment Receipt',
-      category: 'transactional',
-      subject: 'Payment received - Thank you!',
-      preview: 'Thank you for your payment of ${{amount}}. This confirms that Invoice #{{invoice_number}} has been paid in full...',
-      variables: ['customer_name', 'amount', 'invoice_number', 'payment_date'],
-      lastUsed: '2026-02-02',
-      timesUsed: 1893,
-    },
-  ],
-  sms: [
-    {
-      id: 's1',
-      name: 'Appointment Reminder - 24hr',
-      category: 'reminders',
-      preview: 'SCWS Reminder: Your appointment is tomorrow at {{appointment_time}}. Reply CONFIRM or call (760) 440-8520 to reschedule.',
-      variables: ['appointment_time'],
-      lastUsed: '2026-02-02',
-      timesUsed: 456,
-    },
-    {
-      id: 's2',
-      name: 'Tech On The Way',
-      category: 'reminders',
-      preview: '{{tech_name}} from SCWS is on the way! ETA: {{eta}}. Questions? Call (760) 440-8520',
-      variables: ['tech_name', 'eta'],
-      lastUsed: '2026-02-02',
-      timesUsed: 234,
-    },
-    {
-      id: 's3',
-      name: 'Quote Ready',
-      category: 'follow-ups',
-      preview: 'Your quote from SCWS is ready! Total: ${{amount}}. View and approve at: {{quote_link}}',
-      variables: ['amount', 'quote_link'],
-      lastUsed: '2026-01-30',
-      timesUsed: 167,
-    },
-    {
-      id: 's4',
-      name: 'Payment Link',
-      category: 'transactional',
-      preview: 'SCWS Invoice #{{invoice_number}}: ${{amount}} due. Pay securely: {{payment_link}}',
-      variables: ['invoice_number', 'amount', 'payment_link'],
-      lastUsed: '2026-02-01',
-      timesUsed: 312,
-    },
-    {
-      id: 's5',
-      name: 'Review Request',
-      category: 'follow-ups',
-      preview: 'Thanks for choosing SCWS! How was your service? Leave a review: {{review_link}}',
-      variables: ['review_link'],
-      lastUsed: '2026-02-02',
-      timesUsed: 89,
-    },
-  ],
+interface Template {
+  id: string
+  name: string
+  type: 'email' | 'sms'
+  category: string
+  subject?: string
+  content: string
+  variables: string[]
+  times_used: number
+  last_used_at?: string
+  created_at: string
+  updated_at: string
 }
 
 const categoryIcons: Record<string, any> = {
@@ -182,13 +94,200 @@ const categoryLabels: Record<string, string> = {
 export default function TemplatesPage() {
   const [searchQuery, setSearchQuery] = useState('')
   const [activeTab, setActiveTab] = useState('email')
+  const [templates, setTemplates] = useState<Template[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  
+  // Create dialog state
   const [isCreateOpen, setIsCreateOpen] = useState(false)
-  const [newTemplateType, setNewTemplateType] = useState('email')
+  const [newTemplateType, setNewTemplateType] = useState<'email' | 'sms'>('email')
+  const [newTemplate, setNewTemplate] = useState({
+    name: '',
+    category: '',
+    subject: '',
+    content: '',
+  })
+  const [creating, setCreating] = useState(false)
+  
+  // Edit dialog state
+  const [editTemplate, setEditTemplate] = useState<Template | null>(null)
+  const [editData, setEditData] = useState({
+    name: '',
+    category: '',
+    subject: '',
+    content: '',
+  })
+  const [saving, setSaving] = useState(false)
+  
+  // Delete state
+  const [deleteId, setDeleteId] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
 
-  const currentTemplates = activeTab === 'email' ? mockTemplates.email : mockTemplates.sms
+  // Fetch templates
+  useEffect(() => {
+    async function fetchTemplates() {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await fetch('/api/marketing/templates')
+        if (!res.ok) throw new Error('Failed to fetch templates')
+        const data = await res.json()
+        setTemplates(data.templates || [])
+      } catch (err: any) {
+        console.error('Error fetching templates:', err)
+        setError(err.message || 'Failed to load templates')
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchTemplates()
+  }, [])
+
+  // Extract variables from content
+  const extractVariables = (content: string): string[] => {
+    const matches = content.match(/\{\{(\w+)\}\}/g) || []
+    return [...new Set(matches.map(m => m.replace(/[{}]/g, '')))]
+  }
+
+  // Create template
+  const handleCreate = async () => {
+    if (!newTemplate.name || !newTemplate.category || !newTemplate.content) {
+      toast.error('Please fill in all required fields')
+      return
+    }
+    
+    setCreating(true)
+    try {
+      const variables = extractVariables(newTemplate.content)
+      const res = await fetch('/api/marketing/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newTemplate.name,
+          type: newTemplateType,
+          category: newTemplate.category,
+          subject: newTemplateType === 'email' ? newTemplate.subject : null,
+          content: newTemplate.content,
+          variables,
+        }),
+      })
+      
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to create template')
+      }
+      
+      const data = await res.json()
+      setTemplates([data.template, ...templates])
+      setIsCreateOpen(false)
+      setNewTemplate({ name: '', category: '', subject: '', content: '' })
+      toast.success('Template created')
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to create template')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // Edit template
+  const handleEdit = async () => {
+    if (!editTemplate) return
+    
+    setSaving(true)
+    try {
+      const variables = extractVariables(editData.content)
+      const res = await fetch(`/api/marketing/templates/${editTemplate.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: editData.name,
+          category: editData.category,
+          subject: editTemplate.type === 'email' ? editData.subject : null,
+          content: editData.content,
+          variables,
+        }),
+      })
+      
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to update template')
+      }
+      
+      const data = await res.json()
+      setTemplates(templates.map(t => t.id === editTemplate.id ? data.template : t))
+      setEditTemplate(null)
+      toast.success('Template updated')
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to update template')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  // Delete template
+  const handleDelete = async () => {
+    if (!deleteId) return
+    
+    setDeleting(true)
+    try {
+      const res = await fetch(`/api/marketing/templates/${deleteId}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to delete template')
+      }
+      setTemplates(templates.filter(t => t.id !== deleteId))
+      toast.success('Template deleted')
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to delete template')
+    } finally {
+      setDeleting(false)
+      setDeleteId(null)
+    }
+  }
+
+  // Duplicate template
+  const handleDuplicate = async (template: Template) => {
+    try {
+      const res = await fetch('/api/marketing/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `${template.name} (Copy)`,
+          type: template.type,
+          category: template.category,
+          subject: template.subject,
+          content: template.content,
+          variables: template.variables,
+        }),
+      })
+      
+      if (!res.ok) {
+        const data = await res.json()
+        throw new Error(data.error || 'Failed to duplicate template')
+      }
+      
+      const data = await res.json()
+      setTemplates([data.template, ...templates])
+      toast.success('Template duplicated')
+    } catch (err: any) {
+      toast.error(err.message || 'Failed to duplicate template')
+    }
+  }
+
+  const openEditDialog = (template: Template) => {
+    setEditTemplate(template)
+    setEditData({
+      name: template.name,
+      category: template.category,
+      subject: template.subject || '',
+      content: template.content,
+    })
+  }
+
+  const currentTemplates = templates.filter(t => t.type === activeTab)
   const filteredTemplates = currentTemplates.filter(template =>
     template.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    template.preview.toLowerCase().includes(searchQuery.toLowerCase())
+    template.content.toLowerCase().includes(searchQuery.toLowerCase())
   )
 
   // Group by category
@@ -198,7 +297,25 @@ export default function TemplatesPage() {
     }
     acc[template.category].push(template)
     return acc
-  }, {} as Record<string, typeof filteredTemplates>)
+  }, {} as Record<string, Template[]>)
+
+  if (loading) {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-6 gap-4">
+        <AlertCircle className="h-12 w-12 text-destructive" />
+        <p className="text-muted-foreground">{error}</p>
+        <Button onClick={() => window.location.reload()}>Retry</Button>
+      </div>
+    )
+  }
 
   return (
     <div className="flex-1 space-y-6 p-6">
@@ -233,7 +350,7 @@ export default function TemplatesPage() {
             <div className="grid gap-4 py-4">
               <div className="grid gap-2">
                 <Label>Template Type</Label>
-                <Select value={newTemplateType} onValueChange={setNewTemplateType}>
+                <Select value={newTemplateType} onValueChange={(v: 'email' | 'sms') => setNewTemplateType(v)}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -254,12 +371,20 @@ export default function TemplatesPage() {
                 </Select>
               </div>
               <div className="grid gap-2">
-                <Label htmlFor="name">Template Name</Label>
-                <Input id="name" placeholder="e.g., Appointment Reminder" />
+                <Label htmlFor="name">Template Name *</Label>
+                <Input 
+                  id="name" 
+                  placeholder="e.g., Appointment Reminder" 
+                  value={newTemplate.name}
+                  onChange={(e) => setNewTemplate({ ...newTemplate, name: e.target.value })}
+                />
               </div>
               <div className="grid gap-2">
-                <Label>Category</Label>
-                <Select>
+                <Label>Category *</Label>
+                <Select 
+                  value={newTemplate.category} 
+                  onValueChange={(v) => setNewTemplate({ ...newTemplate, category: v })}
+                >
                   <SelectTrigger>
                     <SelectValue placeholder="Select category" />
                   </SelectTrigger>
@@ -274,12 +399,17 @@ export default function TemplatesPage() {
               {newTemplateType === 'email' && (
                 <div className="grid gap-2">
                   <Label htmlFor="subject">Subject Line</Label>
-                  <Input id="subject" placeholder="e.g., Your appointment is tomorrow" />
+                  <Input 
+                    id="subject" 
+                    placeholder="e.g., Your appointment is tomorrow"
+                    value={newTemplate.subject}
+                    onChange={(e) => setNewTemplate({ ...newTemplate, subject: e.target.value })}
+                  />
                 </div>
               )}
               <div className="grid gap-2">
                 <Label htmlFor="content">
-                  {newTemplateType === 'email' ? 'Email Body' : 'Message'} 
+                  {newTemplateType === 'email' ? 'Email Body' : 'Message'} *
                   <span className="text-muted-foreground text-xs ml-2">
                     Use {'{{variable_name}}'} for dynamic content
                   </span>
@@ -291,15 +421,17 @@ export default function TemplatesPage() {
                     : "SCWS: Your appointment is tomorrow at {{appointment_time}}. Reply CONFIRM or call (760) 440-8520"
                   }
                   rows={6}
+                  value={newTemplate.content}
+                  onChange={(e) => setNewTemplate({ ...newTemplate, content: e.target.value })}
                 />
               </div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setIsCreateOpen(false)}>
+              <Button variant="outline" onClick={() => setIsCreateOpen(false)} disabled={creating}>
                 Cancel
               </Button>
-              <Button onClick={() => setIsCreateOpen(false)}>
-                Create Template
+              <Button onClick={handleCreate} disabled={creating}>
+                {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Create Template'}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -334,21 +466,38 @@ export default function TemplatesPage() {
         <CardContent>
           {Object.keys(groupedTemplates).length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
-              No templates found
+              {currentTemplates.length === 0 ? (
+                <div className="space-y-2">
+                  <p>No {activeTab} templates yet</p>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => {
+                      setNewTemplateType(activeTab as 'email' | 'sms')
+                      setIsCreateOpen(true)
+                    }}
+                  >
+                    <Plus className="mr-2 h-4 w-4" />
+                    Create your first template
+                  </Button>
+                </div>
+              ) : (
+                'No templates found'
+              )}
             </div>
           ) : (
             <div className="space-y-6">
-              {Object.entries(groupedTemplates).map(([category, templates]) => {
+              {Object.entries(groupedTemplates).map(([category, categoryTemplates]) => {
                 const CategoryIcon = categoryIcons[category] || FileText
                 return (
                   <div key={category}>
                     <div className="flex items-center gap-2 mb-3">
                       <CategoryIcon className="h-4 w-4 text-muted-foreground" />
                       <h3 className="font-semibold">{categoryLabels[category] || category}</h3>
-                      <Badge variant="secondary" className="ml-2">{templates.length}</Badge>
+                      <Badge variant="secondary" className="ml-2">{categoryTemplates.length}</Badge>
                     </div>
                     <div className="grid gap-3">
-                      {templates.map((template) => (
+                      {categoryTemplates.map((template) => (
                         <div 
                           key={template.id}
                           className="flex items-start justify-between p-4 rounded-lg border hover:bg-muted/50 transition-colors"
@@ -356,21 +505,25 @@ export default function TemplatesPage() {
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
                               <h4 className="font-medium">{template.name}</h4>
-                              {activeTab === 'email' && 'subject' in template && (
+                              {activeTab === 'email' && template.subject && (
                                 <Badge variant="outline" className="text-xs">
                                   {template.subject}
                                 </Badge>
                               )}
                             </div>
                             <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
-                              {template.preview}
+                              {template.content}
                             </p>
                             <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
-                              <span>Used {template.timesUsed} times</span>
+                              <span>Used {template.times_used || 0} times</span>
+                              {template.last_used_at && (
+                                <>
+                                  <span>•</span>
+                                  <span>Last used {new Date(template.last_used_at).toLocaleDateString()}</span>
+                                </>
+                              )}
                               <span>•</span>
-                              <span>Last used {new Date(template.lastUsed).toLocaleDateString()}</span>
-                              <span>•</span>
-                              <span>{template.variables.length} variables</span>
+                              <span>{(template.variables || []).length} variables</span>
                             </div>
                           </div>
                           <DropdownMenu>
@@ -380,15 +533,18 @@ export default function TemplatesPage() {
                               </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                              <DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => openEditDialog(template)}>
                                 <Edit className="mr-2 h-4 w-4" />
                                 Edit
                               </DropdownMenuItem>
-                              <DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleDuplicate(template)}>
                                 <Copy className="mr-2 h-4 w-4" />
                                 Duplicate
                               </DropdownMenuItem>
-                              <DropdownMenuItem className="text-destructive">
+                              <DropdownMenuItem 
+                                className="text-destructive"
+                                onClick={() => setDeleteId(template.id)}
+                              >
                                 <Trash className="mr-2 h-4 w-4" />
                                 Delete
                               </DropdownMenuItem>
@@ -419,8 +575,9 @@ export default function TemplatesPage() {
               <h4 className="font-medium mb-2">Customer</h4>
               <div className="space-y-1 text-sm text-muted-foreground">
                 <div><code className="bg-muted px-1 rounded">customer_name</code></div>
-                <div><code className="bg-muted px-1 rounded">customer_email</code></div>
-                <div><code className="bg-muted px-1 rounded">customer_phone</code></div>
+                <div><code className="bg-muted px-1 rounded">first_name</code></div>
+                <div><code className="bg-muted px-1 rounded">email</code></div>
+                <div><code className="bg-muted px-1 rounded">phone</code></div>
                 <div><code className="bg-muted px-1 rounded">address</code></div>
               </div>
             </div>
@@ -445,6 +602,96 @@ export default function TemplatesPage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Edit Dialog */}
+      <Dialog open={!!editTemplate} onOpenChange={(open) => !open && setEditTemplate(null)}>
+        <DialogContent className="sm:max-w-[600px]">
+          <DialogHeader>
+            <DialogTitle>Edit Template</DialogTitle>
+            <DialogDescription>
+              Update the template details
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-2">
+              <Label htmlFor="edit-name">Template Name</Label>
+              <Input 
+                id="edit-name" 
+                value={editData.name}
+                onChange={(e) => setEditData({ ...editData, name: e.target.value })}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label>Category</Label>
+              <Select 
+                value={editData.category} 
+                onValueChange={(v) => setEditData({ ...editData, category: v })}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="reminders">Reminders</SelectItem>
+                  <SelectItem value="follow-ups">Follow-ups</SelectItem>
+                  <SelectItem value="promotions">Promotions</SelectItem>
+                  <SelectItem value="transactional">Transactional</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {editTemplate?.type === 'email' && (
+              <div className="grid gap-2">
+                <Label htmlFor="edit-subject">Subject Line</Label>
+                <Input 
+                  id="edit-subject"
+                  value={editData.subject}
+                  onChange={(e) => setEditData({ ...editData, subject: e.target.value })}
+                />
+              </div>
+            )}
+            <div className="grid gap-2">
+              <Label htmlFor="edit-content">
+                {editTemplate?.type === 'email' ? 'Email Body' : 'Message'}
+              </Label>
+              <Textarea 
+                id="edit-content" 
+                rows={6}
+                value={editData.content}
+                onChange={(e) => setEditData({ ...editData, content: e.target.value })}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditTemplate(null)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button onClick={handleEdit} disabled={saving}>
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Confirmation */}
+      <AlertDialog open={!!deleteId} onOpenChange={(open) => !open && setDeleteId(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Template?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action cannot be undone. The template will be permanently deleted.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleDelete} 
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Delete'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   )
 }
