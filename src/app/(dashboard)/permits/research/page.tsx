@@ -920,15 +920,18 @@ export default function PermitResearchPage() {
       const col3X = 180;
       
       pdf.text(`APN: ${result.parcel?.apn || 'N/A'}`, col1X, infoY + 16);
-      // Show owner name if available, otherwise blank
-      const ownerName = result.parcel?.ownerName || '';
-      if (ownerName && ownerName.length < 40) {
-        pdf.text(`Owner: ${ownerName}`, col1X, infoY + 23);
-      }
       pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
-      pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col2X, infoY + 23);
-      pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X, infoY + 16);
-      pdf.text(`Wells Found: ${result.wells.length}`, col3X, infoY + 23);
+      pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col3X, infoY + 16);
+      
+      pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, col3X + 20, infoY + 16);
+      
+      // Owner name on its own line to avoid overlap
+      const ownerName = result.parcel?.ownerName || '';
+      if (ownerName) {
+        const truncatedOwner = ownerName.length > 60 ? ownerName.substring(0, 57) + '...' : ownerName;
+        pdf.text(`Owner: ${truncatedOwner}`, col1X, infoY + 23);
+      }
+      pdf.text(`Wells Found: ${result.wells.length}`, col3X + 20, infoY + 23);
       
       // Proposed Well GPS Coordinates (if placed)
       if (wellLocation) {
