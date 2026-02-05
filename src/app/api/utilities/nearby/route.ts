@@ -47,10 +47,10 @@ export async function GET(request: NextRequest) {
     for (const tableName of tables) {
       try {
         const { data, error } = await supabase.rpc('get_nearby_utilities', {
-          table_name: tableName,
-          lat,
-          lng,
-          radius_meters: radius,
+          p_table_name: tableName,
+          p_lat: lat,
+          p_lng: lng,
+          p_radius_meters: radius,
         });
 
         if (error) {
