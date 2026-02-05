@@ -1,18 +1,26 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
-import { Resend } from 'resend';
-import twilio from 'twilio';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+// Lazy-load clients to avoid build-time errors
+function getSupabase() {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_KEY!
+  );
+}
 
-const resend = new Resend(process.env.RESEND_API_KEY);
-const twilioClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
-);
+async function getResend() {
+  const { Resend } = await import('resend');
+  return new Resend(process.env.RESEND_API_KEY);
+}
+
+async function getTwilioClient() {
+  const twilio = (await import('twilio')).default;
+  return twilio(
+    process.env.TWILIO_ACCOUNT_SID,
+    process.env.TWILIO_AUTH_TOKEN
+  );
+}
 
 interface QuoteForFollowup {
   id: string;
@@ -38,6 +46,10 @@ export async function GET(request: NextRequest) {
   }
 
   try {
+    const supabase = getSupabase();
+    const resend = await getResend();
+    const twilioClient = await getTwilioClient();
+    
     const now = new Date();
     const results = {
       checked: 0,
@@ -199,6 +211,7 @@ export async function POST(request: NextRequest) {
   }
 
   try {
+    const supabase = getSupabase();
     const { quoteId, followupNumber } = await request.json();
 
     if (!quoteId) {
