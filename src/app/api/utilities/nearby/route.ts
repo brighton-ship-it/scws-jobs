@@ -13,13 +13,6 @@ interface UtilityFeature {
   geometry: any;
 }
 
-interface GeoJSONResponse {
-  type: 'FeatureCollection';
-  features: UtilityFeature[];
-  count: number;
-  sources: string[];
-}
-
 // Helper to check if a geometry intersects with bounding box
 function geometryIntersectsBbox(geometry: any, minLng: number, maxLng: number, minLat: number, maxLat: number): boolean {
   if (!geometry || !geometry.coordinates) return false;
@@ -69,184 +62,198 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Missing lat/lng parameters' }, { status: 400 });
   }
 
-  try {
-    const supabase = createApiClient();
-    const features: UtilityFeature[] = [];
-    const sources: string[] = [];
+  const supabase = createApiClient();
+  const features: UtilityFeature[] = [];
+  const sources: string[] = [];
+  const errors: string[] = [];
+  const queryStats: any = {};
 
-    // Convert radius to degrees (rough approximation: 1 degree ≈ 111km)
-    const radiusDegrees = radius / 111000;
-    const minLat = lat - radiusDegrees;
-    const maxLat = lat + radiusDegrees;
-    const minLng = lng - radiusDegrees;
-    const maxLng = lng + radiusDegrees;
+  // Convert radius to degrees (rough approximation: 1 degree ≈ 111km)
+  const radiusDegrees = radius / 111000;
+  const minLat = lat - radiusDegrees;
+  const maxLat = lat + radiusDegrees;
+  const minLng = lng - radiusDegrees;
+  const maxLng = lng + radiusDegrees;
 
-    // Query San Diego sewer mains
-    if (types.includes('sewer')) {
-      try {
-        const { data: sdSewer, error: sdSewerErr } = await supabase
-          .from('sd_sewer_mains')
-          .select('id, geometry, facilityid, diameter, material')
-          .limit(500);
+  // Query San Diego sewer mains
+  if (types.includes('sewer')) {
+    try {
+      const { data: sdSewer, error: sdSewerErr } = await supabase
+        .from('sd_sewer_mains')
+        .select('id, geometry, facilityid, diameter, material')
+        .limit(500);
 
-        console.log('SD Sewer query result:', { count: sdSewer?.length, error: sdSewerErr?.message });
-
-        if (!sdSewerErr && sdSewer && sdSewer.length > 0) {
-          const filtered = sdSewer.filter((row: any) => 
-            geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
-          );
-          
-          if (filtered.length > 0) {
-            sources.push('sd_sewer_mains');
-            filtered.slice(0, 200).forEach((row: any) => {
-              features.push({
-                type: 'Feature',
-                properties: {
-                  id: row.id,
-                  utility_type: 'sewer',
-                  source_table: 'sd_sewer_mains',
-                  city: 'San Diego',
-                  facilityid: row.facilityid,
-                  diameter: row.diameter,
-                  material: row.material,
-                },
-                geometry: row.geometry,
-              });
+      queryStats.sd_sewer_raw = sdSewer?.length || 0;
+      
+      if (sdSewerErr) {
+        errors.push(`sd_sewer_mains: ${sdSewerErr.message}`);
+      } else if (sdSewer && sdSewer.length > 0) {
+        const filtered = sdSewer.filter((row: any) => 
+          geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
+        );
+        
+        queryStats.sd_sewer_filtered = filtered.length;
+        
+        if (filtered.length > 0) {
+          sources.push('sd_sewer_mains');
+          filtered.slice(0, 200).forEach((row: any) => {
+            features.push({
+              type: 'Feature',
+              properties: {
+                id: row.id,
+                utility_type: 'sewer',
+                source_table: 'sd_sewer_mains',
+                city: 'San Diego',
+                facilityid: row.facilityid,
+                diameter: row.diameter,
+                material: row.material,
+              },
+              geometry: row.geometry,
             });
-          }
+          });
         }
-      } catch (e) {
-        console.error('Error querying sd_sewer_mains:', e);
       }
-
-      // Query Riverside sewer mains
-      try {
-        const { data: rvSewer, error: rvSewerErr } = await supabase
-          .from('riverside_sewer_mains')
-          .select('id, geometry, source_city, pipe_size, material')
-          .not('geometry', 'is', null)
-          .limit(1000);
-
-        if (!rvSewerErr && rvSewer) {
-          const filtered = rvSewer.filter((row: any) => 
-            geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
-          );
-          
-          if (filtered.length > 0) {
-            sources.push('riverside_sewer_mains');
-            filtered.slice(0, 200).forEach((row: any) => {
-              features.push({
-                type: 'Feature',
-                properties: {
-                  id: row.id,
-                  utility_type: 'sewer',
-                  source_table: 'riverside_sewer_mains',
-                  city: row.source_city || 'Riverside County',
-                  pipe_size: row.pipe_size,
-                  material: row.material,
-                },
-                geometry: row.geometry,
-              });
-            });
-          }
-        }
-      } catch (e) {
-        console.error('Error querying riverside_sewer_mains:', e);
-      }
+    } catch (e: any) {
+      errors.push(`sd_sewer_mains exception: ${e.message}`);
     }
 
-    // Query San Diego water mains
-    if (types.includes('water')) {
-      try {
-        const { data: sdWater, error: sdWaterErr } = await supabase
-          .from('sd_water_mains')
-          .select('id, geometry, facilityid, diameter, material')
-          .not('geometry', 'is', null)
-          .limit(1000);
+    // Query Riverside sewer mains
+    try {
+      const { data: rvSewer, error: rvSewerErr } = await supabase
+        .from('riverside_sewer_mains')
+        .select('id, geometry, source_city, pipe_size, material')
+        .limit(500);
 
-        if (!sdWaterErr && sdWater) {
-          const filtered = sdWater.filter((row: any) => 
-            geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
-          );
-          
-          if (filtered.length > 0) {
-            sources.push('sd_water_mains');
-            filtered.slice(0, 200).forEach((row: any) => {
-              features.push({
-                type: 'Feature',
-                properties: {
-                  id: row.id,
-                  utility_type: 'water',
-                  source_table: 'sd_water_mains',
-                  city: 'San Diego',
-                  facilityid: row.facilityid,
-                  diameter: row.diameter,
-                  material: row.material,
-                },
-                geometry: row.geometry,
-              });
+      queryStats.rv_sewer_raw = rvSewer?.length || 0;
+      
+      if (rvSewerErr) {
+        errors.push(`riverside_sewer_mains: ${rvSewerErr.message}`);
+      } else if (rvSewer && rvSewer.length > 0) {
+        const filtered = rvSewer.filter((row: any) => 
+          geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
+        );
+        
+        queryStats.rv_sewer_filtered = filtered.length;
+        
+        if (filtered.length > 0) {
+          sources.push('riverside_sewer_mains');
+          filtered.slice(0, 200).forEach((row: any) => {
+            features.push({
+              type: 'Feature',
+              properties: {
+                id: row.id,
+                utility_type: 'sewer',
+                source_table: 'riverside_sewer_mains',
+                city: row.source_city || 'Riverside County',
+                pipe_size: row.pipe_size,
+                material: row.material,
+              },
+              geometry: row.geometry,
             });
-          }
+          });
         }
-      } catch (e) {
-        console.error('Error querying sd_water_mains:', e);
       }
+    } catch (e: any) {
+      errors.push(`riverside_sewer_mains exception: ${e.message}`);
     }
-
-    // Query San Diego storm drains
-    if (types.includes('storm')) {
-      try {
-        const { data: sdStorm, error: sdStormErr } = await supabase
-          .from('sd_storm_drains')
-          .select('id, geometry, facilityid, diameter')
-          .not('geometry', 'is', null)
-          .limit(1000);
-
-        if (!sdStormErr && sdStorm) {
-          const filtered = sdStorm.filter((row: any) => 
-            geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
-          );
-          
-          if (filtered.length > 0) {
-            sources.push('sd_storm_drains');
-            filtered.slice(0, 200).forEach((row: any) => {
-              features.push({
-                type: 'Feature',
-                properties: {
-                  id: row.id,
-                  utility_type: 'storm',
-                  source_table: 'sd_storm_drains',
-                  city: 'San Diego',
-                  facilityid: row.facilityid,
-                  diameter: row.diameter,
-                },
-                geometry: row.geometry,
-              });
-            });
-          }
-        }
-      } catch (e) {
-        console.error('Error querying sd_storm_drains:', e);
-      }
-    }
-
-    const response: any = {
-      type: 'FeatureCollection',
-      features,
-      count: features.length,
-      sources,
-      debug: {
-        bbox: { minLat, maxLat, minLng, maxLng },
-        requestedTypes: types,
-      }
-    };
-
-    return NextResponse.json(response);
-  } catch (error) {
-    console.error('Error fetching nearby utilities:', error);
-    return NextResponse.json(
-      { error: 'Failed to fetch nearby utilities', features: [], count: 0 },
-      { status: 500 }
-    );
   }
+
+  // Query San Diego water mains
+  if (types.includes('water')) {
+    try {
+      const { data: sdWater, error: sdWaterErr } = await supabase
+        .from('sd_water_mains')
+        .select('id, geometry, facilityid, diameter, material')
+        .limit(500);
+
+      queryStats.sd_water_raw = sdWater?.length || 0;
+      
+      if (sdWaterErr) {
+        errors.push(`sd_water_mains: ${sdWaterErr.message}`);
+      } else if (sdWater && sdWater.length > 0) {
+        const filtered = sdWater.filter((row: any) => 
+          geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
+        );
+        
+        queryStats.sd_water_filtered = filtered.length;
+        
+        if (filtered.length > 0) {
+          sources.push('sd_water_mains');
+          filtered.slice(0, 200).forEach((row: any) => {
+            features.push({
+              type: 'Feature',
+              properties: {
+                id: row.id,
+                utility_type: 'water',
+                source_table: 'sd_water_mains',
+                city: 'San Diego',
+                facilityid: row.facilityid,
+                diameter: row.diameter,
+                material: row.material,
+              },
+              geometry: row.geometry,
+            });
+          });
+        }
+      }
+    } catch (e: any) {
+      errors.push(`sd_water_mains exception: ${e.message}`);
+    }
+  }
+
+  // Query San Diego storm drains
+  if (types.includes('storm')) {
+    try {
+      const { data: sdStorm, error: sdStormErr } = await supabase
+        .from('sd_storm_drains')
+        .select('id, geometry, facilityid, diameter')
+        .limit(500);
+
+      queryStats.sd_storm_raw = sdStorm?.length || 0;
+      
+      if (sdStormErr) {
+        errors.push(`sd_storm_drains: ${sdStormErr.message}`);
+      } else if (sdStorm && sdStorm.length > 0) {
+        const filtered = sdStorm.filter((row: any) => 
+          geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
+        );
+        
+        queryStats.sd_storm_filtered = filtered.length;
+        
+        if (filtered.length > 0) {
+          sources.push('sd_storm_drains');
+          filtered.slice(0, 200).forEach((row: any) => {
+            features.push({
+              type: 'Feature',
+              properties: {
+                id: row.id,
+                utility_type: 'storm',
+                source_table: 'sd_storm_drains',
+                city: 'San Diego',
+                facilityid: row.facilityid,
+                diameter: row.diameter,
+              },
+              geometry: row.geometry,
+            });
+          });
+        }
+      }
+    } catch (e: any) {
+      errors.push(`sd_storm_drains exception: ${e.message}`);
+    }
+  }
+
+  return NextResponse.json({
+    type: 'FeatureCollection',
+    features,
+    count: features.length,
+    sources,
+    debug: {
+      bbox: { minLat, maxLat, minLng, maxLng },
+      requestedTypes: types,
+      queryStats,
+      errors: errors.length > 0 ? errors : undefined,
+      hasServiceKey: !!process.env.SUPABASE_SERVICE_KEY,
+    }
+  });
 }
