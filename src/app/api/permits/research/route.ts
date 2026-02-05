@@ -582,8 +582,32 @@ async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number,
         latitude: r.latitude,
         longitude: r.longitude,
       }));
+    } else if (county === 'riverside') {
+      // Riverside uses dedicated riverside_septic_permits table (OWTS permits)
+      const result = await supabase
+        .from('riverside_septic_permits')
+        .select('apn, site_address, city, latitude, longitude, project_type, permit_status')
+        .gte('latitude', lat - latOffset)
+        .lte('latitude', lat + latOffset)
+        .gte('longitude', lng - lngOffset)
+        .lte('longitude', lng + lngOffset)
+        .not('latitude', 'is', null)
+        .not('longitude', 'is', null)
+        .limit(100);
+      
+      data = result.data || [];
+      error = result.error;
+      
+      // Map field names to match expected format
+      data = data.map((r: any) => ({
+        apn: r.apn,
+        sewer_septic_designation: r.project_type || 'OWTS Permit',
+        latitude: r.latitude,
+        longitude: r.longitude,
+        full_address: r.site_address ? `${r.site_address}, ${r.city || ''}` : undefined,
+      }));
     } else {
-      // San Diego and Riverside use parcel_infrastructure
+      // San Diego uses parcel_infrastructure
       const result = await supabase
         .from('parcel_infrastructure')
         .select('apn, sewer_septic_designation, latitude, longitude')

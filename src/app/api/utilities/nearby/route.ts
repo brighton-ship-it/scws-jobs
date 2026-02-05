@@ -16,10 +16,11 @@ interface UtilityFeature {
 
 // Map of utility types to their respective tables
 const UTILITY_TABLES: Record<string, string[]> = {
-  sewer: ['sd_sewer_mains', 'riverside_sewer_mains'],
-  water: ['sd_water_mains'],
+  sewer: ['sd_sewer_mains', 'sd_sewer_manholes', 'riverside_sewer_mains'],
+  water: ['sd_water_mains', 'sd_water_hydrants'],
   storm: ['sd_storm_drains'],
   electric: ['ca_electric_transmission'],
+  imperial: ['imperial_utilities'],
 };
 
 export async function GET(request: NextRequest) {
