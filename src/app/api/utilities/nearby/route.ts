@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createApiClient } from '@/lib/supabase/api-client';
 
 interface UtilityFeature {
   type: 'Feature';
@@ -70,7 +70,7 @@ export async function GET(request: NextRequest) {
   }
 
   try {
-    const supabase = await createClient();
+    const supabase = createApiClient();
     const features: UtilityFeature[] = [];
     const sources: string[] = [];
 
