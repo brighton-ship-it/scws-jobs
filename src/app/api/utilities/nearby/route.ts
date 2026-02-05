@@ -75,12 +75,12 @@ export async function GET(request: NextRequest) {
   const minLng = lng - radiusDegrees;
   const maxLng = lng + radiusDegrees;
 
-  // Query San Diego sewer mains
+  // Query San Diego sewer mains - columns are: id, properties (jsonb), geometry, created_at
   if (types.includes('sewer')) {
     try {
       const { data: sdSewer, error: sdSewerErr } = await supabase
         .from('sd_sewer_mains')
-        .select('id, geometry, facilityid, diameter, material')
+        .select('id, properties, geometry')
         .limit(500);
 
       queryStats.sd_sewer_raw = sdSewer?.length || 0;
@@ -104,9 +104,7 @@ export async function GET(request: NextRequest) {
                 utility_type: 'sewer',
                 source_table: 'sd_sewer_mains',
                 city: 'San Diego',
-                facilityid: row.facilityid,
-                diameter: row.diameter,
-                material: row.material,
+                ...(row.properties || {}),
               },
               geometry: row.geometry,
             });
@@ -117,11 +115,11 @@ export async function GET(request: NextRequest) {
       errors.push(`sd_sewer_mains exception: ${e.message}`);
     }
 
-    // Query Riverside sewer mains
+    // Query Riverside sewer mains - columns: id, city, properties, geometry, created_at
     try {
       const { data: rvSewer, error: rvSewerErr } = await supabase
         .from('riverside_sewer_mains')
-        .select('id, geometry, source_city, pipe_size, material')
+        .select('id, city, properties, geometry')
         .limit(500);
 
       queryStats.rv_sewer_raw = rvSewer?.length || 0;
@@ -144,9 +142,8 @@ export async function GET(request: NextRequest) {
                 id: row.id,
                 utility_type: 'sewer',
                 source_table: 'riverside_sewer_mains',
-                city: row.source_city || 'Riverside County',
-                pipe_size: row.pipe_size,
-                material: row.material,
+                city: row.city || 'Riverside County',
+                ...(row.properties || {}),
               },
               geometry: row.geometry,
             });
@@ -158,12 +155,12 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Query San Diego water mains
+  // Query San Diego water mains - columns: id, properties, geometry, created_at
   if (types.includes('water')) {
     try {
       const { data: sdWater, error: sdWaterErr } = await supabase
         .from('sd_water_mains')
-        .select('id, geometry, facilityid, diameter, material')
+        .select('id, properties, geometry')
         .limit(500);
 
       queryStats.sd_water_raw = sdWater?.length || 0;
@@ -187,9 +184,7 @@ export async function GET(request: NextRequest) {
                 utility_type: 'water',
                 source_table: 'sd_water_mains',
                 city: 'San Diego',
-                facilityid: row.facilityid,
-                diameter: row.diameter,
-                material: row.material,
+                ...(row.properties || {}),
               },
               geometry: row.geometry,
             });
@@ -201,12 +196,12 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Query San Diego storm drains
+  // Query San Diego storm drains - columns: id, properties, geometry, created_at
   if (types.includes('storm')) {
     try {
       const { data: sdStorm, error: sdStormErr } = await supabase
         .from('sd_storm_drains')
-        .select('id, geometry, facilityid, diameter')
+        .select('id, properties, geometry')
         .limit(500);
 
       queryStats.sd_storm_raw = sdStorm?.length || 0;
@@ -230,8 +225,7 @@ export async function GET(request: NextRequest) {
                 utility_type: 'storm',
                 source_table: 'sd_storm_drains',
                 city: 'San Diego',
-                facilityid: row.facilityid,
-                diameter: row.diameter,
+                ...(row.properties || {}),
               },
               geometry: row.geometry,
             });
@@ -253,7 +247,6 @@ export async function GET(request: NextRequest) {
       requestedTypes: types,
       queryStats,
       errors: errors.length > 0 ? errors : undefined,
-      hasServiceKey: !!process.env.SUPABASE_SERVICE_KEY,
     }
   });
 }
