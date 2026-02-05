@@ -542,7 +542,7 @@ async function fetchInfrastructureStatus(supabase: any, apn: string, lat?: numbe
  * Fetch nearby septic permits within radius
  * Returns parcels marked as "septic" within the search radius for mapping
  */
-async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number, radiusMeters: number = 152): Promise<SepticPermit[]> {
+async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number, radiusMeters: number = 152, county: string = 'san_diego'): Promise<SepticPermit[]> {
   try {
     // Convert radius to approximate degrees
     const latDegPerMeter = 1 / 111000;
@@ -551,27 +551,54 @@ async function fetchNearbySepticPermits(supabase: any, lat: number, lng: number,
     const latOffset = radiusMeters * latDegPerMeter;
     const lngOffset = radiusMeters * lngDegPerMeter;
     
-    console.log('Fetching nearby septic permits within', radiusMeters, 'm (', Math.round(radiusMeters * 3.28084), 'ft) of', lat, lng);
+    console.log('Fetching nearby septic permits within', radiusMeters, 'm (', Math.round(radiusMeters * 3.28084), 'ft) of', lat, lng, 'county:', county);
     console.log('Bounding box:', lat - latOffset, 'to', lat + latOffset, '/', lng - lngOffset, 'to', lng + lngOffset);
     
-    // First, check how many records exist in the table at all
-    const { count: totalCount } = await supabase
-      .from('parcel_infrastructure')
-      .select('*', { count: 'exact', head: true });
-    console.log('Total records in parcel_infrastructure:', totalCount);
+    let data: any[] = [];
+    let error: any = null;
     
-    // Query parcels with septic designation within bounding box
-    const { data, error } = await supabase
-      .from('parcel_infrastructure')
-      .select('apn, sewer_septic_designation, latitude, longitude')
-      .gte('latitude', lat - latOffset)
-      .lte('latitude', lat + latOffset)
-      .gte('longitude', lng - lngOffset)
-      .lte('longitude', lng + lngOffset)
-      .ilike('sewer_septic_designation', '%septic%')
-      .not('latitude', 'is', null)
-      .not('longitude', 'is', null)
-      .limit(100);
+    // Query the appropriate table based on county
+    if (county === 'san_bernardino') {
+      // San Bernardino uses dedicated sb_septic_permits table
+      const result = await supabase
+        .from('sb_septic_permits')
+        .select('apn, sewer_status, latitude, longitude')
+        .gte('latitude', lat - latOffset)
+        .lte('latitude', lat + latOffset)
+        .gte('longitude', lng - lngOffset)
+        .lte('longitude', lng + lngOffset)
+        .ilike('sewer_status', '%septic%')
+        .not('latitude', 'is', null)
+        .not('longitude', 'is', null)
+        .limit(100);
+      
+      data = result.data || [];
+      error = result.error;
+      
+      // Map field names to match parcel_infrastructure format
+      data = data.map((r: any) => ({
+        apn: r.apn,
+        sewer_septic_designation: r.sewer_status,
+        latitude: r.latitude,
+        longitude: r.longitude,
+      }));
+    } else {
+      // San Diego and Riverside use parcel_infrastructure
+      const result = await supabase
+        .from('parcel_infrastructure')
+        .select('apn, sewer_septic_designation, latitude, longitude')
+        .gte('latitude', lat - latOffset)
+        .lte('latitude', lat + latOffset)
+        .gte('longitude', lng - lngOffset)
+        .lte('longitude', lng + lngOffset)
+        .ilike('sewer_septic_designation', '%septic%')
+        .not('latitude', 'is', null)
+        .not('longitude', 'is', null)
+        .limit(100);
+      
+      data = result.data || [];
+      error = result.error;
+    }
     
     if (error) {
       console.error('Septic permits query error:', error);
@@ -680,7 +707,7 @@ export async function POST(request: NextRequest) {
         let septicPermits: SepticPermit[] = [];
         if (lat && lng) {
           try {
-            septicPermits = await fetchNearbySepticPermits(supabase, lat, lng, 1609);
+            septicPermits = await fetchNearbySepticPermits(supabase, lat, lng, 1609, targetCounty);
           } catch (e) {
             console.error('Failed to fetch septic permits for cached result:', e);
           }
@@ -783,7 +810,7 @@ export async function POST(request: NextRequest) {
         // Default to 500 feet (152m), can be overridden by request
         const septicRadiusFeet = body.septicRadiusFeet || 500;
         const septicRadiusMeters = septicRadiusFeet * 0.3048;
-        result.septicPermits = await fetchNearbySepticPermits(supabase, searchLat, searchLng, septicRadiusMeters);
+        result.septicPermits = await fetchNearbySepticPermits(supabase, searchLat, searchLng, septicRadiusMeters, targetCounty);
         if (result.septicPermits.length > 0) {
           sources.push({ 
             name: 'Nearby Septic Parcels', 
