@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { JobStatusBadge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ActivityFeed } from '@/components/dashboard/ActivityFeed';
+import { FleetWidget } from '@/components/dashboard/FleetWidget';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   mockJobs,
@@ -533,6 +534,9 @@ export default function DashboardPage() {
               </p>
             </CardContent>
           </Card>
+
+          {/* Fleet Registration Widget */}
+          <FleetWidget />
 
           {/* Activity Feed */}
           <ActivityFeed limit={4} />

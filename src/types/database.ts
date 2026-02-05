@@ -650,3 +650,40 @@ export interface BookingRequest {
   created_at: string;
   updated_at: string;
 }
+
+// ==================== VEHICLE FLEET MANAGEMENT ====================
+
+export type VehicleStatus = 'active' | 'inactive' | 'sold' | 'maintenance';
+export type VehicleRegistrationStatus = 'expired' | 'due_soon' | 'upcoming' | 'current';
+
+export interface Vehicle {
+  id: string;
+  name: string;  // e.g., "White F-350"
+  license_plate: string | null;
+  vin: string | null;
+  year: number | null;
+  make: string | null;  // e.g., "Ford"
+  model: string | null;  // e.g., "F-350"
+  registration_due_date: string | null;  // Date
+  insurance_expiry_date: string | null;  // Date
+  assigned_user_id: string | null;
+  status: VehicleStatus;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface VehicleWithUser extends Vehicle {
+  assigned_user?: User | null;
+  registration_status?: VehicleRegistrationStatus;
+  days_until_due?: number;
+}
+
+export interface VehicleReminder {
+  id: string;
+  vehicle_id: string;
+  reminder_type: 'registration' | 'insurance';
+  days_before: number;  // 60, 30, 14, 7
+  sent_at: string;
+  created_at: string;
+}

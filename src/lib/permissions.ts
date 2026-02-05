@@ -32,6 +32,8 @@ export type Permission =
   | 'manage_inventory'
   | 'view_expenses'
   | 'manage_expenses'
+  | 'view_fleet'
+  | 'manage_fleet'
   | 'view_well_tools'
   | 'view_permit_research'
   | 'view_settings'
@@ -71,6 +73,8 @@ const rolePermissions: Record<UserRole, Permission[]> = {
     'manage_inventory',
     'view_expenses',
     'manage_expenses',
+    'view_fleet',
+    'manage_fleet',
     'view_well_tools',
     'view_permit_research',
     'view_settings',
@@ -108,6 +112,8 @@ const rolePermissions: Record<UserRole, Permission[]> = {
     'manage_inventory',
     'view_expenses',
     'manage_expenses',
+    'view_fleet',
+    'manage_fleet',
     'view_well_tools',
     'view_permit_research',
     // No settings access
@@ -189,6 +195,7 @@ export const routePermissions: Record<string, Permission[]> = {
   '/reports': ['view_reports'],
   '/inventory': ['view_inventory'],
   '/expenses': ['view_expenses'],
+  '/vehicles': ['view_fleet'],
   '/well-tools': ['view_well_tools'],
   '/permits/research': ['view_permit_research'],
   '/settings': ['view_settings'],

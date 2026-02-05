@@ -7,11 +7,12 @@ export type AutomationTrigger =
   | 'quote_approved'
   | 'invoice_sent'
   | 'invoice_paid'
+  | 'vehicle_registration'
   | 'custom';
 
 export type MessageType = 'sms' | 'email' | 'both';
 export type SentMessageStatus = 'pending' | 'sent' | 'failed' | 'delivered';
-export type TriggerEntityType = 'job' | 'quote' | 'invoice';
+export type TriggerEntityType = 'job' | 'quote' | 'invoice' | 'vehicle';
 
 export interface Automation {
   id: string;
@@ -78,6 +79,7 @@ export const TEMPLATE_VARIABLES: Record<AutomationTrigger, string[]> = {
   quote_approved: ['customer_name', 'service_type', 'amount', 'quote_number'],
   invoice_sent: ['customer_name', 'invoice_number', 'amount', 'due_date', 'payment_link'],
   invoice_paid: ['customer_name', 'invoice_number', 'amount', 'payment_method'],
+  vehicle_registration: ['vehicle_name', 'license_plate', 'registration_due_date', 'days_until_due', 'assigned_user'],
   custom: ['customer_name'],
 };
 
@@ -88,5 +90,9 @@ export const TRIGGER_LABELS: Record<AutomationTrigger, string> = {
   quote_approved: 'Quote Approved',
   invoice_sent: 'Invoice Sent',
   invoice_paid: 'Payment Received',
+  vehicle_registration: 'Vehicle Registration Due',
   custom: 'Custom Trigger',
 };
+
+// Vehicle registration reminder intervals (days before due date)
+export const VEHICLE_REGISTRATION_REMINDER_DAYS = [60, 30, 14, 7];

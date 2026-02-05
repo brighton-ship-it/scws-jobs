@@ -74,6 +74,12 @@ const navigationGroups: { name: string; items: NavItemDef[] }[] = [
     ],
   },
   {
+    name: 'Fleet',
+    items: [
+      { name: 'Vehicles', href: '/vehicles', icon: Truck, permissions: ['view_fleet'] },
+    ],
+  },
+  {
     name: 'SCWS Tools',
     items: [
       { name: 'Inventory', href: '/inventory', icon: Package, permissions: ['view_inventory'] },
