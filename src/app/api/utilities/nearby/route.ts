@@ -9,6 +9,7 @@ interface UtilityFeature {
     source_table: string;
     city?: string;
     distance_meters?: number;
+    water_system_name?: string;
     [key: string]: any;
   };
   geometry: any;
@@ -22,6 +23,12 @@ const UTILITY_TABLES: Record<string, string[]> = {
   electric: ['ca_electric_transmission'],
   imperial: ['imperial_utilities'],
 };
+
+// Water service area tables (use point-in-polygon instead of distance)
+const WATER_SERVICE_AREA_TABLES = [
+  'sb_water_service_areas',
+  'imperial_water_service_areas'
+];
 
 export async function GET(request: NextRequest) {
   const searchParams = request.nextUrl.searchParams;
@@ -39,6 +46,48 @@ export async function GET(request: NextRequest) {
   const sources: string[] = [];
   const errors: string[] = [];
   const queryStats: Record<string, number> = {};
+  
+  // Also query water service areas for any water-related request
+  if (types.includes('water')) {
+    try {
+      const { data, error } = await supabase.rpc('get_water_service_area_at_point', {
+        p_lat: lat,
+        p_lng: lng,
+      });
+      
+      if (!error && data && data.length > 0) {
+        queryStats['water_service_areas'] = data.length;
+        sources.push('water_service_areas');
+        
+        for (const row of data) {
+          features.push({
+            type: 'Feature',
+            properties: {
+              id: row.id,
+              utility_type: 'water_service_area',
+              source_table: row.county?.toLowerCase().includes('imperial') 
+                ? 'imperial_water_service_areas' 
+                : 'sb_water_service_areas',
+              water_system_name: row.water_system_name,
+              water_system_number: row.water_system_number,
+              county: row.county,
+              population: row.population,
+              service_connections: row.service_connections,
+              regulating_agency: row.regulating_agency,
+              verified_status: row.verified_status,
+              distance_meters: 0, // Point is inside the service area
+              ...(row.properties || {}),
+            },
+            geometry: row.geometry,
+          });
+        }
+      } else if (error) {
+        errors.push(`water_service_areas: ${error.message}`);
+      }
+    } catch (e: any) {
+      errors.push(`water_service_areas exception: ${e.message}`);
+    }
+  }
 
   // Query each requested utility type using the PostGIS RPC function
   for (const utilType of types) {
