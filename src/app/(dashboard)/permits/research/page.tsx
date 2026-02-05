@@ -461,6 +461,31 @@ export default function PermitResearchPage() {
   // Update map when results change
   useEffect(() => {
     console.log('Drawing useEffect triggered:', { mapReady, hasResult: !!result, hasMap: !!mapInstanceRef.current });
+    
+    // Always clear existing markers and polygons first
+    if (mapInstanceRef.current) {
+      markersRef.current.forEach(m => m.map = null);
+      markersRef.current = [];
+      septicPermitMarkersRef.current.forEach(m => {
+        if ((m as any)._septicCircle) {
+          (m as any)._septicCircle.setMap(null);
+        }
+        m.setMap(null);
+      });
+      septicPermitMarkersRef.current = [];
+      if (parcelPolygonRef.current) {
+        parcelPolygonRef.current.setMap(null);
+        parcelPolygonRef.current = null;
+      }
+      setbackCirclesRef.current.forEach(c => c.setMap(null));
+      setbackCirclesRef.current = [];
+      if (propertyLineSetbackRef.current) {
+        propertyLineSetbackRef.current.setMap(null);
+        propertyLineSetbackRef.current = null;
+      }
+    }
+    
+    // Now check if we should draw new results
     if (!mapInstanceRef.current || !result) {
       console.log('Drawing skipped - map or result missing');
       return;
@@ -468,26 +493,6 @@ export default function PermitResearchPage() {
     console.log('Drawing parcel, wells, and septic permits...');
     
     const map = mapInstanceRef.current;
-    
-    // Clear existing markers and polygons
-    markersRef.current.forEach(m => m.map = null);
-    markersRef.current = [];
-    septicPermitMarkersRef.current.forEach(m => {
-      // Also remove the attached circle
-      if ((m as any)._septicCircle) {
-        (m as any)._septicCircle.setMap(null);
-      }
-      m.setMap(null);
-    });
-    septicPermitMarkersRef.current = [];
-    if (parcelPolygonRef.current) {
-      parcelPolygonRef.current.setMap(null);
-    }
-    setbackCirclesRef.current.forEach(c => c.setMap(null));
-    setbackCirclesRef.current = [];
-    if (propertyLineSetbackRef.current) {
-      propertyLineSetbackRef.current.setMap(null);
-    }
     
     // Draw parcel boundary
     if (result.parcel?.geometry?.rings) {
