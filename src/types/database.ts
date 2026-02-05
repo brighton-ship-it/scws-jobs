@@ -192,6 +192,8 @@ export interface InvoiceItem {
 }
 
 // Payments
+export type PaymentStatus = 'completed' | 'pending' | 'failed' | 'refunded' | 'voided';
+
 export interface Payment {
   id: string;
   invoice_id: string;
@@ -202,6 +204,14 @@ export interface Payment {
   notes: string | null;
   created_at: string;
   qb_payment_id?: string | null;  // QuickBooks payment ID
+  // Stax payment fields
+  stax_transaction_id?: string | null;
+  stax_customer_id?: string | null;
+  stax_payment_method_id?: string | null;
+  processing_fee?: number | null;
+  total_charged?: number | null;
+  payment_status?: PaymentStatus;
+  customer_email?: string | null;
 }
 
 // Portal Tokens

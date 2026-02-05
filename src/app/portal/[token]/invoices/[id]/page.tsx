@@ -21,6 +21,7 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { PaymentModal } from '@/components/payments'
 
 interface InvoiceItem {
   id: string
@@ -96,18 +97,36 @@ export default function InvoiceDetailPage() {
   
   const [invoice, setInvoice] = useState<InvoiceDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [isProcessingPayment, setIsProcessingPayment] = useState(false)
-  const [paymentMethod, setPaymentMethod] = useState<'credit' | 'debit' | 'ach'>('ach')
+  const [paymentModalOpen, setPaymentModalOpen] = useState(false)
   const [paymentSuccess, setPaymentSuccess] = useState(false)
-  const [paymentError, setPaymentError] = useState<string | null>(null)
+  const [staxWebKey, setStaxWebKey] = useState<string | null>(null)
+  const [customerInfo, setCustomerInfo] = useState<{ name: string; email: string | null } | null>(null)
 
   useEffect(() => {
     async function loadInvoice() {
       try {
+        // Load invoice
         const res = await fetch(`/api/portal/${token}/invoices/${invoiceId}`)
         const data = await res.json()
         if (res.ok) {
           setInvoice(data.invoice)
+        }
+        
+        // Load payment info (Stax key)
+        const payRes = await fetch(`/api/portal/${token}/invoices/${invoiceId}/pay`)
+        const payData = await payRes.json()
+        if (payRes.ok) {
+          setStaxWebKey(payData.staxWebPaymentsKey)
+        }
+        
+        // Load customer info
+        const portalRes = await fetch(`/api/portal/${token}`)
+        const portalData = await portalRes.json()
+        if (portalRes.ok && portalData.customer) {
+          setCustomerInfo({
+            name: portalData.customer.name,
+            email: portalData.customer.email,
+          })
         }
       } catch (err) {
         console.error('Failed to load invoice:', err)
@@ -119,58 +138,29 @@ export default function InvoiceDetailPage() {
     loadInvoice()
   }, [token, invoiceId])
 
-  // Fee percentages
-  const CREDIT_FEE = 0.025 // 2.5%
-  const DEBIT_FEE = 0.015  // 1.5%
-
-  const handlePayment = async () => {
-    if (!invoice) return
+  const handlePaymentSuccess = async () => {
+    setPaymentSuccess(true)
+    setPaymentModalOpen(false)
     
-    setIsProcessingPayment(true)
-    setPaymentError(null)
-    
-    const amountDue = Number(invoice.total) - Number(invoice.amount_paid)
-    // Apply fee based on payment method
-    let processingFee = 0
-    if (paymentMethod === 'credit') {
-      processingFee = amountDue * CREDIT_FEE
-    } else if (paymentMethod === 'debit') {
-      processingFee = amountDue * DEBIT_FEE
-    }
-    const totalPayment = amountDue + processingFee
-    
+    // Refresh invoice data
     try {
-      const res = await fetch(`/api/portal/${token}/invoices/${invoiceId}/pay`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          paymentMethod,
-          amount: amountDue,
-          processingFee: processingFee,
-          totalCharged: totalPayment,
-        }),
-      })
-      
+      const res = await fetch(`/api/portal/${token}/invoices/${invoiceId}`)
       const data = await res.json()
-      
-      if (res.ok && data.success) {
-        setPaymentSuccess(true)
-        // Refresh invoice data
-        const refreshRes = await fetch(`/api/portal/${token}/invoices/${invoiceId}`)
-        const refreshData = await refreshRes.json()
-        if (refreshRes.ok) {
-          setInvoice(refreshData.invoice)
-        }
-      } else {
-        setPaymentError(data.error || 'Payment failed')
+      if (res.ok) {
+        setInvoice(data.invoice)
       }
     } catch (err) {
-      setPaymentError('An error occurred processing your payment')
-      console.error(err)
-    } finally {
-      setIsProcessingPayment(false)
+      console.error('Failed to refresh invoice:', err)
     }
   }
+
+  // Keep the old handlePayment for backwards compatibility but it now opens the modal
+  const handlePayment = () => {
+    setPaymentModalOpen(true)
+  }
+
+  // Card fee for display
+  const CARD_FEE_PERCENT = 3
 
   if (isLoading) {
     return (
@@ -374,144 +364,58 @@ export default function InvoiceDetailPage() {
         </Card>
       )}
 
-      {/* Payment Form */}
+      {/* Pay Now Section */}
       {!isPaid && (
         <Card className="border-[#4e9271]">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <CreditCard className="h-5 w-5" />
-              Pay Now
-            </CardTitle>
-            <CardDescription>
-              Securely pay your invoice online
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {paymentError && (
-              <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-800">
-                <div className="flex items-center gap-2">
-                  <AlertCircle className="h-5 w-5" />
-                  <span>{paymentError}</span>
-                </div>
+          <CardContent className="pt-6">
+            <div className="text-center space-y-4">
+              <div className="space-y-2">
+                <p className="text-2xl font-bold text-red-600">${amountDue.toFixed(2)}</p>
+                <p className="text-sm text-muted-foreground">Balance Due</p>
               </div>
-            )}
+              
+              <Button 
+                onClick={() => setPaymentModalOpen(true)}
+                className="w-full sm:w-auto px-8 bg-[#4e9271] hover:bg-[#3d7a5c] h-12 text-lg"
+              >
+                <CreditCard className="h-5 w-5 mr-2" />
+                Pay Now
+              </Button>
+              
+              <p className="text-xs text-muted-foreground">
+                Pay securely with ACH bank transfer (no fee) or credit/debit card ({CARD_FEE_PERCENT}% fee)
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
-            {/* Payment Method Selection */}
-            <div className="space-y-3">
-              <Label>Payment Method</Label>
-              <div className="grid grid-cols-3 gap-3">
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod('ach')}
-                  className={`p-4 rounded-lg border-2 transition-colors ${
-                    paymentMethod === 'ach' 
-                      ? 'border-[#4e9271] bg-[#4e9271]/5' 
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <Building2 className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'ach' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
-                  <div className="font-medium text-sm">Bank Transfer</div>
-                  <div className="text-xs text-green-600 font-medium">No fee ✓</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod('debit')}
-                  className={`p-4 rounded-lg border-2 transition-colors ${
-                    paymentMethod === 'debit' 
-                      ? 'border-[#4e9271] bg-[#4e9271]/5' 
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <Banknote className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'debit' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
-                  <div className="font-medium text-sm">Debit Card</div>
-                  <div className="text-xs text-muted-foreground">1.5% fee</div>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setPaymentMethod('credit')}
-                  className={`p-4 rounded-lg border-2 transition-colors ${
-                    paymentMethod === 'credit' 
-                      ? 'border-[#4e9271] bg-[#4e9271]/5' 
-                      : 'border-gray-200 hover:border-gray-300'
-                  }`}
-                >
-                  <CreditCard className={`h-6 w-6 mx-auto mb-2 ${paymentMethod === 'credit' ? 'text-[#4e9271]' : 'text-gray-400'}`} />
-                  <div className="font-medium text-sm">Credit Card</div>
-                  <div className="text-xs text-muted-foreground">2.5% fee</div>
-                </button>
+      {/* Payment Modal */}
+      <PaymentModal
+        open={paymentModalOpen}
+        onOpenChange={setPaymentModalOpen}
+        invoiceId={invoice.id}
+        invoiceNumber={invoice.invoice_number}
+        amount={amountDue}
+        customerName={customerInfo?.name}
+        customerEmail={customerInfo?.email || undefined}
+        cardFeePercent={CARD_FEE_PERCENT}
+        staxWebKey={staxWebKey}
+        portalToken={token}
+        onPaymentSuccess={handlePaymentSuccess}
+      />
+
+      {/* Payment Success Banner */}
+      {paymentSuccess && (
+        <Card className="border-green-200 bg-green-50">
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <CheckCircle className="h-6 w-6 text-green-600" />
+              <div>
+                <p className="font-medium text-green-800">Payment Successful!</p>
+                <p className="text-sm text-green-700">Thank you for your payment.</p>
               </div>
             </div>
-
-            {/* Payment Summary */}
-            <div className="bg-muted/50 rounded-lg p-4 space-y-2">
-              <div className="flex justify-between">
-                <span>Invoice Amount</span>
-                <span>${amountDue.toFixed(2)}</span>
-              </div>
-              {paymentMethod === 'credit' && (
-                <div className="flex justify-between text-muted-foreground">
-                  <span>Credit Card Fee (2.5%)</span>
-                  <span>${(amountDue * CREDIT_FEE).toFixed(2)}</span>
-                </div>
-              )}
-              {paymentMethod === 'debit' && (
-                <div className="flex justify-between text-muted-foreground">
-                  <span>Debit Card Fee (1.5%)</span>
-                  <span>${(amountDue * DEBIT_FEE).toFixed(2)}</span>
-                </div>
-              )}
-              {paymentMethod === 'ach' && (
-                <div className="flex justify-between text-green-600">
-                  <span>Processing Fee</span>
-                  <span>$0.00</span>
-                </div>
-              )}
-              <div className="flex justify-between font-bold text-lg border-t pt-2 mt-2">
-                <span>Total</span>
-                <span>
-                  ${paymentMethod === 'credit' 
-                    ? (amountDue * (1 + CREDIT_FEE)).toFixed(2) 
-                    : paymentMethod === 'debit'
-                    ? (amountDue * (1 + DEBIT_FEE)).toFixed(2)
-                    : amountDue.toFixed(2)
-                  }
-                </span>
-              </div>
-            </div>
-
-            {/* Demo Notice */}
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 text-blue-800 text-sm">
-              <p className="font-medium">Demo Mode</p>
-              <p>Payment processing is in demo mode. Click "Pay Now" to simulate a successful payment.</p>
-            </div>
-
-            {/* Pay Button */}
-            <Button 
-              onClick={handlePayment}
-              disabled={isProcessingPayment}
-              className="w-full bg-[#4e9271] hover:bg-[#3d7a5c] h-12 text-lg"
-            >
-              {isProcessingPayment ? (
-                <>
-                  <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                  Processing...
-                </>
-              ) : (
-                <>
-                  <Check className="h-5 w-5 mr-2" />
-                  Pay ${paymentMethod === 'credit' 
-                    ? (amountDue * (1 + CREDIT_FEE)).toFixed(2) 
-                    : paymentMethod === 'debit'
-                    ? (amountDue * (1 + DEBIT_FEE)).toFixed(2)
-                    : amountDue.toFixed(2)
-                  }
-                </>
-              )}
-            </Button>
-
-            <p className="text-xs text-center text-muted-foreground">
-              Payments are processed securely. Your payment information is never stored on our servers.
-            </p>
           </CardContent>
         </Card>
       )}
