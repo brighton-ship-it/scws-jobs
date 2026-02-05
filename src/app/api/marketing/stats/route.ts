@@ -55,7 +55,7 @@ export async function GET() {
     const smsPerf = await queryOne<any>(`
       SELECT 
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'delivered') as delivered
+        COUNT(*) FILTER (WHERE r.status = 'delivered') as delivered
       FROM marketing_campaign_recipients r
       JOIN marketing_campaigns c ON c.id = r.campaign_id
       WHERE c.type = 'sms' AND r.status IN ('sent', 'delivered')

@@ -86,9 +86,9 @@ interface UtilityCoverage {
   note?: string;
 }
 
-// Utility colors for map layers - bright for visibility on satellite
+// Utility colors for map layers - visible on satellite
 const UTILITY_COLORS = {
-  sewer: '#FF6600', // bright orange for visibility
+  sewer: '#8B4513', // brown
   water: '#00BFFF', // bright cyan blue
   storm: '#00FF00', // bright green
   electric: '#FFFF00', // bright yellow
@@ -1990,7 +1990,7 @@ export default function PermitResearchPage() {
                     type="checkbox"
                     checked={utilityLayers.sewer}
                     onChange={(e) => setUtilityLayers(prev => ({ ...prev, sewer: e.target.checked }))}
-                    className="rounded border-gray-300 text-amber-700 focus:ring-amber-500"
+                    className="rounded border-gray-300 text-amber-800 focus:ring-amber-600"
                   />
                   <span className="w-2 h-2 rounded" style={{ backgroundColor: UTILITY_COLORS.sewer }}></span>
                   Sewer
