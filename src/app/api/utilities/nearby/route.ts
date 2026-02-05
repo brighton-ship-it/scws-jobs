@@ -87,10 +87,11 @@ export async function GET(request: NextRequest) {
         const { data: sdSewer, error: sdSewerErr } = await supabase
           .from('sd_sewer_mains')
           .select('id, geometry, facilityid, diameter, material')
-          .not('geometry', 'is', null)
-          .limit(1000);
+          .limit(500);
 
-        if (!sdSewerErr && sdSewer) {
+        console.log('SD Sewer query result:', { count: sdSewer?.length, error: sdSewerErr?.message });
+
+        if (!sdSewerErr && sdSewer && sdSewer.length > 0) {
           const filtered = sdSewer.filter((row: any) => 
             geometryIntersectsBbox(row.geometry, minLng, maxLng, minLat, maxLat)
           );
@@ -229,11 +230,15 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    const response: GeoJSONResponse = {
+    const response: any = {
       type: 'FeatureCollection',
       features,
       count: features.length,
       sources,
+      debug: {
+        bbox: { minLat, maxLat, minLng, maxLng },
+        requestedTypes: types,
+      }
     };
 
     return NextResponse.json(response);
