@@ -1,42 +1,48 @@
-// SCWS Tech Service Worker
-const CACHE_NAME = 'scws-tech-v1';
+// SCWS Service Worker - v2 (Network-first strategy)
+const CACHE_NAME = 'scws-v2';
 const OFFLINE_URL = '/tech/offline';
 
-// Assets to cache for offline use
-const STATIC_ASSETS = [
-  '/tech',
+// Only cache essential offline assets
+const OFFLINE_ASSETS = [
   '/tech/offline',
   '/manifest.json',
   '/icons/icon-192x192.png',
   '/icons/icon-512x512.png',
 ];
 
-// Install event - cache static assets
+// Install - cache only offline essentials
 self.addEventListener('install', (event) => {
+  console.log('[SW] Installing v2 - network-first strategy');
   event.waitUntil(
     caches.open(CACHE_NAME).then((cache) => {
-      console.log('[SW] Caching static assets');
-      return cache.addAll(STATIC_ASSETS);
+      return cache.addAll(OFFLINE_ASSETS);
     })
   );
+  // Immediately take over
   self.skipWaiting();
 });
 
-// Activate event - clean up old caches
+// Activate - clear ALL old caches
 self.addEventListener('activate', (event) => {
+  console.log('[SW] Activating - clearing old caches');
   event.waitUntil(
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames
           .filter((name) => name !== CACHE_NAME)
-          .map((name) => caches.delete(name))
+          .map((name) => {
+            console.log('[SW] Deleting old cache:', name);
+            return caches.delete(name);
+          })
       );
+    }).then(() => {
+      // Take control of all clients immediately
+      return self.clients.claim();
     })
   );
-  self.clients.claim();
 });
 
-// Fetch event - network first, fallback to cache
+// Fetch - ALWAYS network first, cache only for offline fallback
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
@@ -47,82 +53,47 @@ self.addEventListener('fetch', (event) => {
   // Skip cross-origin requests
   if (url.origin !== self.location.origin) return;
 
-  // Skip API requests - they should not be cached
+  // NEVER cache API requests
   if (url.pathname.startsWith('/api/')) return;
 
-  // For navigation requests, try network first
-  if (request.mode === 'navigate') {
-    event.respondWith(
-      fetch(request)
-        .then((response) => {
-          // Cache the page for offline use
-          const responseClone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => {
-            cache.put(request, responseClone);
-          });
-          return response;
-        })
-        .catch(() => {
-          // Return cached version or offline page
-          return caches.match(request).then((cached) => {
-            return cached || caches.match(OFFLINE_URL);
-          });
-        })
-    );
-    return;
-  }
-
-  // For other requests, try cache first, then network
+  // Network first for everything
   event.respondWith(
-    caches.match(request).then((cached) => {
-      if (cached) return cached;
-      
-      return fetch(request).then((response) => {
-        // Cache successful responses
-        if (response.ok) {
+    fetch(request)
+      .then((response) => {
+        // Only cache successful responses for offline use
+        if (response.ok && request.mode === 'navigate') {
           const responseClone = response.clone();
           caches.open(CACHE_NAME).then((cache) => {
             cache.put(request, responseClone);
           });
         }
         return response;
-      });
-    })
+      })
+      .catch(() => {
+        // Only use cache when truly offline
+        return caches.match(request).then((cached) => {
+          if (cached) return cached;
+          // Return offline page for navigation requests
+          if (request.mode === 'navigate') {
+            return caches.match(OFFLINE_URL);
+          }
+          return new Response('Offline', { status: 503 });
+        });
+      })
   );
 });
 
-// Background sync for offline actions
-self.addEventListener('sync', (event) => {
-  if (event.tag === 'sync-job-updates') {
-    event.waitUntil(syncJobUpdates());
+// Message handler for manual cache clear
+self.addEventListener('message', (event) => {
+  if (event.data === 'skipWaiting') {
+    self.skipWaiting();
+  }
+  if (event.data === 'clearCache') {
+    caches.keys().then((names) => {
+      names.forEach((name) => caches.delete(name));
+    });
   }
 });
-
-async function syncJobUpdates() {
-  // Sync any pending job updates when back online
-  const pendingUpdates = await getStoredUpdates();
-  for (const update of pendingUpdates) {
-    try {
-      await fetch(update.url, {
-        method: update.method,
-        headers: update.headers,
-        body: update.body,
-      });
-      await removeStoredUpdate(update.id);
-    } catch (error) {
-      console.log('[SW] Failed to sync update:', error);
-    }
-  }
-}
-
-// Helpers for IndexedDB storage (placeholder - implement as needed)
-async function getStoredUpdates() {
-  return [];
-}
-
-async function removeStoredUpdate(id) {
-  // Remove synced update from storage
-}
 
 // Push notifications
 self.addEventListener('push', (event) => {
@@ -134,9 +105,7 @@ self.addEventListener('push', (event) => {
     icon: '/icons/icon-192x192.png',
     badge: '/icons/icon-72x72.png',
     vibrate: [100, 50, 100],
-    data: {
-      url: data.url || '/tech',
-    },
+    data: { url: data.url || '/' },
   };
 
   event.waitUntil(
@@ -144,23 +113,17 @@ self.addEventListener('push', (event) => {
   );
 });
 
-// Notification click handler
+// Notification click
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || '/tech';
+  const url = event.notification.data?.url || '/';
   
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // Check if there's already a window/tab open
       for (const client of clientList) {
-        if (client.url.includes('/tech') && 'focus' in client) {
-          return client.focus();
-        }
+        if ('focus' in client) return client.focus();
       }
-      // Open new window if needed
-      if (clients.openWindow) {
-        return clients.openWindow(url);
-      }
+      if (clients.openWindow) return clients.openWindow(url);
     })
   );
 });

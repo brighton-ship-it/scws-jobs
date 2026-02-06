@@ -16,6 +16,8 @@ export async function POST(request: NextRequest) {
     const {
       service_type,
       customer_name,
+      first_name,
+      last_name,
       phone,
       email,
       address,
@@ -78,6 +80,8 @@ export async function POST(request: NextRequest) {
       .insert({
         service_type,
         customer_name: customer_name.trim(),
+        first_name: first_name?.trim() || null,
+        last_name: last_name?.trim() || null,
         phone: cleanPhone,
         email: email?.toLowerCase()?.trim() || null,
         address: address.trim(),
@@ -111,7 +115,9 @@ SERVICE TYPE: ${serviceTypeLabel}
 ${service_type === 'no_water' ? '⚠️ URGENT - NO WATER EMERGENCY' : ''}
 
 CUSTOMER INFORMATION:
-• Name: ${customer_name}
+• First Name: ${first_name || 'N/A'}
+• Last Name: ${last_name || 'N/A'}
+• Full Name: ${customer_name}
 • Phone: ${formatPhone(cleanPhone)}
 • Email: ${email || 'Not provided'}
 

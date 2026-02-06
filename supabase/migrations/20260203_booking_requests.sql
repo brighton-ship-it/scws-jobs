@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS booking_requests (
   
   -- Contact Info  
   customer_name VARCHAR(255) NOT NULL,
+  first_name VARCHAR(100),
+  last_name VARCHAR(100),
   phone VARCHAR(20) NOT NULL,
   email VARCHAR(255),
   

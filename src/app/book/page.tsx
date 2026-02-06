@@ -65,7 +65,8 @@ export default function BookingPage() {
   const [isSubmitted, setIsSubmitted] = useState(false)
   
   const [formData, setFormData] = useState({
-    name: '',
+    firstName: '',
+    lastName: '',
     phone: '',
     email: '',
     address: '',
@@ -88,7 +89,9 @@ export default function BookingPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           service_type: selectedService,
-          customer_name: formData.name,
+          customer_name: `${formData.firstName} ${formData.lastName}`.trim(),
+          first_name: formData.firstName,
+          last_name: formData.lastName,
           phone: formData.phone,
           email: formData.email || null,
           address: formData.address,
@@ -320,14 +323,26 @@ export default function BookingPage() {
               <CardContent className="pt-6 space-y-4">
                 <div className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-2">
-                    <Label htmlFor="name">Full Name *</Label>
+                    <Label htmlFor="firstName">First Name *</Label>
                     <Input 
-                      id="name" 
-                      placeholder="John Smith"
-                      value={formData.name}
-                      onChange={(e) => setFormData({...formData, name: e.target.value})}
+                      id="firstName" 
+                      placeholder="John"
+                      value={formData.firstName}
+                      onChange={(e) => setFormData({...formData, firstName: e.target.value})}
                     />
                   </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="lastName">Last Name *</Label>
+                    <Input 
+                      id="lastName" 
+                      placeholder="Smith"
+                      value={formData.lastName}
+                      onChange={(e) => setFormData({...formData, lastName: e.target.value})}
+                    />
+                  </div>
+                </div>
+                
+                <div className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-2">
                     <Label htmlFor="phone">Phone Number *</Label>
                     <Input 
@@ -337,17 +352,16 @@ export default function BookingPage() {
                       onChange={(e) => setFormData({...formData, phone: e.target.value})}
                     />
                   </div>
-                </div>
-                
-                <div className="grid gap-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input 
-                    id="email" 
-                    type="email"
-                    placeholder="john@email.com"
-                    value={formData.email}
-                    onChange={(e) => setFormData({...formData, email: e.target.value})}
-                  />
+                  <div className="grid gap-2">
+                    <Label htmlFor="email">Email</Label>
+                    <Input 
+                      id="email" 
+                      type="email"
+                      placeholder="john@email.com"
+                      value={formData.email}
+                      onChange={(e) => setFormData({...formData, email: e.target.value})}
+                    />
+                  </div>
                 </div>
                 
                 <div className="grid gap-2">
@@ -427,7 +441,7 @@ export default function BookingPage() {
               </Button>
               <Button 
                 onClick={handleSubmit} 
-                disabled={!formData.name || !formData.phone || !formData.address || !formData.city || isSubmitting}
+                disabled={!formData.firstName || !formData.lastName || !formData.phone || !formData.address || !formData.city || isSubmitting}
                 className="bg-[#4e9271] hover:bg-[#3d7a5c]"
               >
                 {isSubmitting ? (

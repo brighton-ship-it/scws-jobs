@@ -46,7 +46,8 @@ export default function EmbedBookingPage() {
   const [error, setError] = useState<string | null>(null)
   
   const [formData, setFormData] = useState({
-    name: '',
+    firstName: '',
+    lastName: '',
     phone: '',
     email: '',
     address: '',
@@ -67,7 +68,9 @@ export default function EmbedBookingPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           service_type: selectedService,
-          customer_name: formData.name,
+          customer_name: `${formData.firstName} ${formData.lastName}`.trim(),
+          first_name: formData.firstName,
+          last_name: formData.lastName,
           phone: formData.phone,
           email: formData.email || null,
           address: formData.address,
@@ -190,16 +193,32 @@ export default function EmbedBookingPage() {
         <div className="grid grid-cols-2 gap-2">
           <input
             type="text"
-            placeholder="Your Name *"
-            value={formData.name}
-            onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+            placeholder="First Name *"
+            value={formData.firstName}
+            onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
             className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
           />
+          <input
+            type="text"
+            placeholder="Last Name *"
+            value={formData.lastName}
+            onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
           <input
             type="tel"
             placeholder="Phone *"
             value={formData.phone}
             onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
+          />
+          <input
+            type="email"
+            placeholder="Email"
+            value={formData.email}
+            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
             className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
           />
         </div>
@@ -210,29 +229,20 @@ export default function EmbedBookingPage() {
           onChange={(e) => setFormData({ ...formData, address: e.target.value })}
           className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
         />
-        <div className="grid grid-cols-2 gap-2">
-          <select
-            value={formData.city}
-            onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
-          >
-            <option value="">City *</option>
-            <option value="Ramona">Ramona</option>
-            <option value="Valley Center">Valley Center</option>
-            <option value="Escondido">Escondido</option>
-            <option value="Poway">Poway</option>
-            <option value="Julian">Julian</option>
-            <option value="Fallbrook">Fallbrook</option>
-            <option value="Other">Other</option>
-          </select>
-          <input
-            type="email"
-            placeholder="Email"
-            value={formData.email}
-            onChange={(e) => setFormData({ ...formData, email: e.target.value })}
-            className="px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
-          />
-        </div>
+        <select
+          value={formData.city}
+          onChange={(e) => setFormData({ ...formData, city: e.target.value })}
+          className="w-full px-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-500"
+        >
+          <option value="">City *</option>
+          <option value="Ramona">Ramona</option>
+          <option value="Valley Center">Valley Center</option>
+          <option value="Escondido">Escondido</option>
+          <option value="Poway">Poway</option>
+          <option value="Julian">Julian</option>
+          <option value="Fallbrook">Fallbrook</option>
+          <option value="Other">Other</option>
+        </select>
       </div>
 
       {error && (
@@ -243,7 +253,7 @@ export default function EmbedBookingPage() {
 
       <button
         onClick={handleSubmit}
-        disabled={!selectedService || !formData.name || !formData.phone || !formData.address || !formData.city || isSubmitting}
+        disabled={!selectedService || !formData.firstName || !formData.lastName || !formData.phone || !formData.address || !formData.city || isSubmitting}
         className="w-full py-3 bg-[#1f3b4d] text-white font-medium rounded-lg hover:bg-[#2a4d63] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {isSubmitting ? 'Submitting...' : 'Request Callback'}
