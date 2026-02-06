@@ -55,13 +55,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Get initial session
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
-        // Fetch user profile from our users table
-        const { data: profile } = await supabase
+        // Fetch user profile from our users table (by email since IDs may differ)
+        const { data: profile, error } = await supabase
           .from('users')
           .select('*')
-          .eq('id', session.user.id)
+          .eq('email', session.user.email)
           .single();
         
+        if (error) {
+          console.error('Error fetching user profile:', error);
+        }
         setUser(profile);
       }
       setLoading(false);
@@ -71,12 +74,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (session?.user) {
-          const { data: profile } = await supabase
+          const { data: profile, error } = await supabase
             .from('users')
             .select('*')
-            .eq('id', session.user.id)
+            .eq('email', session.user.email)
             .single();
           
+          if (error) {
+            console.error('Error fetching user profile on auth change:', error);
+          }
           setUser(profile);
         } else {
           setUser(null);
