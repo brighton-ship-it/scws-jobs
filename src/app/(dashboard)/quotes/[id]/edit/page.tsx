@@ -94,7 +94,33 @@ export default function EditQuotePage() {
 
         const quote = quoteJson.quote;
         setQuoteData(quote);
-        setCustomers(customersJson.customers || []);
+        
+        // Ensure the quote's customer is in the list (they may not be in first 1000)
+        let customersList = customersJson.customers || [];
+        if (quote.customer_id && quote.customer) {
+          const existingCustomer = customersList.find((c: Customer) => c.id === quote.customer_id);
+          if (!existingCustomer) {
+            // Add the quote's customer to the beginning of the list
+            customersList = [
+              { 
+                id: quote.customer_id, 
+                name: quote.customer.name,
+                email: quote.customer.email,
+                phone: quote.customer.phone,
+                properties: quote.property ? [quote.property] : []
+              },
+              ...customersList
+            ];
+          } else if (quote.property && existingCustomer.properties) {
+            // Ensure the property is in the customer's properties
+            const hasProperty = existingCustomer.properties.some((p: Property) => p.id === quote.property_id);
+            if (!hasProperty) {
+              existingCustomer.properties = [quote.property, ...existingCustomer.properties];
+            }
+          }
+        }
+        
+        setCustomers(customersList);
         setProducts(productsJson.products || []);
 
         // Populate form
