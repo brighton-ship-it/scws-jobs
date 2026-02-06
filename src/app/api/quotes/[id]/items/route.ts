@@ -26,6 +26,8 @@ export async function PUT(
     }
 
     // Insert new items if any
+    // Note: Only include columns that exist in the base schema
+    // taxable and item_description columns require migration 20250202_add_quote_item_description_taxable.sql
     if (items && items.length > 0) {
       const itemsToInsert = items.map((item: any, index: number) => ({
         quote_id: quoteId,
@@ -34,7 +36,6 @@ export async function PUT(
         unit_price: item.unit_price || 0,
         total: item.total || 0,
         item_type: item.item_type || null,
-        taxable: item.taxable !== false,
         sort_order: item.sort_order ?? index,
       }));
 
