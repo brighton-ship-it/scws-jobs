@@ -10,6 +10,10 @@ export type InvoiceStatus = 'draft' | 'sent' | 'viewed' | 'paid' | 'overdue' | '
 export type QuoteStatus = 'draft' | 'sent' | 'accepted' | 'declined' | 'expired';
 export type PaymentMethod = 'cash' | 'check' | 'card' | 'transfer' | 'ach';
 
+// Lead Source Tracking
+export type LeadSource = 'google_ads' | 'organic_seo' | 'referral' | 'repeat_customer' | 'phone' | 'walk_in' | 'website_form' | 'other';
+export type LeadStage = 'lead' | 'quote_sent' | 'quote_accepted' | 'job_scheduled' | 'job_completed' | 'paid';
+
 export interface User {
   id: string;
   email: string;
@@ -29,6 +33,33 @@ export interface Customer {
   created_at: string;
   updated_at: string;
   qb_customer_id?: string | null;  // QuickBooks customer ID
+  // Lead tracking fields
+  lead_source?: LeadSource | null;
+  lead_source_detail?: string | null;
+  utm_source?: string | null;
+  utm_medium?: string | null;
+  utm_campaign?: string | null;
+  utm_term?: string | null;
+  utm_content?: string | null;
+  referrer_url?: string | null;
+  lead_stage?: LeadStage | null;
+  lead_stage_updated_at?: string | null;
+  quote_sent_at?: string | null;
+  quote_accepted_at?: string | null;
+  job_scheduled_at?: string | null;
+  job_completed_at?: string | null;
+  first_paid_at?: string | null;
+}
+
+// Lead Source Costs for ROI tracking
+export interface LeadSourceCost {
+  id: string;
+  lead_source: LeadSource;
+  month: string; // ISO date string (first day of month)
+  cost: number;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Property {

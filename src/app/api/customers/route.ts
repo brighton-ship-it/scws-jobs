@@ -19,7 +19,9 @@ export async function GET(request: NextRequest) {
       .from('customers')
       .select(`
         *,
-        properties (*)
+        properties (*),
+        lead_source,
+        lead_stage
       `)
       .order('name', { ascending: true })
       .limit(limit);
@@ -87,7 +89,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Insert customer
+    // Insert customer with lead source tracking
     const { data: newCustomer, error: customerError } = await supabase
       .from('customers')
       .insert({
@@ -96,7 +98,17 @@ export async function POST(request: NextRequest) {
         phone: customer.phone?.trim() || null,
         billing_address: customer.billing_address?.trim() || null,
         notes: customer.notes?.trim() || null,
-      })
+        // Lead tracking fields
+        lead_source: customer.lead_source || null,
+        lead_source_detail: customer.lead_source_detail?.trim() || null,
+        utm_source: customer.utm_source?.trim() || null,
+        utm_medium: customer.utm_medium?.trim() || null,
+        utm_campaign: customer.utm_campaign?.trim() || null,
+        utm_term: customer.utm_term?.trim() || null,
+        utm_content: customer.utm_content?.trim() || null,
+        referrer_url: customer.referrer_url?.trim() || null,
+        lead_stage: customer.lead_stage || 'lead',
+      } as any)
       .select()
       .single();
 

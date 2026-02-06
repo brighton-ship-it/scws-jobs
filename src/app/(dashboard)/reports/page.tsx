@@ -235,6 +235,31 @@ export default function ReportsPage() {
         />
       </div>
 
+      {/* Quick Links to Detailed Reports */}
+      <div className="flex flex-wrap gap-2">
+        <a
+          href="/reports/leads"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-orange-100 text-orange-700 hover:bg-orange-200 text-sm font-medium transition-colors"
+        >
+          <TrendingUp className="h-4 w-4" />
+          Lead Sources
+        </a>
+        <a
+          href="/reports/revenue"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 text-sm font-medium transition-colors"
+        >
+          <DollarSign className="h-4 w-4" />
+          Revenue Details
+        </a>
+        <a
+          href="/reports/expenses"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 text-sm font-medium transition-colors"
+        >
+          <TrendingDown className="h-4 w-4" />
+          Expenses
+        </a>
+      </div>
+
       {/* Summary Cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
         {/* Revenue Card */}

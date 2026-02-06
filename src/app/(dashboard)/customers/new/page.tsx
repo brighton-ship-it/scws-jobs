@@ -6,8 +6,21 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input, Textarea } from '@/components/ui/input';
+import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { AddressAutocomplete } from '@/components/address-autocomplete';
-import { ArrowLeft, Save, Plus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Save, Plus, Trash2, Target } from 'lucide-react';
+import type { LeadSource } from '@/types/database';
+
+const LEAD_SOURCE_OPTIONS: { value: LeadSource; label: string }[] = [
+  { value: 'phone', label: 'Phone Call' },
+  { value: 'referral', label: 'Referral' },
+  { value: 'repeat_customer', label: 'Repeat Customer' },
+  { value: 'walk_in', label: 'Walk-In' },
+  { value: 'google_ads', label: 'Google Ads' },
+  { value: 'organic_seo', label: 'Organic Search' },
+  { value: 'website_form', label: 'Website Form' },
+  { value: 'other', label: 'Other' },
+];
 
 interface PropertyForm {
   address: string;
@@ -27,6 +40,8 @@ export default function NewCustomerPage() {
     phone: '',
     billing_address: '',
     notes: '',
+    lead_source: '' as LeadSource | '',
+    lead_source_detail: '',
   });
 
   const [properties, setProperties] = useState<PropertyForm[]>([
@@ -189,6 +204,40 @@ export default function NewCustomerPage() {
                 onChange={handleChange}
                 placeholder="Full billing address"
               />
+            </div>
+
+            {/* Lead Source Tracking */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  <Target className="h-4 w-4 inline mr-1" />
+                  Lead Source
+                </label>
+                <Select
+                  value={formData.lead_source}
+                  onValueChange={(value) => setFormData((prev) => ({ ...prev, lead_source: value as LeadSource }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="How did they find us?" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LEAD_SOURCE_OPTIONS.map((opt) => (
+                      <SelectItem key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              {(formData.lead_source === 'referral' || formData.lead_source === 'other') && (
+                <Input
+                  label="Details"
+                  name="lead_source_detail"
+                  value={formData.lead_source_detail}
+                  onChange={handleChange}
+                  placeholder={formData.lead_source === 'referral' ? "Who referred them?" : "How did they find us?"}
+                />
+              )}
             </div>
 
             <Textarea

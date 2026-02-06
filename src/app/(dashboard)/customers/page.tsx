@@ -5,8 +5,9 @@ import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
-import { Search, Plus, Phone, Mail, MapPin, MoreHorizontal, Loader2 } from 'lucide-react';
+import { Search, Plus, Phone, Mail, MapPin, MoreHorizontal, Loader2, Target } from 'lucide-react';
 import { format } from 'date-fns';
+import type { LeadSource } from '@/types/database';
 
 interface Customer {
   id: string;
@@ -17,7 +18,31 @@ interface Customer {
   notes: string | null;
   created_at: string;
   properties?: { id: string }[];
+  lead_source?: LeadSource | null;
+  lead_stage?: string | null;
 }
+
+const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
+  google_ads: 'Google Ads',
+  organic_seo: 'Organic',
+  referral: 'Referral',
+  repeat_customer: 'Repeat',
+  phone: 'Phone',
+  walk_in: 'Walk-In',
+  website_form: 'Website',
+  other: 'Other',
+};
+
+const LEAD_SOURCE_COLORS: Record<LeadSource, string> = {
+  google_ads: 'bg-blue-100 text-blue-700',
+  organic_seo: 'bg-green-100 text-green-700',
+  referral: 'bg-yellow-100 text-yellow-700',
+  repeat_customer: 'bg-red-100 text-red-700',
+  phone: 'bg-purple-100 text-purple-700',
+  walk_in: 'bg-orange-100 text-orange-700',
+  website_form: 'bg-cyan-100 text-cyan-700',
+  other: 'bg-gray-100 text-gray-700',
+};
 
 export default function CustomersPage() {
   const [search, setSearch] = useState('');
@@ -92,6 +117,7 @@ export default function CustomersPage() {
             <TableRow>
               <TableCell header>Customer</TableCell>
               <TableCell header>Contact</TableCell>
+              <TableCell header>Source</TableCell>
               <TableCell header>Properties</TableCell>
               <TableCell header>Added</TableCell>
               <TableCell header></TableCell>
@@ -99,14 +125,14 @@ export default function CustomersPage() {
           </TableHeader>
           <TableBody>
             {loading ? (
-              <TableRow>
-                <TableCell colSpan={5}>
+              <tr>
+                <td colSpan={6} className="px-5 py-4 text-sm text-gray-700">
                   <div className="flex items-center justify-center py-8">
                     <Loader2 className="h-6 w-6 animate-spin text-gray-400" />
                     <span className="ml-2 text-gray-500">Loading customers...</span>
                   </div>
-                </TableCell>
-              </TableRow>
+                </td>
+              </tr>
             ) : customers.length === 0 ? (
               <TableEmpty message={search ? "No customers match your search" : "No customers found"} />
             ) : (
@@ -144,6 +170,15 @@ export default function CustomersPage() {
                         </div>
                       )}
                     </div>
+                  </TableCell>
+                  <TableCell>
+                    {customer.lead_source ? (
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${LEAD_SOURCE_COLORS[customer.lead_source]}`}>
+                        {LEAD_SOURCE_LABELS[customer.lead_source]}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 text-sm">—</span>
+                    )}
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-1">

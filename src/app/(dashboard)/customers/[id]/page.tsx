@@ -29,7 +29,38 @@ import {
   Wrench,
   AlertTriangle,
   MessageSquare,
+  Target,
 } from 'lucide-react';
+import type { LeadSource, LeadStage } from '@/types/database';
+
+const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
+  google_ads: 'Google Ads',
+  organic_seo: 'Organic Search',
+  referral: 'Referral',
+  repeat_customer: 'Repeat Customer',
+  phone: 'Phone Call',
+  walk_in: 'Walk-In',
+  website_form: 'Website Form',
+  other: 'Other',
+};
+
+const LEAD_STAGE_LABELS: Record<LeadStage, string> = {
+  lead: 'New Lead',
+  quote_sent: 'Quote Sent',
+  quote_accepted: 'Quote Accepted',
+  job_scheduled: 'Job Scheduled',
+  job_completed: 'Job Completed',
+  paid: 'Paid',
+};
+
+const LEAD_STAGE_COLORS: Record<LeadStage, string> = {
+  lead: 'bg-blue-100 text-blue-700',
+  quote_sent: 'bg-purple-100 text-purple-700',
+  quote_accepted: 'bg-amber-100 text-amber-700',
+  job_scheduled: 'bg-cyan-100 text-cyan-700',
+  job_completed: 'bg-green-100 text-green-700',
+  paid: 'bg-emerald-100 text-emerald-700',
+};
 import CommunicationTimeline from '@/components/customers/CommunicationTimeline';
 import { format, differenceInDays, parseISO } from 'date-fns';
 import type { CustomerEquipment } from '@/types/database';
@@ -43,6 +74,14 @@ export default function CustomerDetailPage({
   const router = useRouter();
   const [equipment, setEquipment] = useState<CustomerEquipment[]>([]);
   const [equipmentLoading, setEquipmentLoading] = useState(true);
+  const [leadInfo, setLeadInfo] = useState<{
+    lead_source?: LeadSource | null;
+    lead_source_detail?: string | null;
+    lead_stage?: LeadStage | null;
+    utm_source?: string | null;
+    utm_medium?: string | null;
+    utm_campaign?: string | null;
+  } | null>(null);
   
   const customer = getCustomerById(id);
 
@@ -67,6 +106,31 @@ export default function CustomerDetailPage({
       setEquipmentLoading(false);
     }
   }, [id, customer]);
+
+  // Fetch lead source info from API (real data)
+  useEffect(() => {
+    const fetchLeadInfo = async () => {
+      try {
+        const res = await fetch(`/api/customers/${id}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.customer) {
+            setLeadInfo({
+              lead_source: data.customer.lead_source,
+              lead_source_detail: data.customer.lead_source_detail,
+              lead_stage: data.customer.lead_stage,
+              utm_source: data.customer.utm_source,
+              utm_medium: data.customer.utm_medium,
+              utm_campaign: data.customer.utm_campaign,
+            });
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch lead info:', err);
+      }
+    };
+    fetchLeadInfo();
+  }, [id]);
 
   // Count expiring warranties - safely compute even when customer is null
   const expiringWarranties = equipment.filter((e) => {
@@ -205,6 +269,42 @@ export default function CustomerDetailPage({
               <div className="pt-4 border-t border-gray-200">
                 <p className="text-sm text-gray-500 mb-1">Notes</p>
                 <p className="text-sm text-gray-700">{customer.notes}</p>
+              </div>
+            )}
+
+            {/* Lead Source Info */}
+            {leadInfo?.lead_source && (
+              <div className="pt-4 border-t border-gray-200">
+                <div className="flex items-center gap-3 mb-2">
+                  <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-orange-100">
+                    <Target className="h-5 w-5 text-orange-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-500">Lead Source</p>
+                    <p className="font-medium text-gray-900">
+                      {LEAD_SOURCE_LABELS[leadInfo.lead_source]}
+                    </p>
+                  </div>
+                </div>
+                {leadInfo.lead_source_detail && (
+                  <p className="text-sm text-gray-600 ml-13 pl-1">
+                    {leadInfo.lead_source_detail}
+                  </p>
+                )}
+                {leadInfo.lead_stage && (
+                  <div className="mt-2">
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${LEAD_STAGE_COLORS[leadInfo.lead_stage]}`}>
+                      {LEAD_STAGE_LABELS[leadInfo.lead_stage]}
+                    </span>
+                  </div>
+                )}
+                {(leadInfo.utm_source || leadInfo.utm_campaign) && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    {leadInfo.utm_source && <span className="mr-2">Source: {leadInfo.utm_source}</span>}
+                    {leadInfo.utm_medium && <span className="mr-2">Medium: {leadInfo.utm_medium}</span>}
+                    {leadInfo.utm_campaign && <span>Campaign: {leadInfo.utm_campaign}</span>}
+                  </div>
+                )}
               </div>
             )}
           </CardContent>
