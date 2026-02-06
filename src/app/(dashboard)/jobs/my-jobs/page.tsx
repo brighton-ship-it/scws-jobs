@@ -34,8 +34,17 @@ import { format, isPast, isToday, isTomorrow, addDays, parseISO } from 'date-fns
 type ViewMode = 'today' | 'upcoming' | 'all';
 
 export default function MyJobsPage() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const [viewMode, setViewMode] = useState<ViewMode>('today');
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
