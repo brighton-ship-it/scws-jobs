@@ -206,20 +206,29 @@ export default function EditQuotePage() {
       });
 
       if (!quoteRes.ok) {
-        throw new Error('Failed to update quote');
+        const errorData = await quoteRes.json().catch(() => ({}));
+        console.error('Quote update failed:', errorData);
+        throw new Error(errorData.error || 'Failed to update quote');
       }
 
       // Update line items - delete existing and insert new
-      await fetch(`/api/quotes/${quoteId}/items`, {
+      const itemsRes = await fetch(`/api/quotes/${quoteId}/items`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ items: lineItems }),
       });
 
+      if (!itemsRes.ok) {
+        const errorData = await itemsRes.json().catch(() => ({}));
+        console.error('Items update failed:', errorData);
+        throw new Error(errorData.error || 'Failed to update line items');
+      }
+
       router.push(`/quotes/${quoteId}`);
     } catch (err) {
       console.error('Failed to save quote:', err);
-      alert('Failed to save quote. Please try again.');
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      alert(`Failed to save quote: ${message}`);
     } finally {
       setSaving(false);
     }
