@@ -52,19 +52,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     const supabase = createClient();
 
+    // Helper to fetch user profile via API (bypasses RLS)
+    const fetchUserProfile = async () => {
+      try {
+        const res = await fetch('/api/auth/me');
+        const data = await res.json();
+        return data.user;
+      } catch (error) {
+        console.error('Error fetching user profile:', error);
+        return null;
+      }
+    };
+
     // Get initial session
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
-        // Fetch user profile from our users table (by email since IDs may differ)
-        const { data: profile, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('email', session.user.email)
-          .single();
-        
-        if (error) {
-          console.error('Error fetching user profile:', error);
-        }
+        const profile = await fetchUserProfile();
         setUser(profile);
       }
       setLoading(false);
@@ -74,15 +77,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (session?.user) {
-          const { data: profile, error } = await supabase
-            .from('users')
-            .select('*')
-            .eq('email', session.user.email)
-            .single();
-          
-          if (error) {
-            console.error('Error fetching user profile on auth change:', error);
-          }
+          const profile = await fetchUserProfile();
           setUser(profile);
         } else {
           setUser(null);

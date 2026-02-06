@@ -10,20 +10,8 @@ import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '
 import { TeamMemberMultiSelect, AssignmentHistory, AssignedTeamAvatars } from '@/components/scheduling';
 import { JobPhotoGallery } from '@/components/jobs/JobPhotoGallery';
 import { JobPartsExpenses } from '@/components/jobs/JobPartsExpenses';
-import {
-  mockJobs,
-  mockInvoices,
-  getPropertyById,
-  getCustomerById,
-  getUserById,
-  getWellInfoByPropertyId,
-  getJobAssignments,
-  getAssignedUsersForJob,
-  getAllTeamMembers,
-  assignUserToJob,
-  unassignUserFromJob,
-} from '@/lib/mock-data';
 import { useAuth } from '@/contexts/AuthContext';
+import type { JobPhoto, User } from '@/types/database';
 import {
   ArrowLeft,
   MapPin,
@@ -31,7 +19,6 @@ import {
   Mail,
   Calendar,
   Clock,
-  User,
   Users,
   Edit,
   MoreHorizontal,
@@ -46,32 +33,52 @@ import {
   Wrench,
   History,
   RefreshCw,
+  Loader2,
 } from 'lucide-react';
 import { MakeRecurringModal } from '@/components/jobs/MakeRecurringModal';
 import { RecurringBadge } from '@/components/ui/badge';
 import { OnMyWayButton } from '@/components/jobs/OnMyWayButton';
 import { format, isPast, isToday } from 'date-fns';
-import type { JobPhoto } from '@/types/database';
 
-// Mock line items for the job
-const mockLineItems = [
-  { id: '1', description: 'Labor - Standard Rate', quantity: 3, cost: 60, price: 125, total: 375 },
-  { id: '2', description: 'Service Call Fee', quantity: 1, cost: 0, price: 95, total: 95 },
-  { id: '3', description: 'Misc. Parts & Materials', quantity: 1, cost: 45, price: 85, total: 85 },
-];
-
-// Mock labor entries
-const mockLabor = [
-  { id: '1', user: 'Mike Thompson', date: '2024-01-30', hours: 2.5, rate: 125, total: 312.50, notes: 'Initial diagnosis' },
-  { id: '2', user: 'Carlos Rivera', date: '2024-01-31', hours: 1.5, rate: 125, total: 187.50, notes: 'Parts replacement' },
-];
-
-// Mock visits
-const mockVisits = [
-  { id: 'v1', date: '2024-01-30', time: '09:00', status: 'completed', assignedTo: 'Mike Thompson', description: 'Initial inspection' },
-  { id: 'v2', date: '2024-01-31', time: '14:00', status: 'completed', assignedTo: 'Carlos Rivera', description: 'Parts replacement' },
-  { id: 'v3', date: '2024-02-05', time: '10:00', status: 'upcoming', assignedTo: 'Mike Thompson', description: 'Follow-up check' },
-];
+// Job data type from API
+interface JobData {
+  id: string;
+  job_type: string;
+  status: string;
+  priority?: string;
+  scheduled_date: string | null;
+  scheduled_time: string | null;
+  estimated_duration: string | null;
+  description: string | null;
+  internal_notes: string | null;
+  assigned_to: string | null;
+  recurring_schedule_id?: string | null;
+  created_at: string;
+  completed_at: string | null;
+  property?: {
+    id: string;
+    address: string;
+    city: string;
+    county?: string;
+    zip?: string;
+    access_notes?: string;
+    customer?: {
+      id: string;
+      name: string;
+      email: string;
+      phone: string;
+      billing_address?: string;
+      notes?: string;
+    };
+  };
+  assigned_user?: {
+    id: string;
+    name: string;
+    email: string;
+    phone?: string;
+    role: string;
+  };
+}
 
 export default function JobDetailPage() {
   const params = useParams();
@@ -81,25 +88,52 @@ export default function JobDetailPage() {
   const [showRecurringModal, setShowRecurringModal] = useState(false);
   const { user: currentUser } = useAuth();
   
-  const job = mockJobs.find(j => j.id === id);
-  
-  // State for assignments
-  const [assignedUserIds, setAssignedUserIds] = useState<string[]>([]);
-  const [assignments, setAssignments] = useState(job ? getJobAssignments(id) : []);
-  const teamMembers = getAllTeamMembers();
+  // Data state
+  const [job, setJob] = useState<JobData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [teamMembers, setTeamMembers] = useState<User[]>([]);
+  const [relatedInvoices, setRelatedInvoices] = useState<any[]>([]);
   
   // State for photos
   const [photos, setPhotos] = useState<JobPhoto[]>([]);
   const [photosLoading, setPhotosLoading] = useState(true);
   
-  // Initialize assigned user IDs
+  // Fetch job data
   useEffect(() => {
-    if (job) {
-      const assignedUsers = getAssignedUsersForJob(id);
-      setAssignedUserIds(assignedUsers.map(u => u.id));
-      setAssignments(getJobAssignments(id));
+    async function fetchData() {
+      try {
+        setLoading(true);
+        setError(null);
+        
+        const [jobRes, usersRes, invoicesRes] = await Promise.all([
+          fetch(`/api/jobs/${id}`),
+          fetch('/api/users'),
+          fetch(`/api/invoices?job_id=${id}`),
+        ]);
+        
+        if (!jobRes.ok) {
+          throw new Error('Job not found');
+        }
+        
+        const [jobData, usersData, invoicesData] = await Promise.all([
+          jobRes.json(),
+          usersRes.json(),
+          invoicesRes.json(),
+        ]);
+        
+        setJob(jobData.job);
+        setTeamMembers(usersData.users || []);
+        setRelatedInvoices(invoicesData.invoices || []);
+      } catch (err) {
+        console.error('Failed to fetch job:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load job');
+      } finally {
+        setLoading(false);
+      }
     }
-  }, [id, job]);
+    fetchData();
+  }, [id]);
   
   // Fetch photos
   useEffect(() => {
@@ -120,31 +154,40 @@ export default function JobDetailPage() {
   }, [id]);
 
   // Handle assignment changes
-  const handleAssignmentChange = (newSelectedIds: string[]) => {
-    const added = newSelectedIds.filter(id => !assignedUserIds.includes(id));
-    const removed = assignedUserIds.filter(id => !newSelectedIds.includes(id));
+  const handleAssignmentChange = async (newSelectedIds: string[]) => {
+    if (!job || newSelectedIds.length === 0) return;
     
-    // Add new assignments
-    added.forEach(userId => {
-      assignUserToJob(id, userId, currentUser?.id || null, null);
-      console.log(`Job ${id} assigned to user ${userId}`);
-    });
-    
-    // Remove assignments
-    removed.forEach(userId => {
-      unassignUserFromJob(id, userId);
-      console.log(`Job ${id} unassigned from user ${userId}`);
-    });
-    
-    setAssignedUserIds(newSelectedIds);
-    setAssignments(getJobAssignments(id));
+    // Update the assigned_to field with the first selected user
+    try {
+      const res = await fetch(`/api/jobs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assigned_to: newSelectedIds[0] }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setJob(data.job);
+      }
+    } catch (err) {
+      console.error('Failed to update assignment:', err);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+        <span className="ml-2 text-gray-500">Loading job...</span>
+      </div>
+    );
+  }
   
-  if (!job) {
+  if (error || !job) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900">Job not found</h2>
-        <p className="text-gray-500 mt-2">The job you&apos;re looking for doesn&apos;t exist.</p>
+        <p className="text-gray-500 mt-2">{error || "The job you're looking for doesn't exist."}</p>
         <Link href="/jobs" className="text-green-600 hover:underline mt-4 inline-block">
           Back to Jobs
         </Link>
@@ -152,10 +195,9 @@ export default function JobDetailPage() {
     );
   }
 
-  const property = getPropertyById(job.property_id);
-  const customer = property ? getCustomerById(property.customer_id) : null;
-  const assignedUser = job.assigned_to ? getUserById(job.assigned_to) : null;
-  const wellInfo = property ? getWellInfoByPropertyId(property.id) : null;
+  const property = job.property;
+  const customer = property?.customer;
+  const assignedUser = job.assigned_user;
 
   // Calculate derived status
   const getDerivedStatus = () => {
@@ -169,7 +211,7 @@ export default function JobDetailPage() {
     return job.status;
   };
 
-  // Mock profitability data
+  // Mock profitability data (would come from job line items)
   const profitability = {
     totalPrice: 555,
     lineItemCost: 105,
@@ -178,9 +220,6 @@ export default function JobDetailPage() {
     profit: -123.50,
     margin: -22.3,
   };
-
-  // Related invoices
-  const relatedInvoices = mockInvoices.filter(inv => inv.job_id === job.id);
 
   const derivedStatus = getDerivedStatus();
   const isLate = derivedStatus === 'late';
@@ -203,7 +242,7 @@ export default function JobDetailPage() {
                 <PriorityBadge priority={job.priority} />
               )}
               {job.recurring_schedule_id && <RecurringBadge />}
-              <span className="text-gray-500">Job #{job.id}</span>
+              <span className="text-gray-500">Job #{job.id.slice(0, 8)}</span>
             </div>
             <h1 className="text-2xl font-bold text-gray-900 mt-1">{job.job_type}</h1>
           </div>
@@ -298,39 +337,41 @@ export default function JobDetailPage() {
               onClick={() => setShowProfitability(!showProfitability)}
               className="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors"
             >
-              <div className="flex items-center gap-3">
-                <DollarSign className="h-5 w-5 text-gray-500" />
-                <span className="font-semibold text-gray-900">Profitability</span>
-                <span className={`text-sm font-medium ${profitability.margin >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                  {profitability.margin >= 0 ? '+' : ''}{profitability.margin.toFixed(1)}% margin
+              <div className="flex items-center gap-2">
+                <DollarSign className="h-5 w-5 text-gray-400" />
+                <span className="font-medium">Profitability</span>
+                <span className={`text-sm px-2 py-0.5 rounded-full ${
+                  profitability.profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'
+                }`}>
+                  {profitability.margin.toFixed(1)}% margin
                 </span>
               </div>
-              {showProfitability ? <ChevronUp className="h-5 w-5 text-gray-400" /> : <ChevronDown className="h-5 w-5 text-gray-400" />}
+              {showProfitability ? <ChevronUp className="h-5 w-5" /> : <ChevronDown className="h-5 w-5" />}
             </button>
             
             {showProfitability && (
-              <CardContent className="pt-0 pb-6">
-                <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-center">
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-xs text-gray-500 uppercase">Total Price</p>
-                    <p className="text-lg font-bold text-gray-900">${profitability.totalPrice.toFixed(2)}</p>
+              <CardContent className="pt-0 pb-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500">Total Price</p>
+                    <p className="text-lg font-semibold">${profitability.totalPrice.toFixed(2)}</p>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-xs text-gray-500 uppercase">Line Item Cost</p>
-                    <p className="text-lg font-bold text-red-600">-${profitability.lineItemCost.toFixed(2)}</p>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500">Line Item Cost</p>
+                    <p className="text-lg font-semibold">${profitability.lineItemCost.toFixed(2)}</p>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-xs text-gray-500 uppercase">Labor</p>
-                    <p className="text-lg font-bold text-red-600">-${profitability.laborCost.toFixed(2)}</p>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500">Labor Cost</p>
+                    <p className="text-lg font-semibold">${profitability.laborCost.toFixed(2)}</p>
                   </div>
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-xs text-gray-500 uppercase">Expenses</p>
-                    <p className="text-lg font-bold text-red-600">-${profitability.expenses.toFixed(2)}</p>
+                  <div className="p-3 bg-gray-50 rounded-lg">
+                    <p className="text-xs text-gray-500">Expenses</p>
+                    <p className="text-lg font-semibold">${profitability.expenses.toFixed(2)}</p>
                   </div>
-                  <div className={`rounded-lg p-3 ${profitability.profit >= 0 ? 'bg-green-50' : 'bg-red-50'}`}>
-                    <p className="text-xs text-gray-500 uppercase">Profit</p>
+                  <div className="p-3 bg-gray-50 rounded-lg col-span-2 sm:col-span-1">
+                    <p className="text-xs text-gray-500">Profit</p>
                     <p className={`text-lg font-bold ${profitability.profit >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {profitability.profit >= 0 ? '' : '-'}${Math.abs(profitability.profit).toFixed(2)}
+                      ${profitability.profit.toFixed(2)}
                     </p>
                   </div>
                 </div>
@@ -338,398 +379,234 @@ export default function JobDetailPage() {
             )}
           </Card>
 
-          {/* Line Items Table */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle>Line Items</CardTitle>
-              <Button variant="outline" size="sm">
-                <Plus className="h-4 w-4" />
-                New Line Item
-              </Button>
-            </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableCell header>Product / Service</TableCell>
-                  <TableCell header className="text-center">Qty</TableCell>
-                  <TableCell header className="text-right">Cost</TableCell>
-                  <TableCell header className="text-right">Price</TableCell>
-                  <TableCell header className="text-right">Total</TableCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {mockLineItems.map((item) => (
-                  <TableRow key={item.id}>
-                    <TableCell>
-                      <p className="font-medium text-gray-900">{item.description}</p>
-                    </TableCell>
-                    <TableCell className="text-center">{item.quantity}</TableCell>
-                    <TableCell className="text-right text-gray-500">${item.cost.toFixed(2)}</TableCell>
-                    <TableCell className="text-right">${item.price.toFixed(2)}</TableCell>
-                    <TableCell className="text-right font-medium">${item.total.toFixed(2)}</TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Card>
+          {/* Photos Section */}
+          <JobPhotoGallery
+            jobId={id}
+            photos={photos}
+            loading={photosLoading}
+            onPhotosChange={setPhotos}
+          />
 
-          {/* Labor Table */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <Clock className="h-5 w-5 text-gray-400" />
-                Labor
-              </CardTitle>
-              <Button variant="outline" size="sm">
-                <Plus className="h-4 w-4" />
-                New Time Entry
-              </Button>
-            </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableCell header>Team Member</TableCell>
-                  <TableCell header>Date</TableCell>
-                  <TableCell header className="text-center">Hours</TableCell>
-                  <TableCell header className="text-right">Rate</TableCell>
-                  <TableCell header className="text-right">Total</TableCell>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {mockLabor.length === 0 ? (
-                  <TableEmpty message="No time entries" />
-                ) : (
-                  mockLabor.map((entry) => (
-                    <TableRow key={entry.id}>
-                      <TableCell>
-                        <p className="font-medium text-gray-900">{entry.user}</p>
-                        {entry.notes && <p className="text-sm text-gray-500">{entry.notes}</p>}
-                      </TableCell>
-                      <TableCell>{format(new Date(entry.date), 'MMM d, yyyy')}</TableCell>
-                      <TableCell className="text-center">{entry.hours}</TableCell>
-                      <TableCell className="text-right">${entry.rate.toFixed(2)}/hr</TableCell>
-                      <TableCell className="text-right font-medium">${entry.total.toFixed(2)}</TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </Card>
-
-          {/* Parts & Expenses - Real data from Supabase */}
+          {/* Parts & Expenses */}
           <JobPartsExpenses jobId={id} />
 
-          {/* Visits Section */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <Calendar className="h-5 w-5 text-gray-400" />
-                Visits
-              </CardTitle>
-              <Button variant="outline" size="sm">
-                <Plus className="h-4 w-4" />
-                New Visit
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {mockVisits.map((visit) => {
-                const isComplete = visit.status === 'completed';
-                const visitDate = new Date(visit.date);
-                const isOverdue = !isComplete && isPast(visitDate) && !isToday(visitDate);
-                
-                return (
-                  <div 
-                    key={visit.id}
-                    className={`flex items-center gap-4 p-4 rounded-lg border ${
-                      isOverdue ? 'border-red-200 bg-red-50' : 'border-gray-200'
-                    }`}
-                  >
-                    <input 
-                      type="checkbox" 
-                      checked={isComplete}
-                      readOnly
-                      className="h-5 w-5 rounded border-gray-300 text-green-600 focus:ring-green-500"
-                    />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <p className="font-medium text-gray-900">
-                          {format(visitDate, 'MMM d, yyyy')} at {visit.time}
-                        </p>
-                        {isOverdue && (
-                          <span className="text-xs font-medium text-red-600 bg-red-100 px-2 py-0.5 rounded">
-                            OVERDUE
-                          </span>
-                        )}
-                        {isComplete && (
-                          <span className="text-xs font-medium text-green-600 bg-green-100 px-2 py-0.5 rounded">
-                            COMPLETED
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-sm text-gray-600">{visit.description}</p>
-                    </div>
-                    <div className="text-right">
-                      <div className="flex items-center gap-1 text-sm text-gray-500">
-                        <User className="h-4 w-4" />
-                        {visit.assignedTo}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-
-          {/* Photos Section */}
-          {!photosLoading && (
-            <JobPhotoGallery
-              jobId={id}
-              photos={photos}
-              onPhotosChange={setPhotos}
-            />
+          {/* Job Description */}
+          {job.description && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Description</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-gray-600 whitespace-pre-wrap">{job.description}</p>
+              </CardContent>
+            </Card>
           )}
 
-          {/* Invoices Section */}
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
-              <CardTitle className="flex items-center gap-2">
-                <FileText className="h-5 w-5 text-gray-400" />
-                Invoices
-              </CardTitle>
-              <Button size="sm">
-                <Plus className="h-4 w-4" />
-                Create Invoice
-              </Button>
-            </CardHeader>
-            {relatedInvoices.length === 0 ? (
-              <CardContent>
-                <p className="text-gray-500 text-center py-4">No invoices yet</p>
-              </CardContent>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableCell header>Invoice</TableCell>
-                    <TableCell header>Due Date</TableCell>
-                    <TableCell header>Status</TableCell>
-                    <TableCell header className="text-right">Balance</TableCell>
-                    <TableCell header className="text-right">Total</TableCell>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {relatedInvoices.map((invoice) => (
-                    <TableRow key={invoice.id}>
-                      <TableCell>
-                        <Link href={`/invoices/${invoice.id}`} className="font-medium text-green-600 hover:underline">
-                          #{invoice.invoice_number}
-                        </Link>
-                      </TableCell>
-                      <TableCell>
-                        {invoice.due_date ? format(new Date(invoice.due_date), 'MMM d, yyyy') : '—'}
-                      </TableCell>
-                      <TableCell>
-                        <InvoiceStatusBadge status={invoice.status} />
-                      </TableCell>
-                      <TableCell className="text-right">
-                        ${(invoice.total - invoice.amount_paid).toFixed(2)}
-                      </TableCell>
-                      <TableCell className="text-right font-medium">
-                        ${invoice.total.toFixed(2)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
-          </Card>
-
           {/* Internal Notes */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Internal Notes</CardTitle>
-              <p className="text-sm text-gray-500">Internal notes will only be seen by your team</p>
-            </CardHeader>
-            <CardContent>
-              <textarea
-                className="w-full h-32 p-3 border border-gray-300 rounded-lg resize-none focus:border-green-500 focus:outline-none focus:ring-1 focus:ring-green-500"
-                placeholder="Add notes for your team..."
-                defaultValue={job.internal_notes || ''}
-              />
-              <div className="mt-3 flex items-center gap-4">
-                <Button variant="outline" size="sm">
+          {job.internal_notes && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Internal Notes</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <p className="text-gray-600 whitespace-pre-wrap">{job.internal_notes}</p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Related Invoices */}
+          {relatedInvoices.length > 0 && (
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  Invoices
+                </CardTitle>
+                <Button size="sm" variant="outline" href={`/invoices/new?job_id=${job.id}`}>
                   <Plus className="h-4 w-4" />
-                  Attach File
+                  New Invoice
                 </Button>
-              </div>
-            </CardContent>
-          </Card>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableCell header>Invoice #</TableCell>
+                      <TableCell header>Status</TableCell>
+                      <TableCell header>Total</TableCell>
+                      <TableCell header>Date</TableCell>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {relatedInvoices.map((inv) => (
+                      <TableRow key={inv.id}>
+                        <TableCell>
+                          <Link href={`/invoices/${inv.id}`} className="text-green-600 hover:underline font-medium">
+                            #{inv.invoice_number}
+                          </Link>
+                        </TableCell>
+                        <TableCell>
+                          <InvoiceStatusBadge status={inv.status} />
+                        </TableCell>
+                        <TableCell>${inv.total?.toFixed(2)}</TableCell>
+                        <TableCell>{inv.issue_date ? format(new Date(inv.issue_date), 'MMM d, yyyy') : '-'}</TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
         </div>
 
-        {/* Right Sidebar - Job Details */}
+        {/* Sidebar */}
         <div className="space-y-6">
-          {/* Team Assignment Card */}
+          {/* Schedule */}
           <Card>
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-gray-500" />
-                  Team Assignment
-                </CardTitle>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setShowAssignmentHistory(!showAssignmentHistory)}
-                  className="text-xs text-gray-500 hover:text-gray-700"
-                >
-                  <History className="h-3.5 w-3.5 mr-1" />
-                  History
-                </Button>
-              </div>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Calendar className="h-5 w-5" />
+                Schedule
+              </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              {/* Multi-select dropdown */}
-              <TeamMemberMultiSelect
-                teamMembers={teamMembers.filter(m => m.role === 'field')}
-                selectedIds={assignedUserIds}
-                onChange={handleAssignmentChange}
-                placeholder="Assign team members..."
-              />
-              
-              {/* Show all team members option */}
-              {assignedUserIds.length === 0 && (
-                <p className="text-xs text-gray-500">
-                  Select one or more field technicians to assign to this job.
-                </p>
+            <CardContent className="space-y-3">
+              {job.scheduled_date ? (
+                <>
+                  <div className="flex items-center gap-2 text-gray-600">
+                    <Calendar className="h-4 w-4" />
+                    <span>{format(new Date(job.scheduled_date), 'EEEE, MMMM d, yyyy')}</span>
+                  </div>
+                  {job.scheduled_time && (
+                    <div className="flex items-center gap-2 text-gray-600">
+                      <Clock className="h-4 w-4" />
+                      <span>{job.scheduled_time}</span>
+                    </div>
+                  )}
+                  {job.estimated_duration && (
+                    <div className="flex items-center gap-2 text-gray-600">
+                      <Clock className="h-4 w-4" />
+                      <span>Est. {job.estimated_duration}</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-gray-500 italic">Not scheduled</p>
               )}
               
-              {/* Assignment History */}
-              {showAssignmentHistory && (
-                <div className="border-t pt-4 mt-4">
-                  <p className="text-sm font-medium text-gray-700 mb-3">Assignment History</p>
-                  <AssignmentHistory assignments={assignments} />
+              <Button variant="outline" size="sm" className="w-full mt-2" href={`/schedule?job=${job.id}`}>
+                <Calendar className="h-4 w-4" />
+                Open in Calendar
+              </Button>
+            </CardContent>
+          </Card>
+
+          {/* Team Assignment */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Users className="h-5 w-5" />
+                Assigned Team
+              </CardTitle>
+              {!showAssignmentHistory && (
+                <button
+                  onClick={() => setShowAssignmentHistory(true)}
+                  className="text-xs text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                >
+                  <History className="h-3 w-3" />
+                  History
+                </button>
+              )}
+            </CardHeader>
+            <CardContent>
+              {showAssignmentHistory ? (
+                <div className="space-y-4">
+                  <button
+                    onClick={() => setShowAssignmentHistory(false)}
+                    className="text-sm text-green-600 hover:underline"
+                  >
+                    ← Back to assignment
+                  </button>
+                  <p className="text-sm text-gray-500">Assignment history not yet implemented with real data.</p>
                 </div>
+              ) : (
+                <TeamMemberMultiSelect
+                  members={teamMembers}
+                  selectedIds={assignedUser ? [assignedUser.id] : []}
+                  onChange={handleAssignmentChange}
+                  placeholder="Assign team members..."
+                />
               )}
             </CardContent>
           </Card>
 
+          {/* Recurring */}
           <Card>
             <CardHeader>
-              <CardTitle>Job Details</CardTitle>
+              <CardTitle className="text-base flex items-center gap-2">
+                <RefreshCw className="h-5 w-5" />
+                Recurring
+              </CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div>
-                <p className="text-sm text-gray-500">Job Type</p>
-                <p className="font-medium text-gray-900">One-off</p>
-              </div>
-              
-              {job.scheduled_date && (
-                <div>
-                  <p className="text-sm text-gray-500">Scheduled</p>
-                  <p className="font-medium text-gray-900">
-                    {format(new Date(job.scheduled_date), 'MMM d, yyyy')}
-                    {job.scheduled_time && ` at ${job.scheduled_time}`}
-                  </p>
+            <CardContent>
+              {job.recurring_schedule_id ? (
+                <div className="space-y-2">
+                  <RecurringBadge />
+                  <p className="text-sm text-gray-600">This job is part of a recurring schedule.</p>
+                  <Button variant="outline" size="sm" className="w-full">
+                    View Schedule
+                  </Button>
                 </div>
-              )}
-              
-              {job.estimated_duration && (
-                <div>
-                  <p className="text-sm text-gray-500">Estimated Duration</p>
-                  <p className="font-medium text-gray-900">{job.estimated_duration}</p>
+              ) : (
+                <div className="space-y-2">
+                  <p className="text-sm text-gray-500">This is a one-time job.</p>
+                  <Button variant="outline" size="sm" className="w-full" onClick={() => setShowRecurringModal(true)}>
+                    <RefreshCw className="h-4 w-4" />
+                    Make Recurring
+                  </Button>
                 </div>
-              )}
-              
-              {/* Assigned Team Members */}
-              <div>
-                <p className="text-sm text-gray-500 mb-2">Assigned To</p>
-                {assignedUserIds.length > 0 ? (
-                  <AssignedTeamAvatars 
-                    users={teamMembers.filter(m => assignedUserIds.includes(m.id))} 
-                    showNames={true}
-                    size="md"
-                  />
-                ) : (
-                  <p className="text-gray-400 italic text-sm">Not assigned</p>
-                )}
-              </div>
-              
-              <div>
-                <p className="text-sm text-gray-500">Created</p>
-                <p className="font-medium text-gray-900">
-                  {format(new Date(job.created_at), 'MMM d, yyyy')}
-                </p>
-              </div>
-
-              {wellInfo && (
-                <>
-                  <div className="border-t pt-4 mt-4">
-                    <p className="text-sm font-semibold text-gray-700 uppercase">Well Info</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Well Depth</p>
-                    <p className="font-medium text-gray-900">{wellInfo.well_depth} ft</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Pump Model</p>
-                    <p className="font-medium text-gray-900">{wellInfo.pump_model}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-500">Pump HP</p>
-                    <p className="font-medium text-gray-900">{wellInfo.pump_hp} HP</p>
-                  </div>
-                </>
               )}
             </CardContent>
           </Card>
 
           {/* Quick Actions */}
           <Card>
-            <CardContent className="py-4 space-y-2">
-              <Button className="w-full justify-start" variant="outline">
-                <Calendar className="h-4 w-4" />
-                Schedule Visit
-              </Button>
-              <Button className="w-full justify-start" variant="outline">
-                <FileText className="h-4 w-4" />
-                Create Invoice
-              </Button>
-              <Button className="w-full justify-start" variant="outline">
-                <Mail className="h-4 w-4" />
-                Email Client
-              </Button>
-              {!job.recurring_schedule_id && (
-                <Button 
-                  className="w-full justify-start" 
-                  variant="outline"
-                  onClick={() => setShowRecurringModal(true)}
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Make Recurring
+            <CardHeader>
+              <CardTitle className="text-base">Quick Actions</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {job.status === 'scheduled' && (
+                <Button className="w-full bg-green-600 hover:bg-green-700">
+                  <CheckCircle2 className="h-4 w-4" />
+                  Mark Complete
                 </Button>
               )}
+              {job.status === 'completed' && (
+                <Button className="w-full" href={`/invoices/new?job_id=${job.id}`}>
+                  <FileText className="h-4 w-4" />
+                  Create Invoice
+                </Button>
+              )}
+              <Button variant="outline" className="w-full" href={`/quotes/new?property_id=${property?.id}`}>
+                <Plus className="h-4 w-4" />
+                Create Quote
+              </Button>
             </CardContent>
           </Card>
         </div>
       </div>
 
       {/* Make Recurring Modal */}
-      {property && customer && (
-        <MakeRecurringModal
-          open={showRecurringModal}
-          onOpenChange={setShowRecurringModal}
-          jobId={job.id}
-          customerId={customer.id}
-          propertyId={property.id}
-          jobType={job.job_type}
-          description={job.description}
-          assignedTo={job.assigned_to}
-          estimatedDuration={job.estimated_duration}
-          onSuccess={(scheduleId) => {
-            console.log('Created recurring schedule:', scheduleId);
-            // Could refresh the page or show a toast
-          }}
-        />
-      )}
+      <MakeRecurringModal
+        isOpen={showRecurringModal}
+        onClose={() => setShowRecurringModal(false)}
+        jobId={job.id}
+        jobType={job.job_type}
+        propertyId={property?.id || ''}
+        onSuccess={(scheduleId) => {
+          setJob({ ...job, recurring_schedule_id: scheduleId });
+          setShowRecurringModal(false);
+        }}
+      />
     </div>
   );
 }

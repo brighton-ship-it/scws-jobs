@@ -3,7 +3,7 @@
 // Disable static generation for this page
 export const dynamic = 'force-dynamic';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -13,8 +13,7 @@ import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
 import { CustomerSearch } from '@/components/customer-search';
-import { mockProducts } from '@/lib/mock-data';
-import type { Property } from '@/types/database';
+import type { Property, Product } from '@/types/database';
 import { ArrowLeft, DollarSign } from 'lucide-react';
 
 export default function NewQuotePage() {
@@ -31,6 +30,31 @@ export default function NewQuotePage() {
     { id: '1', description: '', item_description: null, quantity: 1, unit_price: 0, total: 0, item_type: null, taxable: true, sort_order: 0 }
   ]);
   const [saving, setSaving] = useState(false);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [loadingProducts, setLoadingProducts] = useState(true);
+
+  // Fetch products from API
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        console.log('Fetching products...');
+        const res = await fetch('/api/products?limit=2000');
+        console.log('Products response status:', res.status);
+        if (res.ok) {
+          const data = await res.json();
+          console.log('Products received:', data.products?.length || 0);
+          setProducts(data.products || []);
+        } else {
+          console.error('Products API error:', res.status, res.statusText);
+        }
+      } catch (error) {
+        console.error('Failed to fetch products:', error);
+      } finally {
+        setLoadingProducts(false);
+      }
+    };
+    fetchProducts();
+  }, []);
 
   const propertyOptions = properties.map(p => ({ 
     value: p.id, 
@@ -50,7 +74,10 @@ export default function NewQuotePage() {
     }
   };
 
-  const activeProducts = mockProducts.filter(p => p.active);
+  const activeProducts = products.filter(p => p.active);
+  
+  // Debug: log product count
+  console.log('Products loaded:', products.length, 'Active:', activeProducts.length);
 
   // Calculate totals
   const subtotal = useMemo(() => 
@@ -75,14 +102,71 @@ export default function NewQuotePage() {
       return;
     }
 
+    // Validate line items
+    const validLineItems = lineItems.filter(item => item.description.trim());
+    if (validLineItems.length === 0) {
+      alert('Please add at least one line item');
+      return;
+    }
+
     setSaving(true);
     
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // TODO: Implement actual save logic
+    try {
+      const response = await fetch('/api/quotes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: customerId,
+          property_id: propertyId || null,
+          valid_until: validUntil || null,
+          notes: notes || null,
+          internal_notes: internalNotes || null,
+          tax_rate: taxRate,
+          required_deposit: requiredDeposit ? parseFloat(requiredDeposit) : null,
+          status: asDraft ? 'draft' : 'sent',
+          line_items: validLineItems.map((item, index) => ({
+            description: item.description,
+            item_description: item.item_description,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            total: item.total,
+            item_type: item.item_type,
+            taxable: item.taxable,
+            sort_order: index,
+          })),
+        }),
+      });
 
-    router.push('/quotes');
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to create quote');
+      }
+
+      // If "Save & Send" was clicked, send the email
+      if (!asDraft && data.quote?.id) {
+        try {
+          const sendRes = await fetch(`/api/quotes/${data.quote.id}/send`, {
+            method: 'POST',
+          });
+          const sendData = await sendRes.json();
+          if (!sendRes.ok) {
+            alert(`Quote saved but email failed: ${sendData.error}`);
+          }
+        } catch (sendError) {
+          console.error('Send error:', sendError);
+          alert('Quote saved but failed to send email');
+        }
+      }
+
+      // Redirect to quotes list
+      router.push('/quotes');
+    } catch (error) {
+      console.error('Save error:', error);
+      alert(error instanceof Error ? error.message : 'Failed to save quote');
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -195,6 +279,9 @@ export default function NewQuotePage() {
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Line Items</CardTitle>
+          <span className="text-sm text-gray-500">
+            {loadingProducts ? 'Loading products...' : `${activeProducts.length} products available`}
+          </span>
         </CardHeader>
         <CardContent>
           <DraggableLineItems

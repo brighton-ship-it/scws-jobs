@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
@@ -11,11 +11,10 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { Modal } from '@/components/feedback/Modal';
-import { getInvoiceWithDetails, getPropertyById } from '@/lib/mock-data';
 import { 
   ArrowLeft, Edit, Send, Download, Mail, DollarSign,
   Check, X, Clock, Printer, Building2, CreditCard, Trash2,
-  AlertTriangle
+  AlertTriangle, Loader2
 } from 'lucide-react';
 import { format, differenceInDays } from 'date-fns';
 
@@ -55,22 +54,55 @@ export default function InvoiceDetailPage() {
   const [paymentReference, setPaymentReference] = useState('');
   const [paymentDate, setPaymentDate] = useState(format(new Date(), 'yyyy-MM-dd'));
   const [paymentNotes, setPaymentNotes] = useState('');
-
-  const invoiceData = getInvoiceWithDetails(invoiceId);
+  
+  // Data state - fetch from API
+  const [invoiceData, setInvoiceData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Fetch invoice data
+  useEffect(() => {
+    async function fetchInvoice() {
+      try {
+        setLoading(true);
+        const res = await fetch(`/api/invoices/${invoiceId}`);
+        if (!res.ok) throw new Error('Invoice not found');
+        const data = await res.json();
+        setInvoiceData(data.invoice);
+        if (data.invoice?.customer?.email) {
+          setSendEmail(data.invoice.customer.email);
+        }
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load invoice');
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchInvoice();
+  }, [invoiceId]);
 
   // Calculate derived values (must be before early return for hooks consistency)
-  const balanceDue = invoiceData ? invoiceData.total - invoiceData.amount_paid : 0;
+  const balanceDue = invoiceData ? invoiceData.total - (invoiceData.amount_paid || 0) : 0;
 
   const openPaymentModal = useCallback(() => {
     setPaymentAmount(balanceDue.toFixed(2));
     setShowPaymentModal(true);
   }, [balanceDue]);
 
-  if (!invoiceData) {
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+        <span className="ml-2 text-gray-500">Loading invoice...</span>
+      </div>
+    );
+  }
+
+  if (error || !invoiceData) {
     return (
       <div className="text-center py-12">
         <h2 className="text-xl font-semibold text-gray-900">Invoice not found</h2>
-        <p className="text-gray-500 mt-2">The invoice you're looking for doesn't exist.</p>
+        <p className="text-gray-500 mt-2">{error || "The invoice you're looking for doesn't exist."}</p>
         <Button href="/invoices" variant="outline" className="mt-4">
           Back to Invoices
         </Button>

@@ -134,8 +134,10 @@ export interface Product {
   description: string | null;
   default_price: number;
   item_type: LineItemType;
+  sku: string | null;
   active: boolean;
   created_at: string;
+  updated_at?: string;
 }
 
 // Quotes

@@ -22,6 +22,87 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { GripVertical, Trash2, Package, Plus, Receipt } from 'lucide-react';
 import type { LineItemType, Product } from '@/types/database';
+import { Search } from 'lucide-react';
+
+// Searchable Product Picker Component
+function ProductPicker({ 
+  products, 
+  onSelect, 
+  onClose,
+  initialSearch = ''
+}: { 
+  products: Product[];
+  onSelect: (productId: string) => void;
+  onClose: () => void;
+  initialSearch?: string;
+}) {
+  const [search, setSearch] = useState(initialSearch);
+  
+  const filteredProducts = products.filter(p => 
+    p.name.toLowerCase().includes(search.toLowerCase()) ||
+    (p.description?.toLowerCase().includes(search.toLowerCase()))
+  );
+  
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
+  };
+  
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-10"
+        onClick={onClose}
+      />
+      <div className="absolute top-full left-0 mt-1 z-20 w-96 rounded-lg border border-gray-200 bg-white shadow-lg">
+        <div className="p-2 border-b border-gray-100">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search products..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-md focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              autoFocus
+            />
+          </div>
+        </div>
+        <div className="max-h-64 overflow-auto">
+          {filteredProducts.length === 0 ? (
+            <div className="p-4 text-center text-sm text-gray-500">
+              No products found
+            </div>
+          ) : (
+            filteredProducts.slice(0, 50).map((product) => (
+              <button
+                key={product.id}
+                type="button"
+                onClick={() => onSelect(product.id)}
+                className="w-full text-left px-3 py-2 hover:bg-gray-50 flex justify-between items-center border-b border-gray-50 last:border-0"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">{product.name}</p>
+                  {product.description && (
+                    <p className="text-xs text-gray-500 truncate">{product.description}</p>
+                  )}
+                  <p className="text-xs text-gray-400 capitalize">{product.item_type}</p>
+                </div>
+                <span className="text-sm font-medium text-gray-900 ml-2">
+                  {formatCurrency(product.default_price)}
+                </span>
+              </button>
+            ))
+          )}
+          {filteredProducts.length > 50 && (
+            <div className="p-2 text-center text-xs text-gray-500 bg-gray-50">
+              Showing 50 of {filteredProducts.length} — type to narrow results
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
 
 export interface LineItem {
   id: string;
@@ -100,53 +181,54 @@ function SortableItem({
             <GripVertical className="h-5 w-5 text-gray-400" />
           </div>
 
-          {/* Description with product picker */}
+          {/* Description with inline autocomplete */}
           <div className="col-span-1 md:col-span-4 relative">
             <div className="flex gap-2">
-              <Input
-                placeholder="Item name"
-                value={item.description}
-                onChange={(e) => onUpdate(item.id, 'description', e.target.value)}
-              />
+              <div className="flex-1 relative">
+                <Input
+                  placeholder="Type to search products..."
+                  value={item.description}
+                  onChange={(e) => {
+                    onUpdate(item.id, 'description', e.target.value);
+                    // Auto-show picker when typing
+                    if (e.target.value.length >= 2 && !showProductPicker) {
+                      onProductSelect(item.id);
+                    }
+                  }}
+                  onFocus={() => {
+                    // Show picker on focus if there's text
+                    if (item.description.length >= 2 && !showProductPicker) {
+                      onProductSelect(item.id);
+                    }
+                  }}
+                />
+                {/* Inline autocomplete dropdown */}
+                {showProductPicker && item.description.length >= 2 && (
+                  <ProductPicker
+                    products={products}
+                    onSelect={(productId) => onProductPick(item.id, productId)}
+                    onClose={onCloseProductPicker}
+                    initialSearch={item.description}
+                  />
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => onProductSelect(item.id)}
                 className="shrink-0 p-2 rounded-lg border border-gray-300 hover:bg-gray-100 text-gray-500"
-                title="Select from catalog"
+                title="Browse all products"
               >
                 <Package className="h-5 w-5" />
               </button>
             </div>
 
-            {/* Product Picker Dropdown */}
-            {showProductPicker && (
-              <>
-                <div
-                  className="fixed inset-0 z-10"
-                  onClick={onCloseProductPicker}
-                />
-                <div className="absolute top-full left-0 mt-1 z-20 w-80 max-h-64 overflow-auto rounded-lg border border-gray-200 bg-white shadow-lg">
-                  <div className="p-2 border-b border-gray-100">
-                    <p className="text-xs font-medium text-gray-500 uppercase">Products & Services</p>
-                  </div>
-                  {products.map((product) => (
-                    <button
-                      key={product.id}
-                      type="button"
-                      onClick={() => onProductPick(item.id, product.id)}
-                      className="w-full text-left px-3 py-2 hover:bg-gray-50 flex justify-between items-center"
-                    >
-                      <div>
-                        <p className="text-sm font-medium text-gray-900">{product.name}</p>
-                        <p className="text-xs text-gray-500 capitalize">{product.item_type}</p>
-                      </div>
-                      <span className="text-sm font-medium text-gray-900">
-                        {formatCurrency(product.default_price)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </>
+            {/* Full product picker (when clicking icon with no/short text) */}
+            {showProductPicker && item.description.length < 2 && (
+              <ProductPicker
+                products={products}
+                onSelect={(productId) => onProductPick(item.id, productId)}
+                onClose={onCloseProductPicker}
+              />
             )}
           </div>
 
@@ -301,6 +383,11 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
           updated.total = Number(updated.quantity) * Number(updated.unit_price);
         }
 
+        // Labor is not taxable in California - auto-set when type changes
+        if (field === 'item_type') {
+          updated.taxable = value !== 'labor';
+        }
+
         return updated;
       })
     );
@@ -325,6 +412,8 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
           unit_price: product.default_price,
           total: item.quantity * product.default_price,
           item_type: product.item_type as LineItemType,
+          // Labor is not taxable in California
+          taxable: product.item_type !== 'labor',
         };
       })
     );

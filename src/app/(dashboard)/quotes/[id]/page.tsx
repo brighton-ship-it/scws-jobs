@@ -13,8 +13,7 @@ import { Modal } from '@/components/feedback/Modal';
 import { QuotePDFButton } from '@/components/pdf/QuotePDFButton';
 import { DepositSidebar } from '@/components/quotes/DepositSidebar';
 import { SignaturePad } from '@/components/signatures';
-import { getQuoteWithDetails, mockQuoteChangeRequests } from '@/lib/mock-data';
-import type { Signature } from '@/types/database';
+import type { Signature, Quote } from '@/types/database';
 import { 
   ArrowLeft, Edit, Send, FileText, Mail, 
   Check, X, Clock, Printer, Building2, MapPin, DollarSign, Receipt, PenTool
@@ -30,19 +29,69 @@ const COMPANY_INFO = {
   email: 'info@socalwellservice.com',
 };
 
+interface QuoteData {
+  id: string;
+  quote_number: number;
+  status: 'draft' | 'sent' | 'accepted' | 'declined' | 'expired';
+  valid_until: string | null;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  notes: string | null;
+  internal_notes: string | null;
+  created_at: string;
+  sent_at: string | null;
+  accepted_at: string | null;
+  required_deposit?: number | null;
+  customer: { id: string; name: string; email: string; phone: string; company?: string } | null;
+  property: { id: string; address: string; city: string; state?: string; zip?: string } | null;
+  items: Array<{
+    id: string;
+    description: string;
+    item_description?: string;
+    quantity: number;
+    unit_price: number;
+    total: number;
+    item_type: string | null;
+    taxable?: boolean;
+  }>;
+}
+
 export default function QuoteDetailPage() {
   const router = useRouter();
   const params = useParams();
   const quoteId = params.id as string;
   const printRef = useRef<HTMLDivElement>(null);
   
+  const [quoteData, setQuoteData] = useState<QuoteData | null>(null);
+  const [loading, setLoading] = useState(true);
   const [showSendModal, setShowSendModal] = useState(false);
   const [sendEmail, setSendEmail] = useState('');
   const [sending, setSending] = useState(false);
   const [signature, setSignature] = useState<Signature | null>(null);
   const [signatureLoading, setSignatureLoading] = useState(true);
 
-  const quoteData = getQuoteWithDetails(quoteId);
+  // Fetch quote data
+  useEffect(() => {
+    async function fetchQuote() {
+      try {
+        const res = await fetch(`/api/quotes/${quoteId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setQuoteData(data.quote);
+          if (data.quote?.customer?.email) {
+            setSendEmail(data.quote.customer.email);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch quote:', err);
+      } finally {
+        setLoading(false);
+      }
+    }
+    fetchQuote();
+  }, [quoteId]);
 
   // Fetch signature on mount
   useEffect(() => {
@@ -61,6 +110,15 @@ export default function QuoteDetailPage() {
     }
     fetchSignature();
   }, [quoteId]);
+
+  if (loading) {
+    return (
+      <div className="text-center py-12">
+        <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+        <p className="text-gray-500">Loading quote...</p>
+      </div>
+    );
+  }
 
   if (!quoteData) {
     return (
@@ -102,25 +160,28 @@ export default function QuoteDetailPage() {
   };
 
   const handleRequestChanges = async (message: string, name: string, email: string) => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // In real implementation, this would save to database and notify the team
-    const newRequest = {
-      id: `qcr${mockQuoteChangeRequests.length + 1}`,
-      quote_id: quoteId,
-      customer_name: name,
-      customer_email: email,
-      message: message,
-      status: 'pending' as const,
-      created_at: new Date().toISOString(),
-      reviewed_at: null,
-    };
-    
-    mockQuoteChangeRequests.push(newRequest);
-    console.log('Change request submitted:', newRequest);
-    
-    // TODO: Send notification to team (email/slack/etc)
+    try {
+      const res = await fetch('/api/quote-change-requests', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          quote_id: quoteId,
+          customer_name: name,
+          customer_email: email,
+          message: message,
+        }),
+      });
+      
+      if (!res.ok) {
+        throw new Error('Failed to submit change request');
+      }
+      
+      console.log('Change request submitted successfully');
+    } catch (error) {
+      console.error('Failed to submit change request:', error);
+      // Still log the request even if API fails - can be handled manually
+      console.log('Change request (offline):', { quoteId, name, email, message });
+    }
   };
 
   // Show sidebar for sent/expired quotes (customer-facing view)

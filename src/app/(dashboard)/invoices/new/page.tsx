@@ -10,9 +10,10 @@ import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
 import { 
-  mockCustomers, mockJobs, mockProducts, getJobsByCustomerId,
+  mockCustomers, mockJobs, getJobsByCustomerId,
   getQuoteWithDetails, getPropertyById
 } from '@/lib/mock-data';
+import type { Product } from '@/types/database';
 import { ArrowLeft, Briefcase } from 'lucide-react';
 import { format, addDays } from 'date-fns';
 
@@ -43,6 +44,23 @@ export default function NewInvoicePage() {
   ]);
   const [showJobSelector, setShowJobSelector] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [products, setProducts] = useState<Product[]>([]);
+
+  // Fetch products from API
+  useEffect(() => {
+    const fetchProducts = async () => {
+      try {
+        const res = await fetch('/api/products?limit=2000');
+        if (res.ok) {
+          const data = await res.json();
+          setProducts(data.products || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch products:', error);
+      }
+    };
+    fetchProducts();
+  }, []);
 
   const customerJobs = customerId 
     ? getJobsByCustomerId(customerId).filter(j => j.status === 'completed')
@@ -86,7 +104,7 @@ export default function NewInvoicePage() {
     label: `${j.job_type} - ${format(new Date(j.scheduled_date || j.created_at), 'MMM d, yyyy')}` 
   }));
 
-  const activeProducts = mockProducts.filter(p => p.active);
+  const activeProducts = products.filter(p => p.active);
 
   // Calculate totals
   const subtotal = useMemo(() => 

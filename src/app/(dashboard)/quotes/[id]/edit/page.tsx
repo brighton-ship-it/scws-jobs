@@ -9,16 +9,56 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
-import { mockCustomers, getPropertiesByCustomerId, mockProducts, getQuoteWithDetails } from '@/lib/mock-data';
-import { ArrowLeft, DollarSign } from 'lucide-react';
+import type { Product, Customer, Property } from '@/types/database';
+import { ArrowLeft, DollarSign, Loader2 } from 'lucide-react';
+
+interface QuoteData {
+  id: string;
+  quote_number: number;
+  customer_id: string;
+  property_id: string | null;
+  status: string;
+  valid_until: string | null;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  notes: string | null;
+  internal_notes: string | null;
+  required_deposit?: number | null;
+  items: Array<{
+    id: string;
+    description: string;
+    item_description?: string;
+    quantity: number;
+    unit_price: number;
+    total: number;
+    item_type: string | null;
+    taxable?: boolean;
+    sort_order?: number;
+  }>;
+}
+
+interface CustomerWithProperties extends Customer {
+  properties?: Property[];
+}
 
 export default function EditQuotePage() {
   const router = useRouter();
   const params = useParams();
   const quoteId = params.id as string;
   
-  const quoteData = getQuoteWithDetails(quoteId);
-
+  // Loading states
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  
+  // Data
+  const [quoteData, setQuoteData] = useState<QuoteData | null>(null);
+  const [customers, setCustomers] = useState<CustomerWithProperties[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  
+  // Form state
   const [customerId, setCustomerId] = useState('');
   const [propertyId, setPropertyId] = useState('');
   const [validUntil, setValidUntil] = useState('');
@@ -27,59 +67,81 @@ export default function EditQuotePage() {
   const [taxRate, setTaxRate] = useState(8.75);
   const [requiredDeposit, setRequiredDeposit] = useState<string>('');
   const [lineItems, setLineItems] = useState<LineItem[]>([]);
-  const [saving, setSaving] = useState(false);
-  const [loaded, setLoaded] = useState(false);
 
-  // Load quote data
+  // Fetch all data on mount
   useEffect(() => {
-    if (quoteData && !loaded) {
-      setCustomerId(quoteData.customer_id);
-      setPropertyId(quoteData.property_id || '');
-      setValidUntil(quoteData.valid_until || '');
-      setNotes(quoteData.notes || '');
-      setInternalNotes(quoteData.internal_notes || '');
-      setTaxRate(quoteData.tax_rate);
-      setRequiredDeposit(quoteData.required_deposit ? quoteData.required_deposit.toFixed(2) : '');
-      setLineItems(quoteData.items.map(item => ({
-        id: item.id,
-        description: item.description,
-        item_description: (item as any).item_description || null,
-        quantity: item.quantity,
-        unit_price: item.unit_price,
-        total: item.total,
-        item_type: item.item_type,
-        taxable: (item as any).taxable !== false, // Default to true if not set
-        sort_order: item.sort_order,
-      })));
-      setLoaded(true);
+    async function fetchData() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        // Fetch quote, customers, and products in parallel
+        const [quoteRes, customersRes, productsRes] = await Promise.all([
+          fetch(`/api/quotes/${quoteId}`),
+          fetch('/api/customers?limit=1000'),
+          fetch('/api/products?limit=2000'),
+        ]);
+
+        if (!quoteRes.ok) {
+          throw new Error('Quote not found');
+        }
+
+        const [quoteJson, customersJson, productsJson] = await Promise.all([
+          quoteRes.json(),
+          customersRes.json(),
+          productsRes.json(),
+        ]);
+
+        const quote = quoteJson.quote;
+        setQuoteData(quote);
+        setCustomers(customersJson.customers || []);
+        setProducts(productsJson.products || []);
+
+        // Populate form
+        if (quote) {
+          setCustomerId(quote.customer_id || '');
+          setPropertyId(quote.property_id || '');
+          setValidUntil(quote.valid_until || '');
+          setNotes(quote.notes || '');
+          setInternalNotes(quote.internal_notes || '');
+          setTaxRate(quote.tax_rate || 8.75);
+          setRequiredDeposit(quote.required_deposit ? quote.required_deposit.toFixed(2) : '');
+          setLineItems((quote.items || []).map((item: any) => ({
+            id: item.id,
+            description: item.description,
+            item_description: item.item_description || null,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            total: item.total,
+            item_type: item.item_type,
+            taxable: item.taxable !== false,
+            sort_order: item.sort_order,
+          })));
+        }
+      } catch (err) {
+        console.error('Failed to fetch data:', err);
+        setError(err instanceof Error ? err.message : 'Failed to load quote');
+      } finally {
+        setLoading(false);
+      }
     }
-  }, [quoteData, loaded]);
+    fetchData();
+  }, [quoteId]);
 
-  if (!quoteData) {
-    return (
-      <div className="text-center py-12">
-        <h2 className="text-xl font-semibold text-gray-900">Quote not found</h2>
-        <p className="text-gray-500 mt-2">The quote you're looking for doesn't exist.</p>
-        <Button href="/quotes" variant="outline" className="mt-4">
-          Back to Quotes
-        </Button>
-      </div>
-    );
-  }
+  // Get properties for selected customer
+  const selectedCustomer = customers.find(c => c.id === customerId);
+  const properties = selectedCustomer?.properties || [];
 
-  const properties = customerId ? getPropertiesByCustomerId(customerId) : [];
-
-  const customerOptions = mockCustomers.map(c => ({ value: c.id, label: c.name }));
+  const customerOptions = customers.map(c => ({ value: c.id, label: c.name }));
   const propertyOptions = properties.map(p => ({ 
     value: p.id, 
     label: `${p.address}${p.city ? `, ${p.city}` : ''}` 
   }));
 
-  const activeProducts = mockProducts.filter(p => p.active);
+  const activeProducts = products.filter(p => p.active);
 
   // Calculate totals
   const subtotal = lineItems.reduce((sum, item) => sum + item.total, 0);
-  // Only apply tax to taxable items
   const taxableSubtotal = lineItems.filter(item => item.taxable).reduce((sum, item) => sum + item.total, 0);
   const taxAmount = taxableSubtotal * (taxRate / 100);
   const total = subtotal + taxAmount;
@@ -96,12 +158,67 @@ export default function EditQuotePage() {
 
     setSaving(true);
     
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // TODO: Implement actual update logic
+    try {
+      // First update the quote itself
+      const quoteRes = await fetch(`/api/quotes/${quoteId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: customerId,
+          property_id: propertyId || null,
+          valid_until: validUntil || null,
+          notes: notes || null,
+          internal_notes: internalNotes || null,
+          tax_rate: taxRate,
+          subtotal: subtotal,
+          tax_amount: taxAmount,
+          total: total,
+          required_deposit: requiredDeposit ? parseFloat(requiredDeposit) : null,
+          status: asDraft ? quoteData?.status : 'sent',
+          sent_at: !asDraft ? new Date().toISOString() : undefined,
+        }),
+      });
 
-    router.push(`/quotes/${quoteId}`);
+      if (!quoteRes.ok) {
+        throw new Error('Failed to update quote');
+      }
+
+      // Update line items - delete existing and insert new
+      await fetch(`/api/quotes/${quoteId}/items`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: lineItems }),
+      });
+
+      router.push(`/quotes/${quoteId}`);
+    } catch (err) {
+      console.error('Failed to save quote:', err);
+      alert('Failed to save quote. Please try again.');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+        <span className="ml-2 text-gray-500">Loading quote...</span>
+      </div>
+    );
+  }
+
+  if (error || !quoteData) {
+    return (
+      <div className="text-center py-12">
+        <h2 className="text-xl font-semibold text-gray-900">Quote not found</h2>
+        <p className="text-gray-500 mt-2">{error || "The quote you're looking for doesn't exist."}</p>
+        <Button href="/quotes" variant="outline" className="mt-4">
+          Back to Quotes
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-5xl">
@@ -283,7 +400,14 @@ export default function EditQuotePage() {
           onClick={() => handleSubmit(true)}
           disabled={saving}
         >
-          Save Changes
+          {saving ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              Saving...
+            </>
+          ) : (
+            'Save Changes'
+          )}
         </Button>
         {quoteData.status === 'draft' && (
           <Button 

@@ -1,15 +1,33 @@
 'use client';
 
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
 import { QuoteStatusBadge } from '@/components/ui/badge';
-import { mockQuotes, getCustomerById, getPropertyById } from '@/lib/mock-data';
-import { Search, Plus, MoreHorizontal, Eye, Edit, Copy, Send, FileText } from 'lucide-react';
+import { Search, Plus, MoreHorizontal, Eye, Edit, Copy, Send, FileText, RefreshCw } from 'lucide-react';
 import { format } from 'date-fns';
+
+interface Quote {
+  id: string;
+  quote_number: number;
+  customer_id: string;
+  property_id: string | null;
+  status: 'draft' | 'sent' | 'accepted' | 'declined' | 'expired';
+  valid_until: string | null;
+  subtotal: number;
+  tax_rate: number;
+  tax_amount: number;
+  total: number;
+  notes: string | null;
+  internal_notes: string | null;
+  created_at: string;
+  customer?: { id: string; name: string; email: string; phone: string };
+  property?: { id: string; address: string; city: string };
+  items?: any[];
+}
 
 const statusFilters = [
   { value: 'all', label: 'All Quotes' },
@@ -21,13 +39,33 @@ const statusFilters = [
 ];
 
 export default function QuotesPage() {
+  const [quotes, setQuotes] = useState<Quote[]>([]);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
 
-  const filteredQuotes = mockQuotes.filter((quote) => {
-    const customer = getCustomerById(quote.customer_id);
-    const matchesSearch = customer?.name.toLowerCase().includes(search.toLowerCase()) ||
+  // Fetch quotes from API
+  useEffect(() => {
+    const fetchQuotes = async () => {
+      try {
+        const res = await fetch('/api/quotes?limit=100');
+        if (res.ok) {
+          const data = await res.json();
+          setQuotes(data.quotes || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch quotes:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchQuotes();
+  }, []);
+
+  const filteredQuotes = quotes.filter((quote) => {
+    const customerName = quote.customer?.name || '';
+    const matchesSearch = customerName.toLowerCase().includes(search.toLowerCase()) ||
       quote.quote_number.toString().includes(search);
     const matchesStatus = statusFilter === 'all' || quote.status === statusFilter;
     return matchesSearch && matchesStatus;
@@ -48,7 +86,7 @@ export default function QuotesPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Quotes</h2>
-          <p className="text-gray-600">{mockQuotes.length} total quotes</p>
+          <p className="text-gray-600">{loading ? 'Loading...' : `${quotes.length} total quotes`}</p>
         </div>
         <Button href="/quotes/new">
           <Plus className="h-4 w-4" />
@@ -59,10 +97,10 @@ export default function QuotesPage() {
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {[
-          { label: 'Draft', value: mockQuotes.filter(q => q.status === 'draft').length, color: 'text-gray-600' },
-          { label: 'Sent', value: mockQuotes.filter(q => q.status === 'sent').length, color: 'text-blue-600' },
-          { label: 'Accepted', value: mockQuotes.filter(q => q.status === 'accepted').length, color: 'text-green-600' },
-          { label: 'Declined', value: mockQuotes.filter(q => q.status === 'declined').length, color: 'text-red-600' },
+          { label: 'Draft', value: quotes.filter(q => q.status === 'draft').length, color: 'text-gray-600' },
+          { label: 'Sent', value: quotes.filter(q => q.status === 'sent').length, color: 'text-blue-600' },
+          { label: 'Accepted', value: quotes.filter(q => q.status === 'accepted').length, color: 'text-green-600' },
+          { label: 'Declined', value: quotes.filter(q => q.status === 'declined').length, color: 'text-red-600' },
         ].map((stat) => (
           <Card key={stat.label}>
             <CardContent className="py-4">
@@ -122,13 +160,17 @@ export default function QuotesPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sortedQuotes.length === 0 ? (
+            {loading ? (
+              <TableRow>
+                <TableCell colSpan={8} className="text-center py-8 text-gray-500">
+                  <RefreshCw className="h-5 w-5 animate-spin mx-auto mb-2" />
+                  Loading quotes...
+                </TableCell>
+              </TableRow>
+            ) : sortedQuotes.length === 0 ? (
               <TableEmpty message="No quotes found" />
             ) : (
               sortedQuotes.map((quote) => {
-                const customer = getCustomerById(quote.customer_id);
-                const property = quote.property_id ? getPropertyById(quote.property_id) : null;
-
                 return (
                   <TableRow key={quote.id}>
                     <TableCell>
@@ -140,11 +182,11 @@ export default function QuotesPage() {
                       </Link>
                     </TableCell>
                     <TableCell>
-                      <span className="font-medium text-gray-900">{customer?.name || 'Unknown'}</span>
+                      <span className="font-medium text-gray-900">{quote.customer?.name || 'Unknown'}</span>
                     </TableCell>
                     <TableCell>
                       <span className="text-gray-500 text-sm">
-                        {property ? `${property.address}, ${property.city}` : '-'}
+                        {quote.property ? `${quote.property.address}, ${quote.property.city}` : '-'}
                       </span>
                     </TableCell>
                     <TableCell>

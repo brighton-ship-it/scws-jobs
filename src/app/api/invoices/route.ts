@@ -16,6 +16,7 @@ export async function GET(request: NextRequest) {
     const searchParams = request.nextUrl.searchParams;
     const status = searchParams.get('status');
     const customerId = searchParams.get('customer_id');
+    const jobId = searchParams.get('job_id');
     const limit = parseInt(searchParams.get('limit') || '50', 10);
     const offset = parseInt(searchParams.get('offset') || '0', 10);
 
@@ -36,6 +37,10 @@ export async function GET(request: NextRequest) {
 
     if (customerId) {
       query = query.eq('customer_id', customerId);
+    }
+
+    if (jobId) {
+      query = query.eq('job_id', jobId);
     }
 
     const { data: invoices, error } = await query;

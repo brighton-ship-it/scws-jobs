@@ -4,12 +4,18 @@ const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const FROM_EMAIL = process.env.FROM_EMAIL || 'noreply@scwellservice.com';
 const FROM_NAME = process.env.FROM_NAME || 'Southern California Well Service';
 
+interface Attachment {
+  filename: string;
+  content: Buffer;
+}
+
 interface SendEmailOptions {
   to: string;
   subject: string;
   html?: string;
   text?: string;
   replyTo?: string;
+  attachments?: Attachment[];
 }
 
 interface SendEmailResult {
@@ -34,6 +40,7 @@ export async function sendEmail({
   html,
   text,
   replyTo,
+  attachments,
 }: SendEmailOptions): Promise<SendEmailResult> {
   if (!isResendConfigured()) {
     console.error('[Email] Resend API key not configured');
@@ -53,6 +60,10 @@ export async function sendEmail({
       html,
       text,
       replyTo: replyTo || 'office@scwellservice.com',
+      attachments: attachments?.map(a => ({
+        filename: a.filename,
+        content: a.content,
+      })),
     });
 
     if (result.error) {
