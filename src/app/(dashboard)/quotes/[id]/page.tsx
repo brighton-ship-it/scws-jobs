@@ -270,6 +270,10 @@ export default function QuoteDetailPage() {
           )}
           {quoteData.status === 'sent' && (
             <>
+              <Button variant="outline" href={`/quotes/${quoteId}/edit`}>
+                <Edit className="h-4 w-4" />
+                Edit
+              </Button>
               <Button variant="outline" onClick={() => {
                 setSendEmail(customer.email || '');
                 setShowSendModal(true);
