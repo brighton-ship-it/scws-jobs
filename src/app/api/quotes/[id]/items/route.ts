@@ -30,7 +30,6 @@ export async function PUT(
       const itemsToInsert = items.map((item: any, index: number) => ({
         quote_id: quoteId,
         description: item.description,
-        item_description: item.item_description || null,
         quantity: item.quantity || 1,
         unit_price: item.unit_price || 0,
         total: item.total || 0,
