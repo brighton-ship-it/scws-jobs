@@ -159,6 +159,43 @@ export default function QuoteDetailPage() {
     alert('Payment flow would open here. This will redirect to a payment processor.');
   };
 
+  const handleMarkAccepted = async () => {
+    try {
+      const res = await fetch(`/api/quotes/${quoteId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'accepted', accepted_at: new Date().toISOString() }),
+      });
+      if (res.ok) {
+        setQuoteData(prev => prev ? { ...prev, status: 'accepted', accepted_at: new Date().toISOString() } : null);
+      } else {
+        alert('Failed to mark quote as accepted');
+      }
+    } catch (err) {
+      console.error('Failed to mark accepted:', err);
+      alert('Failed to mark quote as accepted');
+    }
+  };
+
+  const handleMarkDeclined = async () => {
+    if (!confirm('Are you sure you want to mark this quote as declined?')) return;
+    try {
+      const res = await fetch(`/api/quotes/${quoteId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'declined' }),
+      });
+      if (res.ok) {
+        setQuoteData(prev => prev ? { ...prev, status: 'declined' } : null);
+      } else {
+        alert('Failed to mark quote as declined');
+      }
+    } catch (err) {
+      console.error('Failed to mark declined:', err);
+      alert('Failed to mark quote as declined');
+    }
+  };
+
   const handleRequestChanges = async (message: string, name: string, email: string) => {
     try {
       const res = await fetch('/api/quote-change-requests', {
@@ -240,11 +277,11 @@ export default function QuoteDetailPage() {
                 <Mail className="h-4 w-4" />
                 Resend
               </Button>
-              <Button variant="secondary" onClick={() => {}}>
+              <Button variant="secondary" onClick={handleMarkDeclined}>
                 <X className="h-4 w-4" />
                 Mark Declined
               </Button>
-              <Button onClick={() => {}}>
+              <Button onClick={handleMarkAccepted}>
                 <Check className="h-4 w-4" />
                 Mark Accepted
               </Button>
