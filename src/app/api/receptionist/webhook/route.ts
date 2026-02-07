@@ -202,13 +202,18 @@ export async function POST(request: NextRequest) {
 
     // Also create a booking request if we have enough info
     if (phone.length >= 10) {
+      // Just include summary - full transcript is in receptionist_calls table
+      const notesText = summary 
+        ? `📞 Sarah AI: ${summary}` 
+        : `📞 Call from ${customerName || formatPhone(phone)} - ${serviceNeeded || 'Phone inquiry'}`;
+      
       await supabase.from('booking_requests').insert({
         service_type: serviceNeeded || 'Phone Inquiry',
         customer_name: customerName || `Caller: ${formatPhone(phone)}`,
         phone: phone,
         address: address || '',
         city: city || '',
-        notes: `AI Receptionist Call\n\nSummary: ${summary}\n\nFull Transcript:\n${transcript}`,
+        notes: notesText,
         status: 'pending',
         customer_id: customerId,
         source: 'phone' as any,

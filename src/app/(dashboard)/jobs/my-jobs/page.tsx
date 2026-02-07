@@ -1,20 +1,11 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { JobStatusBadge, PriorityBadge } from '@/components/ui/badge';
 import { AssignedTeamAvatars } from '@/components/scheduling';
-import {
-  mockJobs,
-  getPropertyById,
-  getCustomerById,
-  getJobsAssignedToUser,
-  getTodaysJobsForUser,
-  getActiveJobsAssignedToUser,
-  getAssignedUsersForJob,
-} from '@/lib/mock-data';
 import { useAuth } from '@/contexts/AuthContext';
 import {
   Calendar,
@@ -36,8 +27,31 @@ type ViewMode = 'today' | 'upcoming' | 'all';
 export default function MyJobsPage() {
   const { user, loading } = useAuth();
   const [viewMode, setViewMode] = useState<ViewMode>('today');
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [isLoadingJobs, setIsLoadingJobs] = useState(true);
 
-  if (loading) {
+  // Fetch jobs assigned to current user
+  useEffect(() => {
+    const fetchJobs = async () => {
+      if (!user?.id) return;
+      try {
+        const res = await fetch(`/api/jobs?assigned_to=${user.id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setJobs(data.jobs || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch jobs:', error);
+      } finally {
+        setIsLoadingJobs(false);
+      }
+    };
+    if (user?.id) {
+      fetchJobs();
+    }
+  }, [user?.id]);
+
+  if (loading || isLoadingJobs) {
     return (
       <div className="text-center py-12">
         <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-4"></div>
@@ -54,9 +68,12 @@ export default function MyJobsPage() {
     );
   }
 
-  const allMyJobs = getJobsAssignedToUser(user.id);
-  const todaysJobs = getTodaysJobsForUser(user.id);
-  const activeJobs = getActiveJobsAssignedToUser(user.id);
+  const allMyJobs = jobs;
+  const todaysJobs = jobs.filter(job => {
+    if (!job.scheduled_date) return false;
+    return isToday(parseISO(job.scheduled_date));
+  });
+  const activeJobs = jobs.filter(job => job.status !== 'completed' && job.status !== 'invoiced');
   
   // Get upcoming jobs (next 7 days, excluding today)
   const upcomingJobs = useMemo(() => {
@@ -263,10 +280,11 @@ export default function MyJobsPage() {
 }
 
 // Job Card Component
-function JobCard({ job, showDate = true }: { job: typeof mockJobs[0]; showDate?: boolean }) {
-  const property = getPropertyById(job.property_id);
-  const customer = property ? getCustomerById(property.customer_id) : null;
-  const assignedUsers = getAssignedUsersForJob(job.id);
+function JobCard({ job, showDate = true }: { job: any; showDate?: boolean }) {
+  // Property and customer come from API join
+  const property = job.property;
+  const customer = job.property?.customer;
+  const assignedUsers = job.assigned_user ? [job.assigned_user] : [];
   
   const isLate = job.scheduled_date && isPast(parseISO(job.scheduled_date)) && 
     !isToday(parseISO(job.scheduled_date)) && 

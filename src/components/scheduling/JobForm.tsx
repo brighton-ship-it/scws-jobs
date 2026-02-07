@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -9,12 +9,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { TeamMemberMultiSelect } from './TeamMemberMultiSelect';
 import {
-  mockCustomers,
-  mockProperties,
   mockJobTypes,
-  mockUsers,
-  getPropertiesByCustomerId,
-  getFieldCrew,
   getAssignedUsersForJob,
   assignUserToJob,
   unassignUserFromJob,
@@ -28,6 +23,7 @@ import {
   Calendar,
   FileText,
   Repeat,
+  Loader2,
 } from 'lucide-react';
 
 const jobSchema = z.object({
@@ -72,8 +68,12 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
   const { user: currentUser } = useAuth();
   const [customerSearch, setCustomerSearch] = useState('');
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
-  const [selectedCustomerId, setSelectedCustomerId] = useState(job?.property_id ? 
-    mockProperties.find(p => p.id === job.property_id)?.customer_id : '');
+  const [selectedCustomerId, setSelectedCustomerId] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
+  const [customerProperties, setCustomerProperties] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingCustomer, setIsLoadingCustomer] = useState(false);
   
   // State for team assignments (multiple)
   const [assignedUserIds, setAssignedUserIds] = useState<string[]>(() => {
@@ -83,7 +83,27 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
     return [];
   });
   
-  const fieldCrew = getFieldCrew();
+  // Team members from Supabase
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [isLoadingTeam, setIsLoadingTeam] = useState(true);
+  
+  // Fetch team members on mount
+  useEffect(() => {
+    const fetchTeamMembers = async () => {
+      try {
+        const res = await fetch('/api/users');
+        if (res.ok) {
+          const data = await res.json();
+          setTeamMembers(data.users || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch team members:', error);
+      } finally {
+        setIsLoadingTeam(false);
+      }
+    };
+    fetchTeamMembers();
+  }, []);
 
   // Get pre-filled date from URL params (from calendar click)
   const prefilledDate = searchParams.get('date');
@@ -97,7 +117,7 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
   } = useForm<JobFormData>({
     resolver: zodResolver(jobSchema),
     defaultValues: {
-      customer_id: initialData?.customer_id || selectedCustomerId || '',
+      customer_id: initialData?.customer_id || '',
       property_id: initialData?.property_id || job?.property_id || '',
       job_type: initialData?.job_type || job?.job_type || '',
       scheduled_date: job?.scheduled_date || prefilledDate || '',
@@ -114,14 +134,72 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
     },
   });
 
-  // If initialData has customer_id, set it
-  useEffect(() => {
-    if (initialData?.customer_id) {
-      setValue('customer_id', initialData.customer_id);
-      setSelectedCustomerId(initialData.customer_id);
+  // Fetch customer by ID (for pre-populating from quote)
+  const fetchCustomerById = useCallback(async (customerId: string) => {
+    setIsLoadingCustomer(true);
+    try {
+      const res = await fetch(`/api/customers/${customerId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const customer = data.customer;
+        setSelectedCustomer(customer);
+        setSelectedCustomerId(customer.id);
+        setCustomerSearch(customer.name);
+        setValue('customer_id', customer.id);
+        // Set properties from customer
+        if (customer.properties && customer.properties.length > 0) {
+          setCustomerProperties(customer.properties);
+          // Auto-select first property if not already set
+          if (initialData?.property_id) {
+            setValue('property_id', initialData.property_id);
+          } else {
+            setValue('property_id', customer.properties[0].id);
+          }
+        } else {
+          setCustomerProperties([]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch customer:', error);
+    } finally {
+      setIsLoadingCustomer(false);
     }
-    if (initialData?.property_id) {
-      setValue('property_id', initialData.property_id);
+  }, [setValue, initialData?.property_id]);
+
+  // Search customers
+  const searchCustomers = useCallback(async (query: string) => {
+    if (!query || query.length < 2) {
+      setSearchResults([]);
+      return;
+    }
+    setIsSearching(true);
+    try {
+      const res = await fetch(`/api/customers?search=${encodeURIComponent(query)}&limit=10`);
+      if (res.ok) {
+        const data = await res.json();
+        setSearchResults(data.customers || []);
+      }
+    } catch (error) {
+      console.error('Failed to search customers:', error);
+    } finally {
+      setIsSearching(false);
+    }
+  }, []);
+
+  // Debounced search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (customerSearch && !selectedCustomer) {
+        searchCustomers(customerSearch);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [customerSearch, selectedCustomer, searchCustomers]);
+
+  // If initialData has customer_id, fetch the customer
+  useEffect(() => {
+    if (initialData?.customer_id && !selectedCustomer) {
+      fetchCustomerById(initialData.customer_id);
     }
     if (initialData?.job_type) {
       setValue('job_type', initialData.job_type);
@@ -132,7 +210,7 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
     if (initialData?.notes) {
       setValue('internal_notes', initialData.notes);
     }
-  }, [initialData, setValue]);
+  }, [initialData, setValue, fetchCustomerById, selectedCustomer]);
 
   const watchJobType = watch('job_type');
   const watchIsRecurring = watch('is_recurring');
@@ -148,57 +226,78 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
     }
   }, [watchJobType, setValue]);
 
-  // Get available properties for selected customer
-  const customerProperties = useMemo(() => {
-    if (!selectedCustomerId) return [];
-    return getPropertiesByCustomerId(selectedCustomerId);
-  }, [selectedCustomerId]);
+  // customerProperties is now managed via state when selecting a customer
 
-  // Filter customers for search
-  const filteredCustomers = useMemo(() => {
-    if (!customerSearch) return mockCustomers.slice(0, 5);
-    const search = customerSearch.toLowerCase();
-    return mockCustomers.filter(c => 
-      c.name.toLowerCase().includes(search) ||
-      c.email?.toLowerCase().includes(search) ||
-      c.phone?.includes(search)
-    ).slice(0, 10);
-  }, [customerSearch]);
-
-  const handleCustomerSelect = (customerId: string) => {
-    setSelectedCustomerId(customerId);
-    setValue('customer_id', customerId);
+  // Handle selecting a customer from dropdown
+  const handleCustomerSelect = async (customer: any) => {
+    setSelectedCustomerId(customer.id);
+    setSelectedCustomer(customer);
+    setCustomerSearch(customer.name);
+    setValue('customer_id', customer.id);
     setValue('property_id', ''); // Reset property when customer changes
     setShowCustomerDropdown(false);
-    const customer = mockCustomers.find(c => c.id === customerId);
-    if (customer) setCustomerSearch(customer.name);
+    setSearchResults([]);
+    
+    // Fetch customer with properties
+    try {
+      const res = await fetch(`/api/customers/${customer.id}`);
+      if (res.ok) {
+        const data = await res.json();
+        const fullCustomer = data.customer;
+        if (fullCustomer.properties && fullCustomer.properties.length > 0) {
+          setCustomerProperties(fullCustomer.properties);
+          // Auto-select first property
+          setValue('property_id', fullCustomer.properties[0].id);
+        } else {
+          setCustomerProperties([]);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch customer properties:', error);
+    }
   };
 
   const onSubmit = async (data: JobFormData) => {
-    // Handle team assignments
-    if (job) {
-      // Get current assignments
-      const currentAssignedIds = getAssignedUsersForJob(job.id).map(u => u.id);
-      
-      // Find additions and removals
-      const toAdd = assignedUserIds.filter(id => !currentAssignedIds.includes(id));
-      const toRemove = currentAssignedIds.filter(id => !assignedUserIds.includes(id));
-      
-      // Apply changes
-      toAdd.forEach(userId => {
-        assignUserToJob(job.id, userId, currentUser?.id || null);
-        console.log(`Assigned user ${userId} to job ${job.id}`);
-      });
-      
-      toRemove.forEach(userId => {
-        unassignUserFromJob(job.id, userId);
-        console.log(`Unassigned user ${userId} from job ${job.id}`);
-      });
+    try {
+      const payload = {
+        property_id: data.property_id,
+        job_type: data.job_type,
+        scheduled_date: data.scheduled_date || null,
+        scheduled_time: data.scheduled_time || null,
+        estimated_duration: data.estimated_duration || null,
+        description: data.description || null,
+        internal_notes: data.internal_notes || null,
+        priority: data.priority,
+        assigned_to: assignedUserIds.length > 0 ? assignedUserIds[0] : null, // Primary assignee
+      };
+
+      let res;
+      if (mode === 'create') {
+        res = await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      } else if (job) {
+        res = await fetch(`/api/jobs/${job.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+      }
+
+      if (!res?.ok) {
+        const error = await res?.json();
+        throw new Error(error?.error || 'Failed to save job');
+      }
+
+      const result = await res.json();
+      console.log('Job saved:', result.job);
+      router.push('/jobs');
+    } catch (error) {
+      console.error('Failed to save job:', error);
+      alert(error instanceof Error ? error.message : 'Failed to save job');
     }
-    
-    // TODO: Implement actual save to Supabase
-    alert(mode === 'create' ? 'Job created!' : 'Job updated!');
-    router.push('/jobs');
   };
 
   return (
@@ -225,29 +324,48 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
                 onChange={(e) => {
                   setCustomerSearch(e.target.value);
                   setShowCustomerDropdown(true);
+                  // If user types after selecting, reset selection
+                  if (selectedCustomer && e.target.value !== selectedCustomer.name) {
+                    setSelectedCustomer(null);
+                    setSelectedCustomerId('');
+                    setCustomerProperties([]);
+                    setValue('customer_id', '');
+                    setValue('property_id', '');
+                  }
                 }}
-                onFocus={() => setShowCustomerDropdown(true)}
+                onFocus={() => !selectedCustomer && setShowCustomerDropdown(true)}
                 placeholder="Search customers..."
                 className="w-full h-10 pl-10 pr-4 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
               />
+              {isLoadingCustomer && (
+                <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-blue-500" />
+              )}
             </div>
             
             {/* Customer Dropdown */}
-            {showCustomerDropdown && (
+            {showCustomerDropdown && !selectedCustomer && (
               <div className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                {filteredCustomers.map(customer => (
-                  <button
-                    key={customer.id}
-                    type="button"
-                    onClick={() => handleCustomerSelect(customer.id)}
-                    className="w-full px-4 py-2 text-left hover:bg-gray-50 border-b last:border-0"
-                  >
-                    <p className="font-medium text-gray-900">{customer.name}</p>
-                    <p className="text-sm text-gray-500">{customer.email} · {customer.phone}</p>
-                  </button>
-                ))}
-                {filteredCustomers.length === 0 && (
+                {isSearching ? (
+                  <div className="px-4 py-3 flex items-center gap-2 text-gray-500 text-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Searching...
+                  </div>
+                ) : searchResults.length > 0 ? (
+                  searchResults.map(customer => (
+                    <button
+                      key={customer.id}
+                      type="button"
+                      onClick={() => handleCustomerSelect(customer)}
+                      className="w-full px-4 py-2 text-left hover:bg-gray-50 border-b last:border-0"
+                    >
+                      <p className="font-medium text-gray-900">{customer.name}</p>
+                      <p className="text-sm text-gray-500">{customer.email} · {customer.phone}</p>
+                    </button>
+                  ))
+                ) : customerSearch.length >= 2 ? (
                   <p className="px-4 py-3 text-gray-500 text-sm">No customers found</p>
+                ) : (
+                  <p className="px-4 py-3 text-gray-500 text-sm">Type at least 2 characters to search...</p>
                 )}
               </div>
             )}
@@ -434,14 +552,21 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
               <Users className="h-4 w-4" />
               Assign Team Members
             </label>
-            <TeamMemberMultiSelect
-              teamMembers={fieldCrew}
-              selectedIds={assignedUserIds}
-              onChange={setAssignedUserIds}
-              placeholder="Select team members to assign..."
-            />
+            {isLoadingTeam ? (
+              <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading team...
+              </div>
+            ) : (
+              <TeamMemberMultiSelect
+                teamMembers={teamMembers}
+                selectedIds={assignedUserIds}
+                onChange={setAssignedUserIds}
+                placeholder="Select team members to assign..."
+              />
+            )}
             <p className="text-xs text-gray-500 mt-1">
-              You can assign multiple field technicians to this job.
+              You can assign multiple team members to this job.
             </p>
           </div>
         </CardContent>

@@ -1,16 +1,11 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ScheduleMap } from '@/components/schedule/ScheduleMap';
 import { QuickCreateMenu } from '@/components/ui/quick-create-menu';
 import { 
-  mockJobs, 
   mockJobTypes,
-  getPropertyById, 
-  getCustomerById, 
-  getUserById,
-  getFieldCrew,
 } from '@/lib/mock-data';
 import { 
   ChevronLeft, 
@@ -41,21 +36,51 @@ export default function SchedulePage() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [selectedDate, setSelectedDate] = useState(new Date());
   const [viewMode, setViewMode] = useState<ViewMode>('list');
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [teamMembers, setTeamMembers] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Fetch jobs and team members
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [jobsRes, teamRes] = await Promise.all([
+          fetch('/api/jobs'),
+          fetch('/api/users'),
+        ]);
+        
+        if (jobsRes.ok) {
+          const jobsData = await jobsRes.json();
+          setJobs(jobsData.jobs || []);
+        }
+        
+        if (teamRes.ok) {
+          const teamData = await teamRes.json();
+          setTeamMembers(teamData.users || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch schedule data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
 
   const weekStart = startOfWeek(selectedDate, { weekStartsOn: 0 });
   const weekEnd = endOfWeek(selectedDate, { weekStartsOn: 0 });
   const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
 
-  const fieldCrew = getFieldCrew();
+  const fieldCrew = teamMembers.filter(m => m.role === 'field' || m.role === 'admin');
 
   // Get jobs for selected date
   const dayJobs = useMemo(() => {
-    return mockJobs.filter(job => {
+    return jobs.filter(job => {
       if (!job.scheduled_date) return false;
       const jobDate = parseISO(job.scheduled_date);
       return isSameDay(jobDate, selectedDate);
     });
-  }, [selectedDate]);
+  }, [selectedDate, jobs]);
 
   // Get jobs for a crew member on selected date
   const getJobsForCrew = (userId: string) => {
@@ -80,9 +105,10 @@ export default function SchedulePage() {
   const goToToday = () => setSelectedDate(new Date());
 
   // Job card component
-  const JobCard = ({ job }: { job: typeof mockJobs[0] }) => {
-    const property = getPropertyById(job.property_id);
-    const customer = getCustomerById(job.customer_id);
+  const JobCard = ({ job }: { job: any }) => {
+    // Property and customer come from API join
+    const property = job.property;
+    const customer = job.property?.customer;
     const isCompleted = job.status === 'completed';
     const color = getJobTypeColor(job.job_type);
 

@@ -3,35 +3,46 @@ import { createServiceClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
-// GET - List users
+// GET - List users (from team_members table for job assignments)
 export async function GET(request: NextRequest) {
   try {
     const supabase = createServiceClient();
     const { searchParams } = new URL(request.url);
     
     const role = searchParams.get('role');
+    const activeOnly = searchParams.get('active') !== 'false';
     const limit = parseInt(searchParams.get('limit') || '100');
 
+    // Use team_members table for job assignments
     let query = supabase
-      .from('users')
+      .from('team_members')
       .select('*')
       .order('name', { ascending: true })
       .limit(limit);
 
+    if (activeOnly) {
+      query = query.eq('active', true);
+    }
+
     if (role) {
-      if (role === 'field') {
-        // Field crew - technicians who do on-site work
-        query = query.eq('role', 'field');
-      } else {
-        query = query.eq('role', role);
-      }
+      query = query.eq('role', role);
     }
 
     const { data: users, error } = await query;
 
     if (error) {
       console.error('Users fetch error:', error);
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      // Fallback to users table if team_members doesn't exist
+      const { data: fallbackUsers, error: fallbackError } = await supabase
+        .from('users')
+        .select('*')
+        .order('name', { ascending: true })
+        .limit(limit);
+      
+      if (fallbackError) {
+        return NextResponse.json({ error: fallbackError.message }, { status: 500 });
+      }
+      return NextResponse.json({ users: fallbackUsers || [] });
     }
 
     return NextResponse.json({ users: users || [] });
