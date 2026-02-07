@@ -44,15 +44,16 @@ export default function NewInvoicePage() {
   const [saving, setSaving] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
-  const [customerJobs, setCustomerJobs] = useState<any[]>([]);
+  const [allJobs, setAllJobs] = useState<any[]>([]);
 
-  // Fetch products and customers from API
+  // Fetch products, customers, and jobs from API
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [productsRes, customersRes] = await Promise.all([
+        const [productsRes, customersRes, jobsRes] = await Promise.all([
           fetch('/api/products?limit=2000'),
           fetch('/api/customers?limit=500'),
+          fetch('/api/jobs?status=completed&limit=500'),
         ]);
         
         if (productsRes.ok) {
@@ -63,6 +64,10 @@ export default function NewInvoicePage() {
           const data = await customersRes.json();
           setCustomers(data.customers || []);
         }
+        if (jobsRes.ok) {
+          const data = await jobsRes.json();
+          setAllJobs(data.jobs || []);
+        }
       } catch (error) {
         console.error('Failed to fetch data:', error);
       }
@@ -70,25 +75,10 @@ export default function NewInvoicePage() {
     fetchData();
   }, []);
 
-  // Fetch jobs when customer changes
-  useEffect(() => {
-    if (!customerId) {
-      setCustomerJobs([]);
-      return;
-    }
-    const fetchJobs = async () => {
-      try {
-        const res = await fetch(`/api/jobs?customer_id=${customerId}&status=completed`);
-        if (res.ok) {
-          const data = await res.json();
-          setCustomerJobs(data.jobs || []);
-        }
-      } catch (error) {
-        console.error('Failed to fetch jobs:', error);
-      }
-    };
-    fetchJobs();
-  }, [customerId]);
+  // Filter jobs for selected customer (or show all if no customer selected)
+  const customerJobs = customerId 
+    ? allJobs.filter(j => j.property?.customer?.id === customerId)
+    : allJobs;
 
   // Load from quote if specified
   useEffect(() => {
@@ -182,7 +172,9 @@ export default function NewInvoicePage() {
   
   const jobOptions = customerJobs.map(j => ({ 
     value: j.id, 
-    label: `${j.job_type} - ${format(new Date(j.scheduled_date || j.created_at), 'MMM d, yyyy')}` 
+    label: customerId 
+      ? `${j.job_type} - ${format(new Date(j.scheduled_date || j.created_at), 'MMM d, yyyy')}`
+      : `${j.job_type} - ${j.property?.customer?.name || 'Unknown'} - ${format(new Date(j.scheduled_date || j.created_at), 'MMM d, yyyy')}`
   }));
 
   const activeProducts = products.filter(p => p.active);
@@ -206,8 +198,13 @@ export default function NewInvoicePage() {
 
   const importFromJob = (selectedJobId: string) => {
     setJobId(selectedJobId);
-    const job = customerJobs.find(j => j.id === selectedJobId);
+    const job = allJobs.find(j => j.id === selectedJobId);
     if (job) {
+      // Auto-fill customer from job
+      if (job.property?.customer?.id) {
+        setCustomerId(job.property.customer.id);
+      }
+      
       const hours = job.estimated_duration 
         ? parseInt(job.estimated_duration.split(':')[0]) || 2 
         : 2;
@@ -347,10 +344,19 @@ export default function NewInvoicePage() {
             <Select
               label="Related Job"
               options={[{ value: '', label: 'None' }, ...jobOptions]}
-              placeholder={customerId ? "Select a job (optional)" : "Select customer first"}
+              placeholder="Select a job (optional)"
               value={jobId}
-              onChange={(e) => setJobId(e.target.value)}
-              disabled={!customerId}
+              onChange={(e) => {
+                const selectedJobId = e.target.value;
+                setJobId(selectedJobId);
+                // Auto-fill customer from job if not already set
+                if (selectedJobId) {
+                  const job = allJobs.find(j => j.id === selectedJobId);
+                  if (job?.property?.customer?.id && !customerId) {
+                    setCustomerId(job.property.customer.id);
+                  }
+                }
+              }}
             />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
