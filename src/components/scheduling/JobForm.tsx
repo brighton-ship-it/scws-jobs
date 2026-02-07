@@ -52,9 +52,21 @@ type JobFormData = z.infer<typeof jobSchema>;
 interface JobFormProps {
   job?: Job;
   mode: 'create' | 'edit';
+  initialData?: {
+    customer_id?: string;
+    customer_name?: string;
+    property_id?: string;
+    address?: string;
+    city?: string;
+    job_type?: string;
+    description?: string;
+    notes?: string;
+    quote_id?: string;
+    request_id?: string;
+  };
 }
 
-export function JobForm({ job, mode }: JobFormProps) {
+export function JobForm({ job, mode, initialData }: JobFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user: currentUser } = useAuth();
@@ -85,22 +97,42 @@ export function JobForm({ job, mode }: JobFormProps) {
   } = useForm<JobFormData>({
     resolver: zodResolver(jobSchema),
     defaultValues: {
-      customer_id: selectedCustomerId || '',
-      property_id: job?.property_id || '',
-      job_type: job?.job_type || '',
+      customer_id: initialData?.customer_id || selectedCustomerId || '',
+      property_id: initialData?.property_id || job?.property_id || '',
+      job_type: initialData?.job_type || job?.job_type || '',
       scheduled_date: job?.scheduled_date || prefilledDate || '',
       scheduled_time: job?.scheduled_time || '',
       estimated_duration: job?.estimated_duration || '',
       assigned_to: job?.assigned_to || '',
       priority: job?.priority || 'normal',
-      description: job?.description || '',
-      internal_notes: job?.internal_notes || '',
+      description: initialData?.description || job?.description || '',
+      internal_notes: initialData?.notes || job?.internal_notes || '',
       is_recurring: false,
       recurring_frequency: undefined,
       recurring_day_of_week: undefined,
       recurring_day_of_month: undefined,
     },
   });
+
+  // If initialData has customer_id, set it
+  useEffect(() => {
+    if (initialData?.customer_id) {
+      setValue('customer_id', initialData.customer_id);
+      setSelectedCustomerId(initialData.customer_id);
+    }
+    if (initialData?.property_id) {
+      setValue('property_id', initialData.property_id);
+    }
+    if (initialData?.job_type) {
+      setValue('job_type', initialData.job_type);
+    }
+    if (initialData?.description) {
+      setValue('description', initialData.description);
+    }
+    if (initialData?.notes) {
+      setValue('internal_notes', initialData.notes);
+    }
+  }, [initialData, setValue]);
 
   const watchJobType = watch('job_type');
   const watchIsRecurring = watch('is_recurring');
