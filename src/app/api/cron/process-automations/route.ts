@@ -85,7 +85,7 @@ async function findTriggerEvents(automation: Automation) {
               email
             )
           ),
-          assigned_user:users (name)
+          assigned_user:team_members (name)
         `)
         .eq('status', 'completed')
         .not('completed_at', 'is', null)
@@ -131,7 +131,7 @@ async function findTriggerEvents(automation: Automation) {
               email
             )
           ),
-          assigned_user:users (name)
+          assigned_user:team_members (name)
         `)
         .eq('status', 'scheduled')
         .eq('scheduled_date', targetDate);

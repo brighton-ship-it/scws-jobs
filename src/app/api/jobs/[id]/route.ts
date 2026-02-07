@@ -25,7 +25,7 @@ export async function GET(
           access_notes,
           customer:customers (id, name, email, phone, billing_address, notes)
         ),
-        assigned_user:users (id, name, email, phone, role)
+        assigned_user:team_members (id, name, email, phone, role)
       `)
       .eq('id', id)
       .single();

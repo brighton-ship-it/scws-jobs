@@ -131,7 +131,7 @@ export async function GET(request: NextRequest) {
           address,
           customer:customers (name)
         ),
-        assigned_user:users!jobs_assigned_to_fkey (name)
+        assigned_user:team_members!jobs_assigned_to_fkey (name)
       `)
       .order('scheduled_date', { ascending: false })
       .limit(10);

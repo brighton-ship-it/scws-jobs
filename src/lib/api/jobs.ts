@@ -101,7 +101,7 @@ export async function getJob(id: string): Promise<JobWithDetails | null> {
         well_info (*),
         customer:customers (*)
       ),
-      assigned_user:users (*),
+      assigned_user:team_members (*),
       line_items:job_line_items (*),
       photos:job_photos (*)
     `)

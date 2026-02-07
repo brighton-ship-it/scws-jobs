@@ -28,7 +28,7 @@ export async function GET(request: NextRequest) {
           zip,
           customer:customers (id, name, email, phone)
         ),
-        assigned_user:users (id, name, email, role)
+        assigned_user:team_members (id, name, email, role)
       `)
       .order('created_at', { ascending: false })
       .limit(limit);
