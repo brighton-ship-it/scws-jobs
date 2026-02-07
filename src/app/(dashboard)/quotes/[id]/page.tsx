@@ -150,8 +150,8 @@ export default function QuoteDetailPage() {
     window.print();
   };
 
-  const handleConvertToInvoice = () => {
-    router.push(`/invoices/new?from_quote=${quoteId}`);
+  const handleConvertToJob = () => {
+    router.push(`/jobs/new?from_quote=${quoteId}`);
   };
 
   const handleApproveAndPay = () => {
@@ -292,9 +292,9 @@ export default function QuoteDetailPage() {
             </>
           )}
           {quoteData.status === 'accepted' && (
-            <Button onClick={handleConvertToInvoice}>
+            <Button onClick={handleConvertToJob}>
               <FileText className="h-4 w-4" />
-              Convert to Invoice
+              Convert to Job
             </Button>
           )}
           <QuotePDFButton quote={quoteData} signature={signature} companyInfo={COMPANY_INFO} />

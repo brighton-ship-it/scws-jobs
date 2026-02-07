@@ -261,7 +261,7 @@ export default function QuotesPage() {
                                   }}
                                 >
                                   <FileText className="h-4 w-4" />
-                                  Convert to Invoice
+                                  Convert to Job
                                 </button>
                               )}
                               <button
