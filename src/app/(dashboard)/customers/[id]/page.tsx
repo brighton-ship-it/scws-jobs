@@ -7,7 +7,9 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge, JobStatusBadge } from '@/components/ui/badge';
-// Removed mock-data imports - now using real API
+import CommunicationTimeline from '@/components/customers/CommunicationTimeline';
+import { format, differenceInDays, parseISO } from 'date-fns';
+import type { CustomerEquipment, LeadSource, LeadStage } from '@/types/database';
 import {
   ArrowLeft,
   Phone,
@@ -24,7 +26,6 @@ import {
   MessageSquare,
   Target,
 } from 'lucide-react';
-import type { LeadSource, LeadStage } from '@/types/database';
 
 const LEAD_SOURCE_LABELS: Record<LeadSource, string> = {
   google_ads: 'Google Ads',
@@ -54,9 +55,6 @@ const LEAD_STAGE_COLORS: Record<LeadStage, string> = {
   job_completed: 'bg-green-100 text-green-700',
   paid: 'bg-emerald-100 text-emerald-700',
 };
-import CommunicationTimeline from '@/components/customers/CommunicationTimeline';
-import { format, differenceInDays, parseISO } from 'date-fns';
-import type { CustomerEquipment } from '@/types/database';
 
 export default function CustomerDetailPage({
   params,
@@ -515,6 +513,7 @@ export default function CustomerDetailPage({
                       </div>
                       <p className="text-sm text-gray-600 truncate">
                         {property?.address}
+                      </p>
                       {job.description && (
                         <p className="text-sm text-gray-500 truncate mt-0.5">
                           {job.description}
