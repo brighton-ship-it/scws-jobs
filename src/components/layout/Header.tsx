@@ -145,7 +145,13 @@ export default function Header() {
         {/* Notifications */}
         <div className="relative" ref={dropdownRef}>
           <button
-            onClick={() => setShowNotifications(!showNotifications)}
+            onClick={() => {
+              setShowNotifications(!showNotifications)
+              // Mark all as read when opening dropdown
+              if (!showNotifications && unreadCount > 0) {
+                setTimeout(() => markAllAsRead(), 2000) // Auto-clear after 2 sec
+              }
+            }}
             className="relative rounded-lg p-2 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
             title="Notifications"
           >
@@ -178,34 +184,58 @@ export default function Header() {
                     No notifications
                   </div>
                 ) : (
-                  recentNotifications.map((notification) => (
-                    <div
-                      key={notification.id}
-                      className={`flex gap-3 border-b border-gray-50 p-4 hover:bg-gray-50 transition-colors cursor-pointer ${
-                        !notification.read ? 'bg-emerald-50/50' : ''
-                      }`}
-                    >
-                      <span className="text-lg">{getNotificationIcon(notification.type)}</span>
-                      <div className="flex-1 min-w-0">
-                        <p className={`text-sm ${!notification.read ? 'font-medium' : ''} text-gray-900`}>
-                          {notification.title}
-                        </p>
-                        <p className="text-sm text-gray-500 truncate">{notification.message}</p>
-                        <p className="text-xs text-gray-400 mt-1">
-                          {formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}
-                        </p>
+                  recentNotifications.map((notification) => {
+                    // Determine link based on entity type
+                    const getNotificationLink = () => {
+                      if (notification.entity_type === 'customer' && notification.entity_id) {
+                        return `/customers/${notification.entity_id}`
+                      }
+                      if (notification.entity_type === 'job' && notification.entity_id) {
+                        return `/jobs/${notification.entity_id}`
+                      }
+                      if (notification.entity_type === 'booking_request') {
+                        return '/requests'
+                      }
+                      if (notification.type === 'call') {
+                        return '/requests'
+                      }
+                      if (notification.type === 'booking') {
+                        return '/requests'
+                      }
+                      return null
+                    }
+                    const link = getNotificationLink()
+                    
+                    return (
+                      <div
+                        key={notification.id}
+                        onClick={() => {
+                          markAsRead(notification.id)
+                          if (link) {
+                            setShowNotifications(false)
+                            window.location.href = link
+                          }
+                        }}
+                        className={`flex gap-3 border-b border-gray-50 p-4 hover:bg-gray-50 transition-colors cursor-pointer ${
+                          !notification.read ? 'bg-emerald-50/50' : ''
+                        }`}
+                      >
+                        <span className="text-lg">{getNotificationIcon(notification.type)}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm ${!notification.read ? 'font-medium' : ''} text-gray-900`}>
+                            {notification.title}
+                          </p>
+                          <p className="text-sm text-gray-500 truncate">{notification.message}</p>
+                          <p className="text-xs text-gray-400 mt-1">
+                            {formatDistanceToNow(new Date(notification.created_at), { addSuffix: true })}
+                          </p>
+                        </div>
+                        {link && (
+                          <span className="text-gray-300">→</span>
+                        )}
                       </div>
-                      {!notification.read && (
-                        <button
-                          onClick={() => markAsRead(notification.id)}
-                          className="text-gray-400 hover:text-emerald-600 transition-colors"
-                          title="Mark as read"
-                        >
-                          <Check className="h-4 w-4" />
-                        </button>
-                      )}
-                    </div>
-                  ))
+                    )
+                  })
                 )}
               </div>
               
