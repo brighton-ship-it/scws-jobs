@@ -10,7 +10,6 @@ import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
 import { 
-  mockCustomers, mockJobs, getJobsByCustomerId,
   getQuoteWithDetails, getPropertyById
 } from '@/lib/mock-data';
 import type { Product } from '@/types/database';
@@ -29,6 +28,7 @@ export default function NewInvoicePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const fromQuoteId = searchParams.get('from_quote');
+  const fromJobId = searchParams.get('job_id');
 
   const [customerId, setCustomerId] = useState('');
   const [jobId, setJobId] = useState('');
@@ -45,26 +45,52 @@ export default function NewInvoicePage() {
   const [showJobSelector, setShowJobSelector] = useState(false);
   const [saving, setSaving] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [customerJobs, setCustomerJobs] = useState<any[]>([]);
 
-  // Fetch products from API
+  // Fetch products and customers from API
   useEffect(() => {
-    const fetchProducts = async () => {
+    const fetchData = async () => {
       try {
-        const res = await fetch('/api/products?limit=2000');
-        if (res.ok) {
-          const data = await res.json();
+        const [productsRes, customersRes] = await Promise.all([
+          fetch('/api/products?limit=2000'),
+          fetch('/api/customers?limit=500'),
+        ]);
+        
+        if (productsRes.ok) {
+          const data = await productsRes.json();
           setProducts(data.products || []);
         }
+        if (customersRes.ok) {
+          const data = await customersRes.json();
+          setCustomers(data.customers || []);
+        }
       } catch (error) {
-        console.error('Failed to fetch products:', error);
+        console.error('Failed to fetch data:', error);
       }
     };
-    fetchProducts();
+    fetchData();
   }, []);
 
-  const customerJobs = customerId 
-    ? getJobsByCustomerId(customerId).filter(j => j.status === 'completed')
-    : [];
+  // Fetch jobs when customer changes
+  useEffect(() => {
+    if (!customerId) {
+      setCustomerJobs([]);
+      return;
+    }
+    const fetchJobs = async () => {
+      try {
+        const res = await fetch(`/api/jobs?customer_id=${customerId}&status=completed`);
+        if (res.ok) {
+          const data = await res.json();
+          setCustomerJobs(data.jobs || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch jobs:', error);
+      }
+    };
+    fetchJobs();
+  }, [customerId]);
 
   // Load from quote if specified
   useEffect(() => {
@@ -90,6 +116,51 @@ export default function NewInvoicePage() {
     }
   }, [fromQuoteId]);
 
+  // Load from job if specified
+  useEffect(() => {
+    if (fromJobId) {
+      const loadFromJob = async () => {
+        try {
+          const res = await fetch(`/api/jobs/${fromJobId}`);
+          if (res.ok) {
+            const data = await res.json();
+            const job = data.job;
+            if (job) {
+              // Set customer from job's property
+              if (job.property?.customer?.id) {
+                setCustomerId(job.property.customer.id);
+              }
+              setJobId(fromJobId);
+              
+              // Create line items from job info
+              const hours = job.estimated_duration 
+                ? parseInt(job.estimated_duration.split(':')[0]) || 2 
+                : 2;
+              setLineItems([{
+                id: '1',
+                description: `${job.job_type} - Labor`,
+                item_description: job.description || null,
+                quantity: hours,
+                unit_price: 125,
+                total: hours * 125,
+                item_type: 'labor',
+                taxable: true,
+                sort_order: 0,
+              }]);
+              
+              if (job.internal_notes) {
+                setInternalNotes(job.internal_notes);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Failed to load job:', error);
+        }
+      };
+      loadFromJob();
+    }
+  }, [fromJobId]);
+
   // Update due date when payment terms or issue date change
   useEffect(() => {
     const days = parseInt(paymentTerms);
@@ -97,7 +168,7 @@ export default function NewInvoicePage() {
     setDueDate(format(addDays(issue, days), 'yyyy-MM-dd'));
   }, [paymentTerms, issueDate]);
 
-  const customerOptions = mockCustomers.map(c => ({ value: c.id, label: c.name }));
+  const customerOptions = customers.map(c => ({ value: c.id, label: c.name }));
   
   const jobOptions = customerJobs.map(j => ({ 
     value: j.id, 
@@ -125,16 +196,19 @@ export default function NewInvoicePage() {
 
   const importFromJob = (selectedJobId: string) => {
     setJobId(selectedJobId);
-    const job = mockJobs.find(j => j.id === selectedJobId);
+    const job = customerJobs.find(j => j.id === selectedJobId);
     if (job) {
+      const hours = job.estimated_duration 
+        ? parseInt(job.estimated_duration.split(':')[0]) || 2 
+        : 2;
       const newItems: LineItem[] = [
         {
           id: Date.now().toString(),
           description: `${job.job_type} - Labor`,
-          item_description: null,
-          quantity: parseInt(job.estimated_duration || '2'),
+          item_description: job.description || null,
+          quantity: hours,
           unit_price: 125,
-          total: parseInt(job.estimated_duration || '2') * 125,
+          total: hours * 125,
           item_type: 'labor',
           taxable: true,
           sort_order: 0,
