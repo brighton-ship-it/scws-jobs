@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { 
   Plus, 
   Search, 
@@ -16,7 +17,9 @@ import {
   Calendar,
   RefreshCw,
   Loader2,
-  ExternalLink
+  ExternalLink,
+  Trash2,
+  X
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -51,10 +54,12 @@ function formatPhone(phone: string): string {
 }
 
 export default function RequestsPage() {
+  const router = useRouter();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('pending');
   const [requests, setRequests] = useState<BookingRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   useEffect(() => {
     fetchRequests();
@@ -72,6 +77,68 @@ export default function RequestsPage() {
       console.error('Failed to fetch requests:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const dismissRequest = async (id: string) => {
+    if (!confirm('Dismiss this request? It will be marked as cancelled.')) return;
+    setActionLoading(id);
+    try {
+      const res = await fetch(`/api/booking/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'cancelled' }),
+      });
+      if (res.ok) {
+        setRequests(prev => prev.filter(r => r.id !== id));
+      }
+    } catch (error) {
+      console.error('Failed to dismiss request:', error);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const createJobFromRequest = async (request: BookingRequest) => {
+    setActionLoading(request.id);
+    try {
+      // Create customer if not exists
+      let customerId = request.customer_id;
+      
+      if (!customerId) {
+        const customerRes = await fetch('/api/customers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: request.customer_name,
+            phone: request.phone,
+            email: request.email,
+            billing_address: `${request.address}, ${request.city}`,
+          }),
+        });
+        if (customerRes.ok) {
+          const customerData = await customerRes.json();
+          customerId = customerData.customer?.id;
+        }
+      }
+
+      // Navigate to create job page with pre-filled data
+      const params = new URLSearchParams({
+        customer_id: customerId || '',
+        customer_name: request.customer_name,
+        address: request.address,
+        city: request.city,
+        service_type: request.service_type,
+        notes: request.notes || '',
+        request_id: request.id,
+      });
+      
+      router.push(`/jobs/new?${params.toString()}`);
+    } catch (error) {
+      console.error('Failed to create job:', error);
+      alert('Failed to create job. Please try again.');
+    } finally {
+      setActionLoading(null);
     }
   };
 
@@ -336,18 +403,40 @@ export default function RequestsPage() {
                         <span className="text-sm text-gray-500">
                           {format(new Date(request.created_at), 'MMM d, h:mm a')}
                         </span>
-                        {request.status === 'pending' && (
-                          <div className="flex gap-2">
-                            <Button size="sm" variant="outline">
-                              <Phone className="h-3.5 w-3.5 mr-1" />
-                              Call
-                            </Button>
-                            <Button size="sm" className="bg-green-600 hover:bg-green-700">
-                              <CheckCircle className="h-3.5 w-3.5 mr-1" />
-                              Create Job
-                            </Button>
-                          </div>
-                        )}
+                        <div className="flex gap-2">
+                          {request.status === 'pending' && (
+                            <>
+                              <a href={`tel:${request.phone}`}>
+                                <Button size="sm" variant="outline">
+                                  <Phone className="h-3.5 w-3.5 mr-1" />
+                                  Call
+                                </Button>
+                              </a>
+                              <Button 
+                                size="sm" 
+                                className="bg-green-600 hover:bg-green-700"
+                                onClick={() => createJobFromRequest(request)}
+                                disabled={actionLoading === request.id}
+                              >
+                                {actionLoading === request.id ? (
+                                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                                ) : (
+                                  <CheckCircle className="h-3.5 w-3.5 mr-1" />
+                                )}
+                                Create Job
+                              </Button>
+                            </>
+                          )}
+                          <Button 
+                            size="sm" 
+                            variant="ghost"
+                            className="text-gray-400 hover:text-red-500"
+                            onClick={() => dismissRequest(request.id)}
+                            disabled={actionLoading === request.id}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
                       </div>
                     </div>
                   </div>
