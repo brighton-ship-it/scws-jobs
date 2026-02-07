@@ -30,12 +30,22 @@ export default function MyJobsPage() {
   const [jobs, setJobs] = useState<any[]>([]);
   const [isLoadingJobs, setIsLoadingJobs] = useState(true);
 
-  // Fetch jobs assigned to current user
+  // Fetch jobs assigned to current user (by email since users/team_members have different IDs)
   useEffect(() => {
     const fetchJobs = async () => {
-      if (!user?.id) return;
+      if (!user?.email) return;
       try {
-        const res = await fetch(`/api/jobs?assigned_to=${user.id}`);
+        // First get team_member ID by email
+        const teamRes = await fetch(`/api/users/by-email?email=${encodeURIComponent(user.email)}`);
+        let teamMemberId = user.id;
+        if (teamRes.ok) {
+          const teamData = await teamRes.json();
+          if (teamData.team_member?.id) {
+            teamMemberId = teamData.team_member.id;
+          }
+        }
+        
+        const res = await fetch(`/api/jobs?assigned_to=${teamMemberId}`);
         if (res.ok) {
           const data = await res.json();
           setJobs(data.jobs || []);
@@ -46,10 +56,10 @@ export default function MyJobsPage() {
         setIsLoadingJobs(false);
       }
     };
-    if (user?.id) {
+    if (user?.email) {
       fetchJobs();
     }
-  }, [user?.id]);
+  }, [user?.email, user?.id]);
 
   if (loading || isLoadingJobs) {
     return (
