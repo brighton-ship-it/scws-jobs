@@ -7,12 +7,11 @@ import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { Button } from '@/components/forms/Button';
-import { mockCompanySettings } from '@/lib/mock-data';
 
 export default function BillingSettingsPage() {
   const [settings, setSettings] = useState({
-    tax_rate: mockCompanySettings.tax_rate,
-    payment_terms_days: mockCompanySettings.payment_terms_days,
+    tax_rate: 8.75,
+    payment_terms_days: 30,
     invoice_prefix: 'INV',
     invoice_notes: 'Thank you for your business!',
     late_fee_percentage: 1.5,

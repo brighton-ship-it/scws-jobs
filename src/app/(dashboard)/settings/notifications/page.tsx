@@ -6,7 +6,18 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Button } from '@/components/forms/Button';
 import { Input } from '@/components/forms/Input';
-import { mockNotificationSettings } from '@/lib/mock-data';
+// Default notification settings
+const defaultNotificationSettings = {
+  email_job_assigned: true,
+  email_job_completed: true,
+  email_invoice_paid: true,
+  email_quote_accepted: true,
+  sms_job_reminder: true,
+  sms_on_the_way: true,
+  in_app_all: true,
+  daily_digest: true,
+  digest_time: '08:00',
+};
 
 interface ToggleSwitchProps {
   enabled: boolean;
@@ -40,7 +51,7 @@ function ToggleSwitch({ enabled, onChange, label, description }: ToggleSwitchPro
 }
 
 export default function NotificationSettingsPage() {
-  const [settings, setSettings] = useState(mockNotificationSettings);
+  const [settings, setSettings] = useState(defaultNotificationSettings);
   const [saving, setSaving] = useState(false);
 
   const handleToggle = (field: keyof typeof settings, value: boolean) => {

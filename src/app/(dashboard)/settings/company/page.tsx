@@ -7,10 +7,23 @@ import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Input } from '@/components/forms/Input';
 import { Button } from '@/components/forms/Button';
 import { Upload, Building2 } from 'lucide-react';
-import { mockCompanySettings } from '@/lib/mock-data';
+
+// Default company settings
+const defaultCompanySettings = {
+  company_name: 'Southern California Well Service',
+  address: '1077 Main St',
+  city: 'Ramona',
+  state: 'CA',
+  zip: '92065',
+  phone: '(760) 440-8520',
+  email: 'info@scwellservice.com',
+  website: 'www.scwellservice.com',
+  tax_rate: 8.75,
+  payment_terms_days: 30,
+};
 
 export default function CompanySettingsPage() {
-  const [settings, setSettings] = useState(mockCompanySettings);
+  const [settings, setSettings] = useState(defaultCompanySettings);
   const [saving, setSaving] = useState(false);
 
   const handleChange = (field: string, value: string) => {
