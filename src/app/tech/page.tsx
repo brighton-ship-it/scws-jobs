@@ -1,32 +1,40 @@
 'use client';
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { JobStatusBadge, PriorityBadge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  Calendar,
-  Clock,
-  MapPin,
-  Phone,
-  ChevronRight,
+  MessageSquare,
+  Bell,
+  Settings,
   Play,
   Square,
-  AlertCircle,
   CheckCircle2,
-  Navigation,
+  ChevronRight,
+  Home,
+  Calendar,
+  Clock,
+  Search,
+  MoreHorizontal,
+  MapPin,
+  Plus,
 } from 'lucide-react';
-import { format, parseISO } from 'date-fns';
+import { format, startOfWeek, endOfWeek } from 'date-fns';
 
-export default function TechJobsPage() {
+export default function TechHomePage() {
   const { user } = useAuth();
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [clockInTime, setClockInTime] = useState<Date | null>(null);
-  const [elapsedTime, setElapsedTime] = useState('0:00:00');
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  
+  const today = format(new Date(), 'yyyy-MM-dd');
+  const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
+  const userName = user?.name?.split(' ')[0] || 'there';
 
-  // Load clock-in state from localStorage
+  // Load clock-in state
   useEffect(() => {
     const savedClockIn = localStorage.getItem('tech_clock_in');
     if (savedClockIn) {
@@ -36,57 +44,10 @@ export default function TechJobsPage() {
     }
   }, []);
 
-  // Update elapsed time
-  useEffect(() => {
-    if (!isClockedIn || !clockInTime) return;
-    
-    const interval = setInterval(() => {
-      const now = new Date();
-      const diff = Math.floor((now.getTime() - clockInTime.getTime()) / 1000);
-      const hours = Math.floor(diff / 3600);
-      const minutes = Math.floor((diff % 3600) / 60);
-      const seconds = diff % 60;
-      setElapsedTime(`${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`);
-    }, 1000);
-    
-    return () => clearInterval(interval);
-  }, [isClockedIn, clockInTime]);
-
-  const handleClockToggle = () => {
-    if (isClockedIn) {
-      // Clock out
-      localStorage.removeItem('tech_clock_in');
-      // Save time entry
-      const entries = JSON.parse(localStorage.getItem('tech_time_entries') || '[]');
-      entries.push({
-        id: Date.now(),
-        clockIn: clockInTime?.toISOString(),
-        clockOut: new Date().toISOString(),
-        userId: user?.id,
-      });
-      localStorage.setItem('tech_time_entries', JSON.stringify(entries));
-      setIsClockedIn(false);
-      setClockInTime(null);
-      setElapsedTime('0:00:00');
-    } else {
-      // Clock in
-      const now = new Date();
-      localStorage.setItem('tech_clock_in', JSON.stringify({ time: now.toISOString() }));
-      setIsClockedIn(true);
-      setClockInTime(now);
-    }
-  };
-
-  // Fetch today's jobs for current user
-  const [jobs, setJobs] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
-  
-  const today = format(new Date(), 'yyyy-MM-dd');
-  
+  // Fetch today's jobs
   useEffect(() => {
     const fetchJobs = async () => {
       try {
-        // Fetch jobs for today assigned to this user
         const url = user?.id 
           ? `/api/jobs?scheduled_date=${today}&assigned_to=${user.id}`
           : `/api/jobs?scheduled_date=${today}&limit=50`;
@@ -103,7 +64,28 @@ export default function TechJobsPage() {
     };
     fetchJobs();
   }, [user?.id, today]);
-  
+
+  const handleClockToggle = () => {
+    if (isClockedIn) {
+      localStorage.removeItem('tech_clock_in');
+      const entries = JSON.parse(localStorage.getItem('tech_time_entries') || '[]');
+      entries.push({
+        id: Date.now(),
+        clockIn: clockInTime?.toISOString(),
+        clockOut: new Date().toISOString(),
+        userId: user?.id,
+      });
+      localStorage.setItem('tech_time_entries', JSON.stringify(entries));
+      setIsClockedIn(false);
+      setClockInTime(null);
+    } else {
+      const now = new Date();
+      localStorage.setItem('tech_clock_in', JSON.stringify({ time: now.toISOString() }));
+      setIsClockedIn(true);
+      setClockInTime(now);
+    }
+  };
+
   const sortedJobs = [...jobs].sort((a, b) => {
     if (a.scheduled_time && b.scheduled_time) {
       return a.scheduled_time.localeCompare(b.scheduled_time);
@@ -112,191 +94,271 @@ export default function TechJobsPage() {
   });
 
   const completedCount = sortedJobs.filter(j => j.status === 'completed' || j.status === 'invoiced').length;
-  const inProgressCount = sortedJobs.filter(j => j.status === 'in_progress').length;
+  const totalValue = sortedJobs.reduce((sum, j) => sum + (j.estimated_value || 150), 0);
+  
+  const weekStart = startOfWeek(new Date());
+  const weekEnd = endOfWeek(new Date());
 
   return (
-    <div className="p-4 space-y-4">
-      {/* Header with date */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-bold text-[#1f3b4d]">Today's Jobs</h1>
-          <p className="text-sm text-gray-500">{format(new Date(), 'EEEE, MMMM d')}</p>
+    <div className="min-h-screen bg-gray-50 pb-20">
+      {/* Header */}
+      <div className="bg-white px-4 pt-4 pb-3">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm text-gray-500">{format(new Date(), 'EEEE, MMMM do')}</p>
+          <div className="flex items-center gap-4">
+            <Link href="/tech/messages" className="text-gray-600">
+              <MessageSquare className="h-5 w-5" />
+            </Link>
+            <Link href="/tech/notifications" className="relative text-gray-600">
+              <Bell className="h-5 w-5" />
+              {jobs.filter(j => j.priority === 'urgent').length > 0 && (
+                <span className="absolute -top-1 -right-1 h-2 w-2 bg-red-500 rounded-full" />
+              )}
+            </Link>
+            <Link href="/tech/settings" className="text-gray-600">
+              <Settings className="h-5 w-5" />
+            </Link>
+          </div>
         </div>
-        <div className="text-right">
-          <p className="text-sm text-gray-500">{completedCount}/{sortedJobs.length} done</p>
+        <h1 className="text-2xl font-bold text-[#1f3b4d]">{greeting}, {userName}</h1>
+      </div>
+
+      {/* Clock In Card */}
+      <div className="px-4 -mt-1">
+        <Card className="bg-white shadow-sm">
+          <CardContent className="py-3 px-4">
+            <div className="flex items-center justify-between">
+              <p className="text-gray-700 font-medium">
+                {isClockedIn ? `Started at ${clockInTime ? format(clockInTime, 'h:mm a') : ''}` : "Let's get started"}
+              </p>
+              <Button
+                onClick={handleClockToggle}
+                className={`px-6 py-2 rounded-md font-semibold ${
+                  isClockedIn 
+                    ? 'bg-red-500 hover:bg-red-600 text-white' 
+                    : 'bg-[#4e9271] hover:bg-[#3d7a5d] text-white'
+                }`}
+              >
+                {isClockedIn ? (
+                  <>
+                    <Square className="h-4 w-4 mr-2 fill-current" />
+                    Clock Out
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4 mr-2" />
+                    Clock In
+                  </>
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Map Preview */}
+      <div className="px-4 mt-4">
+        <div className="relative h-48 bg-[#e8f4ea] rounded-xl overflow-hidden">
+          {/* Simplified map background */}
+          <div className="absolute inset-0 opacity-50">
+            <svg viewBox="0 0 400 200" className="w-full h-full">
+              <path d="M0,100 Q100,80 200,100 T400,100" stroke="#c5dfc9" strokeWidth="3" fill="none" />
+              <path d="M50,150 Q150,130 250,150 T400,140" stroke="#c5dfc9" strokeWidth="2" fill="none" />
+            </svg>
+          </div>
+          
+          {/* Job markers */}
+          {sortedJobs.slice(0, 3).map((job, idx) => (
+            <div 
+              key={job.id}
+              className="absolute flex items-center gap-1 bg-white rounded-full px-2 py-1 shadow-md"
+              style={{ 
+                top: `${30 + idx * 25}%`, 
+                left: `${20 + idx * 20}%` 
+              }}
+            >
+              <div className="h-3 w-3 bg-[#1f3b4d] rounded-full" />
+              <span className="text-xs font-medium text-[#1f3b4d]">
+                {job.scheduled_time?.slice(0, 5) || '—'}
+              </span>
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* Clock In/Out Card */}
-      <Card className="bg-gradient-to-r from-[#1f3b4d] to-[#2d4f63]">
-        <CardContent className="py-4">
-          <div className="flex items-center justify-between">
-            <div className="text-white">
-              <p className="text-sm opacity-80">
-                {isClockedIn ? 'Clocked In' : 'Ready to start?'}
-              </p>
-              {isClockedIn && (
-                <>
-                  <p className="text-2xl font-bold font-mono">{elapsedTime}</p>
-                  <p className="text-xs opacity-60">
-                    Started at {clockInTime ? format(clockInTime, 'h:mm a') : ''}
-                  </p>
-                </>
-              )}
-            </div>
-            <Button
-              onClick={handleClockToggle}
-              className={`h-14 w-14 rounded-full ${
-                isClockedIn 
-                  ? 'bg-red-500 hover:bg-red-600' 
-                  : 'bg-[#4e9271] hover:bg-[#3d7a5d]'
-              }`}
-            >
-              {isClockedIn ? (
-                <Square className="h-6 w-6 fill-current" />
-              ) : (
-                <Play className="h-6 w-6 ml-1" />
-              )}
-            </Button>
+      {/* Visits Summary */}
+      <div className="px-4 mt-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-lg font-bold text-gray-900">
+              {sortedJobs.length} visit{sortedJobs.length !== 1 ? 's' : ''} worth ${totalValue.toLocaleString()}
+            </p>
+            <p className="text-sm text-gray-500">
+              {completedCount} visit{completedCount !== 1 ? 's' : ''} complete
+            </p>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Jobs summary pills */}
-      <div className="flex gap-2 overflow-x-auto py-1">
-        <div className="flex-shrink-0 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 text-sm font-medium">
-          {sortedJobs.filter(j => j.status === 'scheduled').length} Scheduled
-        </div>
-        {inProgressCount > 0 && (
-          <div className="flex-shrink-0 px-3 py-1.5 rounded-full bg-amber-50 text-amber-700 text-sm font-medium">
-            {inProgressCount} In Progress
-          </div>
-        )}
-        <div className="flex-shrink-0 px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 text-sm font-medium">
-          {completedCount} Completed
+          <Link 
+            href="/tech/schedule"
+            className="flex items-center gap-1 text-sm font-medium text-gray-700 border border-gray-300 rounded-full px-4 py-2"
+          >
+            View all
+            <ChevronRight className="h-4 w-4" />
+          </Link>
         </div>
       </div>
 
       {/* Job Cards */}
-      <div className="space-y-3">
-        {sortedJobs.length === 0 ? (
-          <Card>
+      <div className="px-4 mt-4 space-y-3">
+        {loading ? (
+          <div className="flex justify-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#1f3b4d]" />
+          </div>
+        ) : sortedJobs.length === 0 ? (
+          <Card className="bg-white">
             <CardContent className="py-8 text-center">
               <Calendar className="h-12 w-12 mx-auto mb-3 text-gray-300" />
-              <h3 className="font-medium text-gray-900">No Jobs Today</h3>
-              <p className="text-sm text-gray-500 mt-1">
-                Check back later or view past jobs
-              </p>
+              <p className="font-medium text-gray-900">No jobs scheduled</p>
+              <p className="text-sm text-gray-500">Enjoy your day off!</p>
             </CardContent>
           </Card>
         ) : (
           sortedJobs.map((job) => <JobCard key={job.id} job={job} />)
         )}
       </div>
+
+      {/* This Week Section */}
+      <div className="px-4 mt-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="font-bold text-gray-900">This week</p>
+            <p className="text-sm text-gray-500">
+              {format(weekStart, 'MMM d')} - {format(weekEnd, 'd')}
+            </p>
+          </div>
+          <Link href="/tech/timesheet" className="text-[#4e9271] font-medium text-sm">
+            View timesheet
+          </Link>
+        </div>
+      </div>
+
+      {/* FAB */}
+      <Link
+        href="/tech/jobs/new"
+        className="fixed bottom-24 right-4 h-14 w-14 bg-[#1f3b4d] rounded-full flex items-center justify-center shadow-lg"
+      >
+        <Plus className="h-6 w-6 text-white" />
+      </Link>
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-2 safe-area-pb">
+        <div className="flex items-center justify-between max-w-md mx-auto">
+          <Link href="/tech" className="flex flex-col items-center py-2 text-[#1f3b4d]">
+            <Home className="h-5 w-5" />
+            <span className="text-xs mt-1 font-medium">Home</span>
+          </Link>
+          <Link href="/tech/schedule" className="flex flex-col items-center py-2 text-gray-400">
+            <Calendar className="h-5 w-5" />
+            <span className="text-xs mt-1">Schedule</span>
+          </Link>
+          <Link href="/tech/timesheet" className="flex flex-col items-center py-2 text-gray-400">
+            <Clock className="h-5 w-5" />
+            <span className="text-xs mt-1">Timesheet</span>
+          </Link>
+          <Link href="/tech/search" className="flex flex-col items-center py-2 text-gray-400">
+            <Search className="h-5 w-5" />
+            <span className="text-xs mt-1">Search</span>
+          </Link>
+          <Link href="/tech/more" className="flex flex-col items-center py-2 text-gray-400">
+            <MoreHorizontal className="h-5 w-5" />
+            <span className="text-xs mt-1">More</span>
+          </Link>
+        </div>
+      </nav>
     </div>
   );
 }
 
 function JobCard({ job }: { job: any }) {
-  // Property and customer come from API join
   const property = job.property;
   const customer = property?.customer;
-  
-  const priorityBorder = {
-    low: 'border-l-gray-300',
-    normal: 'border-l-blue-400',
-    high: 'border-l-orange-400',
-    urgent: 'border-l-red-500',
-  };
+  const isCompleted = job.status === 'completed' || job.status === 'invoiced';
+  const isActive = job.status === 'in_progress';
 
-  const statusIcon = {
-    scheduled: <Clock className="h-5 w-5 text-blue-500" />,
-    in_progress: <AlertCircle className="h-5 w-5 text-amber-500" />,
-    completed: <CheckCircle2 className="h-5 w-5 text-emerald-500" />,
-    invoiced: <CheckCircle2 className="h-5 w-5 text-teal-500" />,
+  const formatTimeRange = () => {
+    if (!job.scheduled_time) return '';
+    const startTime = job.scheduled_time.slice(0, 5);
+    // Estimate end time based on duration or default 2 hours
+    const durationHours = job.estimated_duration 
+      ? parseInt(job.estimated_duration.split(':')[0]) || 2 
+      : 2;
+    const [hours, mins] = job.scheduled_time.split(':').map(Number);
+    const endHours = (hours + durationHours) % 24;
+    const endTime = `${endHours}:${mins.toString().padStart(2, '0')}`;
+    
+    const formatTime = (time: string) => {
+      const [h, m] = time.split(':').map(Number);
+      const ampm = h >= 12 ? 'PM' : 'AM';
+      const hour = h % 12 || 12;
+      return `${hour}:${m.toString().padStart(2, '0')} ${ampm}`;
+    };
+    
+    return `${formatTime(startTime)} - ${formatTime(endTime)}`;
   };
-
-  const googleMapsUrl = property 
-    ? `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
-        `${property.address}, ${property.city || ''} ${property.zip || ''}`
-      )}`
-    : null;
 
   return (
     <Link href={`/tech/jobs/${job.id}`}>
-      <Card className={`border-l-4 ${priorityBorder[job.priority || 'normal']} active:bg-gray-50`}>
-        <CardContent className="py-4">
-          <div className="flex items-start gap-3">
-            {/* Status icon */}
-            <div className="flex-shrink-0 mt-0.5">
-              {statusIcon[job.status]}
-            </div>
-
-            {/* Job info */}
-            <div className="flex-1 min-w-0">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h3 className="font-semibold text-gray-900 truncate">{job.job_type}</h3>
-                  <p className="text-sm text-gray-600 truncate">{customer?.name || 'Unknown'}</p>
-                </div>
-                <ChevronRight className="h-5 w-5 text-gray-400 flex-shrink-0" />
+      <Card className={`bg-white overflow-hidden ${isActive ? 'ring-2 ring-[#4e9271]' : ''}`}>
+        <div className="flex">
+          {/* Left color bar */}
+          <div className={`w-1 ${isCompleted ? 'bg-gray-300' : isActive ? 'bg-[#4e9271]' : 'bg-[#4e9271]'}`} />
+          
+          <CardContent className="flex-1 py-3 px-4">
+            <div className="flex items-start gap-3">
+              {/* Checkbox */}
+              <div className="mt-1">
+                {isCompleted ? (
+                  <CheckCircle2 className="h-5 w-5 text-gray-400" />
+                ) : (
+                  <div className="h-5 w-5 rounded border-2 border-gray-300" />
+                )}
               </div>
-
-              {/* Time */}
-              {job.scheduled_time && (
-                <div className="flex items-center gap-1.5 mt-2 text-sm text-gray-500">
-                  <Clock className="h-4 w-4" />
-                  <span>{job.scheduled_time}</span>
-                  {job.estimated_duration && (
-                    <span className="text-gray-400">• {job.estimated_duration}</span>
+              
+              {/* Job Details */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-start justify-between">
+                  <h3 className="font-semibold text-gray-900">{customer?.name || 'Unknown Customer'}</h3>
+                  {isActive && (
+                    <span className="flex items-center gap-1 text-xs font-medium text-[#4e9271]">
+                      Active
+                      <span className="h-2 w-2 bg-[#4e9271] rounded-full" />
+                    </span>
                   )}
                 </div>
-              )}
-
-              {/* Address */}
-              {property && (
-                <div className="flex items-center gap-1.5 mt-1 text-sm text-gray-500">
-                  <MapPin className="h-4 w-4" />
-                  <span className="truncate">{property.address}, {property.city}</span>
-                </div>
-              )}
-
-              {/* Quick actions */}
-              <div className="flex items-center gap-3 mt-3">
-                {googleMapsUrl && (
-                  <a
-                    href={googleMapsUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-50 text-blue-700 text-sm font-medium"
-                  >
-                    <Navigation className="h-4 w-4" />
-                    Navigate
-                  </a>
-                )}
-                {customer?.phone && (
-                  <a
-                    href={`tel:${customer.phone}`}
-                    onClick={(e) => e.stopPropagation()}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-green-50 text-green-700 text-sm font-medium"
-                  >
-                    <Phone className="h-4 w-4" />
-                    Call
-                  </a>
-                )}
+                <p className="text-sm text-gray-600">{formatTimeRange()}</p>
+                <p className="text-sm text-gray-500 flex items-center gap-1 mt-0.5">
+                  <MapPin className="h-3 w-3" />
+                  {property?.address || 'No address'}
+                </p>
+                <p className="text-sm text-gray-500 mt-0.5">
+                  {job.job_type}{job.description ? `, ${job.description.slice(0, 30)}` : ''}
+                </p>
               </div>
-
-              {/* Status/Priority badges */}
-              <div className="flex items-center gap-2 mt-3">
-                <JobStatusBadge status={job.status} />
-                {job.priority && job.priority !== 'normal' && (
-                  <PriorityBadge priority={job.priority} />
-                )}
-              </div>
+              
+              {/* Navigation button */}
+              <button 
+                onClick={(e) => {
+                  e.preventDefault();
+                  if (property?.address) {
+                    window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(property.address)}`, '_blank');
+                  }
+                }}
+                className="p-2 text-gray-400 hover:text-[#1f3b4d]"
+              >
+                <ChevronRight className="h-5 w-5" />
+              </button>
             </div>
-          </div>
-        </CardContent>
+          </CardContent>
+        </div>
       </Card>
     </Link>
   );
