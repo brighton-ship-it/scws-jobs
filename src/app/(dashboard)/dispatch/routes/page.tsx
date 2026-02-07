@@ -1,16 +1,20 @@
 'use client';
 
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  mockJobs,
-  getPropertyById,
-  getCustomerById,
-  getJobTypeByName,
-  getFieldCrew,
-} from '@/lib/mock-data';
+
+// Job type colors for route display
+const JOB_TYPE_COLORS: Record<string, string> = {
+  'Well Inspection': '#0d9488',
+  'Pump Installation': '#2563eb',
+  'Pump Repair': '#7c3aed',
+  'Water Testing': '#059669',
+  'Emergency Service': '#dc2626',
+  'Maintenance': '#d97706',
+  default: '#3B82F6',
+};
 import type { Job, Property } from '@/types/database';
 import {
   Route,
@@ -49,35 +53,62 @@ export default function RouteOptimizationPage() {
   const [routeSegments, setRouteSegments] = useState<RouteSegment[]>([]);
   const [totalDistance, setTotalDistance] = useState<string>('');
   const [totalDuration, setTotalDuration] = useState<string>('');
+  const [allJobs, setAllJobs] = useState<Job[]>([]);
+  const [fieldCrew, setFieldCrew] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const fieldCrew = useMemo(() => getFieldCrew(), []);
   const today = format(new Date(), 'yyyy-MM-dd');
+
+  // Fetch jobs and team members
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [jobsRes, usersRes] = await Promise.all([
+          fetch(`/api/jobs?scheduled_date=${today}&limit=100`),
+          fetch('/api/users?role=field'),
+        ]);
+        
+        if (jobsRes.ok) {
+          const data = await jobsRes.json();
+          setAllJobs(data.jobs || []);
+        }
+        if (usersRes.ok) {
+          const data = await usersRes.json();
+          setFieldCrew(data.users || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch route data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, [today]);
 
   // Get today's jobs for selected crew member
   const crewJobs = useMemo(() => {
     if (!selectedCrew) return [];
-    return mockJobs.filter(
+    return allJobs.filter(
       job =>
-        job.scheduled_date === today &&
         job.assigned_to === selectedCrew &&
         (job.status === 'scheduled' || job.status === 'in_progress')
     );
-  }, [selectedCrew, today]);
+  }, [selectedCrew, allJobs]);
 
-  // Build route stops with property info
+  // Build route stops with property info (from API join)
   const routeStops = useMemo((): RouteStop[] => {
     return crewJobs
       .map((job, index) => {
-        const property = getPropertyById(job.property_id);
-        const customer = property ? getCustomerById(property.customer_id) : null;
-        const jobType = getJobTypeByName(job.job_type);
+        const property = job.property;
+        const customer = property?.customer;
+        const color = JOB_TYPE_COLORS[job.job_type] || JOB_TYPE_COLORS.default;
         if (!property) return null;
         return {
           job,
           property,
           customerName: customer?.name || 'Unknown',
           order: index + 1,
-          color: jobType?.color || '#3B82F6',
+          color,
         };
       })
       .filter((stop): stop is RouteStop => stop !== null)
@@ -225,7 +256,7 @@ export default function RouteOptimizationPage() {
               ) : (
                 <div className="divide-y">
                   {displayRoute.map((stop, index) => {
-                    const jobType = getJobTypeByName(stop.job.job_type);
+                    const color = stop.color || JOB_TYPE_COLORS.default;
                     const isLast = index === displayRoute.length - 1;
                     
                     return (
@@ -240,7 +271,7 @@ export default function RouteOptimizationPage() {
                             {/* Order Number */}
                             <div
                               className="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold"
-                              style={{ backgroundColor: jobType?.color || '#3B82F6' }}
+                              style={{ backgroundColor: color }}
                             >
                               {stop.order}
                             </div>
