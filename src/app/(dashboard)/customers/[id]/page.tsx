@@ -7,14 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge, JobStatusBadge } from '@/components/ui/badge';
-import {
-  getCustomerById,
-  getPropertiesByCustomerId,
-  getWellInfoByPropertyId,
-  getJobsByCustomerId,
-  getUserById,
-  getPropertyById,
-} from '@/lib/mock-data';
+// Removed mock-data imports - now using real API
 import {
   ArrowLeft,
   Phone,
@@ -72,6 +65,10 @@ export default function CustomerDetailPage({
 }) {
   const { id } = use(params);
   const router = useRouter();
+  const [customer, setCustomer] = useState<any>(null);
+  const [customerLoading, setCustomerLoading] = useState(true);
+  const [properties, setProperties] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<any[]>([]);
   const [equipment, setEquipment] = useState<CustomerEquipment[]>([]);
   const [equipmentLoading, setEquipmentLoading] = useState(true);
   const [leadInfo, setLeadInfo] = useState<{
@@ -82,8 +79,50 @@ export default function CustomerDetailPage({
     utm_medium?: string | null;
     utm_campaign?: string | null;
   } | null>(null);
-  
-  const customer = getCustomerById(id);
+
+  // Fetch customer data from API
+  useEffect(() => {
+    const fetchCustomer = async () => {
+      try {
+        setCustomerLoading(true);
+        const res = await fetch(`/api/customers/${id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setCustomer(data.customer);
+          setProperties(data.customer?.properties || []);
+          setLeadInfo({
+            lead_source: data.customer?.lead_source,
+            lead_source_detail: data.customer?.lead_source_detail,
+            lead_stage: data.customer?.lead_stage,
+            utm_source: data.customer?.utm_source,
+            utm_medium: data.customer?.utm_medium,
+            utm_campaign: data.customer?.utm_campaign,
+          });
+        }
+      } catch (err) {
+        console.error('Failed to fetch customer:', err);
+      } finally {
+        setCustomerLoading(false);
+      }
+    };
+    fetchCustomer();
+  }, [id]);
+
+  // Fetch jobs for this customer
+  useEffect(() => {
+    const fetchJobs = async () => {
+      try {
+        const res = await fetch(`/api/jobs?customer_id=${id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setJobs(data.jobs || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch jobs:', err);
+      }
+    };
+    if (id) fetchJobs();
+  }, [id]);
 
   // Fetch equipment data
   useEffect(() => {
@@ -100,36 +139,7 @@ export default function CustomerDetailPage({
         setEquipmentLoading(false);
       }
     };
-    if (customer) {
-      fetchEquipment();
-    } else {
-      setEquipmentLoading(false);
-    }
-  }, [id, customer]);
-
-  // Fetch lead source info from API (real data)
-  useEffect(() => {
-    const fetchLeadInfo = async () => {
-      try {
-        const res = await fetch(`/api/customers/${id}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.customer) {
-            setLeadInfo({
-              lead_source: data.customer.lead_source,
-              lead_source_detail: data.customer.lead_source_detail,
-              lead_stage: data.customer.lead_stage,
-              utm_source: data.customer.utm_source,
-              utm_medium: data.customer.utm_medium,
-              utm_campaign: data.customer.utm_campaign,
-            });
-          }
-        }
-      } catch (err) {
-        console.error('Failed to fetch lead info:', err);
-      }
-    };
-    fetchLeadInfo();
+    if (id) fetchEquipment();
   }, [id]);
 
   // Count expiring warranties - safely compute even when customer is null
@@ -153,6 +163,15 @@ export default function CustomerDetailPage({
     }
   }).length;
 
+  if (customerLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
+        <span className="ml-3 text-gray-600">Loading customer...</span>
+      </div>
+    );
+  }
+
   if (!customer) {
     return (
       <div className="flex flex-col items-center justify-center py-12">
@@ -165,10 +184,7 @@ export default function CustomerDetailPage({
     );
   }
 
-  const properties = getPropertiesByCustomerId(customer.id);
-  const jobs = getJobsByCustomerId(customer.id);
-
-  // Sort jobs by date, most recent first
+  // Sort jobs by date, most recent first (jobs fetched from API)
   const sortedJobs = [...jobs].sort((a, b) => {
     const dateA = a.scheduled_date ? new Date(a.scheduled_date).getTime() : 0;
     const dateB = b.scheduled_date ? new Date(b.scheduled_date).getTime() : 0;
@@ -479,8 +495,9 @@ export default function CustomerDetailPage({
           ) : (
             <div className="space-y-3">
               {sortedJobs.map((job) => {
-                const property = getPropertyById(job.property_id);
-                const assignedUser = job.assigned_to ? getUserById(job.assigned_to) : null;
+                // Property and assigned_user come from job API join
+                const property = job.property;
+                const assignedUser = job.assigned_user;
 
                 return (
                   <Link
@@ -498,7 +515,6 @@ export default function CustomerDetailPage({
                       </div>
                       <p className="text-sm text-gray-600 truncate">
                         {property?.address}
-                      </p>
                       {job.description && (
                         <p className="text-sm text-gray-500 truncate mt-0.5">
                           {job.description}
