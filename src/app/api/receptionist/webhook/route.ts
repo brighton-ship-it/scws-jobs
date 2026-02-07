@@ -195,6 +195,48 @@ export async function POST(request: NextRequest) {
       } as any);
     }
 
+    // 🎯 AUTO-CREATE TASK - Assign to Brighton
+    let taskCreated = false;
+    try {
+      const taskTitle = isUrgent 
+        ? `⚠️ URGENT: Call back ${customerName || formatPhone(phone)}`
+        : `📞 Follow up: ${customerName || formatPhone(phone)}`;
+      
+      const taskDescription = [
+        `Sarah received call at ${startTime.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`,
+        '',
+        `Phone: ${formatPhone(phone)}`,
+        customerName ? `Customer: ${customerName}` : '',
+        serviceNeeded ? `Service: ${serviceNeeded}` : '',
+        address ? `Address: ${address}${city ? `, ${city}` : ''}` : '',
+        '',
+        summary ? `Summary: ${summary}` : '',
+        '',
+        customerId ? `Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/customers/${customerId}` : '',
+      ].filter(Boolean).join('\n');
+
+      // Get Brighton's user ID
+      const { data: brightonUser } = await supabase
+        .from('users')
+        .select('id')
+        .eq('email', 'brighton@scwellservice.com')
+        .single();
+
+      const { error: taskError } = await supabase.from('tasks').insert({
+        title: taskTitle,
+        description: taskDescription,
+        assigned_to: brightonUser?.id || null,
+        due_date: new Date().toISOString().split('T')[0],
+        status: 'pending',
+        priority: isUrgent ? 'urgent' : 'high',
+      });
+
+      taskCreated = !taskError;
+      if (taskError) console.log('[Receptionist] Task creation skipped:', taskError.message);
+    } catch (taskErr) {
+      console.log('[Receptionist] Task creation failed:', taskErr);
+    }
+
     // Send email notification
     const pstTime = startTime.toLocaleString('en-US', {
       timeZone: 'America/Los_Angeles',
@@ -206,9 +248,9 @@ export async function POST(request: NextRequest) {
       hour12: true,
     });
 
-    const emailSubject = `📞 AI Receptionist: ${customerName || formatPhone(phone)}${isUrgent ? ' ⚠️ URGENT' : ''}`;
+    const emailSubject = `📞 Sarah: ${customerName || formatPhone(phone)}${isUrgent ? ' ⚠️ URGENT' : ''}`;
     const emailContent = `
-New call received by AI Receptionist
+New call received by Sarah (AI Receptionist)
 
 CALL DETAILS:
 • Time: ${pstTime}
@@ -227,8 +269,10 @@ ${transcript}
 
 ---
 ${isNewCustomer ? '⚡ NEW CUSTOMER CREATED' : customerId ? '✓ Existing customer matched' : '⚪ Customer not matched (incomplete info)'}
+${taskCreated ? '✅ Task created and assigned to Brighton' : ''}
 ${customerId ? `\nView Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/customers/${customerId}` : ''}
-View All Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/requests
+View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/tasks
+View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/requests
     `.trim();
 
     await sendEmail({
@@ -238,7 +282,7 @@ View All Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.verce
       text: emailContent,
     });
 
-    console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone}`);
+    console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Task: ${taskCreated}`);
 
     return NextResponse.json({
       ok: true,
@@ -246,6 +290,7 @@ View All Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.verce
       customer_id: customerId,
       is_new_customer: isNewCustomer,
       is_urgent: isUrgent,
+      task_created: taskCreated,
     });
   } catch (error) {
     console.error('Receptionist webhook error:', error);
