@@ -55,6 +55,18 @@ export async function POST(request: NextRequest) {
     // Extract call data - handle both direct payload and nested message format
     const call: VapiCall = body.message?.call || body.call || body;
     
+    // Analysis might be at message level, not call level
+    const analysis = body.message?.analysis || call.analysis || body.analysis || {};
+    
+    // Log for debugging
+    console.log('[Receptionist] Webhook received:', JSON.stringify({
+      hasMessage: !!body.message,
+      hasCall: !!call,
+      hasAnalysis: !!analysis,
+      callId: call.id,
+      analysisKeys: Object.keys(analysis),
+    }));
+    
     if (!call.id) {
       return NextResponse.json({ ok: false, error: 'No call ID' }, { status: 400 });
     }
@@ -74,11 +86,12 @@ export async function POST(request: NextRequest) {
 
     // Extract customer info
     const phone = call.customer?.number?.replace(/\D/g, '') || '';
-    const transcript = call.transcript || 
+    // Transcript might be at message level too
+    const transcript = body.message?.transcript || call.transcript || 
       call.messages?.map(m => `${m.role}: ${m.content}`).join('\n') || 
       'No transcript available';
-    const summary = call.analysis?.summary || '';
-    const structuredData = call.analysis?.structuredData || {};
+    const summary = analysis.summary || '';
+    const structuredData = analysis.structuredData || {};
     
     // Try to extract customer name from structured data or transcript
     let customerName = structuredData.customerName || call.customer?.name || '';
