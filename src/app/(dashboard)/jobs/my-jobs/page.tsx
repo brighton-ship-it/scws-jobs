@@ -32,8 +32,12 @@ export default function MyJobsPage() {
 
   // Fetch jobs assigned to current user (by email since users/team_members have different IDs)
   useEffect(() => {
+    if (!user?.email) {
+      setIsLoadingJobs(false);
+      return;
+    }
+    
     const fetchJobs = async () => {
-      if (!user?.email) return;
       try {
         // First get team_member ID by email
         const teamRes = await fetch(`/api/users/by-email?email=${encodeURIComponent(user.email)}`);
@@ -56,10 +60,9 @@ export default function MyJobsPage() {
         setIsLoadingJobs(false);
       }
     };
-    if (user?.email) {
-      fetchJobs();
-    }
-  }, [user?.email, user?.id]);
+    
+    fetchJobs();
+  }, [user]);
 
   if (loading || isLoadingJobs) {
     return (
