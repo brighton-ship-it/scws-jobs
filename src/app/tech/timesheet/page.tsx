@@ -12,7 +12,11 @@ import {
   Play,
   Square,
   Trash2,
+  Home,
+  Search,
+  MoreHorizontal,
 } from 'lucide-react';
+import Link from 'next/link';
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, parseISO, addWeeks, subWeeks } from 'date-fns';
 
 interface TimeEntry {
@@ -128,7 +132,7 @@ export default function TechTimesheetPage() {
   };
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="p-4 pb-24 space-y-4">
       {/* Header */}
       <div>
         <h1 className="text-xl font-bold text-[#1f3b4d]">Timesheet</h1>
@@ -270,6 +274,32 @@ export default function TechTimesheetPage() {
           );
         })}
       </div>
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-2 safe-area-pb">
+        <div className="flex items-center justify-between max-w-md mx-auto">
+          <Link href="/tech" className="flex flex-col items-center py-2 text-gray-400">
+            <Home className="h-5 w-5" />
+            <span className="text-xs mt-1">Home</span>
+          </Link>
+          <Link href="/tech/schedule" className="flex flex-col items-center py-2 text-gray-400">
+            <Calendar className="h-5 w-5" />
+            <span className="text-xs mt-1">Schedule</span>
+          </Link>
+          <Link href="/tech/timesheet" className="flex flex-col items-center py-2 text-[#1f3b4d]">
+            <Clock className="h-5 w-5" />
+            <span className="text-xs mt-1 font-medium">Timesheet</span>
+          </Link>
+          <Link href="/tech/search" className="flex flex-col items-center py-2 text-gray-400">
+            <Search className="h-5 w-5" />
+            <span className="text-xs mt-1">Search</span>
+          </Link>
+          <Link href="/tech/more" className="flex flex-col items-center py-2 text-gray-400">
+            <MoreHorizontal className="h-5 w-5" />
+            <span className="text-xs mt-1">More</span>
+          </Link>
+        </div>
+      </nav>
     </div>
   );
 }
