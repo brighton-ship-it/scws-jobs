@@ -123,7 +123,17 @@ export default function JobDetailPage() {
         ]);
         
         setJob(jobData.job);
-        setTeamMembers(usersData.users || []);
+        
+        // Ensure assigned_user is in the team members list
+        let members = usersData.users || [];
+        if (jobData.job?.assigned_user) {
+          const assignedExists = members.some((m: User) => m.id === jobData.job.assigned_user.id);
+          if (!assignedExists) {
+            members = [...members, jobData.job.assigned_user];
+          }
+        }
+        setTeamMembers(members);
+        
         setRelatedInvoices(invoicesData.invoices || []);
       } catch (err) {
         console.error('Failed to fetch job:', err);
