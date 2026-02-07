@@ -174,6 +174,37 @@ export default function JobDetailPage() {
     }
   };
 
+  // Handle mark complete
+  const [isMarkingComplete, setIsMarkingComplete] = useState(false);
+  const handleMarkComplete = async () => {
+    if (!job) return;
+    
+    setIsMarkingComplete(true);
+    try {
+      const res = await fetch(`/api/jobs/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+        }),
+      });
+      
+      if (res.ok) {
+        const data = await res.json();
+        setJob(data.job);
+      } else {
+        const error = await res.json();
+        alert(error.error || 'Failed to mark complete');
+      }
+    } catch (err) {
+      console.error('Failed to mark complete:', err);
+      alert('Failed to mark job as complete');
+    } finally {
+      setIsMarkingComplete(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -575,9 +606,17 @@ export default function JobDetailPage() {
             </CardHeader>
             <CardContent className="space-y-2">
               {job.status === 'scheduled' && (
-                <Button className="w-full bg-green-600 hover:bg-green-700">
-                  <CheckCircle2 className="h-4 w-4" />
-                  Mark Complete
+                <Button 
+                  className="w-full bg-green-600 hover:bg-green-700"
+                  onClick={handleMarkComplete}
+                  disabled={isMarkingComplete}
+                >
+                  {isMarkingComplete ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-4 w-4" />
+                  )}
+                  {isMarkingComplete ? 'Marking Complete...' : 'Mark Complete'}
                 </Button>
               )}
               {job.status === 'completed' && (
