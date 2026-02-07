@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   DndContext,
   DragEndEvent,
@@ -18,12 +18,6 @@ import {
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import {
-  mockJobs,
-  getFieldCrew,
-  getPropertyById,
-  getCustomerById,
-} from '@/lib/mock-data';
 import type { Job } from '@/types/database';
 import {
   ChevronLeft,
@@ -49,20 +43,52 @@ export default function DispatchPage() {
   const [activeJob, setActiveJob] = useState<Job | null>(null);
   const [viewMode, setViewMode] = useState<ViewMode>('board');
   const [selectedJobId, setSelectedJobId] = useState<string | undefined>();
+  const [allJobs, setAllJobs] = useState<Job[]>([]);
+  const [fieldCrew, setFieldCrew] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   
   // Real-time tech locations
   const { locations: techLocations, isLoading: locationsLoading } = useTechLocations({
     realtime: true,
   });
   
-  // In a real app, this would be state that persists to the database
-  const [jobAssignments, setJobAssignments] = useState<Record<string, string | null>>(() => {
+  // Fetch jobs and team members on mount
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [jobsRes, usersRes] = await Promise.all([
+          fetch('/api/jobs?limit=500'),
+          fetch('/api/users?role=field'),
+        ]);
+        
+        if (jobsRes.ok) {
+          const data = await jobsRes.json();
+          setAllJobs(data.jobs || []);
+        }
+        if (usersRes.ok) {
+          const data = await usersRes.json();
+          setFieldCrew(data.users || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch dispatch data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+  
+  // Job assignments state (persists to database on change)
+  const [jobAssignments, setJobAssignments] = useState<Record<string, string | null>>({});
+  
+  // Initialize assignments when jobs load
+  useEffect(() => {
     const initial: Record<string, string | null> = {};
-    mockJobs.forEach(job => {
+    allJobs.forEach(job => {
       initial[job.id] = job.assigned_to;
     });
-    return initial;
-  });
+    setJobAssignments(initial);
+  }, [allJobs]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -72,27 +98,26 @@ export default function DispatchPage() {
     })
   );
 
-  const fieldCrew = useMemo(() => getFieldCrew(), []);
   const dateStr = format(selectedDate, 'yyyy-MM-dd');
 
   // Get jobs for the selected date
   const todaysJobs = useMemo(() => {
-    return mockJobs.filter(job => 
+    return allJobs.filter(job => 
       job.scheduled_date === dateStr && 
       (job.status === 'scheduled' || job.status === 'in_progress')
     );
-  }, [dateStr]);
+  }, [allJobs, dateStr]);
 
   // Get unassigned jobs for selected date
   const unassignedJobs = useMemo(() => {
     return todaysJobs.filter(job => !jobAssignments[job.id]);
   }, [todaysJobs, jobAssignments]);
 
-  // Build jobs with property info for map
+  // Build jobs with property info for map (property data comes from API join)
   const jobsWithProperties = useMemo(() => {
     return todaysJobs.map(job => {
-      const property = getPropertyById(job.property_id);
-      const customer = property ? getCustomerById(property.customer_id) : null;
+      const property = job.property;
+      const customer = property?.customer;
       return {
         job,
         property: property!,
