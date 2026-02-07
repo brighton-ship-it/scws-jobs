@@ -108,10 +108,15 @@ export async function POST(request: NextRequest) {
       if (nameMatch) customerName = nameMatch[1];
     }
 
-    // Calculate call duration
-    const startTime = new Date(call.startedAt);
-    const endTime = call.endedAt ? new Date(call.endedAt) : new Date();
-    const durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+    // Calculate call duration - timestamps might be at message or call level
+    const startedAt = body.message?.startedAt || call.startedAt || body.startedAt;
+    const endedAt = body.message?.endedAt || call.endedAt || body.endedAt;
+    
+    const startTime = startedAt ? new Date(startedAt) : new Date();
+    const endTime = endedAt ? new Date(endedAt) : new Date();
+    const durationSec = startedAt && endedAt 
+      ? Math.round((endTime.getTime() - startTime.getTime()) / 1000)
+      : 0;
 
     // Format phone for display
     const formatPhone = (p: string) => {
@@ -185,7 +190,7 @@ export async function POST(request: NextRequest) {
         duration_sec: durationSec,
         status: 'pending',
         priority: isUrgent ? 'urgent' : 'normal',
-        called_at: call.startedAt,
+        called_at: startedAt || new Date().toISOString(),
       } as any)
       .select()
       .single();
@@ -253,15 +258,25 @@ export async function POST(request: NextRequest) {
     }
 
     // Send email notification
-    const pstTime = startTime.toLocaleString('en-US', {
-      timeZone: 'America/Los_Angeles',
-      weekday: 'short',
-      month: 'short',
-      day: 'numeric',
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    });
+    const pstTime = startedAt 
+      ? startTime.toLocaleString('en-US', {
+          timeZone: 'America/Los_Angeles',
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        })
+      : new Date().toLocaleString('en-US', {
+          timeZone: 'America/Los_Angeles',
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        });
 
     const emailSubject = `📞 Sarah: ${customerName || formatPhone(phone)}${isUrgent ? ' ⚠️ URGENT' : ''}`;
     const emailContent = `
@@ -269,7 +284,7 @@ New call received by Sarah (AI Receptionist)
 
 CALL DETAILS:
 • Time: ${pstTime}
-• Duration: ${Math.floor(durationSec / 60)}m ${durationSec % 60}s
+• Duration: ${durationSec > 0 ? `${Math.floor(durationSec / 60)}m ${durationSec % 60}s` : 'Unknown'}
 • Phone: ${formatPhone(phone)}
 ${customerName ? `• Customer: ${customerName}` : ''}
 ${address ? `• Address: ${address}${city ? `, ${city}` : ''}` : ''}
