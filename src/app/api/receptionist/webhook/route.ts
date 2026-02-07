@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
+import { notifyNewCall } from '@/lib/messaging/discord';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -280,6 +281,17 @@ View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.ap
       subject: emailSubject,
       html: textToHtml(emailContent),
       text: emailContent,
+    });
+
+    // Discord notification (instant mobile alert)
+    await notifyNewCall({
+      phone,
+      customerName,
+      serviceNeeded,
+      summary,
+      isUrgent,
+      customerId,
+      isNewCustomer,
     });
 
     console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Task: ${taskCreated}`);
