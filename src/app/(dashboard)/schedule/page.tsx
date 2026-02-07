@@ -4,9 +4,18 @@ import { useState, useMemo, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ScheduleMap } from '@/components/schedule/ScheduleMap';
 import { QuickCreateMenu } from '@/components/ui/quick-create-menu';
-import { 
-  mockJobTypes,
-} from '@/lib/mock-data';
+// Job type colors for calendar display
+const JOB_TYPE_COLORS: Record<string, string> = {
+  'Well Inspection': '#0d9488',
+  'Pump Installation': '#2563eb',
+  'Pump Repair': '#7c3aed',
+  'Water Testing': '#059669',
+  'Emergency Service': '#dc2626',
+  'Maintenance': '#d97706',
+  'Consultation': '#6366f1',
+  'Well Drilling': '#0891b2',
+  default: '#0d9488',
+};
 import { 
   ChevronLeft, 
   ChevronRight, 
@@ -95,8 +104,7 @@ export default function SchedulePage() {
   };
 
   const getJobTypeColor = (jobType: string) => {
-    const type = mockJobTypes.find(jt => jt.name === jobType);
-    return type?.color || '#0d9488'; // Default teal
+    return JOB_TYPE_COLORS[jobType] || JOB_TYPE_COLORS.default;
   };
 
   // Navigate week
