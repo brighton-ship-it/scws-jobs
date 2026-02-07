@@ -12,7 +12,11 @@ import {
   MoreVertical,
   Archive,
   Trash2,
-  ChevronLeft
+  ChevronLeft,
+  MessageSquare,
+  Loader2,
+  RefreshCw,
+  AlertTriangle
 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -24,314 +28,324 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
-import { Textarea } from '@/components/ui/textarea'
+import { formatDistanceToNow } from 'date-fns'
 
-// Mock conversations
-const mockConversations = [
-  {
-    id: '1',
-    customer_name: 'Robert Johnson',
-    phone_number: '+17605551234',
-    last_message: 'Thanks! See you tomorrow at 9am.',
-    last_message_at: '2026-02-02T18:30:00',
-    last_message_direction: 'inbound',
-    unread_count: 1,
-    status: 'active',
-  },
-  {
-    id: '2',
-    customer_name: 'Maria Garcia',
-    phone_number: '+17605555678',
-    last_message: 'Your technician is on the way! ETA 15 minutes.',
-    last_message_at: '2026-02-02T14:15:00',
-    last_message_direction: 'outbound',
-    unread_count: 0,
-    status: 'active',
-  },
-  {
-    id: '3',
-    customer_name: 'Desert Oasis HOA',
-    phone_number: '+17605559012',
-    last_message: 'Can you come check the pump? Its making a weird noise',
-    last_message_at: '2026-02-02T11:00:00',
-    last_message_direction: 'inbound',
-    unread_count: 2,
-    status: 'active',
-  },
-  {
-    id: '4',
-    customer_name: 'James Wilson',
-    phone_number: '+17605553456',
-    last_message: 'Quote sent! Let me know if you have questions.',
-    last_message_at: '2026-02-01T16:45:00',
-    last_message_direction: 'outbound',
-    unread_count: 0,
-    status: 'active',
-  },
-]
-
-// Mock messages for selected conversation
-const mockMessages = [
-  {
-    id: '1',
-    direction: 'inbound',
-    body: 'Hi, my well pump stopped working this morning. No water at all.',
-    sent_at: '2026-02-02T08:15:00',
-    status: 'delivered',
-  },
-  {
-    id: '2',
-    direction: 'outbound',
-    body: 'Hi Robert! Sorry to hear that. Can you tell me if the pressure gauge shows any reading?',
-    sent_at: '2026-02-02T08:20:00',
-    status: 'delivered',
-  },
-  {
-    id: '3',
-    direction: 'inbound',
-    body: 'The gauge shows 0. And I can hear a clicking sound from the pressure switch.',
-    sent_at: '2026-02-02T08:25:00',
-    status: 'delivered',
-  },
-  {
-    id: '4',
-    direction: 'outbound',
-    body: 'That clicking sound suggests the pressure switch is trying to turn on the pump but it\'s not responding. We can send a tech out today. Would 9am tomorrow work?',
-    sent_at: '2026-02-02T08:30:00',
-    status: 'delivered',
-  },
-  {
-    id: '5',
-    direction: 'inbound',
-    body: 'Yes 9am works great. Thank you!',
-    sent_at: '2026-02-02T08:35:00',
-    status: 'delivered',
-  },
-  {
-    id: '6',
-    direction: 'outbound',
-    body: 'Perfect! I\'ve scheduled Travis to come out at 9am tomorrow. He\'ll call when he\'s on the way. Is 760-555-1234 the best number?',
-    sent_at: '2026-02-02T08:40:00',
-    status: 'delivered',
-  },
-  {
-    id: '7',
-    direction: 'inbound',
-    body: 'Thanks! See you tomorrow at 9am.',
-    sent_at: '2026-02-02T18:30:00',
-    status: 'delivered',
-  },
-]
-
-function formatTime(dateString: string) {
-  const date = new Date(dateString)
-  const now = new Date()
-  const diffDays = Math.floor((now.getTime() - date.getTime()) / (1000 * 60 * 60 * 24))
-  
-  if (diffDays === 0) {
-    return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-  } else if (diffDays === 1) {
-    return 'Yesterday'
-  } else {
-    return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
-  }
+interface Message {
+  role: 'user' | 'assistant'
+  content: string
+  timestamp?: string
+  sid?: string
 }
 
-function formatMessageTime(dateString: string) {
-  const date = new Date(dateString)
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+interface Conversation {
+  id: string
+  phone_number: string
+  customer_name: string
+  last_message: string
+  last_message_at: string
+  last_message_direction: 'inbound' | 'outbound'
+  unread_count: number
+  messages: Message[]
+  is_urgent?: boolean
+  issue?: string
+  service_address?: string
+}
+
+function formatPhone(phone: string): string {
+  const clean = phone.replace(/\D/g, '')
+  if (clean.length === 11 && clean[0] === '1') {
+    return `(${clean.slice(1, 4)}) ${clean.slice(4, 7)}-${clean.slice(7)}`
+  }
+  if (clean.length === 10) {
+    return `(${clean.slice(0, 3)}) ${clean.slice(3, 6)}-${clean.slice(6)}`
+  }
+  return phone
 }
 
 export default function MessagesPage() {
-  const [searchQuery, setSearchQuery] = useState('')
-  const [selectedConversation, setSelectedConversation] = useState<string | null>('1')
+  const [conversations, setConversations] = useState<Conversation[]>([])
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null)
   const [newMessage, setNewMessage] = useState('')
-  const [isMobileConversationOpen, setIsMobileConversationOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [sending, setSending] = useState(false)
+  const [showMobileConvo, setShowMobileConvo] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
-  const filteredConversations = mockConversations.filter(conv =>
-    conv.customer_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    conv.phone_number.includes(searchQuery)
-  )
-
-  const selectedConv = mockConversations.find(c => c.id === selectedConversation)
-
-  const handleSend = () => {
-    if (!newMessage.trim()) return
-    // TODO: Send via Twilio API
-    console.log('Sending:', newMessage)
-    setNewMessage('')
-  }
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
-    }
-  }
-
-  const selectConversation = (id: string) => {
-    setSelectedConversation(id)
-    setIsMobileConversationOpen(true)
-  }
+  useEffect(() => {
+    fetchConversations()
+    // Poll for new messages every 10 seconds
+    const interval = setInterval(fetchConversations, 10000)
+    return () => clearInterval(interval)
+  }, [])
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [selectedConversation])
+  }, [selectedConversation?.messages])
+
+  const fetchConversations = async () => {
+    try {
+      const res = await fetch('/api/messages')
+      if (res.ok) {
+        const data = await res.json()
+        setConversations(data.conversations || [])
+        
+        // Update selected conversation if it exists
+        if (selectedConversation) {
+          const updated = data.conversations?.find((c: Conversation) => c.id === selectedConversation.id)
+          if (updated) setSelectedConversation(updated)
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch conversations:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const sendMessage = async () => {
+    if (!newMessage.trim() || !selectedConversation) return
+    
+    setSending(true)
+    try {
+      const res = await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: selectedConversation.phone_number,
+          message: newMessage,
+          customer_name: selectedConversation.customer_name,
+        }),
+      })
+
+      if (res.ok) {
+        setNewMessage('')
+        fetchConversations()
+      } else {
+        const error = await res.json()
+        alert('Failed to send: ' + (error.error || 'Unknown error'))
+      }
+    } catch (error) {
+      console.error('Failed to send message:', error)
+      alert('Failed to send message')
+    } finally {
+      setSending(false)
+    }
+  }
+
+  const filteredConversations = conversations.filter(conv =>
+    conv.customer_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    conv.phone_number.includes(searchQuery) ||
+    conv.last_message.toLowerCase().includes(searchQuery.toLowerCase())
+  )
+
+  const totalUnread = conversations.reduce((sum, c) => sum + c.unread_count, 0)
 
   return (
-    <div className="flex-1 flex h-[calc(100vh-4rem)]">
-      {/* Conversations List */}
-      <div className={`w-full md:w-80 lg:w-96 border-r flex flex-col bg-white ${isMobileConversationOpen ? 'hidden md:flex' : 'flex'}`}>
-        <div className="p-4 border-b">
-          <h1 className="text-xl font-bold mb-3">Messages</h1>
-          <div className="relative">
-            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search conversations..."
-              className="pl-8"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-            />
-          </div>
+    <div className="h-[calc(100vh-8rem)] flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Messages</h1>
+          <p className="text-gray-500">SMS conversations with customers</p>
         </div>
-        <div className="flex-1 overflow-y-auto">
-          {filteredConversations.map((conv) => (
-            <div
-              key={conv.id}
-              onClick={() => selectConversation(conv.id)}
-              className={`p-4 border-b cursor-pointer hover:bg-muted/50 transition-colors ${
-                selectedConversation === conv.id ? 'bg-muted' : ''
-              }`}
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                    <User className="h-5 w-5 text-primary" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium truncate">{conv.customer_name}</span>
-                      {conv.unread_count > 0 && (
-                        <Badge className="bg-primary text-white h-5 w-5 p-0 flex items-center justify-center text-xs rounded-full">
-                          {conv.unread_count}
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-sm text-muted-foreground truncate max-w-[180px]">
-                      {conv.last_message_direction === 'outbound' && (
-                        <CheckCheck className="inline h-3 w-3 mr-1" />
-                      )}
-                      {conv.last_message}
-                    </p>
-                  </div>
-                </div>
-                <span className="text-xs text-muted-foreground whitespace-nowrap">
-                  {formatTime(conv.last_message_at)}
-                </span>
-              </div>
-            </div>
-          ))}
+        <div className="flex items-center gap-2">
+          <Badge variant={totalUnread > 0 ? 'warning' : 'default'}>
+            {totalUnread} unread
+          </Badge>
+          <Button variant="outline" size="sm" onClick={fetchConversations}>
+            <RefreshCw className="h-4 w-4" />
+          </Button>
         </div>
       </div>
 
-      {/* Message Thread */}
-      <div className={`flex-1 flex flex-col bg-gray-50 ${!isMobileConversationOpen ? 'hidden md:flex' : 'flex'}`}>
-        {selectedConv ? (
-          <>
-            {/* Header */}
-            <div className="p-4 border-b bg-white flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Button 
-                  variant="ghost" 
-                  size="icon" 
-                  className="md:hidden"
-                  onClick={() => setIsMobileConversationOpen(false)}
-                >
-                  <ChevronLeft className="h-5 w-5" />
-                </Button>
-                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                  <User className="h-5 w-5 text-primary" />
-                </div>
-                <div>
-                  <h2 className="font-semibold">{selectedConv.customer_name}</h2>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Phone className="h-3 w-3" />
-                    {selectedConv.phone_number}
+      <div className="flex-1 flex gap-4 overflow-hidden">
+        {/* Conversations List */}
+        <Card className={`w-full md:w-96 flex flex-col ${showMobileConvo ? 'hidden md:flex' : 'flex'}`}>
+          <CardHeader className="pb-2">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+              <Input
+                placeholder="Search conversations..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-10"
+              />
+            </div>
+          </CardHeader>
+          <CardContent className="flex-1 overflow-y-auto p-0">
+            {loading ? (
+              <div className="p-8 text-center">
+                <Loader2 className="h-8 w-8 animate-spin mx-auto text-gray-400" />
+              </div>
+            ) : filteredConversations.length === 0 ? (
+              <div className="p-8 text-center text-gray-500">
+                <MessageSquare className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                <p className="font-medium">No conversations yet</p>
+                <p className="text-sm mt-1">SMS conversations will appear here</p>
+                <p className="text-xs mt-4 text-gray-400">
+                  Customers can text: {formatPhone(process.env.NEXT_PUBLIC_TWILIO_NUMBER || '+17608237963')}
+                </p>
+              </div>
+            ) : (
+              <div className="divide-y divide-gray-100">
+                {filteredConversations.map((conversation) => (
+                  <button
+                    key={conversation.id}
+                    onClick={() => {
+                      setSelectedConversation(conversation)
+                      setShowMobileConvo(true)
+                    }}
+                    className={`w-full p-4 text-left hover:bg-gray-50 transition-colors ${
+                      selectedConversation?.id === conversation.id ? 'bg-green-50 border-l-4 border-green-500' : ''
+                    } ${conversation.is_urgent ? 'bg-red-50' : ''}`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          {conversation.is_urgent && (
+                            <AlertTriangle className="h-4 w-4 text-red-500" />
+                          )}
+                          <p className="font-medium text-gray-900 truncate">
+                            {conversation.customer_name}
+                          </p>
+                          {conversation.unread_count > 0 && (
+                            <Badge variant="warning" size="sm">
+                              {conversation.unread_count}
+                            </Badge>
+                          )}
+                        </div>
+                        <p className="text-sm text-gray-500 truncate mt-1">
+                          {conversation.last_message_direction === 'outbound' && '↩️ '}
+                          {conversation.last_message}
+                        </p>
+                      </div>
+                      <span className="text-xs text-gray-400 whitespace-nowrap">
+                        {formatDistanceToNow(new Date(conversation.last_message_at), { addSuffix: true })}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Conversation View */}
+        <Card className={`flex-1 flex flex-col ${!showMobileConvo ? 'hidden md:flex' : 'flex'}`}>
+          {selectedConversation ? (
+            <>
+              {/* Conversation Header */}
+              <CardHeader className="border-b">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="md:hidden"
+                      onClick={() => setShowMobileConvo(false)}
+                    >
+                      <ChevronLeft className="h-5 w-5" />
+                    </Button>
+                    <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center">
+                      <User className="h-5 w-5 text-green-600" />
+                    </div>
+                    <div>
+                      <h3 className="font-semibold">{selectedConversation.customer_name}</h3>
+                      <p className="text-sm text-gray-500">{formatPhone(selectedConversation.phone_number)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <a href={`tel:${selectedConversation.phone_number}`}>
+                      <Button variant="outline" size="sm">
+                        <Phone className="h-4 w-4" />
+                      </Button>
+                    </a>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="sm">
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem>
+                          <Archive className="h-4 w-4 mr-2" />
+                          Archive
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="text-red-600">
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
-              </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon">
-                    <MoreVertical className="h-5 w-5" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem>View Customer</DropdownMenuItem>
-                  <DropdownMenuItem>Create Job</DropdownMenuItem>
-                  <DropdownMenuItem>
-                    <Archive className="mr-2 h-4 w-4" />
-                    Archive Conversation
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
+                {selectedConversation.service_address && (
+                  <p className="text-xs text-gray-500 mt-2">
+                    📍 {selectedConversation.service_address}
+                  </p>
+                )}
+              </CardHeader>
 
-            {/* Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {mockMessages.map((msg) => (
-                <div
-                  key={msg.id}
-                  className={`flex ${msg.direction === 'outbound' ? 'justify-end' : 'justify-start'}`}
-                >
+              {/* Messages */}
+              <CardContent className="flex-1 overflow-y-auto p-4 space-y-4">
+                {selectedConversation.messages.map((message, idx) => (
                   <div
-                    className={`max-w-[75%] rounded-lg p-3 ${
-                      msg.direction === 'outbound'
-                        ? 'bg-primary text-white'
-                        : 'bg-white border'
-                    }`}
+                    key={idx}
+                    className={`flex ${message.role === 'assistant' ? 'justify-end' : 'justify-start'}`}
                   >
-                    <p className="text-sm whitespace-pre-wrap">{msg.body}</p>
-                    <div className={`flex items-center justify-end gap-1 mt-1 text-xs ${
-                      msg.direction === 'outbound' ? 'text-primary-foreground/70' : 'text-muted-foreground'
-                    }`}>
-                      <span>{formatMessageTime(msg.sent_at)}</span>
-                      {msg.direction === 'outbound' && (
-                        <CheckCheck className="h-3 w-3" />
+                    <div
+                      className={`max-w-[80%] rounded-2xl px-4 py-2 ${
+                        message.role === 'assistant'
+                          ? 'bg-green-600 text-white rounded-br-md'
+                          : 'bg-gray-100 text-gray-900 rounded-bl-md'
+                      }`}
+                    >
+                      <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                      {message.timestamp && (
+                        <p className={`text-xs mt-1 ${
+                          message.role === 'assistant' ? 'text-green-200' : 'text-gray-400'
+                        }`}>
+                          {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </p>
                       )}
                     </div>
                   </div>
-                </div>
-              ))}
-              <div ref={messagesEndRef} />
-            </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </CardContent>
 
-            {/* Input */}
-            <div className="p-4 bg-white border-t">
-              <div className="flex gap-2">
-                <Textarea
-                  placeholder="Type a message..."
-                  value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyDown={handleKeyPress}
-                  rows={1}
-                  className="min-h-[40px] max-h-[120px] resize-none"
-                />
-                <Button onClick={handleSend} disabled={!newMessage.trim()}>
-                  <Send className="h-4 w-4" />
-                </Button>
+              {/* Message Input */}
+              <div className="border-t p-4">
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Type a message..."
+                    value={newMessage}
+                    onChange={(e) => setNewMessage(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && sendMessage()}
+                    disabled={sending}
+                    className="flex-1"
+                  />
+                  <Button onClick={sendMessage} disabled={!newMessage.trim() || sending}>
+                    {sending ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Send className="h-4 w-4" />
+                    )}
+                  </Button>
+                </div>
               </div>
-              <p className="text-xs text-muted-foreground mt-2">
-                Press Enter to send, Shift+Enter for new line
-              </p>
+            </>
+          ) : (
+            <div className="flex-1 flex items-center justify-center text-gray-500">
+              <div className="text-center">
+                <MessageSquare className="h-16 w-16 mx-auto mb-4 text-gray-300" />
+                <p className="font-medium">Select a conversation</p>
+                <p className="text-sm mt-1">Choose a conversation from the list to view messages</p>
+              </div>
             </div>
-          </>
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-muted-foreground">
-            Select a conversation to view messages
-          </div>
-        )}
+          )}
+        </Card>
       </div>
     </div>
   )
