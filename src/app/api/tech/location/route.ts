@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 
 /**
  * GET /api/tech/location - Get all tech locations
@@ -8,7 +8,7 @@ import { createClient } from '@/lib/supabase/server';
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const searchParams = request.nextUrl.searchParams;
     const techId = searchParams.get('tech_id');
 
@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const body = await request.json();
 
     const { tech_id, lat, lng, accuracy, heading, speed } = body;
@@ -126,7 +126,7 @@ export async function POST(request: NextRequest) {
  */
 export async function DELETE(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const searchParams = request.nextUrl.searchParams;
     const techId = searchParams.get('tech_id');
 

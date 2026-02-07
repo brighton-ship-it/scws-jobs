@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 import { sendEmail, isResendConfigured } from '@/lib/messaging/email';
 import { logEmail } from '@/lib/communications';
 
@@ -14,7 +14,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createClient();
+    const supabase = createServiceClient();
 
     // Check email is configured
     if (!isResendConfigured()) {

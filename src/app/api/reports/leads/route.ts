@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 import type { LeadSource, LeadStage } from '@/types/database';
 
 interface LeadSourceStats {
@@ -22,7 +22,7 @@ interface LeadSourceStats {
  */
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const searchParams = request.nextUrl.searchParams;
     
     const startDate = searchParams.get('start_date');
@@ -220,7 +220,7 @@ export async function GET(request: NextRequest) {
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const body = await request.json();
 
     const { lead_source, month, cost, notes } = body;

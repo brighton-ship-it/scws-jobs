@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 import { startOfDay, endOfDay, startOfWeek, endOfWeek, startOfMonth, endOfMonth, startOfYear, endOfYear, subDays, parseISO, format, differenceInMinutes } from 'date-fns';
 
 type DateRange = 'today' | 'week' | 'month' | 'year' | 'custom';
@@ -28,7 +28,7 @@ function getDateRange(range: DateRange, startDate?: string, endDate?: string) {
 
 export async function GET(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const searchParams = request.nextUrl.searchParams;
     
     const range = (searchParams.get('range') || 'month') as DateRange;

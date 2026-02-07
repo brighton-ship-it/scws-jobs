@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 import { addWeeks, addMonths, addYears } from 'date-fns';
 import type { RecurringFrequency } from '@/types/database';
 
@@ -34,7 +34,7 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const supabase = await createClient();
+    const supabase = createServiceClient();
 
     // Get the recurring schedule
     const { data: schedule, error: scheduleError } = await supabase

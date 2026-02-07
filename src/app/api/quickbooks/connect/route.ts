@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 import { getAuthorizationUrl, getOAuthConfig } from '@/lib/quickbooks/oauth';
 import { randomBytes } from 'crypto';
 
@@ -8,7 +8,7 @@ export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {

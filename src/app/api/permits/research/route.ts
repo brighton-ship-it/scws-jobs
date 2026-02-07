@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase/server';
+import { createServiceClient } from '@/lib/supabase/server';
 
 // GIS Service endpoints
 const GIS_ENDPOINTS = {
@@ -91,7 +91,7 @@ async function lookupParcelCentroidsByAPNs(apns: string[]): Promise<Map<string, 
   if (apns.length === 0) return results;
   
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     
     // Normalize APNs - remove dashes/spaces and pad to 10 digits
     const normalizedAPNs = apns
@@ -693,7 +693,7 @@ function getMockSepticData(): any {
  */
 export async function POST(request: NextRequest) {
   try {
-    const supabase = await createClient();
+    const supabase = createServiceClient();
     const body = await request.json();
     const { apn, address, county, lat, lng } = body;
 
