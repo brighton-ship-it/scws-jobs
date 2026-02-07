@@ -21,6 +21,7 @@ import type { JobPhoto, PhotoCategory } from '@/types/database';
 interface JobPhotoGalleryProps {
   jobId: string;
   photos: JobPhoto[];
+  loading?: boolean;
   onPhotosChange: (photos: JobPhoto[]) => void;
 }
 
@@ -36,7 +37,7 @@ const categoryColors: Record<PhotoCategory, 'info' | 'success' | 'default'> = {
   documentation: 'default',
 };
 
-export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalleryProps) {
+export function JobPhotoGallery({ jobId, photos, loading = false, onPhotosChange }: JobPhotoGalleryProps) {
   const [uploading, setUploading] = useState(false);
   const [uploadCategory, setUploadCategory] = useState<PhotoCategory>('documentation');
   const [selectedPhoto, setSelectedPhoto] = useState<JobPhoto | null>(null);
@@ -44,11 +45,14 @@ export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalle
   const [showUploadDialog, setShowUploadDialog] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Guard against undefined photos
+  const photoList = photos || [];
+
   // Group photos by category
   const photosByCategory = {
-    before: photos.filter(p => p.category === 'before'),
-    after: photos.filter(p => p.category === 'after'),
-    documentation: photos.filter(p => p.category === 'documentation'),
+    before: photoList.filter(p => p.category === 'before'),
+    after: photoList.filter(p => p.category === 'after'),
+    documentation: photoList.filter(p => p.category === 'documentation'),
   };
 
   const allPhotos = [...photosByCategory.before, ...photosByCategory.after, ...photosByCategory.documentation];
@@ -80,7 +84,7 @@ export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalle
       }
 
       if (newPhotos.length > 0) {
-        onPhotosChange([...photos, ...newPhotos]);
+        onPhotosChange([...photoList, ...newPhotos]);
       }
     } catch (error) {
       console.error('Upload error:', error);
@@ -102,7 +106,7 @@ export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalle
       });
 
       if (response.ok) {
-        onPhotosChange(photos.filter(p => p.id !== photoId));
+        onPhotosChange(photoList.filter(p => p.id !== photoId));
         if (selectedPhoto?.id === photoId) {
           setSelectedPhoto(null);
         }
@@ -125,7 +129,7 @@ export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalle
 
       if (response.ok) {
         const { photo } = await response.json();
-        onPhotosChange(photos.map(p => p.id === photoId ? photo : p));
+        onPhotosChange(photoList.map(p => p.id === photoId ? photo : p));
       }
     } catch (error) {
       console.error('Update error:', error);
@@ -203,7 +207,7 @@ export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalle
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle className="flex items-center gap-2">
           <Camera className="h-5 w-5 text-gray-400" />
-          Photos ({photos.length})
+          Photos ({photoList.length})
         </CardTitle>
         <Button variant="outline" size="sm" onClick={() => setShowUploadDialog(true)}>
           <Plus className="h-4 w-4" />
@@ -211,7 +215,7 @@ export function JobPhotoGallery({ jobId, photos, onPhotosChange }: JobPhotoGalle
         </Button>
       </CardHeader>
       <CardContent>
-        {photos.length === 0 ? (
+        {photoList.length === 0 ? (
           <div className="text-center py-8">
             <ImageIcon className="h-12 w-12 text-gray-300 mx-auto mb-3" />
             <p className="text-gray-500 mb-4">No photos yet</p>

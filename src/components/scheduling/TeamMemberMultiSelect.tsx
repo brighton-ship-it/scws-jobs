@@ -25,8 +25,12 @@ export function TeamMemberMultiSelect({
   const [search, setSearch] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const selectedMembers = teamMembers.filter(m => selectedIds.includes(m.id));
-  const filteredMembers = teamMembers.filter(m =>
+  // Guard against undefined/null values
+  const members = teamMembers || [];
+  const ids = selectedIds || [];
+
+  const selectedMembers = members.filter(m => ids.includes(m.id));
+  const filteredMembers = members.filter(m =>
     m.name.toLowerCase().includes(search.toLowerCase()) ||
     m.email.toLowerCase().includes(search.toLowerCase())
   );
@@ -43,16 +47,16 @@ export function TeamMemberMultiSelect({
   }, []);
 
   const toggleMember = (memberId: string) => {
-    if (selectedIds.includes(memberId)) {
-      onChange(selectedIds.filter(id => id !== memberId));
+    if (ids.includes(memberId)) {
+      onChange(ids.filter(id => id !== memberId));
     } else {
-      onChange([...selectedIds, memberId]);
+      onChange([...ids, memberId]);
     }
   };
 
   const removeMember = (memberId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    onChange(selectedIds.filter(id => id !== memberId));
+    onChange(ids.filter(id => id !== memberId));
   };
 
   const getRoleColor = (role: string) => {
@@ -126,7 +130,7 @@ export function TeamMemberMultiSelect({
               <p className="px-4 py-3 text-sm text-gray-500">No team members found</p>
             ) : (
               filteredMembers.map(member => {
-                const isSelected = selectedIds.includes(member.id);
+                const isSelected = ids.includes(member.id);
                 return (
                   <button
                     key={member.id}
