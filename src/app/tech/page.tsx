@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
@@ -20,11 +21,13 @@ import {
   MoreHorizontal,
   MapPin,
   Plus,
+  LogIn,
 } from 'lucide-react';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 
 export default function TechHomePage() {
-  const { user } = useAuth();
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const [isClockedIn, setIsClockedIn] = useState(false);
   const [clockInTime, setClockInTime] = useState<Date | null>(null);
   const [jobs, setJobs] = useState<any[]>([]);
@@ -33,6 +36,29 @@ export default function TechHomePage() {
   const today = format(new Date(), 'yyyy-MM-dd');
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
   const userName = user?.name?.split(' ')[0] || 'there';
+
+  // Show login prompt if not authenticated
+  if (!authLoading && !user) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <Card className="w-full max-w-sm">
+          <CardContent className="py-8 text-center">
+            <div className="w-16 h-16 bg-[#1f3b4d] rounded-full flex items-center justify-center mx-auto mb-4">
+              <LogIn className="h-8 w-8 text-white" />
+            </div>
+            <h2 className="text-xl font-bold text-gray-900 mb-2">Sign In Required</h2>
+            <p className="text-gray-500 mb-6">Please sign in to access the tech app</p>
+            <Button
+              onClick={() => router.push('/login?redirect=/tech')}
+              className="w-full bg-[#4e9271] hover:bg-[#3d7a5d]"
+            >
+              Sign In
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   // Load clock-in state
   useEffect(() => {

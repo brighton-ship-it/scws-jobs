@@ -68,7 +68,13 @@ export async function updateSession(request: NextRequest) {
 
   // Protected routes - redirect to login if not authenticated
   const isAuthPage = request.nextUrl.pathname.startsWith('/login');
-  const isProtectedRoute = !isAuthPage && !request.nextUrl.pathname.startsWith('/api');
+  const isPublicRoute = 
+    request.nextUrl.pathname.startsWith('/api') ||
+    request.nextUrl.pathname.startsWith('/tech') ||  // Tech PWA - handles own auth
+    request.nextUrl.pathname.startsWith('/portal') ||
+    request.nextUrl.pathname.startsWith('/book') ||
+    request.nextUrl.pathname.startsWith('/pay');
+  const isProtectedRoute = !isAuthPage && !isPublicRoute;
 
   if (isProtectedRoute && !user) {
     return NextResponse.redirect(new URL('/login', request.url));
