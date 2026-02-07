@@ -99,6 +99,49 @@ export default function RequestsPage() {
     }
   };
 
+  const createQuoteFromRequest = async (request: BookingRequest) => {
+    setActionLoading(request.id);
+    try {
+      // Create customer if not exists
+      let customerId = request.customer_id;
+      
+      if (!customerId) {
+        const customerRes = await fetch('/api/customers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: request.customer_name,
+            phone: request.phone,
+            email: request.email,
+            billing_address: `${request.address}, ${request.city}`,
+          }),
+        });
+        if (customerRes.ok) {
+          const customerData = await customerRes.json();
+          customerId = customerData.customer?.id;
+        }
+      }
+
+      // Navigate to create quote page with pre-filled data
+      const params = new URLSearchParams({
+        customer_id: customerId || '',
+        customer_name: request.customer_name,
+        address: request.address,
+        city: request.city,
+        service_type: request.service_type,
+        notes: request.notes || '',
+        request_id: request.id,
+      });
+      
+      router.push(`/quotes/new?${params.toString()}`);
+    } catch (error) {
+      console.error('Failed to create quote:', error);
+      alert('Failed to create quote. Please try again.');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const createJobFromRequest = async (request: BookingRequest) => {
     setActionLoading(request.id);
     try {
@@ -414,6 +457,14 @@ export default function RequestsPage() {
                               </a>
                               <Button 
                                 size="sm" 
+                                variant="outline"
+                                onClick={() => createQuoteFromRequest(request)}
+                                disabled={actionLoading === request.id}
+                              >
+                                Quote
+                              </Button>
+                              <Button 
+                                size="sm" 
                                 className="bg-green-600 hover:bg-green-700"
                                 onClick={() => createJobFromRequest(request)}
                                 disabled={actionLoading === request.id}
@@ -423,7 +474,7 @@ export default function RequestsPage() {
                                 ) : (
                                   <CheckCircle className="h-3.5 w-3.5 mr-1" />
                                 )}
-                                Create Job
+                                Job
                               </Button>
                             </>
                           )}
