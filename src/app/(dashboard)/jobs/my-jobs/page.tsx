@@ -64,29 +64,16 @@ export default function MyJobsPage() {
     fetchJobs();
   }, [user]);
 
-  if (loading || isLoadingJobs) {
-    return (
-      <div className="text-center py-12">
-        <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-4"></div>
-        <p className="text-gray-500">Loading...</p>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className="text-center py-12">
-        <p className="text-gray-500">Please log in to view your jobs.</p>
-      </div>
-    );
-  }
-
+  // Compute all derived data BEFORE any early returns (hooks must be unconditional)
   const allMyJobs = jobs;
-  const todaysJobs = jobs.filter(job => {
+  const todaysJobs = useMemo(() => jobs.filter(job => {
     if (!job.scheduled_date) return false;
     return isToday(parseISO(job.scheduled_date));
-  });
-  const activeJobs = jobs.filter(job => job.status !== 'completed' && job.status !== 'invoiced');
+  }), [jobs]);
+  
+  const activeJobs = useMemo(() => 
+    jobs.filter(job => job.status !== 'completed' && job.status !== 'invoiced'),
+  [jobs]);
   
   // Get upcoming jobs (next 7 days, excluding today)
   const upcomingJobs = useMemo(() => {
@@ -104,7 +91,7 @@ export default function MyJobsPage() {
 
   // Group jobs by date for upcoming view
   const jobsByDate = useMemo(() => {
-    const grouped: Record<string, typeof activeJobs> = {};
+    const grouped: Record<string, any[]> = {};
     upcomingJobs.forEach(job => {
       const date = job.scheduled_date || 'unscheduled';
       if (!grouped[date]) grouped[date] = [];
@@ -112,6 +99,24 @@ export default function MyJobsPage() {
     });
     return grouped;
   }, [upcomingJobs]);
+
+  // Early returns AFTER all hooks
+  if (loading || isLoadingJobs) {
+    return (
+      <div className="text-center py-12">
+        <div className="animate-spin h-8 w-8 border-4 border-green-500 border-t-transparent rounded-full mx-auto mb-4"></div>
+        <p className="text-gray-500">Loading...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="text-center py-12">
+        <p className="text-gray-500">Please log in to view your jobs.</p>
+      </div>
+    );
+  }
 
   const displayedJobs = viewMode === 'today' 
     ? todaysJobs 
