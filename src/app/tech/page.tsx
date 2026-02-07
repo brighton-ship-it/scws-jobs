@@ -37,7 +37,39 @@ export default function TechHomePage() {
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
   const userName = user?.name?.split(' ')[0] || 'there';
 
-  // Show login prompt if not authenticated
+  // Load clock-in state - MUST be before any conditional returns
+  useEffect(() => {
+    const savedClockIn = localStorage.getItem('tech_clock_in');
+    if (savedClockIn) {
+      const parsed = JSON.parse(savedClockIn);
+      setIsClockedIn(true);
+      setClockInTime(new Date(parsed.time));
+    }
+  }, []);
+
+  // Fetch today's jobs - MUST be before any conditional returns
+  useEffect(() => {
+    if (authLoading || !user) return; // Skip fetch if not authenticated
+    const fetchJobs = async () => {
+      try {
+        const url = user?.id 
+          ? `/api/jobs?scheduled_date=${today}&assigned_to=${user.id}`
+          : `/api/jobs?scheduled_date=${today}&limit=50`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          setJobs(data.jobs || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch jobs:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchJobs();
+  }, [user?.id, today, authLoading, user]);
+
+  // Show login prompt if not authenticated - AFTER all hooks
   if (!authLoading && !user) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -59,37 +91,6 @@ export default function TechHomePage() {
       </div>
     );
   }
-
-  // Load clock-in state
-  useEffect(() => {
-    const savedClockIn = localStorage.getItem('tech_clock_in');
-    if (savedClockIn) {
-      const parsed = JSON.parse(savedClockIn);
-      setIsClockedIn(true);
-      setClockInTime(new Date(parsed.time));
-    }
-  }, []);
-
-  // Fetch today's jobs
-  useEffect(() => {
-    const fetchJobs = async () => {
-      try {
-        const url = user?.id 
-          ? `/api/jobs?scheduled_date=${today}&assigned_to=${user.id}`
-          : `/api/jobs?scheduled_date=${today}&limit=50`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const data = await res.json();
-          setJobs(data.jobs || []);
-        }
-      } catch (err) {
-        console.error('Failed to fetch jobs:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
-    fetchJobs();
-  }, [user?.id, today]);
 
   const handleClockToggle = () => {
     if (isClockedIn) {
