@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { PaymentOptions } from '@/components/payment-options';
-import { getInvoiceWithDetails } from '@/lib/mock-data';
 import { format } from 'date-fns';
 import { 
   FileText, 
@@ -25,18 +24,26 @@ export default function InvoicePaymentPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [invoiceData, setInvoiceData] = useState<any>(null);
 
-  // In production, this would fetch from API
-  const invoiceData = getInvoiceWithDetails(invoiceId);
-
+  // Fetch invoice from API
   useEffect(() => {
-    // Simulate loading delay
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 500);
-
-    return () => clearTimeout(timer);
-  }, []);
+    const fetchInvoice = async () => {
+      try {
+        const res = await fetch(`/api/invoices/${invoiceId}`);
+        if (res.ok) {
+          const data = await res.json();
+          setInvoiceData(data.invoice);
+        }
+      } catch (err) {
+        console.error('Failed to fetch invoice:', err);
+        setError('Failed to load invoice');
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    fetchInvoice();
+  }, [invoiceId]);
 
   if (isLoading) {
     return (
