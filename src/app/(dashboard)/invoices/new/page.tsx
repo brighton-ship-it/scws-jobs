@@ -9,9 +9,7 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
-import { 
-  getQuoteWithDetails, getPropertyById
-} from '@/lib/mock-data';
+// Removed mock-data imports - using real API
 import type { Product } from '@/types/database';
 import { ArrowLeft, Briefcase } from 'lucide-react';
 import { format, addDays } from 'date-fns';
@@ -95,24 +93,36 @@ export default function NewInvoicePage() {
   // Load from quote if specified
   useEffect(() => {
     if (fromQuoteId) {
-      const quote = getQuoteWithDetails(fromQuoteId);
-      if (quote) {
-        setCustomerId(quote.customer_id);
-        setQuoteId(fromQuoteId);
-        setTaxRate(quote.tax_rate);
-        setNotes(quote.notes || '');
-        setLineItems(quote.items.map((item, idx) => ({
-          id: item.id,
-          description: item.description,
-          item_description: item.item_description || null,
-          quantity: item.quantity,
-          unit_price: item.unit_price,
-          total: item.total,
-          item_type: item.item_type,
-          taxable: item.taxable !== false,
-          sort_order: idx,
-        })));
-      }
+      const loadFromQuote = async () => {
+        try {
+          const res = await fetch(`/api/quotes/${fromQuoteId}`);
+          if (res.ok) {
+            const data = await res.json();
+            const quote = data.quote;
+            if (quote) {
+              setCustomerId(quote.customer_id);
+              setQuoteId(fromQuoteId);
+              setTaxRate(quote.tax_rate || 8.75);
+              setNotes(quote.notes || '');
+              const items = quote.items || [];
+              setLineItems(items.map((item: any, idx: number) => ({
+                id: item.id,
+                description: item.description,
+                item_description: item.item_description || null,
+                quantity: item.quantity,
+                unit_price: item.unit_price,
+                total: item.total,
+                item_type: item.item_type,
+                taxable: item.taxable !== false,
+                sort_order: idx,
+              })));
+            }
+          }
+        } catch (err) {
+          console.error('Failed to load quote:', err);
+        }
+      };
+      loadFromQuote();
     }
   }, [fromQuoteId]);
 
@@ -477,7 +487,8 @@ export default function NewInvoicePage() {
                 ) : (
                   <div className="space-y-2">
                     {customerJobs.map(job => {
-                      const property = getPropertyById(job.property_id);
+                      // Property comes from API join
+                      const property = job.property;
                       return (
                         <button
                           key={job.id}
