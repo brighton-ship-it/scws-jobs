@@ -154,6 +154,22 @@ export default function QuoteDetailPage() {
     router.push(`/jobs/new?from_quote=${quoteId}`);
   };
 
+  const handleDelete = async () => {
+    if (!confirm('Are you sure you want to delete this quote? This cannot be undone.')) {
+      return;
+    }
+    try {
+      const res = await fetch(`/api/quotes/${quoteId}`, { method: 'DELETE' });
+      if (res.ok) {
+        router.push('/quotes');
+      } else {
+        alert('Failed to delete quote');
+      }
+    } catch (error) {
+      alert('Failed to delete quote');
+    }
+  };
+
   const handleApproveAndPay = () => {
     // TODO: Implement payment flow
     alert('Payment flow would open here. This will redirect to a payment processor.');
@@ -301,6 +317,10 @@ export default function QuoteDetailPage() {
           <Button variant="outline" onClick={handlePrint}>
             <Printer className="h-4 w-4" />
             Print
+          </Button>
+          <Button variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={handleDelete}>
+            <X className="h-4 w-4" />
+            Delete
           </Button>
         </div>
       </div>

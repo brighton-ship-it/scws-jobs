@@ -16,16 +16,43 @@ export async function GET(
     
     const supabase = createServiceClient();
 
-    const { data: quote, error } = await supabase
-      .from('quotes')
-      .select(`
-        *,
-        customer:customers (id, name, email, phone),
-        property:properties (id, address, city),
-        items:quote_items (*)
-      `)
-      .eq('id', id)
-      .single();
+    // Try UUID first, then quote_number
+    let quote;
+    let error;
+    
+    // Check if it looks like a UUID
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    
+    if (isUUID) {
+      const result = await supabase
+        .from('quotes')
+        .select(`
+          *,
+          customer:customers (id, name, email, phone, billing_address),
+          property:properties (id, address, city),
+          items:quote_items (*)
+        `)
+        .eq('id', id)
+        .single();
+      quote = result.data;
+      error = result.error;
+    }
+    
+    // If not found by UUID, try by quote_number
+    if (!quote) {
+      const result = await supabase
+        .from('quotes')
+        .select(`
+          *,
+          customer:customers (id, name, email, phone, billing_address),
+          property:properties (id, address, city),
+          items:quote_items (*)
+        `)
+        .eq('quote_number', parseInt(id))
+        .single();
+      quote = result.data;
+      error = result.error;
+    }
 
     console.log('Quote API - Query result:', { found: !!quote, error: error?.message });
 
@@ -82,13 +109,30 @@ export async function DELETE(
     const { id } = await params;
     const supabase = createServiceClient();
 
+    // Check if it's a UUID or quote_number
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+    
+    let quoteId = id;
+    
+    // If not UUID, find the UUID by quote_number
+    if (!isUUID) {
+      const { data: quote } = await supabase
+        .from('quotes')
+        .select('id')
+        .eq('quote_number', parseInt(id))
+        .single();
+      if (quote) {
+        quoteId = quote.id;
+      }
+    }
+
     // Delete items first (cascade should handle this but being explicit)
-    await supabase.from('quote_items').delete().eq('quote_id', id);
+    await supabase.from('quote_items').delete().eq('quote_id', quoteId);
 
     const { error } = await supabase
       .from('quotes')
       .delete()
-      .eq('id', id);
+      .eq('id', quoteId);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
