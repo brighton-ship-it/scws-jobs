@@ -201,8 +201,13 @@ export default function NewInvoicePage() {
     const job = allJobs.find(j => j.id === selectedJobId);
     if (job) {
       // Auto-fill customer from job
-      if (job.property?.customer?.id) {
-        setCustomerId(job.property.customer.id);
+      if (job.property?.customer) {
+        const jobCustomer = job.property.customer;
+        // Add customer to list if not already there
+        if (!customers.find(c => c.id === jobCustomer.id)) {
+          setCustomers(prev => [...prev, jobCustomer]);
+        }
+        setCustomerId(jobCustomer.id);
       }
       
       const hours = job.estimated_duration 
@@ -352,8 +357,13 @@ export default function NewInvoicePage() {
                 // Auto-fill customer from job (always override)
                 if (selectedJobId) {
                   const job = allJobs.find(j => j.id === selectedJobId);
-                  if (job?.property?.customer?.id) {
-                    setCustomerId(job.property.customer.id);
+                  if (job?.property?.customer) {
+                    const jobCustomer = job.property.customer;
+                    // Add customer to list if not already there
+                    if (!customers.find(c => c.id === jobCustomer.id)) {
+                      setCustomers(prev => [...prev, jobCustomer]);
+                    }
+                    setCustomerId(jobCustomer.id);
                   }
                 }
               }}
