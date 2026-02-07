@@ -571,7 +571,7 @@ export default function JobDetailPage() {
                 </div>
               ) : (
                 <TeamMemberMultiSelect
-                  members={teamMembers}
+                  teamMembers={teamMembers}
                   selectedIds={assignedUser ? [assignedUser.id] : []}
                   onChange={handleAssignmentChange}
                   placeholder="Assign team members..."
