@@ -126,9 +126,14 @@ export default function NewInvoicePage() {
             const data = await res.json();
             const job = data.job;
             if (job) {
-              // Set customer from job's property
-              if (job.property?.customer?.id) {
-                setCustomerId(job.property.customer.id);
+              // Set customer from job's property and add to dropdown if needed
+              if (job.property?.customer) {
+                const jobCustomer = job.property.customer;
+                setCustomers(prev => {
+                  if (prev.find(c => c.id === jobCustomer.id)) return prev;
+                  return [...prev, jobCustomer];
+                });
+                setCustomerId(jobCustomer.id);
               }
               setJobId(fromJobId);
               
