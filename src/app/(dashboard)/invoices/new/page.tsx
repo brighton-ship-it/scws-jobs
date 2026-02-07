@@ -349,10 +349,10 @@ export default function NewInvoicePage() {
               onChange={(e) => {
                 const selectedJobId = e.target.value;
                 setJobId(selectedJobId);
-                // Auto-fill customer from job if not already set
+                // Auto-fill customer from job (always override)
                 if (selectedJobId) {
                   const job = allJobs.find(j => j.id === selectedJobId);
-                  if (job?.property?.customer?.id && !customerId) {
+                  if (job?.property?.customer?.id) {
                     setCustomerId(job.property.customer.id);
                   }
                 }
