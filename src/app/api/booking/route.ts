@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
+import { notifyBooking } from '@/lib/notifications';
+import { notifyNewBooking } from '@/lib/messaging/discord';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -143,6 +145,23 @@ View in Jobs App: ${process.env.NEXT_PUBLIC_APP_URL || 'https://jobs.scwellservi
       subject: emailSubject,
       html: textToHtml(emailContent),
       text: emailContent,
+    });
+
+    // In-app notification (bell icon)
+    await notifyBooking({
+      customerName: customer_name,
+      serviceType: serviceTypeLabel,
+      phone: cleanPhone,
+      requestId: booking.id,
+    });
+
+    // Discord notification (optional - if configured)
+    await notifyNewBooking({
+      customerName: customer_name,
+      serviceType: serviceTypeLabel,
+      phone: cleanPhone,
+      address: `${address}, ${city}`,
+      preferredDate: preferred_date,
     });
 
     // Also log that we got a new booking
