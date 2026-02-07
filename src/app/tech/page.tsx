@@ -7,12 +7,6 @@ import { Button } from '@/components/ui/button';
 import { JobStatusBadge, PriorityBadge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  mockJobs,
-  getPropertyById,
-  getCustomerById,
-  getTodaysJobsForUser,
-} from '@/lib/mock-data';
-import {
   Calendar,
   Clock,
   MapPin,
@@ -83,11 +77,34 @@ export default function TechJobsPage() {
     }
   };
 
-  // Use a fallback field user for demo if no user is logged in
-  const demoUser = user || { id: '6', name: 'Travis Sego', email: 'travis@scwellservice.com', role: 'field' as const, phone: '(760) 440-8520', created_at: '2024-01-01' };
+  // Fetch today's jobs for current user
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   
-  const todaysJobs = getTodaysJobsForUser(demoUser.id);
-  const sortedJobs = [...todaysJobs].sort((a, b) => {
+  const today = format(new Date(), 'yyyy-MM-dd');
+  
+  useEffect(() => {
+    const fetchJobs = async () => {
+      try {
+        // Fetch jobs for today assigned to this user
+        const url = user?.id 
+          ? `/api/jobs?scheduled_date=${today}&assigned_to=${user.id}`
+          : `/api/jobs?scheduled_date=${today}&limit=50`;
+        const res = await fetch(url);
+        if (res.ok) {
+          const data = await res.json();
+          setJobs(data.jobs || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch jobs:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchJobs();
+  }, [user?.id, today]);
+  
+  const sortedJobs = [...jobs].sort((a, b) => {
     if (a.scheduled_time && b.scheduled_time) {
       return a.scheduled_time.localeCompare(b.scheduled_time);
     }
@@ -180,9 +197,10 @@ export default function TechJobsPage() {
   );
 }
 
-function JobCard({ job }: { job: typeof mockJobs[0] }) {
-  const property = getPropertyById(job.property_id);
-  const customer = property ? getCustomerById(property.customer_id) : null;
+function JobCard({ job }: { job: any }) {
+  // Property and customer come from API join
+  const property = job.property;
+  const customer = property?.customer;
   
   const priorityBorder = {
     low: 'border-l-gray-300',

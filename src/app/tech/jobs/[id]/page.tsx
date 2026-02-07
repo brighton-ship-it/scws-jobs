@@ -7,12 +7,6 @@ import { Button } from '@/components/ui/button';
 import { JobStatusBadge, PriorityBadge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
 import {
-  getJobById,
-  getPropertyById,
-  getCustomerById,
-  getWellInfoByPropertyId,
-} from '@/lib/mock-data';
-import {
   ArrowLeft,
   MapPin,
   Phone,
@@ -65,11 +59,32 @@ export default function TechJobDetailPage() {
   const [showWellInfo, setShowWellInfo] = useState(false);
   const [jobStatus, setJobStatus] = useState<string>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [job, setJob] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
 
-  const job = getJobById(id as string);
-  const property = job ? getPropertyById(job.property_id) : null;
-  const customer = property ? getCustomerById(property.customer_id) : null;
-  const wellInfo = property ? getWellInfoByPropertyId(property.id) : null;
+  // Fetch job from API
+  useEffect(() => {
+    const fetchJob = async () => {
+      try {
+        const res = await fetch(`/api/jobs/${id}`);
+        if (res.ok) {
+          const data = await res.json();
+          setJob(data.job);
+          setJobStatus(data.job?.status || 'scheduled');
+        }
+      } catch (err) {
+        console.error('Failed to fetch job:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    if (id) fetchJob();
+  }, [id]);
+
+  // Property and customer come from API join
+  const property = job?.property;
+  const customer = property?.customer;
+  const wellInfo = null; // TODO: fetch well info if needed
 
   // Load saved notes and photos from localStorage
   useEffect(() => {
