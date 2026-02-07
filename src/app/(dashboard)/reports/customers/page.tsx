@@ -1,6 +1,7 @@
 'use client';
 
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { 
@@ -8,13 +9,8 @@ import {
   TrendingUp, 
   DollarSign,
   Star,
+  Loader2,
 } from 'lucide-react';
-import { 
-  mockCustomers, 
-  mockInvoices,
-  getTopCustomersByRevenue,
-  getJobsByCustomerId,
-} from '@/lib/mock-data';
 import { format, subMonths, startOfMonth, endOfMonth } from 'date-fns';
 import {
   BarChart,
@@ -29,29 +25,65 @@ import {
 } from 'recharts';
 
 export default function CustomersReportPage() {
+  const [customers, setCustomers] = useState<any[]>([]);
+  const [invoices, setInvoices] = useState<any[]>([]);
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch data from API
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [customersRes, invoicesRes, jobsRes] = await Promise.all([
+          fetch('/api/customers?limit=500'),
+          fetch('/api/invoices?limit=1000'),
+          fetch('/api/jobs?limit=1000'),
+        ]);
+        if (customersRes.ok) {
+          const data = await customersRes.json();
+          setCustomers(data.customers || []);
+        }
+        if (invoicesRes.ok) {
+          const data = await invoicesRes.json();
+          setInvoices(data.invoices || []);
+        }
+        if (jobsRes.ok) {
+          const data = await jobsRes.json();
+          setJobs(data.jobs || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch report data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
   // Calculate stats
-  const totalCustomers = mockCustomers.length;
-  const topCustomers = getTopCustomersByRevenue(5);
+  const totalCustomers = customers.length;
   
   // Total revenue per customer
-  const customerRevenue = mockCustomers.map(customer => {
-    const revenue = mockInvoices
+  const customerRevenue = customers.map(customer => {
+    const revenue = invoices
       .filter(inv => inv.customer_id === customer.id && inv.status === 'paid')
-      .reduce((sum, inv) => sum + inv.amount, 0);
-    const jobs = getJobsByCustomerId(customer.id);
+      .reduce((sum, inv) => sum + (inv.amount || inv.total || 0), 0);
+    const customerJobs = jobs.filter(j => j.property?.customer?.id === customer.id);
     return {
       ...customer,
       revenue,
-      jobCount: jobs.length,
+      jobCount: customerJobs.length,
     };
   }).sort((a, b) => b.revenue - a.revenue);
+
+  const topCustomers = customerRevenue.slice(0, 5);
 
   // Customers by month (acquisition)
   const customersByMonth = Array.from({ length: 6 }, (_, i) => {
     const month = subMonths(new Date(), 5 - i);
     const monthStart = startOfMonth(month);
     const monthEnd = endOfMonth(month);
-    const newCustomers = mockCustomers.filter(c => {
+    const newCustomers = customers.filter(c => {
       const createdDate = new Date(c.created_at);
       return createdDate >= monthStart && createdDate <= monthEnd;
     }).length;
@@ -63,9 +95,9 @@ export default function CustomersReportPage() {
   });
 
   // Average revenue per customer
-  const totalRevenue = mockInvoices
+  const totalRevenue = invoices
     .filter(inv => inv.status === 'paid')
-    .reduce((sum, inv) => sum + inv.amount, 0);
+    .reduce((sum, inv) => sum + (inv.amount || inv.total || 0), 0);
   const avgRevenue = totalCustomers > 0 ? Math.round(totalRevenue / totalCustomers) : 0;
 
   // Customers with most jobs

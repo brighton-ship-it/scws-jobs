@@ -1,6 +1,7 @@
 'use client';
 
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Badge } from '@/components/ui/badge';
@@ -11,8 +12,8 @@ import {
   AlertTriangle,
   FileText,
   Mail,
+  Loader2,
 } from 'lucide-react';
-import { mockInvoices, getCustomerById, getAgingReport } from '@/lib/mock-data';
 import { format, differenceInDays } from 'date-fns';
 import {
   BarChart,
@@ -29,20 +30,66 @@ import {
 const COLORS = ['#10B981', '#F59E0B', '#F97316', '#EF4444'];
 
 export default function ReceivablesReportPage() {
-  const agingReport = getAgingReport();
+  const [invoices, setInvoices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch invoices from API
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const res = await fetch('/api/invoices?limit=1000');
+        if (res.ok) {
+          const data = await res.json();
+          setInvoices(data.invoices || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch invoices:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const pendingInvoices = invoices.filter(inv => inv.status === 'sent');
+  
+  const overdueInvoices = invoices.filter(inv => {
+    if (inv.status !== 'sent' || !inv.due_date) return false;
+    return new Date(inv.due_date) < new Date();
+  });
+
+  // Calculate aging buckets
+  const agingReport = [
+    { bucket: 'Current', amount: 0, count: 0 },
+    { bucket: '1-30 Days', amount: 0, count: 0 },
+    { bucket: '31-60 Days', amount: 0, count: 0 },
+    { bucket: '60+ Days', amount: 0, count: 0 },
+  ];
+  
+  pendingInvoices.forEach(inv => {
+    const daysOverdue = inv.due_date ? differenceInDays(new Date(), new Date(inv.due_date)) : 0;
+    const amount = (inv.total || 0) - (inv.amount_paid || 0);
+    
+    if (daysOverdue <= 0) {
+      agingReport[0].amount += amount;
+      agingReport[0].count++;
+    } else if (daysOverdue <= 30) {
+      agingReport[1].amount += amount;
+      agingReport[1].count++;
+    } else if (daysOverdue <= 60) {
+      agingReport[2].amount += amount;
+      agingReport[2].count++;
+    } else {
+      agingReport[3].amount += amount;
+      agingReport[3].count++;
+    }
+  });
   
   // Calculate totals
   const totalOutstanding = agingReport.reduce((sum, bucket) => sum + bucket.amount, 0);
   const overdueAmount = agingReport
     .filter(b => b.bucket !== 'Current')
     .reduce((sum, bucket) => sum + bucket.amount, 0);
-  
-  const overdueInvoices = mockInvoices.filter(inv => {
-    if (inv.status !== 'sent' || !inv.due_date) return false;
-    return new Date(inv.due_date) < new Date();
-  });
-
-  const pendingInvoices = mockInvoices.filter(inv => inv.status === 'sent');
 
   // Pie chart data
   const pieData = agingReport.map((bucket, index) => ({
@@ -222,7 +269,8 @@ export default function ReceivablesReportPage() {
               </thead>
               <tbody>
                 {pendingInvoices.map((invoice) => {
-                  const customer = getCustomerById(invoice.customer_id);
+                  // Customer comes from API join
+                  const customer = invoice.customer;
                   const dueDate = invoice.due_date ? new Date(invoice.due_date) : null;
                   const isOverdue = dueDate && dueDate < new Date();
                   const daysOverdue = dueDate ? differenceInDays(new Date(), dueDate) : 0;
@@ -236,7 +284,7 @@ export default function ReceivablesReportPage() {
                         {customer?.name || 'Unknown'}
                       </td>
                       <td className="px-4 py-3 text-right font-medium text-gray-900">
-                        ${invoice.amount.toLocaleString()}
+                        ${(invoice.total || invoice.amount || 0).toLocaleString()}
                       </td>
                       <td className="px-4 py-3 text-gray-600">
                         {dueDate ? format(dueDate, 'MMM d, yyyy') : '-'}

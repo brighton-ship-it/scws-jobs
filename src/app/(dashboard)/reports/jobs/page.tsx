@@ -1,6 +1,7 @@
 'use client';
 
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { JobStatusBadge } from '@/components/ui/badge';
@@ -9,15 +10,8 @@ import {
   Clock, 
   CheckCircle,
   Users,
+  Loader2,
 } from 'lucide-react';
-import { 
-  mockJobs, 
-  mockUsers, 
-  getJobsByType, 
-  getUserById,
-  getPropertyById,
-  getCustomerById,
-} from '@/lib/mock-data';
 import {
   PieChart,
   Pie,
@@ -34,16 +28,53 @@ import {
 const COLORS = ['#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#06B6D4', '#84CC16'];
 
 export default function JobsReportPage() {
+  const [jobs, setJobs] = useState<any[]>([]);
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch data from API
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [jobsRes, usersRes] = await Promise.all([
+          fetch('/api/jobs?limit=1000'),
+          fetch('/api/users'),
+        ]);
+        if (jobsRes.ok) {
+          const data = await jobsRes.json();
+          setJobs(data.jobs || []);
+        }
+        if (usersRes.ok) {
+          const data = await usersRes.json();
+          setUsers(data.users || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch report data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
   // Calculate stats
-  const totalJobs = mockJobs.length;
-  const completedJobs = mockJobs.filter(j => j.status === 'completed' || j.status === 'invoiced').length;
-  const inProgressJobs = mockJobs.filter(j => j.status === 'in_progress').length;
-  const scheduledJobs = mockJobs.filter(j => j.status === 'scheduled').length;
+  const totalJobs = jobs.length;
+  const completedJobs = jobs.filter(j => j.status === 'completed' || j.status === 'invoiced').length;
+  const inProgressJobs = jobs.filter(j => j.status === 'in_progress').length;
+  const scheduledJobs = jobs.filter(j => j.status === 'scheduled').length;
 
   const completionRate = totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0;
 
   // Jobs by type
-  const jobsByType = getJobsByType();
+  const jobTypeCounts = jobs.reduce((acc, job) => {
+    acc[job.job_type] = (acc[job.job_type] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const jobsByType = Object.entries(jobTypeCounts).map(([name, count], idx) => ({
+    name,
+    count,
+    color: COLORS[idx % COLORS.length],
+  }));
 
   // Jobs by status
   const jobsByStatus = [
@@ -53,9 +84,9 @@ export default function JobsReportPage() {
   ];
 
   // Jobs by crew member
-  const fieldCrew = mockUsers.filter(u => u.role === 'field');
+  const fieldCrew = users.filter(u => u.role === 'field');
   const jobsByCrew = fieldCrew.map(user => {
-    const assignedJobs = mockJobs.filter(j => j.assigned_to === user.id);
+    const assignedJobs = jobs.filter(j => j.assigned_to === user.id);
     const completed = assignedJobs.filter(j => j.status === 'completed' || j.status === 'invoiced').length;
     return {
       name: user.name.split(' ')[0],
@@ -66,7 +97,7 @@ export default function JobsReportPage() {
   });
 
   // Recent completed jobs
-  const recentCompleted = [...mockJobs]
+  const recentCompleted = [...jobs]
     .filter(j => j.status === 'completed' || j.status === 'invoiced')
     .sort((a, b) => {
       const dateA = a.completed_at ? new Date(a.completed_at).getTime() : 0;
@@ -246,9 +277,9 @@ export default function JobsReportPage() {
               </thead>
               <tbody>
                 {recentCompleted.map((job) => {
-                  const property = getPropertyById(job.property_id);
-                  const customer = property ? getCustomerById(property.customer_id) : null;
-                  const assignee = job.assigned_to ? getUserById(job.assigned_to) : null;
+                  // Property, customer, and assignee come from API join
+                  const customer = job.property?.customer;
+                  const assignee = job.assigned_user;
                   
                   return (
                     <tr key={job.id} className="border-b border-gray-100">

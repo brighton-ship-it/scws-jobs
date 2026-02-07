@@ -1,7 +1,7 @@
 'use client';
 
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Button } from '@/components/forms/Button';
@@ -10,8 +10,8 @@ import {
   TrendingUp, 
   TrendingDown,
   Calendar,
+  Loader2,
 } from 'lucide-react';
-import { mockInvoices, getCustomerById } from '@/lib/mock-data';
 import { format, subDays, subMonths, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import {
   LineChart,
@@ -30,6 +30,26 @@ type Period = '7d' | '30d' | '90d' | '12m';
 
 export default function RevenueReportPage() {
   const [period, setPeriod] = useState<Period>('30d');
+  const [invoices, setInvoices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch invoices from API
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const res = await fetch('/api/invoices?limit=1000');
+        if (res.ok) {
+          const data = await res.json();
+          setInvoices(data.invoices || []);
+        }
+      } catch (err) {
+        console.error('Failed to fetch invoices:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
 
   // Generate date range based on period
   const getDateRange = () => {
@@ -57,7 +77,7 @@ export default function RevenueReportPage() {
   const { start, end } = getDateRange();
 
   // Calculate revenue data
-  const paidInvoices = mockInvoices.filter(inv => inv.status === 'paid' && inv.paid_at);
+  const paidInvoices = invoices.filter(inv => inv.status === 'paid' && inv.paid_at);
   const totalRevenue = paidInvoices.reduce((sum, inv) => sum + inv.amount, 0);
   const avgInvoice = paidInvoices.length > 0 ? Math.round(totalRevenue / paidInvoices.length) : 0;
   
