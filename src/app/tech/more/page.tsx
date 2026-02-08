@@ -18,6 +18,7 @@ import {
   Bell,
   ChevronRight,
   Phone,
+  PhoneCall,
 } from 'lucide-react';
 
 export default function TechMorePage() {
@@ -31,6 +32,7 @@ export default function TechMorePage() {
 
   const menuItems = [
     { icon: User, label: 'My Profile', href: '/tech/profile', color: 'bg-blue-100 text-blue-600' },
+    { icon: PhoneCall, label: 'On-Call Schedule', href: '/tech/on-call', color: 'bg-orange-100 text-orange-600' },
     { icon: Bell, label: 'Notifications', href: '/tech/notifications', color: 'bg-amber-100 text-amber-600' },
     { icon: FileText, label: 'My Jobs History', href: '/tech/history', color: 'bg-green-100 text-green-600' },
     { icon: Phone, label: 'Contact Office', href: 'tel:7604408520', color: 'bg-purple-100 text-purple-600' },

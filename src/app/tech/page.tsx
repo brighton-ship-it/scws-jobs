@@ -23,6 +23,7 @@ import {
   Plus,
   LogIn,
 } from 'lucide-react';
+import { PushNotificationPrompt } from '@/components/PushNotificationPrompt';
 import { format, startOfWeek, endOfWeek } from 'date-fns';
 
 export default function TechHomePage() {
@@ -301,6 +302,9 @@ export default function TechHomePage() {
           </Link>
         </div>
       </nav>
+
+      {/* Push Notification Prompt */}
+      <PushNotificationPrompt userId={user?.id} />
     </div>
   );
 }

@@ -64,6 +64,29 @@ export async function createNotification(options: CreateNotificationOptions): Pr
     }
 
     console.log(`[Notifications] Created ${notifications.length} notification(s): ${options.title}`);
+
+    // Also send push notifications (dynamic import to avoid build-time issues)
+    const pushPayload = {
+      title: options.title,
+      body: options.message,
+      tag: `${options.type}-${options.entityId || Date.now()}`,
+      url: options.entityType && options.entityId 
+        ? `/${options.entityType}s/${options.entityId}` 
+        : '/notifications',
+    };
+
+    try {
+      const { sendPushToUser, sendPushToAdmins } = await import('@/lib/push');
+      if (options.userId) {
+        await sendPushToUser(options.userId, pushPayload);
+      } else {
+        await sendPushToAdmins(pushPayload);
+      }
+    } catch (pushError) {
+      // Don't fail the notification if push fails
+      console.error('[Notifications] Push error (non-fatal):', pushError);
+    }
+
     return true;
   } catch (error) {
     console.error('[Notifications] Error:', error);

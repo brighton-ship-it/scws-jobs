@@ -52,8 +52,8 @@ export default function NewInvoicePage() {
       try {
         const [productsRes, customersRes, jobsRes] = await Promise.all([
           fetch('/api/products?limit=2000'),
-          fetch('/api/customers?limit=500'),
-          fetch('/api/jobs?status=completed&limit=500'),
+          fetch('/api/customers?limit=5000'),
+          fetch('/api/jobs?status=completed&limit=1000'),
         ]);
         
         if (productsRes.ok) {

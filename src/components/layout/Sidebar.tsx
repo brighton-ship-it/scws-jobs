@@ -32,6 +32,7 @@ import {
   RefreshCw,
   DollarSign,
   Search,
+  PhoneCall,
 } from 'lucide-react';
 
 interface NavItemDef {
@@ -65,6 +66,7 @@ const navigationGroups: { name: string; items: NavItemDef[] }[] = [
     name: 'Operations',
     items: [
       { name: 'Dispatch', href: '/dispatch', icon: Truck, permissions: ['view_dispatch'] },
+      { name: 'On-Call', href: '/on-call', icon: PhoneCall, permissions: ['view_schedule'] },
       { name: 'Tasks', href: '/tasks', icon: CheckSquare, permissions: ['view_tasks'] },
       { name: 'Messages', href: '/messages', icon: MessageSquare, permissions: ['view_messages'] },
       { name: 'Recurring', href: '/recurring', icon: RefreshCw, permissions: ['view_recurring'] },
