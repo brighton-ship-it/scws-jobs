@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET() {
   try {
-    // Get the authenticated user's session
-    const supabase = createServiceClient();
+    // Get the authenticated user's session using cookie-aware client
+    const supabase = await createClient();
     const { data: { session }, error: sessionError } = await supabase.auth.getSession();
     
     if (sessionError || !session?.user?.email) {
