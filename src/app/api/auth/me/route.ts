@@ -29,7 +29,7 @@ export async function GET() {
       const name = metadata.full_name || metadata.name || email.split('@')[0];
       
       // Determine role - first user or specific emails get admin
-      const adminEmails = ['brighton@scwellservice.com', 'info@scwellservice.com'];
+      const adminEmails = ['brighton@scwellservice.com', 'info@scwellservice.com', 'shanicey@scwellservice.com'];
       const role = adminEmails.includes(email.toLowerCase()) ? 'admin' : 'office';
       
       const { data: newProfile, error: insertError } = await serviceClient

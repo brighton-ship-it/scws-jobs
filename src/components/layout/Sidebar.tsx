@@ -33,6 +33,7 @@ import {
   DollarSign,
   Search,
   PhoneCall,
+  HardHat,
 } from 'lucide-react';
 
 interface NavItemDef {
@@ -57,6 +58,7 @@ const navigationGroups: { name: string; items: NavItemDef[] }[] = [
       { name: 'Customers', href: '/customers', icon: Users, permissions: ['view_customers'] },
       { name: 'Requests', href: '/requests', icon: Inbox, permissions: ['view_requests'] },
       { name: 'Quotes', href: '/quotes', icon: ClipboardList, permissions: ['view_quotes'] },
+      { name: 'Drilling Pipeline', href: '/drilling', icon: HardHat, permissions: ['view_quotes'] },
       { name: 'Jobs', href: '/jobs', icon: Briefcase, permissions: ['view_jobs'] },
       { name: 'My Jobs', href: '/jobs/my-jobs', icon: User, permissions: ['view_own_jobs'] },
       { name: 'Invoices', href: '/invoices', icon: FileText, permissions: ['view_invoices'] },

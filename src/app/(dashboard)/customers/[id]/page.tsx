@@ -8,6 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge, JobStatusBadge } from '@/components/ui/badge';
 import CommunicationTimeline from '@/components/customers/CommunicationTimeline';
+import CustomerNotes from '@/components/customers/CustomerNotes';
 import { format, differenceInDays, parseISO } from 'date-fns';
 import type { CustomerEquipment, LeadSource, LeadStage } from '@/types/database';
 import {
@@ -476,6 +477,9 @@ export default function CustomerDetailPage({
           </CardContent>
         </Card>
       )}
+
+      {/* Customer Notes */}
+      <CustomerNotes customerId={id} />
 
       {/* Communication Timeline */}
       <CommunicationTimeline customerId={id} />
