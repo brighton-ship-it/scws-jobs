@@ -52,8 +52,9 @@ export async function GET(
     
     console.log('[Portal Invoice API] Raw invoice by ID only:', JSON.stringify(rawInvoice));
 
-    // Get invoice with all details
-    console.log('[Portal Invoice API] Fetching invoice:', id, 'for customer:', portalToken.customer_id);
+    // WORKAROUND: Use simple query without customer_id filter due to Supabase bug
+    // The complex query with customer_id filter was returning stale data
+    console.log('[Portal Invoice API] Fetching invoice:', id);
     
     const { data: invoice, error: invoiceError } = await supabase
       .from('invoices')
@@ -91,8 +92,15 @@ export async function GET(
         )
       `)
       .eq('id', id)
-      .eq('customer_id', portalToken.customer_id)
       .single();
+    
+    // Verify customer ownership after fetching
+    if (invoice && invoice.customer_id !== portalToken.customer_id) {
+      return NextResponse.json(
+        { error: 'Invoice not found' },
+        { status: 404 }
+      );
+    }
     
     console.log('[Portal Invoice API] Invoice result:', JSON.stringify({ invoice, error: invoiceError }));
 
