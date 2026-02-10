@@ -135,6 +135,9 @@ export function StaxPaymentForm({
   // Card type detection for dynamic fees
   const [detectedCardType, setDetectedCardType] = useState<'debit' | 'credit' | 'unknown'>('unknown');
   const [cardBrand, setCardBrand] = useState<string | null>(null);
+  const [cardVerified, setCardVerified] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [tokenizedPaymentMethod, setTokenizedPaymentMethod] = useState<string | null>(null);
   
   // Form fields
   const [firstName, setFirstName] = useState(customerName?.split(' ')[0] || '');
@@ -260,6 +263,87 @@ export function StaxPaymentForm({
     return () => clearTimeout(timer);
   }, [isStaxLoaded, webPaymentsKey, paymentMethod]);
 
+  // Step 1: Verify card and determine fee
+  const handleVerifyCard = async () => {
+    if (!staxRef.current) {
+      onPaymentError('Payment form not ready');
+      return;
+    }
+
+    if (!firstName || !lastName) {
+      onPaymentError('Please enter your name');
+      return;
+    }
+
+    if (!expiryMonth || !expiryYear) {
+      onPaymentError('Please enter card expiry date');
+      return;
+    }
+
+    setIsVerifying(true);
+
+    try {
+      // Tokenize to get card details
+      const tokenResult = await staxRef.current.tokenize({
+        firstname: firstName,
+        lastname: lastName,
+        method: 'card',
+        month: expiryMonth.padStart(2, '0'),
+        year: expiryYear.length === 2 ? `20${expiryYear}` : expiryYear,
+        email: email || undefined,
+        validate: true,
+      });
+
+      console.log('Tokenize result:', tokenResult);
+      setTokenizedPaymentMethod(tokenResult.id);
+
+      // Check card type from Stax response
+      let isDebit = false;
+      const cardType = tokenResult.card_type?.toLowerCase() || '';
+      setCardBrand(cardType);
+
+      if ((tokenResult as any).is_debit === true || (tokenResult as any).funding === 'debit') {
+        isDebit = true;
+      }
+
+      // BIN lookup via our API if not determined
+      if (!isDebit && tokenResult.id) {
+        try {
+          const binRes = await fetch(`/api/payments/bin-lookup?payment_method_id=${tokenResult.id}`);
+          if (binRes.ok) {
+            const binData = await binRes.json();
+            console.log('BIN lookup result:', binData);
+            if (binData.isDebit) {
+              isDebit = true;
+            }
+            if (binData.cardType) {
+              setCardBrand(binData.cardType);
+            }
+          }
+        } catch (err) {
+          console.log('BIN lookup failed:', err);
+        }
+      }
+
+      // Update detected card type
+      setDetectedCardType(isDebit ? 'debit' : 'credit');
+      setCardVerified(true);
+
+    } catch (err) {
+      console.error('Card verification error:', err);
+      onPaymentError(err instanceof Error ? err.message : 'Failed to verify card');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  // Reset verification when card details change
+  const resetVerification = () => {
+    setCardVerified(false);
+    setTokenizedPaymentMethod(null);
+    setDetectedCardType('unknown');
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
@@ -271,60 +355,22 @@ export function StaxPaymentForm({
     setIsLoading(true);
 
     try {
-      if (paymentMethod === 'card' && staxRef.current) {
-        // Card payment via Stax.js
-        if (!expiryMonth || !expiryYear) {
-          onPaymentError('Please enter card expiry date');
+      if (paymentMethod === 'card') {
+        // Require card verification first
+        if (!cardVerified || !tokenizedPaymentMethod) {
+          onPaymentError('Please verify your card first');
           setIsLoading(false);
           return;
         }
 
-        // Step 1: Tokenize first to get card details (BIN lookup for debit/credit)
-        const tokenResult = await staxRef.current.tokenize({
-          firstname: firstName,
-          lastname: lastName,
-          method: 'card',
-          month: expiryMonth.padStart(2, '0'),
-          year: expiryYear.length === 2 ? `20${expiryYear}` : expiryYear,
-          email: email || undefined,
-          validate: true,
-        });
+        // Use already-determined card type and fee
+        const actualFeePercent = effectiveFeePercent;
+        const actualFee = cardFee;
+        const actualTotal = cardTotal;
 
-        console.log('Tokenize result:', tokenResult);
+        console.log(`Charging: ${detectedCardType}, Fee: ${actualFeePercent}%, Total: $${actualTotal}`);
 
-        // Step 2: Determine card type from tokenize response or BIN lookup
-        let isDebit = false;
-        const cardLastFour = tokenResult.card_last_four;
-        const cardType = tokenResult.card_type?.toLowerCase() || '';
-        
-        // Check if Stax returned debit info
-        if ((tokenResult as any).is_debit === true || (tokenResult as any).funding === 'debit') {
-          isDebit = true;
-        }
-        
-        // If not determined, do BIN lookup via our API
-        if (!isDebit && tokenResult.id) {
-          try {
-            const binLookupRes = await fetch(`/api/payments/bin-lookup?payment_method_id=${tokenResult.id}`);
-            if (binLookupRes.ok) {
-              const binData = await binLookupRes.json();
-              if (binData.isDebit) {
-                isDebit = true;
-              }
-            }
-          } catch (binErr) {
-            console.log('BIN lookup failed, using default rate:', binErr);
-          }
-        }
-
-        // Step 3: Calculate correct fee based on card type
-        const actualFeePercent = isDebit ? FEE_RATES.debit : FEE_RATES.credit;
-        const actualFee = (amount * actualFeePercent) / 100;
-        const actualTotal = amount + actualFee;
-
-        console.log(`Card type: ${isDebit ? 'debit' : 'credit'}, Fee: ${actualFeePercent}%, Total: $${actualTotal}`);
-
-        // Step 4: Charge via our backend using the tokenized payment method
+        // Charge via our backend using the tokenized payment method
         const chargeRes = await fetch(
           portalToken 
             ? `/api/portal/${portalToken}/invoices/${invoiceId}/pay`
@@ -334,7 +380,7 @@ export function StaxPaymentForm({
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               invoiceId,
-              paymentMethodId: tokenResult.id,
+              paymentMethodId: tokenizedPaymentMethod,
               amount: amount,
               totalCharged: actualTotal,
               processingFee: actualFee,
@@ -342,9 +388,8 @@ export function StaxPaymentForm({
               customerEmail: email,
               meta: {
                 invoice_number: invoiceNumber,
-                card_type: isDebit ? 'debit' : 'credit',
-                card_brand: cardType,
-                card_last_four: cardLastFour,
+                card_type: detectedCardType,
+                card_brand: cardBrand,
               },
             }),
           }
@@ -568,7 +613,10 @@ export function StaxPaymentForm({
               <Input
                 id="expiryMonth"
                 value={expiryMonth}
-                onChange={(e) => setExpiryMonth(e.target.value.replace(/\D/g, '').slice(0, 2))}
+                onChange={(e) => {
+                  setExpiryMonth(e.target.value.replace(/\D/g, '').slice(0, 2));
+                  resetVerification();
+                }}
                 placeholder="MM"
                 maxLength={2}
                 required
@@ -579,7 +627,10 @@ export function StaxPaymentForm({
               <Input
                 id="expiryYear"
                 value={expiryYear}
-                onChange={(e) => setExpiryYear(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                onChange={(e) => {
+                  setExpiryYear(e.target.value.replace(/\D/g, '').slice(0, 4));
+                  resetVerification();
+                }}
                 placeholder="YYYY"
                 maxLength={4}
                 required
@@ -722,16 +773,38 @@ export function StaxPaymentForm({
         </div>
       </div>
 
-      {/* Submit Button */}
-      <Button
-        type="submit"
-        disabled={isLoading || (paymentMethod === 'card' && !isStaxLoaded)}
-        className="w-full h-12 text-lg bg-[#4e9271] hover:bg-[#3d7358]"
-      >
-        {isLoading ? (
-          <>
-            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-            Processing...
+      {/* Action Buttons */}
+      {paymentMethod === 'card' && !cardVerified ? (
+        // Step 1: Verify Card button
+        <Button
+          type="button"
+          onClick={handleVerifyCard}
+          disabled={isVerifying || !isStaxLoaded || !cardFormReady}
+          className="w-full h-12 text-lg bg-[#1f3b4d] hover:bg-[#162d3d]"
+        >
+          {isVerifying ? (
+            <>
+              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+              Verifying Card...
+            </>
+          ) : (
+            <>
+              <CreditCard className="h-5 w-5 mr-2" />
+              Verify Card & See Fee
+            </>
+          )}
+        </Button>
+      ) : (
+        // Step 2: Pay button (or ACH direct pay)
+        <Button
+          type="submit"
+          disabled={isLoading || (paymentMethod === 'card' && (!cardVerified || !isStaxLoaded))}
+          className="w-full h-12 text-lg bg-[#4e9271] hover:bg-[#3d7358]"
+        >
+          {isLoading ? (
+            <>
+              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+              Processing...
           </>
         ) : (
           <>
@@ -739,7 +812,27 @@ export function StaxPaymentForm({
             Pay ${paymentMethod === 'card' ? cardTotal.toFixed(2) : achTotal.toFixed(2)}
           </>
         )}
-      </Button>
+        </Button>
+      )}
+
+      {/* Card Verified Badge */}
+      {paymentMethod === 'card' && cardVerified && (
+        <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg">
+          <div className="flex items-center gap-2 text-green-700">
+            <CheckCircle className="h-5 w-5" />
+            <span className="font-medium">
+              {cardBrand && <span className="capitalize">{cardBrand}</span>} {detectedCardType} card verified
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={resetVerification}
+            className="text-sm text-green-600 hover:text-green-800 underline"
+          >
+            Change card
+          </button>
+        </div>
+      )}
 
       {/* Security Badge */}
       <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
