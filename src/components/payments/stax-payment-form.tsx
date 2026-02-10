@@ -107,6 +107,13 @@ interface StaxPaymentFormProps {
   portalToken?: string;
 }
 
+// Dynamic fee rates by card type
+const FEE_RATES = {
+  debit: 1.0,      // 1% for debit cards
+  credit: 2.5,    // 2.5% for credit cards
+  unknown: 2.5,   // Default to credit rate until detected
+};
+
 export function StaxPaymentForm({
   webPaymentsKey,
   amount,
@@ -114,7 +121,7 @@ export function StaxPaymentForm({
   invoiceNumber,
   customerEmail,
   customerName,
-  cardFeePercent = 3,
+  cardFeePercent = 2.5, // Default, will be overridden by dynamic detection
   onPaymentSuccess,
   onPaymentError,
   portalToken,
@@ -124,6 +131,10 @@ export function StaxPaymentForm({
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'ach'>('ach');
   const [cardFormReady, setCardFormReady] = useState(false);
   const [cardFormError, setCardFormError] = useState<string | null>(null);
+  
+  // Card type detection for dynamic fees
+  const [detectedCardType, setDetectedCardType] = useState<'debit' | 'credit' | 'unknown'>('unknown');
+  const [cardBrand, setCardBrand] = useState<string | null>(null);
   
   // Form fields
   const [firstName, setFirstName] = useState(customerName?.split(' ')[0] || '');
@@ -142,8 +153,9 @@ export function StaxPaymentForm({
   
   const staxRef = useRef<StaxJsInstance | null>(null);
 
-  // Calculate fees
-  const cardFee = (amount * cardFeePercent) / 100;
+  // Calculate fees dynamically based on detected card type
+  const effectiveFeePercent = FEE_RATES[detectedCardType];
+  const cardFee = (amount * effectiveFeePercent) / 100;
   const cardTotal = amount + cardFee;
   const achTotal = amount; // No fee for ACH
 
@@ -202,6 +214,36 @@ export function StaxPaymentForm({
           setCardFormReady(false);
           if (message) {
             setCardFormError(typeof message === 'string' ? message : 'Please complete all card fields');
+          }
+        });
+
+        // Listen for card type detection (BIN lookup)
+        stax.on('card_type_change', (data: any) => {
+          console.log('Card type detected:', data);
+          if (data) {
+            // Set card brand (visa, mastercard, amex, discover, etc.)
+            if (data.brand || data.type) {
+              setCardBrand(data.brand || data.type);
+            }
+            // Detect debit vs credit
+            if (data.funding === 'debit' || data.isDebit === true) {
+              setDetectedCardType('debit');
+            } else if (data.funding === 'credit' || data.isDebit === false) {
+              setDetectedCardType('credit');
+            }
+          }
+        });
+
+        // Alternative event name Stax might use
+        stax.on('bin_match', (data: any) => {
+          console.log('BIN match:', data);
+          if (data) {
+            if (data.card_type) setCardBrand(data.card_type);
+            if (data.funding === 'debit' || data.prepaid === true) {
+              setDetectedCardType('debit');
+            } else {
+              setDetectedCardType('credit');
+            }
           }
         });
 
@@ -381,7 +423,12 @@ export function StaxPaymentForm({
         <div className="grid grid-cols-2 gap-3">
           <button
             type="button"
-            onClick={() => setPaymentMethod('ach')}
+            onClick={() => {
+              setPaymentMethod('ach');
+              // Reset card detection when switching
+              setDetectedCardType('unknown');
+              setCardBrand(null);
+            }}
             className={`p-4 rounded-lg border-2 transition-all ${
               paymentMethod === 'ach'
                 ? 'border-[#4e9271] bg-[#4e9271]/5 shadow-sm'
@@ -396,7 +443,12 @@ export function StaxPaymentForm({
           </button>
           <button
             type="button"
-            onClick={() => setPaymentMethod('card')}
+            onClick={() => {
+              setPaymentMethod('card');
+              // Reset card detection when switching
+              setDetectedCardType('unknown');
+              setCardBrand(null);
+            }}
             className={`p-4 rounded-lg border-2 transition-all ${
               paymentMethod === 'card'
                 ? 'border-[#1f3b4d] bg-[#1f3b4d]/5 shadow-sm'
@@ -407,7 +459,9 @@ export function StaxPaymentForm({
               paymentMethod === 'card' ? 'text-[#1f3b4d]' : 'text-gray-400'
             }`} />
             <div className="font-medium text-sm">Credit/Debit Card</div>
-            <div className="text-xs text-muted-foreground mt-1">{cardFeePercent}% fee</div>
+            <div className="text-xs text-muted-foreground mt-1">
+              {detectedCardType === 'debit' ? '1%' : detectedCardType === 'credit' ? '2.5%' : '1-2.5%'} fee
+            </div>
           </button>
         </div>
       </div>
@@ -587,11 +641,25 @@ export function StaxPaymentForm({
           <span>Invoice Amount</span>
           <span>${amount.toFixed(2)}</span>
         </div>
-        {paymentMethod === 'card' && cardFeePercent > 0 && (
-          <div className="flex justify-between text-muted-foreground">
-            <span>Processing Fee ({cardFeePercent}%)</span>
-            <span>${cardFee.toFixed(2)}</span>
-          </div>
+        {paymentMethod === 'card' && (
+          <>
+            <div className="flex justify-between text-muted-foreground">
+              <span className="flex items-center gap-2">
+                Processing Fee ({effectiveFeePercent}%)
+                {cardBrand && (
+                  <span className="text-xs bg-gray-200 px-1.5 py-0.5 rounded capitalize">
+                    {cardBrand} {detectedCardType !== 'unknown' ? `• ${detectedCardType}` : ''}
+                  </span>
+                )}
+              </span>
+              <span>${cardFee.toFixed(2)}</span>
+            </div>
+            {detectedCardType === 'unknown' && (
+              <p className="text-xs text-muted-foreground">
+                💡 Fee adjusts based on card type: Debit 1% • Credit 2.5%
+              </p>
+            )}
+          </>
         )}
         {paymentMethod === 'ach' && (
           <div className="flex justify-between text-green-600">
