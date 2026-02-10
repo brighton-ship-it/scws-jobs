@@ -395,7 +395,19 @@ export function StaxPaymentForm({
         console.log(`Charging: ${detectedCardType}, Fee: ${actualFeePercent}%, Total: $${actualTotal}`);
 
         // Use Stax.js pay() directly - it handles tokenization and charging
-        const payResult = await staxRef.current.pay({
+        console.log('Calling Stax pay() with:', {
+          firstname: firstName || 'Customer',
+          lastname: lastName || 'Payment',
+          method: 'card',
+          month: expiryMonth.padStart(2, '0'),
+          year: expiryYear.length === 2 ? `20${expiryYear}` : expiryYear,
+          email: email || undefined,
+          total: actualTotal,
+        });
+        
+        let payResult;
+        try {
+          payResult = await staxRef.current.pay({
           firstname: firstName || 'Customer',
           lastname: lastName || 'Payment',
           method: 'card',
@@ -411,6 +423,11 @@ export function StaxPaymentForm({
           },
           validate: true,
         });
+
+        } catch (staxErr: any) {
+          console.error('Stax.js pay() threw:', staxErr);
+          throw new Error(staxErr?.message || staxErr?.error || 'Stax payment error: ' + JSON.stringify(staxErr));
+        }
 
         console.log('Stax pay result:', payResult);
 
@@ -510,9 +527,22 @@ export function StaxPaymentForm({
           throw new Error(result.error || 'ACH payment failed');
         }
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Payment error:', err);
-      onPaymentError(err instanceof Error ? err.message : 'Payment processing failed');
+      // Extract the most detailed error message available
+      let errorMessage = 'Payment processing failed';
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      } else if (err?.message) {
+        errorMessage = err.message;
+      } else if (err?.error) {
+        errorMessage = err.error;
+      } else if (err?.errors?.[0]?.message) {
+        errorMessage = err.errors[0].message;
+      }
+      onPaymentError(errorMessage);
     } finally {
       setIsLoading(false);
     }
