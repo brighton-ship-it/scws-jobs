@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
+
+export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/notifications - Get user's notifications
  */
 export async function GET(request: NextRequest) {
   try {
+    // Use cookie-aware client for auth
+    const authClient = await createClient();
+    const { data: { user } } = await authClient.auth.getUser();
+    
+    // Use service client for queries (bypasses RLS)
     const supabase = createServiceClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -57,8 +63,12 @@ export async function GET(request: NextRequest) {
  */
 export async function PATCH(request: NextRequest) {
   try {
+    // Use cookie-aware client for auth
+    const authClient = await createClient();
+    const { data: { user } } = await authClient.auth.getUser();
+    
+    // Use service client for queries
     const supabase = createServiceClient();
-    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
