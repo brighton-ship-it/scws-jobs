@@ -100,16 +100,36 @@ export default function InvoiceDetailPage() {
   const [paymentModalOpen, setPaymentModalOpen] = useState(false)
   const [paymentSuccess, setPaymentSuccess] = useState(false)
   const [staxWebKey, setStaxWebKey] = useState<string | null>(null)
-  const [customerInfo, setCustomerInfo] = useState<{ name: string; email: string | null } | null>(null)
+  const [customerInfo, setCustomerInfo] = useState<{ 
+    name: string; 
+    email: string | null;
+    phone?: string | null;
+    billing_address?: string | null;
+    billing_city?: string | null;
+    billing_state?: string | null;
+    billing_zip?: string | null;
+  } | null>(null)
 
   useEffect(() => {
     async function loadInvoice() {
       try {
-        // Load invoice
+        // Load invoice (now includes customer billing info)
         const res = await fetch(`/api/portal/${token}/invoices/${invoiceId}`)
         const data = await res.json()
         if (res.ok) {
           setInvoice(data.invoice)
+          // Set customer info from invoice API response
+          if (data.customer) {
+            setCustomerInfo({
+              name: data.customer.name,
+              email: data.customer.email,
+              phone: data.customer.phone,
+              billing_address: data.customer.billing_address,
+              billing_city: data.customer.billing_city,
+              billing_state: data.customer.billing_state,
+              billing_zip: data.customer.billing_zip,
+            })
+          }
         }
         
         // Load payment info (Stax key)
@@ -119,14 +139,16 @@ export default function InvoiceDetailPage() {
           setStaxWebKey(payData.staxWebPaymentsKey)
         }
         
-        // Load customer info
-        const portalRes = await fetch(`/api/portal/${token}`)
-        const portalData = await portalRes.json()
-        if (portalRes.ok && portalData.customer) {
-          setCustomerInfo({
-            name: portalData.customer.name,
-            email: portalData.customer.email,
-          })
+        // Fallback: Load customer info from portal endpoint if not in invoice response
+        if (!data.customer) {
+          const portalRes = await fetch(`/api/portal/${token}`)
+          const portalData = await portalRes.json()
+          if (portalRes.ok && portalData.customer) {
+            setCustomerInfo({
+              name: portalData.customer.name,
+              email: portalData.customer.email,
+            })
+          }
         }
       } catch (err) {
         console.error('Failed to load invoice:', err)
@@ -399,6 +421,11 @@ export default function InvoiceDetailPage() {
         amount={amountDue}
         customerName={customerInfo?.name}
         customerEmail={customerInfo?.email || undefined}
+        customerPhone={customerInfo?.phone || undefined}
+        customerAddress={customerInfo?.billing_address || undefined}
+        customerCity={customerInfo?.billing_city || undefined}
+        customerState={customerInfo?.billing_state || undefined}
+        customerZip={customerInfo?.billing_zip || undefined}
         cardFeePercent={CARD_FEE_PERCENT}
         staxWebKey={staxWebKey}
         portalToken={token}

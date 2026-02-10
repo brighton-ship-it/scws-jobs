@@ -14,6 +14,11 @@ interface PaymentModalProps {
   amount: number;
   customerName?: string;
   customerEmail?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  customerCity?: string;
+  customerState?: string;
+  customerZip?: string;
   cardFeePercent?: number;
   staxWebKey: string | null;
   portalToken?: string;
@@ -28,6 +33,11 @@ export function PaymentModal({
   amount,
   customerName,
   customerEmail,
+  customerPhone,
+  customerAddress,
+  customerCity,
+  customerState,
+  customerZip,
   cardFeePercent = 3,
   staxWebKey,
   portalToken,
@@ -109,6 +119,11 @@ export function PaymentModal({
                 invoiceNumber={invoiceNumber}
                 customerEmail={customerEmail}
                 customerName={customerName}
+                customerPhone={customerPhone}
+                customerAddress={customerAddress}
+                customerCity={customerCity}
+                customerState={customerState}
+                customerZip={customerZip}
                 cardFeePercent={cardFeePercent}
                 onPaymentSuccess={handlePaymentSuccess}
                 onPaymentError={handlePaymentError}

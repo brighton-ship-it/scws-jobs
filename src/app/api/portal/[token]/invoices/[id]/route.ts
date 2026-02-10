@@ -127,6 +127,13 @@ export async function GET(
       .eq('invoice_id', id)
       .order('payment_date', { ascending: false });
 
+    // Get customer billing info for payment form
+    const { data: customer } = await supabase
+      .from('customers')
+      .select('id, name, email, phone, billing_address, billing_city, billing_state, billing_zip')
+      .eq('id', portalToken.customer_id)
+      .single();
+
     // Mark invoice as viewed if not already
     if (!invoice.viewed_at) {
       await supabase
@@ -151,6 +158,7 @@ export async function GET(
         items: freshItems || [],
         payments: payments || [],
       },
+      customer: customer || null,
       _debug: {
         timestamp: new Date().toISOString(),
         deployVersion: '2026-02-10-v4',

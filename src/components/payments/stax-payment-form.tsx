@@ -101,6 +101,11 @@ interface StaxPaymentFormProps {
   invoiceNumber?: number;
   customerEmail?: string;
   customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
+  customerCity?: string;
+  customerState?: string;
+  customerZip?: string;
   cardFeePercent?: number;
   onPaymentSuccess: (payment: { id: string; amount: number; method: string }) => void;
   onPaymentError: (error: string) => void;
@@ -121,6 +126,11 @@ export function StaxPaymentForm({
   invoiceNumber,
   customerEmail,
   customerName,
+  customerPhone,
+  customerAddress,
+  customerCity,
+  customerState,
+  customerZip,
   cardFeePercent = 2.5, // Default, will be overridden by dynamic detection
   onPaymentSuccess,
   onPaymentError,
@@ -141,17 +151,17 @@ export function StaxPaymentForm({
   
   // Auto-verification happens via useEffect when form is complete
   
-  // Form fields
+  // Form fields - pre-fill from customer data
   const [firstName, setFirstName] = useState(customerName?.split(' ')[0] || '');
   const [lastName, setLastName] = useState(customerName?.split(' ').slice(1).join(' ') || '');
   const [email, setEmail] = useState(customerEmail || '');
   
-  // Required by Stax when no customer_id
-  const [phone, setPhone] = useState('');
-  const [address1, setAddress1] = useState('');
-  const [city, setCity] = useState('');
-  const [state, setState] = useState('CA');
-  const [zip, setZip] = useState('');
+  // Required by Stax when no customer_id - pre-fill from customer billing
+  const [phone, setPhone] = useState(customerPhone || '');
+  const [address1, setAddress1] = useState(customerAddress || '');
+  const [city, setCity] = useState(customerCity || '');
+  const [state, setState] = useState(customerState || 'CA');
+  const [zip, setZip] = useState(customerZip || '');
   
   // Card fields (expiry only - number and CVV are in iframes)
   const [expiryMonth, setExpiryMonth] = useState('');
