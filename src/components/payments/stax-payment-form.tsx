@@ -379,58 +379,74 @@ export function StaxPaymentForm({
     setIsLoading(true);
 
     try {
-      if (paymentMethod === 'card') {
-        // Require card verification first
-        if (!cardVerified || !tokenizedPaymentMethod) {
-          onPaymentError('Please verify your card first');
+      if (paymentMethod === 'card' && staxRef.current) {
+        // Card payment via Stax.js pay()
+        if (!expiryMonth || !expiryYear) {
+          onPaymentError('Please enter card expiry date');
           setIsLoading(false);
           return;
         }
 
-        // Use already-determined card type and fee
+        // Use current fee (2.5% default, or 1% if detected as debit)
         const actualFeePercent = effectiveFeePercent;
         const actualFee = cardFee;
         const actualTotal = cardTotal;
 
         console.log(`Charging: ${detectedCardType}, Fee: ${actualFeePercent}%, Total: $${actualTotal}`);
 
-        // Charge via our backend using the tokenized payment method
-        const chargeRes = await fetch(
-          portalToken 
-            ? `/api/portal/${portalToken}/invoices/${invoiceId}/pay`
-            : '/api/payments/process',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              invoiceId,
-              paymentMethodId: tokenizedPaymentMethod,
-              amount: amount,
-              totalCharged: actualTotal,
-              processingFee: actualFee,
-              paymentMethod: 'card',
-              customerEmail: email,
-              meta: {
-                invoice_number: invoiceNumber,
-                card_type: detectedCardType,
-                card_brand: cardBrand,
-              },
-            }),
-          }
-        );
+        // Use Stax.js pay() directly - it handles tokenization and charging
+        const payResult = await staxRef.current.pay({
+          firstname: firstName || 'Customer',
+          lastname: lastName || 'Payment',
+          method: 'card',
+          month: expiryMonth.padStart(2, '0'),
+          year: expiryYear.length === 2 ? `20${expiryYear}` : expiryYear,
+          email: email || undefined,
+          total: actualTotal,
+          meta: {
+            invoice_id: invoiceId,
+            reference: invoiceNumber ? `INV-${invoiceNumber}` : undefined,
+            fee_percent: actualFeePercent,
+            fee_amount: actualFee,
+          },
+          validate: true,
+        });
 
-        const chargeResult = await chargeRes.json();
+        console.log('Stax pay result:', payResult);
 
-        if (chargeRes.ok && chargeResult.success) {
+        if (payResult.success || payResult.transaction?.success) {
+          // Record payment in our backend (already charged by Stax.js)
+          await fetch(
+            portalToken 
+              ? `/api/portal/${portalToken}/invoices/${invoiceId}/pay`
+              : '/api/payments/process',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                invoiceId,
+                amount: amount,
+                totalCharged: actualTotal,
+                processingFee: actualFee,
+                paymentMethod: 'card',
+                alreadyCharged: true,
+                transactionId: payResult.transaction?.id || payResult.id,
+              }),
+            }
+          );
+
           onPaymentSuccess({
-            id: chargeResult.transactionId || chargeResult.payment?.id,
+            id: payResult.transaction?.id || payResult.id,
             amount: amount,
             method: 'card',
           });
+          return;
         } else {
-          throw new Error(chargeResult.error || 'Payment failed');
+          throw new Error(payResult.message || 'Payment failed');
         }
-      } else if (paymentMethod === 'ach') {
+      }
+      
+      if (paymentMethod === 'ach') {
         // ACH payment - validate fields
         if (!bankAccount || !bankRouting) {
           onPaymentError('Please enter your bank account details');
@@ -797,67 +813,24 @@ export function StaxPaymentForm({
         </div>
       </div>
 
-      {/* Action Buttons */}
-      {paymentMethod === 'card' && isVerifying ? (
-        // Auto-verifying
-        <Button
-          type="button"
-          disabled
-          className="w-full h-12 text-lg bg-[#1f3b4d]"
-        >
-          <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-          Verifying Card...
-        </Button>
-      ) : paymentMethod === 'card' && !cardVerified ? (
-        // Manual verify button (fallback if auto-verify didn't trigger)
-        <Button
-          type="button"
-          onClick={handleVerifyCard}
-          disabled={!isStaxLoaded || !cardFormReady || !firstName || !lastName || !expiryMonth || !expiryYear}
-          className="w-full h-12 text-lg bg-[#1f3b4d] hover:bg-[#162d3d]"
-        >
-          <CreditCard className="h-5 w-5 mr-2" />
-          Verify Card & See Fee
-        </Button>
-      ) : (
-        // Pay button (card verified or ACH)
-        <Button
-          type="submit"
-          disabled={isLoading || (paymentMethod === 'card' && !cardVerified)}
-          className="w-full h-12 text-lg bg-[#4e9271] hover:bg-[#3d7358]"
-        >
-          {isLoading ? (
-            <>
-              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-              Processing...
-            </>
-          ) : (
-            <>
-              <Lock className="h-5 w-5 mr-2" />
-              Pay ${paymentMethod === 'card' ? cardTotal.toFixed(2) : achTotal.toFixed(2)}
-            </>
-          )}
-        </Button>
-      )}
-
-      {/* Card Verified Badge */}
-      {paymentMethod === 'card' && cardVerified && (
-        <div className="flex items-center justify-between p-3 bg-green-50 border border-green-200 rounded-lg">
-          <div className="flex items-center gap-2 text-green-700">
-            <CheckCircle className="h-5 w-5" />
-            <span className="font-medium">
-              {cardBrand && <span className="capitalize">{cardBrand}</span>} {detectedCardType} card verified
-            </span>
-          </div>
-          <button
-            type="button"
-            onClick={resetVerification}
-            className="text-sm text-green-600 hover:text-green-800 underline"
-          >
-            Change card
-          </button>
-        </div>
-      )}
+      {/* Pay Button - Simplified: just charge at displayed rate */}
+      <Button
+        type="submit"
+        disabled={isLoading || (paymentMethod === 'card' && !isStaxLoaded)}
+        className="w-full h-12 text-lg bg-[#4e9271] hover:bg-[#3d7358]"
+      >
+        {isLoading ? (
+          <>
+            <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+            Processing...
+          </>
+        ) : (
+          <>
+            <Lock className="h-5 w-5 mr-2" />
+            Pay ${paymentMethod === 'card' ? cardTotal.toFixed(2) : achTotal.toFixed(2)}
+          </>
+        )}
+      </Button>
 
       {/* Security Badge */}
       <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
