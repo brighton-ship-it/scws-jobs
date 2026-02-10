@@ -6,6 +6,18 @@ import { notifyNewBooking } from '@/lib/messaging/discord';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
+// CORS headers for cross-origin requests from the main website
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Accept',
+};
+
+// Handle OPTIONS preflight requests
+export async function OPTIONS() {
+  return NextResponse.json({}, { headers: corsHeaders });
+}
+
 /**
  * POST /api/booking - Create a new booking request
  * Public endpoint - no auth required
@@ -34,7 +46,7 @@ export async function POST(request: NextRequest) {
     if (!service_type || !customer_name || !phone || !address || !city) {
       return NextResponse.json(
         { error: 'Missing required fields: service_type, customer_name, phone, address, city' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -43,7 +55,7 @@ export async function POST(request: NextRequest) {
     if (cleanPhone.length < 10) {
       return NextResponse.json(
         { error: 'Invalid phone number' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -103,7 +115,7 @@ export async function POST(request: NextRequest) {
       console.error('Error creating booking:', bookingError);
       return NextResponse.json(
         { error: 'Failed to create booking request', details: bookingError.message },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
@@ -175,12 +187,12 @@ View in Jobs App: ${process.env.NEXT_PUBLIC_APP_URL || 'https://jobs.scwellservi
         preferred_date: booking.preferred_date,
         preferred_time: booking.preferred_time,
       },
-    });
+    }, { headers: corsHeaders });
   } catch (error) {
     console.error('Booking API error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
