@@ -12,9 +12,20 @@ interface PaymentRequest {
   cardToken?: string;
   // ACH details (for Stax)
   accountToken?: string;
+  // If true, Stax.js pay() already processed this - just record it
+  alreadyCharged?: boolean;
+  // Transaction ID from Stax.js pay()
+  transactionId?: string;
   // Customer info
   email?: string;
   name?: string;
+  // ACH bank details (for server-side processing)
+  firstName?: string;
+  lastName?: string;
+  bankType?: 'checking' | 'savings';
+  bankHolderType?: 'personal' | 'business';
+  bankAccount?: string;
+  bankRouting?: string;
 }
 
 /**
@@ -105,11 +116,83 @@ export async function POST(
     // 4. Record the payment in our database
     
     const staxApiKey = process.env.STAX_API_KEY;
+    const staxWebKey = process.env.NEXT_PUBLIC_STAX_WEB_PAYMENTS_KEY;
     let staxPaymentId: string | null = null;
     let paymentSuccessful = false;
     
-    if (staxApiKey && (body.cardToken || body.accountToken)) {
-      // Real Stax payment processing
+    // Case 1: Already charged via Stax.js pay() - just record it
+    if (body.alreadyCharged && body.transactionId) {
+      paymentSuccessful = true;
+      staxPaymentId = body.transactionId;
+    }
+    // Case 2: ACH payment - need to create payment method and charge
+    else if (staxApiKey && body.paymentMethod === 'ach' && body.bankAccount && body.bankRouting) {
+      try {
+        // Step 1: Create payment method
+        const createMethodResponse = await fetch('https://apiprod.fattlabs.com/payment-method', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${staxApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            method: 'bank',
+            person_name: `${body.firstName || ''} ${body.lastName || ''}`.trim() || 'Customer',
+            bank_account: body.bankAccount,
+            bank_routing: body.bankRouting,
+            bank_type: body.bankType || 'checking',
+            bank_holder_type: body.bankHolderType || 'personal',
+          }),
+        });
+
+        const methodResult = await createMethodResponse.json();
+        
+        if (!createMethodResponse.ok || !methodResult.id) {
+          return NextResponse.json(
+            { error: 'Failed to verify bank account', details: methodResult.message },
+            { status: 400 }
+          );
+        }
+
+        // Step 2: Charge the payment method
+        const chargeResponse = await fetch('https://apiprod.fattlabs.com/charge', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${staxApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            payment_method_id: methodResult.id,
+            total: totalToCharge,
+            meta: {
+              invoice_id: id,
+              customer_id: portalToken.customer_id,
+              processing_fee: processingFee,
+            },
+          }),
+        });
+
+        const chargeResult = await chargeResponse.json();
+        
+        if (chargeResponse.ok && (chargeResult.success !== false || chargeResult.id)) {
+          paymentSuccessful = true;
+          staxPaymentId = chargeResult.id;
+        } else {
+          return NextResponse.json(
+            { error: 'ACH payment failed', details: chargeResult.message || 'Payment declined' },
+            { status: 400 }
+          );
+        }
+      } catch (staxError) {
+        console.error('Stax ACH payment error:', staxError);
+        return NextResponse.json(
+          { error: 'Payment processing failed' },
+          { status: 500 }
+        );
+      }
+    }
+    // Case 3: Card payment with existing token (shouldn't happen - card uses Stax.js pay())
+    else if (staxApiKey && (body.cardToken || body.accountToken)) {
       try {
         const staxResponse = await fetch('https://apiprod.fattlabs.com/charge', {
           method: 'POST',
@@ -123,7 +206,6 @@ export async function POST(
               customer_id: portalToken.customer_id,
               processing_fee: processingFee,
             },
-            // Charge the TOTAL including fee
             total: totalToCharge,
             payment_method_id: body.cardToken || body.accountToken,
           }),

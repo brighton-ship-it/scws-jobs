@@ -347,7 +347,9 @@ export function StaxPaymentForm({
       body: JSON.stringify({
         ...paymentData,
         invoiceId,
-        cardToken: paymentData.staxTransactionId, // The transaction ID serves as proof of payment
+        // Mark as already charged - don't charge again!
+        alreadyCharged: true,
+        transactionId: paymentData.staxTransactionId,
       }),
     });
   };
