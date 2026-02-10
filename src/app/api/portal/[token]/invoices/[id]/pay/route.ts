@@ -4,11 +4,13 @@ import { createServiceClient } from '@/lib/supabase/service';
 interface PaymentRequest {
   paymentMethod: 'card' | 'ach';
   amount: number;
-  // Processing fee (3% for card, 0 for ACH)
+  // Processing fee (dynamic based on card type)
   processingFee?: number;
   // Total amount to charge (amount + processingFee)
   totalCharged?: number;
-  // Card details (for Stax)
+  // Payment method ID from Stax tokenize() - for charging
+  paymentMethodId?: string;
+  // Card details (for Stax) - legacy
   cardToken?: string;
   // ACH details (for Stax)
   accountToken?: string;
@@ -19,6 +21,7 @@ interface PaymentRequest {
   // Customer info
   email?: string;
   name?: string;
+  customerEmail?: string;
   // ACH bank details (for server-side processing)
   firstName?: string;
   lastName?: string;
@@ -26,6 +29,8 @@ interface PaymentRequest {
   bankHolderType?: 'personal' | 'business';
   bankAccount?: string;
   bankRouting?: string;
+  // Additional meta
+  meta?: Record<string, any>;
 }
 
 /**
@@ -102,8 +107,12 @@ export async function POST(
       );
     }
 
-    // Calculate processing fee if not provided (3% for card)
-    const processingFee = body.processingFee ?? (body.paymentMethod === 'card' ? body.amount * 0.03 : 0);
+    // Calculate processing fee if not provided
+    // Dynamic rates: debit 1%, credit 2.5%, ACH 0%
+    // If processingFee is provided (from frontend BIN lookup), use it
+    // Otherwise default to credit rate (2.5%) for safety
+    const defaultFeePercent = body.paymentMethod === 'card' ? 0.025 : 0;
+    const processingFee = body.processingFee ?? (body.amount * defaultFeePercent);
     const totalToCharge = body.totalCharged ?? (body.amount + processingFee);
     
     // TODO: Integrate with Stax Payment Gateway
@@ -191,7 +200,47 @@ export async function POST(
         );
       }
     }
-    // Case 3: Card payment with existing token (shouldn't happen - card uses Stax.js pay())
+    // Case 3: Card payment with payment method ID from tokenize()
+    else if (staxApiKey && body.paymentMethodId && body.paymentMethod === 'card') {
+      try {
+        const chargeResponse = await fetch('https://apiprod.fattlabs.com/charge', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${staxApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            payment_method_id: body.paymentMethodId,
+            total: totalToCharge,
+            meta: {
+              invoice_id: id,
+              customer_id: portalToken.customer_id,
+              processing_fee: processingFee,
+              ...(body.meta || {}),
+            },
+          }),
+        });
+
+        const chargeResult = await chargeResponse.json();
+        
+        if (chargeResponse.ok && (chargeResult.success !== false || chargeResult.id)) {
+          paymentSuccessful = true;
+          staxPaymentId = chargeResult.id;
+        } else {
+          return NextResponse.json(
+            { error: 'Payment failed', details: chargeResult.message || 'Payment declined' },
+            { status: 400 }
+          );
+        }
+      } catch (staxError) {
+        console.error('Stax card charge error:', staxError);
+        return NextResponse.json(
+          { error: 'Payment processing failed' },
+          { status: 500 }
+        );
+      }
+    }
+    // Case 4: Card payment with legacy token (backwards compatibility)
     else if (staxApiKey && (body.cardToken || body.accountToken)) {
       try {
         const staxResponse = await fetch('https://apiprod.fattlabs.com/charge', {

@@ -279,38 +279,87 @@ export function StaxPaymentForm({
           return;
         }
 
-        const payResult = await staxRef.current.pay({
+        // Step 1: Tokenize first to get card details (BIN lookup for debit/credit)
+        const tokenResult = await staxRef.current.tokenize({
           firstname: firstName,
           lastname: lastName,
           method: 'card',
           month: expiryMonth.padStart(2, '0'),
           year: expiryYear.length === 2 ? `20${expiryYear}` : expiryYear,
           email: email || undefined,
-          total: cardTotal,
-          meta: {
-            invoice_id: invoiceId,
-            reference: invoiceNumber ? `INV-${invoiceNumber}` : undefined,
-          },
           validate: true,
         });
 
-        if (payResult.success || payResult.transaction?.success) {
-          // Record payment in our backend
-          await recordPayment({
-            staxTransactionId: payResult.transaction?.id || payResult.id,
-            amount: amount,
-            totalCharged: cardTotal,
-            processingFee: cardFee,
-            paymentMethod: 'card',
-          });
+        console.log('Tokenize result:', tokenResult);
 
+        // Step 2: Determine card type from tokenize response or BIN lookup
+        let isDebit = false;
+        const cardLastFour = tokenResult.card_last_four;
+        const cardType = tokenResult.card_type?.toLowerCase() || '';
+        
+        // Check if Stax returned debit info
+        if ((tokenResult as any).is_debit === true || (tokenResult as any).funding === 'debit') {
+          isDebit = true;
+        }
+        
+        // If not determined, do BIN lookup via our API
+        if (!isDebit && tokenResult.id) {
+          try {
+            const binLookupRes = await fetch(`/api/payments/bin-lookup?payment_method_id=${tokenResult.id}`);
+            if (binLookupRes.ok) {
+              const binData = await binLookupRes.json();
+              if (binData.isDebit) {
+                isDebit = true;
+              }
+            }
+          } catch (binErr) {
+            console.log('BIN lookup failed, using default rate:', binErr);
+          }
+        }
+
+        // Step 3: Calculate correct fee based on card type
+        const actualFeePercent = isDebit ? FEE_RATES.debit : FEE_RATES.credit;
+        const actualFee = (amount * actualFeePercent) / 100;
+        const actualTotal = amount + actualFee;
+
+        console.log(`Card type: ${isDebit ? 'debit' : 'credit'}, Fee: ${actualFeePercent}%, Total: $${actualTotal}`);
+
+        // Step 4: Charge via our backend using the tokenized payment method
+        const chargeRes = await fetch(
+          portalToken 
+            ? `/api/portal/${portalToken}/invoices/${invoiceId}/pay`
+            : '/api/payments/process',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              invoiceId,
+              paymentMethodId: tokenResult.id,
+              amount: amount,
+              totalCharged: actualTotal,
+              processingFee: actualFee,
+              paymentMethod: 'card',
+              customerEmail: email,
+              meta: {
+                invoice_number: invoiceNumber,
+                card_type: isDebit ? 'debit' : 'credit',
+                card_brand: cardType,
+                card_last_four: cardLastFour,
+              },
+            }),
+          }
+        );
+
+        const chargeResult = await chargeRes.json();
+
+        if (chargeRes.ok && chargeResult.success) {
           onPaymentSuccess({
-            id: payResult.transaction?.id || payResult.id,
+            id: chargeResult.transactionId || chargeResult.payment?.id,
             amount: amount,
             method: 'card',
           });
         } else {
-          throw new Error(payResult.message || 'Payment failed');
+          throw new Error(chargeResult.error || 'Payment failed');
         }
       } else if (paymentMethod === 'ach') {
         // ACH payment - validate fields
