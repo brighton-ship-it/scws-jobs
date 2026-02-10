@@ -146,6 +146,13 @@ export function StaxPaymentForm({
   const [lastName, setLastName] = useState(customerName?.split(' ').slice(1).join(' ') || '');
   const [email, setEmail] = useState(customerEmail || '');
   
+  // Required by Stax when no customer_id
+  const [phone, setPhone] = useState('');
+  const [address1, setAddress1] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('CA');
+  const [zip, setZip] = useState('');
+  
   // Card fields (expiry only - number and CVV are in iframes)
   const [expiryMonth, setExpiryMonth] = useState('');
   const [expiryYear, setExpiryYear] = useState('');
@@ -405,6 +412,13 @@ export function StaxPaymentForm({
           total: actualTotal,
         });
         
+        // Validate required address fields
+        if (!phone || !address1 || !city || !zip) {
+          onPaymentError('Please fill in all billing address fields');
+          setIsLoading(false);
+          return;
+        }
+
         let payResult;
         try {
           payResult = await staxRef.current.pay({
@@ -414,6 +428,11 @@ export function StaxPaymentForm({
           month: expiryMonth.padStart(2, '0'),
           year: expiryYear.length === 2 ? `20${expiryYear}` : expiryYear,
           email: email || undefined,
+          phone: phone,
+          address_1: address1,
+          address_city: city,
+          address_state: state || 'CA',
+          address_zip: zip,
           total: actualTotal,
           meta: {
             invoice_id: invoiceId,
@@ -677,6 +696,70 @@ export function StaxPaymentForm({
           placeholder="john@example.com"
         />
       </div>
+
+      {/* Billing Address (required by Stax for cards) */}
+      {paymentMethod === 'card' && (
+        <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
+          <Label className="text-sm font-medium text-gray-700">Billing Address</Label>
+          
+          <div className="space-y-2">
+            <Label htmlFor="phone" className="text-sm">Phone *</Label>
+            <Input
+              id="phone"
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="(555) 123-4567"
+              required
+            />
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="address1" className="text-sm">Street Address *</Label>
+            <Input
+              id="address1"
+              value={address1}
+              onChange={(e) => setAddress1(e.target.value)}
+              placeholder="123 Main St"
+              required
+            />
+          </div>
+          
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="city" className="text-sm">City *</Label>
+              <Input
+                id="city"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                placeholder="San Diego"
+                required
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="state" className="text-sm">State</Label>
+              <Input
+                id="state"
+                value={state}
+                onChange={(e) => setState(e.target.value)}
+                placeholder="CA"
+                maxLength={2}
+              />
+            </div>
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="zip" className="text-sm">ZIP Code *</Label>
+            <Input
+              id="zip"
+              value={zip}
+              onChange={(e) => setZip(e.target.value)}
+              placeholder="92101"
+              required
+            />
+          </div>
+        </div>
+      )}
 
       {/* Card Form */}
       {paymentMethod === 'card' && (
