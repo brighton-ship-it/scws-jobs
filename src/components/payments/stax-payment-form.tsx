@@ -414,7 +414,12 @@ export function StaxPaymentForm({
 
         console.log('Stax pay result:', payResult);
 
-        if (payResult.success || payResult.transaction?.success) {
+        // Check for success
+        const isSuccess = payResult.success === true || 
+                         payResult.transaction?.success === true ||
+                         (payResult.id && !payResult.error);
+
+        if (isSuccess) {
           // Record payment in our backend (already charged by Stax.js)
           await fetch(
             portalToken 
@@ -442,7 +447,14 @@ export function StaxPaymentForm({
           });
           return;
         } else {
-          throw new Error(payResult.message || 'Payment failed');
+          // Extract detailed error message from Stax response
+          const staxError = payResult.message || 
+                           payResult.error || 
+                           payResult.transaction?.message ||
+                           payResult.errors?.[0]?.message ||
+                           (typeof payResult === 'string' ? payResult : 'Payment declined');
+          console.error('Stax payment failed:', payResult);
+          throw new Error(staxError);
         }
       }
       
