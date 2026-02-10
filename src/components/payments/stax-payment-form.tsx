@@ -139,6 +139,8 @@ export function StaxPaymentForm({
   const [isVerifying, setIsVerifying] = useState(false);
   const [tokenizedPaymentMethod, setTokenizedPaymentMethod] = useState<string | null>(null);
   
+  // Auto-verification happens via useEffect when form is complete
+  
   // Form fields
   const [firstName, setFirstName] = useState(customerName?.split(' ')[0] || '');
   const [lastName, setLastName] = useState(customerName?.split(' ').slice(1).join(' ') || '');
@@ -263,6 +265,27 @@ export function StaxPaymentForm({
     return () => clearTimeout(timer);
   }, [isStaxLoaded, webPaymentsKey, paymentMethod]);
 
+  // Auto-verify card when all required fields are filled
+  useEffect(() => {
+    if (
+      paymentMethod === 'card' &&
+      cardFormReady &&
+      !cardVerified &&
+      !isVerifying &&
+      firstName &&
+      lastName &&
+      expiryMonth.length === 2 &&
+      expiryYear.length >= 2 &&
+      staxRef.current
+    ) {
+      // Debounce to avoid rapid re-verification
+      const timer = setTimeout(() => {
+        handleVerifyCard();
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [cardFormReady, cardVerified, isVerifying, firstName, lastName, expiryMonth, expiryYear, paymentMethod]);
+
   // Step 1: Verify card and determine fee
   const handleVerifyCard = async () => {
     if (!staxRef.current) {
@@ -342,6 +365,7 @@ export function StaxPaymentForm({
     setCardVerified(false);
     setTokenizedPaymentMethod(null);
     setDetectedCardType('unknown');
+    setCardBrand(null);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -774,44 +798,45 @@ export function StaxPaymentForm({
       </div>
 
       {/* Action Buttons */}
-      {paymentMethod === 'card' && !cardVerified ? (
-        // Step 1: Verify Card button
+      {paymentMethod === 'card' && isVerifying ? (
+        // Auto-verifying
+        <Button
+          type="button"
+          disabled
+          className="w-full h-12 text-lg bg-[#1f3b4d]"
+        >
+          <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+          Verifying Card...
+        </Button>
+      ) : paymentMethod === 'card' && !cardVerified ? (
+        // Manual verify button (fallback if auto-verify didn't trigger)
         <Button
           type="button"
           onClick={handleVerifyCard}
-          disabled={isVerifying || !isStaxLoaded || !cardFormReady}
+          disabled={!isStaxLoaded || !cardFormReady || !firstName || !lastName || !expiryMonth || !expiryYear}
           className="w-full h-12 text-lg bg-[#1f3b4d] hover:bg-[#162d3d]"
         >
-          {isVerifying ? (
-            <>
-              <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-              Verifying Card...
-            </>
-          ) : (
-            <>
-              <CreditCard className="h-5 w-5 mr-2" />
-              Verify Card & See Fee
-            </>
-          )}
+          <CreditCard className="h-5 w-5 mr-2" />
+          Verify Card & See Fee
         </Button>
       ) : (
-        // Step 2: Pay button (or ACH direct pay)
+        // Pay button (card verified or ACH)
         <Button
           type="submit"
-          disabled={isLoading || (paymentMethod === 'card' && (!cardVerified || !isStaxLoaded))}
+          disabled={isLoading || (paymentMethod === 'card' && !cardVerified)}
           className="w-full h-12 text-lg bg-[#4e9271] hover:bg-[#3d7358]"
         >
           {isLoading ? (
             <>
               <Loader2 className="h-5 w-5 mr-2 animate-spin" />
               Processing...
-          </>
-        ) : (
-          <>
-            <Lock className="h-5 w-5 mr-2" />
-            Pay ${paymentMethod === 'card' ? cardTotal.toFixed(2) : achTotal.toFixed(2)}
-          </>
-        )}
+            </>
+          ) : (
+            <>
+              <Lock className="h-5 w-5 mr-2" />
+              Pay ${paymentMethod === 'card' ? cardTotal.toFixed(2) : achTotal.toFixed(2)}
+            </>
+          )}
         </Button>
       )}
 
