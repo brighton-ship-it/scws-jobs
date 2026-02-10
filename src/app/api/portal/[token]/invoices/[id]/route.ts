@@ -43,6 +43,15 @@ export async function GET(
       );
     }
 
+    // First, query just by ID to see raw data
+    const { data: rawInvoice } = await supabase
+      .from('invoices')
+      .select('id, total, subtotal, due_date')
+      .eq('id', id)
+      .single();
+    
+    console.log('[Portal Invoice API] Raw invoice by ID only:', JSON.stringify(rawInvoice));
+
     // Get invoice with all details
     console.log('[Portal Invoice API] Fetching invoice:', id, 'for customer:', portalToken.customer_id);
     
@@ -136,9 +145,13 @@ export async function GET(
       },
       _debug: {
         timestamp: new Date().toISOString(),
-        deployVersion: '2026-02-10-v3',
+        deployVersion: '2026-02-10-v4',
         invoiceId: id,
+        customerId: portalToken.customer_id,
+        rawInvoiceByIdOnly: rawInvoice,
         invoiceTotal: invoice.total,
+        invoiceSubtotal: invoice.subtotal,
+        invoiceDueDate: invoice.due_date,
         rawItemsCount: lineItems?.length || 0,
         freshItemsCount: freshItems?.length || 0,
         rawFirstItem: lineItems?.[0],
