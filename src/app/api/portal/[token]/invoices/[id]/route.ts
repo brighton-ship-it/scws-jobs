@@ -121,17 +121,29 @@ export async function GET(
         .eq('id', id);
     }
 
+    // Force fresh query for items with explicit select
+    const { data: freshItems } = await supabase
+      .from('invoice_items')
+      .select('id, description, quantity, unit_price, total, item_type, sort_order')
+      .eq('invoice_id', id)
+      .order('sort_order');
+    
     return NextResponse.json({
       invoice: {
         ...invoice,
-        items: lineItems || [],
+        items: freshItems || [],
         payments: payments || [],
       },
       _debug: {
         timestamp: new Date().toISOString(),
+        deployVersion: '2026-02-10-v3',
+        invoiceId: id,
         invoiceTotal: invoice.total,
-        itemsCount: lineItems?.length || 0,
-        firstItemPrice: lineItems?.[0]?.unit_price,
+        rawItemsCount: lineItems?.length || 0,
+        freshItemsCount: freshItems?.length || 0,
+        rawFirstItem: lineItems?.[0],
+        freshFirstItem: freshItems?.[0],
+        supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL?.slice(0, 30),
       },
     }, {
       headers: {
@@ -139,6 +151,7 @@ export async function GET(
         'Pragma': 'no-cache',
         'Expires': '0',
         'X-Debug-Time': new Date().toISOString(),
+        'X-Deploy-Version': '2026-02-10-v3',
       },
     });
 
