@@ -121,6 +121,12 @@ export async function GET(
         items: lineItems || [],
         payments: payments || [],
       },
+    }, {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+        'Pragma': 'no-cache',
+        'Expires': '0',
+      },
     });
 
   } catch (error) {
