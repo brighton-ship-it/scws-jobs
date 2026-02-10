@@ -665,7 +665,7 @@ export function StaxPaymentForm({
             }`} />
             <div className="font-medium text-sm">Credit/Debit Card</div>
             <div className="text-xs text-muted-foreground mt-1">
-              {detectedCardType === 'debit' ? '1%' : detectedCardType === 'credit' ? '2.5%' : '1-2.5%'} fee
+              Processing fee applies
             </div>
           </button>
         </div>

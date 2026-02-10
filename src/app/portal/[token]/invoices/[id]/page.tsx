@@ -405,7 +405,7 @@ export default function InvoiceDetailPage() {
               </Button>
               
               <p className="text-xs text-muted-foreground">
-                Pay securely with ACH bank transfer (no fee) or credit/debit card ({CARD_FEE_PERCENT}% fee)
+                Pay securely with ACH bank transfer (no fee) or credit/debit card (processing fee applies)
               </p>
             </div>
           </CardContent>
