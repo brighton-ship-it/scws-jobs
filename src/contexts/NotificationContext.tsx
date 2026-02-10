@@ -23,6 +23,7 @@ interface NotificationContextType {
   loading: boolean;
   markAsRead: (id: string) => void;
   markAllAsRead: () => void;
+  deleteNotification: (id: string) => void;
   refresh: () => Promise<void>;
 }
 
@@ -95,6 +96,30 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     }
   }, [fetchNotifications]);
 
+  // Delete notification
+  const deleteNotification = useCallback(async (id: string) => {
+    // Find the notification to check if unread
+    const notification = notifications.find(n => n.id === id);
+    
+    // Optimistic update
+    setNotifications(prev => prev.filter(n => n.id !== id));
+    if (notification && !notification.read) {
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    }
+
+    // API call
+    try {
+      await fetch('/api/notifications', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id }),
+      });
+    } catch (error) {
+      console.error('[Notifications] Error deleting:', error);
+      fetchNotifications();
+    }
+  }, [notifications, fetchNotifications]);
+
   // Initial fetch
   useEffect(() => {
     fetchNotifications();
@@ -142,6 +167,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         loading,
         markAsRead,
         markAllAsRead,
+        deleteNotification,
         refresh: fetchNotifications,
       }}
     >
