@@ -120,11 +120,40 @@ export default function InvoiceDetailPage() {
   };
 
   const handleSendInvoice = async () => {
+    if (!sendEmail) {
+      alert('Please enter an email address');
+      return;
+    }
+    
     setSending(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    // TODO: Implement actual send logic
-    setSending(false);
-    setShowSendModal(false);
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: sendEmail }),
+      });
+      
+      const data = await res.json();
+      
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to send invoice');
+      }
+      
+      // Refresh invoice data to get updated sent_at
+      const refreshRes = await fetch(`/api/invoices/${invoiceId}`);
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        setInvoiceData(refreshData.invoice);
+      }
+      
+      setShowSendModal(false);
+      alert('Invoice sent successfully!');
+    } catch (err) {
+      console.error('Send invoice error:', err);
+      alert(err instanceof Error ? err.message : 'Failed to send invoice');
+    } finally {
+      setSending(false);
+    }
   };
 
   const handleRecordPayment = async () => {
@@ -178,20 +207,23 @@ export default function InvoiceDetailPage() {
           </div>
         </div>
         <div className="flex items-center gap-2 print:hidden">
-          {invoiceData.status === 'draft' && (
-            <>
-              <Button variant="outline" href={`/invoices/${invoiceId}/edit`}>
+          {/* Edit button - show for draft and sent invoices (not paid or void) */}
+          {invoiceData.status !== 'paid' && invoiceData.status !== 'void' && (
+            <Link href={`/invoices/${invoiceId}/edit`}>
+              <Button variant="outline">
                 <Edit className="h-4 w-4" />
                 Edit
               </Button>
-              <Button onClick={() => {
-                setSendEmail(customer.email || '');
-                setShowSendModal(true);
-              }}>
-                <Send className="h-4 w-4" />
-                Send Invoice
-              </Button>
-            </>
+            </Link>
+          )}
+          {invoiceData.status === 'draft' && (
+            <Button onClick={() => {
+              setSendEmail(customer.email || '');
+              setShowSendModal(true);
+            }}>
+              <Send className="h-4 w-4" />
+              Send Invoice
+            </Button>
           )}
           {invoiceData.status !== 'paid' && invoiceData.status !== 'void' && invoiceData.status !== 'draft' && (
             <>

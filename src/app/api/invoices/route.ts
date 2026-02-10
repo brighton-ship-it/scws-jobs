@@ -150,12 +150,10 @@ export async function POST(request: NextRequest) {
       invoice_id: invoice.id,
       product_id: item.product_id || null,
       description: item.description,
-      item_description: item.item_description || null,
       quantity: item.quantity,
       unit_price: item.unit_price,
       total: item.quantity * item.unit_price,
       item_type: item.item_type || null,
-      taxable: item.taxable !== false,
       sort_order: index,
     }));
 

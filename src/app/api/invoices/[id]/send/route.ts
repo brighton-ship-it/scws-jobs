@@ -2,8 +2,39 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
 import { sendEmail, isResendConfigured } from '@/lib/messaging/email';
 import { logEmail } from '@/lib/communications';
+import { randomBytes } from 'crypto';
 
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app';
+
+// Get or create a portal token for customer
+async function getOrCreatePortalToken(supabase: any, customerId: string): Promise<string> {
+  // Check for existing valid token
+  const { data: existing } = await supabase
+    .from('portal_tokens')
+    .select('token')
+    .eq('customer_id', customerId)
+    .or('expires_at.is.null,expires_at.gt.' + new Date().toISOString())
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (existing?.token) {
+    return existing.token;
+  }
+
+  // Create new token (valid for 1 year)
+  const token = randomBytes(32).toString('hex');
+  const expiresAt = new Date();
+  expiresAt.setFullYear(expiresAt.getFullYear() + 1);
+
+  await supabase.from('portal_tokens').insert({
+    customer_id: customerId,
+    token,
+    expires_at: expiresAt.toISOString(),
+  });
+
+  return token;
+}
 
 /**
  * POST /api/invoices/[id]/send - Send invoice to customer via email
@@ -46,8 +77,11 @@ export async function POST(
       );
     }
 
-    // Generate pay link
-    const payLink = `${APP_URL}/portal/invoices/${id}/pay`;
+    // Get or create portal token for customer
+    const portalToken = await getOrCreatePortalToken(supabase, invoice.customer_id);
+    
+    // Generate pay link with portal token
+    const payLink = `${APP_URL}/portal/${portalToken}/invoices/${id}`;
 
     // Build email content
     const formatCurrency = (amount: number) => 

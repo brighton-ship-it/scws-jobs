@@ -14,13 +14,18 @@ const Dialog = ({ open, onOpenChange, children }: DialogProps) => {
   if (!open) return null
   
   return (
-    <div className="fixed inset-0 z-50">
+    <div className="fixed inset-0 z-[100] overflow-y-auto">
+      {/* Backdrop - fully opaque */}
       <div 
-        className="fixed inset-0 bg-black/80" 
+        className="fixed inset-0 bg-black/90 backdrop-blur-sm" 
         onClick={() => onOpenChange?.(false)}
+        aria-hidden="true"
       />
-      <div className="fixed left-[50%] top-[50%] z-50 translate-x-[-50%] translate-y-[-50%]">
-        {children}
+      {/* Modal container - centered with scroll support */}
+      <div className="fixed inset-0 flex items-center justify-center p-4">
+        <div className="relative z-[101] w-full max-w-lg">
+          {children}
+        </div>
       </div>
     </div>
   )
@@ -44,7 +49,7 @@ const DialogContent = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "w-full max-w-lg bg-background p-6 shadow-lg rounded-lg border",
+      "w-full max-w-lg bg-white p-6 shadow-2xl rounded-lg border max-h-[90vh] overflow-y-auto",
       className
     )}
     {...props}

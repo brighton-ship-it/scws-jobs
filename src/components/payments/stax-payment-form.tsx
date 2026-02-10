@@ -158,7 +158,7 @@ export function StaxPaymentForm({
     }
     
     const script = document.createElement('script');
-    script.src = 'https://js.staxpayments.com/stax.js';
+    script.src = 'https://staxjs.staxpayments.com/stax.js';
     script.async = true;
     script.onload = () => {
       setIsStaxLoaded(true);
