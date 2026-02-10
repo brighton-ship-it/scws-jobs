@@ -37,9 +37,11 @@ export async function createNotification(options: CreateNotificationOptions): Pr
     }
 
     if (userIds.length === 0) {
-      console.log('[Notifications] No users to notify');
+      console.error('[Notifications] No admin/office users found in database! Check users table roles.');
       return false;
     }
+    
+    console.log(`[Notifications] Found ${userIds.length} users to notify:`, userIds);
 
     // Create notification for each user
     const notifications = userIds.map(userId => ({
@@ -54,12 +56,14 @@ export async function createNotification(options: CreateNotificationOptions): Pr
       read: false,
     }));
 
+    console.log('[Notifications] Inserting notifications:', JSON.stringify(notifications, null, 2));
+    
     const { error } = await supabase
       .from('notifications')
       .insert(notifications);
 
     if (error) {
-      console.error('[Notifications] Error creating:', error);
+      console.error('[Notifications] Database insert error:', error.message, error.details, error.hint);
       return false;
     }
 
