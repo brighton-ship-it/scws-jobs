@@ -97,6 +97,9 @@ export async function POST(request: NextRequest) {
         email: customer.email?.trim() || null,
         phone: customer.phone?.trim() || null,
         billing_address: customer.billing_address?.trim() || null,
+        billing_city: customer.billing_city?.trim() || null,
+        billing_state: customer.billing_state?.trim() || null,
+        billing_zip: customer.billing_zip?.trim() || null,
         notes: customer.notes?.trim() || null,
         // Lead tracking fields
         lead_source: customer.lead_source || null,

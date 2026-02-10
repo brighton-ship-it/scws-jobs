@@ -39,10 +39,15 @@ export default function NewCustomerPage() {
     email: '',
     phone: '',
     billing_address: '',
+    billing_city: '',
+    billing_state: 'CA',
+    billing_zip: '',
     notes: '',
     lead_source: '' as LeadSource | '',
     lead_source_detail: '',
   });
+  
+  const [sameAsProperty, setSameAsProperty] = useState(false);
 
   const [properties, setProperties] = useState<PropertyForm[]>([
     { address: '', city: '', county: '', zip: '', access_notes: '' },
@@ -79,7 +84,31 @@ export default function NewCustomerPage() {
       };
       return updated;
     });
-  }, []);
+    
+    // If "same as property" is checked and this is the first property, update billing
+    if (sameAsProperty && index === 0) {
+      setFormData(prev => ({
+        ...prev,
+        billing_address: components.address,
+        billing_city: components.city,
+        billing_state: 'CA',
+        billing_zip: components.zip,
+      }));
+    }
+  }, [sameAsProperty]);
+  
+  const handleSameAsPropertyChange = (checked: boolean) => {
+    setSameAsProperty(checked);
+    if (checked && properties[0]) {
+      setFormData(prev => ({
+        ...prev,
+        billing_address: properties[0].address,
+        billing_city: properties[0].city,
+        billing_state: 'CA',
+        billing_zip: properties[0].zip,
+      }));
+    }
+  };
 
   const addProperty = () => {
     setProperties((prev) => [
@@ -188,22 +217,67 @@ export default function NewCustomerPage() {
               />
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <Input
-                label="Email"
-                name="email"
-                type="email"
-                value={formData.email}
-                onChange={handleChange}
-                placeholder="email@example.com"
-              />
-              <Input
-                label="Billing Address"
-                name="billing_address"
-                value={formData.billing_address}
-                onChange={handleChange}
-                placeholder="Full billing address"
-              />
+            <Input
+              label="Email"
+              name="email"
+              type="email"
+              value={formData.email}
+              onChange={handleChange}
+              placeholder="email@example.com"
+            />
+
+            {/* Billing Address Section */}
+            <div className="border-t pt-4 mt-4">
+              <div className="flex items-center justify-between mb-3">
+                <label className="text-sm font-medium text-gray-700">Billing Address</label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={sameAsProperty}
+                    onChange={(e) => handleSameAsPropertyChange(e.target.checked)}
+                    className="rounded border-gray-300 text-[#4e9271] focus:ring-[#4e9271]"
+                  />
+                  <span className="text-gray-600">Same as property address</span>
+                </label>
+              </div>
+              
+              <div className="space-y-4">
+                <Input
+                  label="Street Address"
+                  name="billing_address"
+                  value={formData.billing_address}
+                  onChange={handleChange}
+                  disabled={sameAsProperty}
+                  placeholder="123 Main St"
+                />
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <Input
+                    label="City"
+                    name="billing_city"
+                    value={formData.billing_city}
+                    onChange={handleChange}
+                    disabled={sameAsProperty}
+                    placeholder="Ramona"
+                  />
+                  <Input
+                    label="State"
+                    name="billing_state"
+                    value={formData.billing_state}
+                    onChange={handleChange}
+                    disabled={sameAsProperty}
+                    placeholder="CA"
+                    maxLength={2}
+                  />
+                  <Input
+                    label="ZIP"
+                    name="billing_zip"
+                    value={formData.billing_zip}
+                    onChange={handleChange}
+                    disabled={sameAsProperty}
+                    placeholder="92065"
+                  />
+                </div>
+              </div>
             </div>
 
             {/* Lead Source Tracking */}
