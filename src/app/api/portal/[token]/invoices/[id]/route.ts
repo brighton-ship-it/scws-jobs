@@ -44,6 +44,8 @@ export async function GET(
     }
 
     // Get invoice with all details
+    console.log('[Portal Invoice API] Fetching invoice:', id, 'for customer:', portalToken.customer_id);
+    
     const { data: invoice, error: invoiceError } = await supabase
       .from('invoices')
       .select(`
@@ -82,6 +84,8 @@ export async function GET(
       .eq('id', id)
       .eq('customer_id', portalToken.customer_id)
       .single();
+    
+    console.log('[Portal Invoice API] Invoice result:', JSON.stringify({ invoice, error: invoiceError }));
 
     if (invoiceError || !invoice) {
       return NextResponse.json(
@@ -91,11 +95,13 @@ export async function GET(
     }
 
     // Get line items
-    const { data: lineItems } = await supabase
+    const { data: lineItems, error: itemsError } = await supabase
       .from('invoice_items')
       .select('*')
       .eq('invoice_id', id)
       .order('sort_order', { ascending: true });
+    
+    console.log('[Portal Invoice API] Line items:', JSON.stringify({ lineItems, error: itemsError }));
 
     // Get payments
     const { data: payments } = await supabase
@@ -121,11 +127,18 @@ export async function GET(
         items: lineItems || [],
         payments: payments || [],
       },
+      _debug: {
+        timestamp: new Date().toISOString(),
+        invoiceTotal: invoice.total,
+        itemsCount: lineItems?.length || 0,
+        firstItemPrice: lineItems?.[0]?.unit_price,
+      },
     }, {
       headers: {
         'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
         'Pragma': 'no-cache',
         'Expires': '0',
+        'X-Debug-Time': new Date().toISOString(),
       },
     });
 
