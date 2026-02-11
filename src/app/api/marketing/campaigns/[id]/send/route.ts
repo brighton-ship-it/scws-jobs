@@ -43,8 +43,9 @@ function substituteVariables(content: string, customer: any): string {
 
 /**
  * Get customers for a segment
+ * @param excludeReviewed - If true, exclude customers who have already left a review
  */
-async function getSegmentCustomers(segmentId: string, campaignType: 'email' | 'sms'): Promise<any[]> {
+async function getSegmentCustomers(segmentId: string, campaignType: 'email' | 'sms', excludeReviewed: boolean = false): Promise<any[]> {
   // Get segment conditions
   const segment = await queryOne<any>(`
     SELECT * FROM marketing_segments WHERE id = $1
@@ -58,6 +59,14 @@ async function getSegmentCustomers(segmentId: string, campaignType: 'email' | 's
   // TODO: Apply segment conditions for dynamic segments
   const contactField = campaignType === 'email' ? 'email' : 'phone'
   
+  // Build the WHERE clause
+  let whereClause = `c.${contactField} IS NOT NULL AND c.${contactField} != ''`
+  
+  // Exclude customers who have already reviewed (for review request campaigns)
+  if (excludeReviewed) {
+    whereClause += ` AND (c.has_reviewed IS NULL OR c.has_reviewed = FALSE)`
+  }
+  
   const customers = await query<any>(`
     SELECT 
       c.id, 
@@ -69,8 +78,7 @@ async function getSegmentCustomers(segmentId: string, campaignType: 'email' | 's
       MAX(j.completed_at) as last_service_date
     FROM customers c
     LEFT JOIN jobs j ON j.customer_id = c.id AND j.status = 'completed'
-    WHERE c.${contactField} IS NOT NULL 
-      AND c.${contactField} != ''
+    WHERE ${whereClause}
     GROUP BY c.id, c.name, c.email, c.phone, c.service_address, c.city
     LIMIT 10000
   `)
@@ -124,8 +132,15 @@ export async function POST(
       WHERE id = $1
     `, [campaignId])
 
-    // Get eligible customers
-    const customers = await getSegmentCustomers(campaign.segment_id, campaign.type)
+    // Check if this is a review request campaign (by name, subject, or content)
+    const isReviewCampaign = 
+      campaign.name?.toLowerCase().includes('review') ||
+      campaign.subject?.toLowerCase().includes('review') ||
+      campaign.content?.toLowerCase().includes('review') ||
+      campaign.content?.toLowerCase().includes('google.com/maps')
+    
+    // Get eligible customers (exclude already-reviewed for review campaigns)
+    const customers = await getSegmentCustomers(campaign.segment_id, campaign.type, isReviewCampaign)
 
     // Get unsubscribed customer IDs
     const unsubscribes = await query<any>(`
@@ -138,6 +153,9 @@ export async function POST(
     // Filter out unsubscribed customers
     const eligibleCustomers = customers.filter((c: any) => !unsubscribedIds.has(c.id))
 
+    if (isReviewCampaign) {
+      console.log(`[Marketing Campaign ${campaignId}] Review campaign detected - excluding customers who already left reviews`)
+    }
     console.log(`[Marketing Campaign ${campaignId}] Sending ${campaign.type} to ${eligibleCustomers.length} recipients`)
 
     // Create recipient records

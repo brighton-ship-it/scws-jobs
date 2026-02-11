@@ -70,12 +70,22 @@ export async function createNotification(options: CreateNotificationOptions): Pr
     console.log(`[Notifications] Created ${notifications.length} notification(s): ${options.title}`);
 
     // Also send push notifications (dynamic import to avoid build-time issues)
+    // Map entity types to actual routes
+    const routeMap: Record<string, string> = {
+      customer: '/customers',
+      booking_request: '/requests',
+      job: '/jobs',
+      invoice: '/invoices',
+      quote: '/quotes',
+    };
+    const entityRoute = options.entityType ? (routeMap[options.entityType] || `/${options.entityType}s`) : null;
+    
     const pushPayload = {
       title: options.title,
       body: options.message,
       tag: `${options.type}-${options.entityId || Date.now()}`,
-      url: options.entityType && options.entityId 
-        ? `/${options.entityType}s/${options.entityId}` 
+      url: entityRoute && options.entityId 
+        ? `${entityRoute}/${options.entityId}` 
         : '/notifications',
     };
 
