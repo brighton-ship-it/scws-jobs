@@ -1,20 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { createServiceClient } from '@/lib/supabase/service';
 import { headers } from 'next/headers';
 import type { Signature } from '@/types/database';
-
-// Check if we're in demo/mock mode
-const useMockData = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                    process.env.NEXT_PUBLIC_SUPABASE_URL === 'your-supabase-url';
-
-// Use service key for server-side operations
-const supabase = useMockData ? null : createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
-
-// Mock signatures store for demo mode
-const mockSignatures: Map<string, Signature> = new Map();
 
 /**
  * GET /api/signatures?quote_id=xxx - Get signature for a quote
@@ -31,12 +18,7 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Return mock data in demo mode
-    if (useMockData || !supabase) {
-      const signature = mockSignatures.get(quoteId);
-      return NextResponse.json({ signature: signature || null });
-    }
-
+    const supabase = createServiceClient();
     const { data, error } = await supabase
       .from('signatures')
       .select('*')
@@ -45,9 +27,7 @@ export async function GET(request: NextRequest) {
 
     if (error && error.code !== 'PGRST116') {
       console.error('[Signatures] Fetch error:', error);
-      // Fall back to mock
-      const signature = mockSignatures.get(quoteId);
-      return NextResponse.json({ signature: signature || null });
+      return NextResponse.json({ signature: null });
     }
 
     return NextResponse.json({ signature: data || null });
@@ -92,26 +72,9 @@ export async function POST(request: NextRequest) {
       signed_at: new Date().toISOString(),
     };
 
-    // Handle mock data mode
-    if (useMockData || !supabase) {
-      // Check if already signed
-      if (mockSignatures.has(body.quote_id)) {
-        return NextResponse.json(
-          { error: 'This quote has already been signed' },
-          { status: 400 }
-        );
-      }
+    const supabase = createServiceClient();
 
-      const newSignature: Signature = {
-        id: `sig_${Date.now()}`,
-        ...signatureData,
-        created_at: new Date().toISOString(),
-      };
-      mockSignatures.set(body.quote_id, newSignature);
-      return NextResponse.json({ signature: newSignature }, { status: 201 });
-    }
-
-    // Check if already signed in database
+    // Check if already signed
     const { data: existing } = await supabase
       .from('signatures')
       .select('id')
@@ -133,15 +96,11 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (error) {
-      console.error('[Signatures] Create error, falling back to mock:', error);
-      // Fall back to mock data on error
-      const newSignature: Signature = {
-        id: `sig_${Date.now()}`,
-        ...signatureData,
-        created_at: new Date().toISOString(),
-      };
-      mockSignatures.set(body.quote_id, newSignature);
-      return NextResponse.json({ signature: newSignature }, { status: 201 });
+      console.error('[Signatures] Create error:', error);
+      return NextResponse.json(
+        { error: 'Failed to save signature' },
+        { status: 500 }
+      );
     }
 
     // Update quote status to accepted

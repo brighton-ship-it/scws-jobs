@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+import { createServiceClient } from '@/lib/supabase/service';
 
 // GET notes for a customer
 export async function GET(
@@ -12,6 +7,7 @@ export async function GET(
   { params }: { params: { id: string } }
 ) {
   try {
+    const supabase = createServiceClient();
     const { data: notes, error } = await supabase
       .from('customer_notes')
       .select('*')
@@ -33,6 +29,7 @@ export async function POST(
   { params }: { params: { id: string } }
 ) {
   try {
+    const supabase = createServiceClient();
     const body = await request.json();
     
     if (!body.note || !body.note.trim()) {
@@ -61,6 +58,7 @@ export async function POST(
 // DELETE a note
 export async function DELETE(request: NextRequest) {
   try {
+    const supabase = createServiceClient();
     const { searchParams } = new URL(request.url);
     const noteId = searchParams.get('noteId');
 

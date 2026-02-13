@@ -1,16 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+import { createServiceClient } from '@/lib/supabase/service';
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } }
 ) {
   try {
+    const supabase = createServiceClient();
     const { data: project, error } = await supabase
       .from('drilling_projects')
       .select('*')
@@ -31,6 +27,7 @@ export async function PATCH(
   { params }: { params: { id: string } }
 ) {
   try {
+    const supabase = createServiceClient();
     const body = await request.json();
     
     const updates: any = {
@@ -94,6 +91,7 @@ export async function DELETE(
   { params }: { params: { id: string } }
 ) {
   try {
+    const supabase = createServiceClient();
     const { error } = await supabase
       .from('drilling_projects')
       .delete()

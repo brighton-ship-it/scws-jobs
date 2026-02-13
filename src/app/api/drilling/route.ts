@@ -1,13 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+import { createServiceClient } from '@/lib/supabase/service';
 
 export async function GET(request: NextRequest) {
   try {
+    const supabase = createServiceClient();
     const { data: projects, error } = await supabase
       .from('drilling_projects')
       .select('*')
@@ -33,6 +29,7 @@ export async function GET(request: NextRequest) {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = createServiceClient();
     const body = await request.json();
     
     const { data, error } = await supabase

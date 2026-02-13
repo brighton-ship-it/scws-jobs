@@ -1,10 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+import { createServiceClient } from '@/lib/supabase/service';
 
 const JOBBER_API = 'https://api.getjobber.com/api/graphql';
 
@@ -23,6 +18,7 @@ async function jobberQuery(query: string, token: string) {
 
 export async function POST(request: NextRequest) {
   try {
+    const supabase = createServiceClient();
     const token = process.env.JOBBER_ACCESS_TOKEN;
     if (!token) {
       return NextResponse.json({ error: 'Jobber token not configured' }, { status: 500 });

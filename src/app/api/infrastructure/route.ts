@@ -1,13 +1,5 @@
-import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
-
-// Lazy init to avoid build-time errors
-function getSupabase() {
-  return createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL || '',
-    process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-  );
-}
+import { createServiceClient } from '@/lib/supabase/service';
 
 // GET /api/infrastructure?apn=123-456-78
 // GET /api/infrastructure?lat=32.8&lng=-117.1
@@ -18,7 +10,7 @@ export async function GET(request: NextRequest) {
   const lng = searchParams.get('lng');
 
   try {
-    const supabase = getSupabase();
+    const supabase = createServiceClient();
     
     // Search by APN
     if (apn) {
