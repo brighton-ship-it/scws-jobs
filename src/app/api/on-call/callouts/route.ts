@@ -12,14 +12,10 @@ export async function GET(request: NextRequest) {
     const startDate = searchParams.get('start');
     const endDate = searchParams.get('end');
 
+    // Simplified query without relationships to check table existence
     let query = supabase
       .from('on_call_callouts')
-      .select(`
-        *,
-        user:users (id, name, email),
-        job:jobs (id, job_type, description),
-        customer:customers (id, name, phone)
-      `)
+      .select('*')
       .order('callout_date', { ascending: false });
 
     if (userId) query = query.eq('user_id', userId);

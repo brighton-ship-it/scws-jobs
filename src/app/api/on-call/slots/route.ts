@@ -12,17 +12,10 @@ export async function GET(request: NextRequest) {
     const endDate = searchParams.get('end') || format(addWeeks(new Date(), 8), 'yyyy-MM-dd');
     const userId = searchParams.get('user_id');
 
+    // First try simple query without relationships to check if table exists
     let query = supabase
       .from('on_call_slots')
-      .select(`
-        *,
-        assigned_user:users!on_call_slots_assigned_user_id_fkey (id, name, email, phone),
-        signups:on_call_signups (
-          id,
-          status,
-          user:users (id, name)
-        )
-      `)
+      .select('*')
       .gte('slot_date', startDate)
       .lte('slot_date', endDate)
       .order('slot_date', { ascending: true });
@@ -119,10 +112,7 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq('id', slot.id)
-        .select(`
-          *,
-          assigned_user:users!on_call_slots_assigned_user_id_fkey (id, name, email)
-        `)
+        .select('*')
         .single();
 
       if (updateError) throw updateError;
