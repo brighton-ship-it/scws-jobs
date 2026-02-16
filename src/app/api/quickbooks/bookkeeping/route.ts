@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { getQuickBooksClient, getQuickBooksClientAdmin, withQBORetry } from '@/lib/quickbooks/service';
 import { QuickBooksClient } from '@/lib/quickbooks/client';
 
@@ -30,8 +30,8 @@ export async function GET(request: NextRequest) {
     const isAdmin = apiKey === process.env.ADMIN_API_KEY;
 
     if (!isAdmin) {
-      // Regular user access - verify auth
-      const supabase = createServiceClient();
+      // Regular user access - verify auth using session-aware client
+      const supabase = await createClient();
       const { data: { user } } = await supabase.auth.getUser();
       
       if (!user) {
