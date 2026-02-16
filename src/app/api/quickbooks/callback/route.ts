@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { exchangeCodeForTokens, getOAuthConfig } from '@/lib/quickbooks/oauth';
 
 export const dynamic = 'force-dynamic';
@@ -34,14 +34,17 @@ export async function GET(request: NextRequest) {
       return NextResponse.redirect(redirectUrl);
     }
 
-    const supabase = createServiceClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
+    // Use session-aware client to get user
+    const authClient = await createClient();
+    const { data: { user } } = await authClient.auth.getUser();
     if (!user) {
       const redirectUrl = new URL('/settings/integrations', baseUrl);
       redirectUrl.searchParams.set('qb_error', 'Not authenticated');
       return NextResponse.redirect(redirectUrl);
     }
+
+    // Use service client for database writes (bypasses RLS)
+    const supabase = createServiceClient();
 
     // Exchange code for tokens
     const config = getOAuthConfig();
