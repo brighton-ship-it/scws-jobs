@@ -18,6 +18,7 @@ export function QuickBooksConnect() {
   const [status, setStatus] = useState<QBOStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [disconnecting, setDisconnecting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     checkStatus();
@@ -30,8 +31,13 @@ export function QuickBooksConnect() {
       window.history.replaceState({}, '', window.location.pathname);
     }
     if (params.get('qb_error')) {
-      console.error('QuickBooks error:', params.get('qb_error'));
-      window.history.replaceState({}, '', window.location.pathname);
+      const errorMsg = params.get('qb_error');
+      console.error('QuickBooks error:', errorMsg);
+      setError(errorMsg);
+      // Don't clear URL immediately so we can debug
+      setTimeout(() => {
+        window.history.replaceState({}, '', window.location.pathname);
+      }, 5000);
     }
   }, []);
 
@@ -103,6 +109,14 @@ export function QuickBooksConnect() {
         </p>
       </CardHeader>
       <CardContent>
+        {error && (
+          <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-md">
+            <p className="text-sm text-red-700 flex items-center gap-2">
+              <AlertCircle className="h-4 w-4" />
+              <strong>Connection failed:</strong> {error}
+            </p>
+          </div>
+        )}
         {status?.connected ? (
           <div className="space-y-4">
             <div className="text-sm text-gray-600 space-y-1">
