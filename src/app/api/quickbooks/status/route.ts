@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/server';
+import { createClient, createServiceClient } from '@/lib/supabase/server';
 import { getQBOConnectionStatus } from '@/lib/quickbooks/service';
 
 export async function GET() {
@@ -19,12 +19,15 @@ export async function GET() {
 
 export async function DELETE() {
   try {
-    const supabase = createServiceClient();
-    
-    const { data: { user } } = await supabase.auth.getUser();
+    // Use session-aware client to get user
+    const authClient = await createClient();
+    const { data: { user } } = await authClient.auth.getUser();
     if (!user) {
       return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
     }
+
+    // Use service client for database operations (bypasses RLS)
+    const supabase = createServiceClient();
 
     // Delete the connection
     const { error } = await supabase
