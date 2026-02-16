@@ -12,14 +12,23 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get('error');
 
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  
+  console.log('=== QBO CALLBACK START ===');
+  console.log('baseUrl:', baseUrl);
+  console.log('code:', code ? 'present' : 'missing');
+  console.log('realmId:', realmId);
+  console.log('state:', state);
+  console.log('error:', error);
 
   if (error) {
+    console.log('QBO Callback - OAuth error:', error);
     const redirectUrl = new URL('/settings/integrations', baseUrl);
     redirectUrl.searchParams.set('qb_error', error);
     return NextResponse.redirect(redirectUrl);
   }
 
   if (!code || !realmId) {
+    console.log('QBO Callback - Missing code or realmId');
     const redirectUrl = new URL('/settings/integrations', baseUrl);
     redirectUrl.searchParams.set('qb_error', 'Missing authorization code or realm ID');
     return NextResponse.redirect(redirectUrl);
@@ -40,11 +49,15 @@ export async function GET(request: NextRequest) {
     }
 
     // Use session-aware client to get user
+    console.log('QBO Callback - Getting user...');
     const authClient = await createClient();
-    const { data: { user } } = await authClient.auth.getUser();
+    const { data: { user }, error: authError } = await authClient.auth.getUser();
+    console.log('QBO Callback - User:', user?.id || 'none', 'Error:', authError?.message || 'none');
+    
     if (!user) {
+      console.log('QBO Callback - No user found, redirecting with error');
       const redirectUrl = new URL('/settings/integrations', baseUrl);
-      redirectUrl.searchParams.set('qb_error', 'Not authenticated');
+      redirectUrl.searchParams.set('qb_error', 'Not authenticated - please log in first');
       return NextResponse.redirect(redirectUrl);
     }
 
@@ -52,13 +65,26 @@ export async function GET(request: NextRequest) {
     const supabase = createServiceClient();
 
     // Exchange code for tokens
+    console.log('QBO Callback - Exchanging code for tokens...');
     const config = getOAuthConfig();
-    const tokens = await exchangeCodeForTokens({
-      code,
-      clientId: config.clientId,
-      clientSecret: config.clientSecret,
-      redirectUri: config.redirectUri,
-    });
+    console.log('QBO Callback - Config redirectUri:', config.redirectUri);
+    
+    let tokens;
+    try {
+      tokens = await exchangeCodeForTokens({
+        code,
+        clientId: config.clientId,
+        clientSecret: config.clientSecret,
+        redirectUri: config.redirectUri,
+      });
+      console.log('QBO Callback - Token exchange successful');
+    } catch (tokenError: unknown) {
+      const errMsg = tokenError instanceof Error ? tokenError.message : 'Unknown token error';
+      console.error('QBO Callback - Token exchange failed:', errMsg);
+      const redirectUrl = new URL('/settings/integrations', baseUrl);
+      redirectUrl.searchParams.set('qb_error', 'Token exchange failed: ' + errMsg);
+      return NextResponse.redirect(redirectUrl);
+    }
 
     // Calculate token expiration
     const tokenExpiresAt = new Date(Date.now() + tokens.expires_in * 1000);
