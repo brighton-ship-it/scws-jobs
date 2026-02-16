@@ -217,6 +217,117 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// POST handler for updates
+export async function POST(request: NextRequest) {
+  try {
+    // Check for admin API key first
+    const apiKey = request.headers.get('x-api-key') || request.nextUrl.searchParams.get('api_key');
+    const isAdmin = apiKey === process.env.ADMIN_API_KEY;
+
+    if (!isAdmin) {
+      // Regular user access - verify auth using session-aware client
+      const supabase = await createClient();
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        return NextResponse.json({ error: 'Not authenticated' }, { status: 401 });
+      }
+    }
+
+    const body = await request.json();
+    const action = body.action;
+
+    switch (action) {
+      case 'update_purchase': {
+        const { purchaseId, accountId, accountName } = body;
+        if (!purchaseId || !accountId) {
+          return NextResponse.json({ error: 'purchaseId and accountId required' }, { status: 400 });
+        }
+
+        const result = await executeWithRetry(isAdmin, async (client) => {
+          // First get the current purchase
+          const purchaseResult = await client.getPurchase(purchaseId);
+          const purchase = purchaseResult.Purchase;
+          
+          if (!purchase) {
+            throw new Error('Purchase not found');
+          }
+
+          // Update the account reference in the line items
+          if (purchase.Line && purchase.Line.length > 0) {
+            for (const line of purchase.Line) {
+              if (line.AccountBasedExpenseLineDetail) {
+                line.AccountBasedExpenseLineDetail.AccountRef = {
+                  value: accountId,
+                  name: accountName || undefined
+                };
+              }
+            }
+          }
+
+          // Update the purchase
+          return client.updatePurchase(purchase);
+        });
+
+        return NextResponse.json({ success: true, purchase: result });
+      }
+
+      case 'batch_update_purchases': {
+        const { updates } = body;
+        if (!updates || !Array.isArray(updates)) {
+          return NextResponse.json({ error: 'updates array required' }, { status: 400 });
+        }
+
+        const results = await executeWithRetry(isAdmin, async (client) => {
+          const outcomes = [];
+          for (const update of updates) {
+            try {
+              const purchaseResult = await client.getPurchase(update.purchaseId);
+              const purchase = purchaseResult.Purchase;
+              
+              if (!purchase) {
+                outcomes.push({ purchaseId: update.purchaseId, success: false, error: 'Not found' });
+                continue;
+              }
+
+              // Update account in line items
+              if (purchase.Line) {
+                for (const line of purchase.Line) {
+                  if (line.AccountBasedExpenseLineDetail) {
+                    line.AccountBasedExpenseLineDetail.AccountRef = {
+                      value: update.accountId,
+                      name: update.accountName || undefined
+                    };
+                  }
+                }
+              }
+
+              const updated = await client.updatePurchase(purchase);
+              outcomes.push({ purchaseId: update.purchaseId, success: true, newAccount: update.accountId });
+            } catch (err) {
+              outcomes.push({ 
+                purchaseId: update.purchaseId, 
+                success: false, 
+                error: err instanceof Error ? err.message : 'Unknown error' 
+              });
+            }
+          }
+          return outcomes;
+        });
+
+        return NextResponse.json({ success: true, results });
+      }
+
+      default:
+        return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
+    }
+  } catch (error) {
+    console.error('Bookkeeping POST error:', error);
+    const message = error instanceof Error ? error.message : 'Failed to update';
+    return NextResponse.json({ error: message }, { status: 500 });
+  }
+}
+
 function getDateNDaysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
