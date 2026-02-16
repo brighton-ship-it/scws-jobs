@@ -321,6 +321,62 @@ export class QuickBooksClient {
     return result.Purchase;
   }
 
+  // ============= DEPOSITS =============
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async createDeposit(deposit: {
+    depositToAccountId: string;
+    txnDate: string;
+    amount: number;
+    memo?: string;
+    description?: string;
+  }): Promise<any> {
+    // Create a bank deposit
+    // Uses "Undeposited Funds" or direct deposit based on amount
+    const qboDeposit = {
+      DepositToAccountRef: { value: deposit.depositToAccountId },
+      TxnDate: deposit.txnDate,
+      Line: [{
+        Amount: deposit.amount,
+        DetailType: 'DepositLineDetail',
+        DepositLineDetail: {
+          AccountRef: { value: '4' }, // Income account - will use default
+        },
+        Description: deposit.description || deposit.memo,
+      }],
+      PrivateNote: deposit.memo,
+    };
+
+    const result = await this.request<{ Deposit: any }>('/deposit', {
+      method: 'POST',
+      body: JSON.stringify(qboDeposit),
+    });
+
+    return result.Deposit;
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async updateDeposit(depositId: string, syncToken: string, updates: {
+    txnDate?: string;
+    memo?: string;
+  }): Promise<any> {
+    // Get existing deposit first
+    const existing = await this.request<{ Deposit: any }>(`/deposit/${depositId}`);
+    const deposit = existing.Deposit;
+    
+    // Apply updates
+    if (updates.txnDate) deposit.TxnDate = updates.txnDate;
+    if (updates.memo) deposit.PrivateNote = updates.memo;
+    deposit.SyncToken = syncToken;
+    
+    const result = await this.request<{ Deposit: any }>('/deposit', {
+      method: 'POST',
+      body: JSON.stringify(deposit),
+    });
+
+    return result.Deposit;
+  }
+
   // ============= GENERIC QUERY =============
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

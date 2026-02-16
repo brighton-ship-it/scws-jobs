@@ -318,6 +318,42 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ success: true, results });
       }
 
+      case 'create_deposit': {
+        const { depositToAccountId, txnDate, amount, memo, description } = body;
+        if (!depositToAccountId || !txnDate || !amount) {
+          return NextResponse.json({ 
+            error: 'depositToAccountId, txnDate, and amount required' 
+          }, { status: 400 });
+        }
+
+        const result = await executeWithRetry(isAdmin, async (client) => {
+          return client.createDeposit({
+            depositToAccountId,
+            txnDate,
+            amount: parseFloat(amount),
+            memo,
+            description
+          });
+        });
+
+        return NextResponse.json({ success: true, deposit: result });
+      }
+
+      case 'update_deposit': {
+        const { depositId, syncToken, txnDate, memo } = body;
+        if (!depositId || syncToken === undefined) {
+          return NextResponse.json({ 
+            error: 'depositId and syncToken required' 
+          }, { status: 400 });
+        }
+
+        const result = await executeWithRetry(isAdmin, async (client) => {
+          return client.updateDeposit(depositId, syncToken, { txnDate, memo });
+        });
+
+        return NextResponse.json({ success: true, deposit: result });
+      }
+
       default:
         return NextResponse.json({ error: `Unknown action: ${action}` }, { status: 400 });
     }
