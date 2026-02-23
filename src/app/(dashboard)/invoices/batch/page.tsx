@@ -1,7 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { 
   ArrowLeft,
   FileText, 
@@ -12,250 +13,295 @@ import {
   Calendar,
   User,
   Send,
-  Download
+  Loader2,
+  RefreshCw,
+  AlertCircle
 } from 'lucide-react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { Checkbox } from '@/components/ui/checkbox'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { format } from 'date-fns'
 
-// Mock completed jobs ready to invoice
-const mockCompletedJobs = [
-  {
-    id: '1',
-    job_type: 'Well Pump Repair',
-    customer_name: 'Robert Johnson',
-    property_address: '12345 Desert View Rd, Ramona',
-    completed_at: '2026-02-01',
-    estimated_amount: 1250.00,
-    assigned_to: 'Travis Sego',
-  },
-  {
-    id: '2',
-    job_type: 'Pressure Tank Replacement',
-    customer_name: 'Maria Garcia',
-    property_address: '5678 Mountain Top Ln, Julian',
-    completed_at: '2026-02-01',
-    estimated_amount: 850.00,
-    assigned_to: 'Brian Eads',
-  },
-  {
-    id: '3',
-    job_type: 'Well Inspection',
-    customer_name: 'Desert Oasis HOA',
-    property_address: '789 Palm Canyon Dr, Borrego Springs',
-    completed_at: '2026-02-01',
-    estimated_amount: 250.00,
-    assigned_to: 'Austin Tipton',
-  },
-  {
-    id: '4',
-    job_type: 'Well Pump Replacement',
-    customer_name: 'James Wilson',
-    property_address: '456 Valley View Rd, Valley Center',
-    completed_at: '2026-01-31',
-    estimated_amount: 3200.00,
-    assigned_to: 'Jeff Gezewski',
-  },
-  {
-    id: '5',
-    job_type: 'Water Quality Test',
-    customer_name: 'Sunrise Vineyard',
-    property_address: '321 Wine Country Rd, Temecula',
-    completed_at: '2026-01-31',
-    estimated_amount: 175.00,
-    assigned_to: 'Dakota Cole',
-  },
-]
+interface CompletedJob {
+  id: string;
+  job_type: string;
+  completed_at: string | null;
+  scheduled_date: string | null;
+  description: string | null;
+  property: {
+    id: string;
+    address: string;
+    city: string | null;
+    customer: {
+      id: string;
+      name: string;
+      email: string | null;
+      phone: string | null;
+    };
+  } | null;
+  assigned_user: {
+    id: string;
+    name: string;
+  } | null;
+}
 
 export default function BatchInvoicePage() {
+  const router = useRouter()
+  const [jobs, setJobs] = useState<CompletedJob[]>([])
+  const [loading, setLoading] = useState(true)
+  const [creating, setCreating] = useState(false)
   const [selectedJobs, setSelectedJobs] = useState<string[]>([])
-  const [dateFilter, setDateFilter] = useState('all')
+  const [error, setError] = useState<string | null>(null)
+
+  const fetchCompletedJobs = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch('/api/jobs?status=requires_invoicing&limit=100')
+      if (res.ok) {
+        const data = await res.json()
+        setJobs(data.jobs || [])
+      } else {
+        setError('Failed to fetch jobs')
+      }
+    } catch (err) {
+      console.error('Error fetching jobs:', err)
+      setError('Failed to fetch jobs')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    fetchCompletedJobs()
+  }, [])
 
   const toggleJob = (id: string) => {
-    setSelectedJobs(prev => 
-      prev.includes(id) 
+    setSelectedJobs(prev =>
+      prev.includes(id)
         ? prev.filter(j => j !== id)
         : [...prev, id]
     )
   }
 
   const toggleAll = () => {
-    if (selectedJobs.length === mockCompletedJobs.length) {
+    if (selectedJobs.length === jobs.length) {
       setSelectedJobs([])
     } else {
-      setSelectedJobs(mockCompletedJobs.map(j => j.id))
+      setSelectedJobs(jobs.map(j => j.id))
     }
   }
 
-  const selectedTotal = mockCompletedJobs
-    .filter(j => selectedJobs.includes(j.id))
-    .reduce((sum, j) => sum + j.estimated_amount, 0)
-
-  const handleCreateInvoices = () => {
-    // TODO: Create invoices for selected jobs
-    console.log('Creating invoices for:', selectedJobs)
-    alert(`Creating ${selectedJobs.length} invoices totaling $${selectedTotal.toLocaleString()}`)
+  const createInvoices = async () => {
+    if (selectedJobs.length === 0) return
+    
+    setCreating(true)
+    try {
+      // Create invoices for each selected job
+      for (const jobId of selectedJobs) {
+        const job = jobs.find(j => j.id === jobId)
+        if (!job?.property?.customer) continue
+        
+        const res = await fetch('/api/invoices', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: job.property.customer.id,
+            job_id: jobId,
+            // Invoice will be created as draft with job details
+          }),
+        })
+        
+        if (res.ok) {
+          // Update job status to invoiced
+          await fetch(`/api/jobs/${jobId}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'invoiced' }),
+          })
+        }
+      }
+      
+      // Refresh and redirect
+      router.push('/invoices')
+    } catch (err) {
+      console.error('Error creating invoices:', err)
+      setError('Failed to create some invoices')
+    } finally {
+      setCreating(false)
+    }
   }
 
   return (
-    <div className="flex-1 space-y-6 p-6">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <Link href="/invoices">
-            <Button variant="ghost" size="icon">
-              <ArrowLeft className="h-5 w-5" />
+            <Button variant="ghost" size="sm">
+              <ArrowLeft className="h-4 w-4 mr-2" />
+              Back
             </Button>
           </Link>
           <div>
-            <h1 className="text-3xl font-bold tracking-tight">Batch Invoicing</h1>
-            <p className="text-muted-foreground">
-              Create invoices for multiple completed jobs at once
-            </p>
+            <h1 className="text-2xl font-bold text-gray-900">Batch Create Invoices</h1>
+            <p className="text-gray-500">Create invoices for completed jobs</p>
           </div>
         </div>
-        <div className="flex gap-2">
-          <Button variant="outline" disabled={selectedJobs.length === 0}>
-            <Download className="mr-2 h-4 w-4" />
-            Export Selected
-          </Button>
-          <Button 
-            onClick={handleCreateInvoices}
-            disabled={selectedJobs.length === 0}
-            className="bg-green-600 hover:bg-green-700"
-          >
-            <Send className="mr-2 h-4 w-4" />
-            Create {selectedJobs.length} Invoice{selectedJobs.length !== 1 ? 's' : ''}
-          </Button>
-        </div>
+        <Button
+          onClick={fetchCompletedJobs}
+          variant="outline"
+          size="sm"
+          disabled={loading}
+        >
+          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+          Refresh
+        </Button>
       </div>
 
       {/* Stats */}
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Jobs to Invoice</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{mockCompletedJobs.length}</div>
-            <p className="text-xs text-muted-foreground">Completed jobs without invoices</p>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-blue-100 rounded-lg">
+                <FileText className="h-5 w-5 text-blue-600" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold">{jobs.length}</div>
+                <div className="text-sm text-gray-500">Jobs Ready</div>
+              </div>
+            </div>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Selected</CardTitle>
-            <CheckSquare className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{selectedJobs.length}</div>
-            <p className="text-xs text-muted-foreground">Jobs selected for invoicing</p>
+          <CardContent className="pt-6">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-green-100 rounded-lg">
+                <CheckSquare className="h-5 w-5 text-green-600" />
+              </div>
+              <div>
+                <div className="text-2xl font-bold">{selectedJobs.length}</div>
+                <div className="text-sm text-gray-500">Selected</div>
+              </div>
+            </div>
           </CardContent>
         </Card>
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Selected Total</CardTitle>
-            <DollarSign className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">${selectedTotal.toLocaleString()}</div>
-            <p className="text-xs text-muted-foreground">Total invoice amount</p>
+          <CardContent className="pt-6">
+            <Button
+              onClick={createInvoices}
+              disabled={selectedJobs.length === 0 || creating}
+              className="w-full"
+            >
+              {creating ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Creating...
+                </>
+              ) : (
+                <>
+                  <Send className="h-4 w-4 mr-2" />
+                  Create {selectedJobs.length} Invoice{selectedJobs.length !== 1 ? 's' : ''}
+                </>
+              )}
+            </Button>
           </CardContent>
         </Card>
       </div>
 
-      {/* Filters */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Button 
-            variant="outline" 
-            onClick={toggleAll}
-            className="gap-2"
-          >
-            {selectedJobs.length === mockCompletedJobs.length ? (
-              <CheckSquare className="h-4 w-4" />
-            ) : (
-              <Square className="h-4 w-4" />
-            )}
-            {selectedJobs.length === mockCompletedJobs.length ? 'Deselect All' : 'Select All'}
-          </Button>
+      {/* Error message */}
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 flex items-center gap-2 text-red-700">
+          <AlertCircle className="h-5 w-5" />
+          {error}
         </div>
-        <Select value={dateFilter} onValueChange={setDateFilter}>
-          <SelectTrigger className="w-[180px]">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Dates</SelectItem>
-            <SelectItem value="today">Today</SelectItem>
-            <SelectItem value="yesterday">Yesterday</SelectItem>
-            <SelectItem value="week">This Week</SelectItem>
-            <SelectItem value="month">This Month</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
+      )}
 
       {/* Jobs List */}
       <Card>
+        <CardHeader className="border-b">
+          <div className="flex items-center justify-between">
+            <CardTitle>Completed Jobs</CardTitle>
+            {jobs.length > 0 && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggleAll}
+              >
+                {selectedJobs.length === jobs.length ? (
+                  <>
+                    <Square className="h-4 w-4 mr-2" />
+                    Deselect All
+                  </>
+                ) : (
+                  <>
+                    <CheckSquare className="h-4 w-4 mr-2" />
+                    Select All
+                  </>
+                )}
+              </Button>
+            )}
+          </div>
+        </CardHeader>
         <CardContent className="p-0">
-          {mockCompletedJobs.length === 0 ? (
-            <div className="text-center py-12 text-muted-foreground">
-              No completed jobs ready for invoicing
+          {loading ? (
+            <div className="flex items-center justify-center py-12">
+              <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
+              <span className="ml-2 text-gray-500">Loading jobs...</span>
+            </div>
+          ) : jobs.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">
+              <FileText className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+              <p className="font-medium">No completed jobs ready for invoicing</p>
+              <p className="text-sm mt-1">Complete some jobs first, then come back here</p>
             </div>
           ) : (
             <div className="divide-y">
-              {mockCompletedJobs.map((job) => (
-                <div 
+              {jobs.map((job) => (
+                <div
                   key={job.id}
                   onClick={() => toggleJob(job.id)}
-                  className={`flex items-center justify-between p-4 cursor-pointer transition-colors ${
-                    selectedJobs.includes(job.id) 
-                      ? 'bg-primary/5' 
-                      : 'hover:bg-muted/50'
+                  className={`p-4 flex items-center gap-4 cursor-pointer hover:bg-gray-50 transition-colors ${
+                    selectedJobs.includes(job.id) ? 'bg-green-50' : ''
                   }`}
                 >
-                  <div className="flex items-center gap-4">
-                    <Checkbox 
-                      checked={selectedJobs.includes(job.id)}
-                      onCheckedChange={() => toggleJob(job.id)}
-                      onClick={(e) => e.stopPropagation()}
-                    />
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="font-medium">{job.job_type}</h4>
-                        <Badge variant="outline" className="text-green-600 border-green-600">
-                          Completed
-                        </Badge>
-                      </div>
-                      <div className="text-sm text-muted-foreground flex items-center gap-3 mt-1">
-                        <span className="flex items-center gap-1">
-                          <User className="h-3 w-3" />
-                          {job.customer_name}
-                        </span>
-                        <span>•</span>
-                        <span>{job.property_address}</span>
-                      </div>
-                      <div className="text-xs text-muted-foreground mt-1 flex items-center gap-3">
-                        <span className="flex items-center gap-1">
-                          <Calendar className="h-3 w-3" />
-                          Completed {new Date(job.completed_at).toLocaleDateString()}
-                        </span>
-                        <span>•</span>
-                        <span>Tech: {job.assigned_to}</span>
-                      </div>
-                    </div>
+                  {/* Checkbox */}
+                  <div className={`h-5 w-5 rounded border-2 flex items-center justify-center transition-colors ${
+                    selectedJobs.includes(job.id)
+                      ? 'bg-green-600 border-green-600 text-white'
+                      : 'border-gray-300'
+                  }`}>
+                    {selectedJobs.includes(job.id) && (
+                      <Check className="h-3 w-3" />
+                    )}
                   </div>
-                  <div className="text-right">
-                    <div className="text-xl font-bold">${job.estimated_amount.toLocaleString()}</div>
-                    <div className="text-xs text-muted-foreground">Estimated</div>
+
+                  {/* Job Details */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-medium text-gray-900">
+                        {job.property?.customer?.name || 'Unknown Customer'}
+                      </h3>
+                      <Badge variant="info">{job.job_type}</Badge>
+                    </div>
+                    <p className="text-sm text-gray-500 mt-1">
+                      {job.property?.address}{job.property?.city ? `, ${job.property.city}` : ''}
+                    </p>
+                    <div className="flex items-center gap-4 mt-2 text-sm text-gray-500">
+                      {job.completed_at && (
+                        <span className="flex items-center gap-1">
+                          <Calendar className="h-3.5 w-3.5" />
+                          Completed {format(new Date(job.completed_at), 'MMM d, yyyy')}
+                        </span>
+                      )}
+                      {job.assigned_user && (
+                        <span className="flex items-center gap-1">
+                          <User className="h-3.5 w-3.5" />
+                          {job.assigned_user.name}
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -263,18 +309,6 @@ export default function BatchInvoicePage() {
           )}
         </CardContent>
       </Card>
-
-      {/* Bottom Action Bar (mobile) */}
-      {selectedJobs.length > 0 && (
-        <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t md:hidden">
-          <Button 
-            className="w-full bg-green-600 hover:bg-green-700"
-            onClick={handleCreateInvoices}
-          >
-            Create {selectedJobs.length} Invoice{selectedJobs.length !== 1 ? 's' : ''} (${selectedTotal.toLocaleString()})
-          </Button>
-        </div>
-      )}
     </div>
   )
 }
