@@ -3,11 +3,22 @@
 import { useMemo } from 'react';
 import { MapPin, AlertCircle } from 'lucide-react';
 import type { Job, Property, MapMarker } from '@/types/database';
-import { getPropertyById } from '@/lib/mock-data';
 import { parseISO, isToday, isPast } from 'date-fns';
 
+// Extended job type with included property from API
+interface JobWithProperty extends Job {
+  property?: {
+    id: string;
+    address: string;
+    city?: string;
+    lat?: number;
+    lng?: number;
+  };
+  service_address?: string;
+}
+
 interface ScheduleMapProps {
-  jobs: Job[];
+  jobs: JobWithProperty[];
   selectedDate?: Date;
   className?: string;
 }
@@ -45,11 +56,12 @@ const markerColors = {
 };
 
 export function ScheduleMap({ jobs, selectedDate, className = '' }: ScheduleMapProps) {
-  // Build markers from jobs
+  // Build markers from jobs - using included property data
   const markers: MapMarker[] = useMemo(() => {
     return jobs
       .map(job => {
-        const property = getPropertyById(job.property_id);
+        // Use property data included in the job from API
+        const property = job.property;
         if (!property || !property.lat || !property.lng) return null;
         
         return {
@@ -57,7 +69,7 @@ export function ScheduleMap({ jobs, selectedDate, className = '' }: ScheduleMapP
           lat: property.lat,
           lng: property.lng,
           job,
-          property,
+          property: property as Property,
           color: getMarkerColor(job),
         };
       })
@@ -103,7 +115,7 @@ export function ScheduleMap({ jobs, selectedDate, className = '' }: ScheduleMapP
                     flex items-center justify-center p-2 rounded-lg text-white text-xs font-medium
                     ${markerColors[marker.color].bg}
                   `}
-                  title={`${marker.job.job_type} - ${marker.property.city}`}
+                  title={`${marker.job.job_type} - ${marker.property?.city || ''}`}
                 >
                   <MapPin className="h-4 w-4" />
                 </div>
