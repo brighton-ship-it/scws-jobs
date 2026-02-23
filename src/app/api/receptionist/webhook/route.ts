@@ -220,6 +220,21 @@ export async function POST(request: NextRequest) {
       } as any);
     }
 
+    // 📞 Add to customer communication timeline (if customer exists)
+    if (customerId) {
+      try {
+        await supabase.from('communications').insert({
+          customer_id: customerId,
+          type: 'call',
+          direction: 'inbound',
+          content: summary || `Phone call from ${customerName || formatPhone(phone)}${serviceNeeded ? ` - ${serviceNeeded}` : ''}`,
+          duration_seconds: durationSec > 0 ? durationSec : null,
+        });
+      } catch (commError) {
+        console.log('[Receptionist] Communication record skipped:', commError);
+      }
+    }
+
     // 🎯 AUTO-CREATE TASK - Assign to Brighton
     let taskCreated = false;
     try {
