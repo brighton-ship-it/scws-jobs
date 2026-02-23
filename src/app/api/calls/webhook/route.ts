@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
     
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${formattedCallerId}" timeout="20" action="${statusUrl}">
+  <Dial callerId="${formattedCallerId}" timeout="5" action="${statusUrl}">
     <Number>${BRIGHTON_NUMBER}</Number>
   </Dial>
 </Response>`;
