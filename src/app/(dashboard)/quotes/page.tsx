@@ -44,22 +44,96 @@ export default function QuotesPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
 
   // Fetch quotes from API
-  useEffect(() => {
-    const fetchQuotes = async () => {
-      try {
-        const res = await fetch('/api/quotes?limit=100');
-        if (res.ok) {
-          const data = await res.json();
-          setQuotes(data.quotes || []);
-        }
-      } catch (error) {
-        console.error('Failed to fetch quotes:', error);
-      } finally {
-        setLoading(false);
+  const fetchQuotes = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch('/api/quotes?limit=100');
+      if (res.ok) {
+        const data = await res.json();
+        setQuotes(data.quotes || []);
       }
-    };
+    } catch (error) {
+      console.error('Failed to fetch quotes:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Send quote via email
+  const handleSendQuote = async (quoteId: string) => {
+    setActionLoading(quoteId);
+    try {
+      const res = await fetch(`/api/quotes/${quoteId}/send`, { method: 'POST' });
+      const data = await res.json();
+      if (res.ok) {
+        alert(data.message || 'Quote sent!');
+        fetchQuotes(); // Refresh list
+      } else {
+        alert(data.error || 'Failed to send quote');
+      }
+    } catch (error) {
+      alert('Failed to send quote');
+    } finally {
+      setActionLoading(null);
+      setOpenMenu(null);
+    }
+  };
+
+  // Convert accepted quote to job
+  const handleConvertToJob = (quoteId: string) => {
+    window.location.href = `/jobs/new?from_quote=${quoteId}`;
+  };
+
+  // Duplicate a quote
+  const handleDuplicate = async (quoteId: string) => {
+    setActionLoading(quoteId);
+    try {
+      // Fetch the quote to duplicate
+      const res = await fetch(`/api/quotes/${quoteId}`);
+      if (!res.ok) throw new Error('Failed to fetch quote');
+      const { quote } = await res.json();
+      
+      // Create new quote with same data
+      const newQuoteRes = await fetch('/api/quotes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: quote.customer_id,
+          property_id: quote.property_id,
+          valid_until: null, // Reset validity
+          notes: quote.notes,
+          tax_rate: quote.tax_rate,
+          items: (quote.items || []).map((item: any) => ({
+            description: item.description,
+            item_description: item.item_description,
+            quantity: item.quantity,
+            unit_price: item.unit_price,
+            taxable: item.taxable,
+            type: item.type,
+          })),
+        }),
+      });
+      
+      if (newQuoteRes.ok) {
+        const { quote: newQuote } = await newQuoteRes.json();
+        window.location.href = `/quotes/${newQuote.id}`;
+      } else {
+        const data = await newQuoteRes.json();
+        alert(data.error || 'Failed to duplicate quote');
+      }
+    } catch (error) {
+      alert('Failed to duplicate quote');
+    } finally {
+      setActionLoading(null);
+      setOpenMenu(null);
+    }
+  };
+
+  // Initial fetch
+  useEffect(() => {
     fetchQuotes();
   }, []);
 
@@ -242,37 +316,30 @@ export default function QuotesPage() {
                               </Link>
                               {quote.status === 'draft' && (
                                 <button
-                                  className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                                  onClick={() => {
-                                    // TODO: Send quote
-                                    setOpenMenu(null);
-                                  }}
+                                  className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                  disabled={actionLoading === quote.id}
+                                  onClick={() => handleSendQuote(quote.id)}
                                 >
                                   <Send className="h-4 w-4" />
-                                  Send Quote
+                                  {actionLoading === quote.id ? 'Sending...' : 'Send Quote'}
                                 </button>
                               )}
                               {quote.status === 'accepted' && (
                                 <button
                                   className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                                  onClick={() => {
-                                    // TODO: Convert to invoice
-                                    setOpenMenu(null);
-                                  }}
+                                  onClick={() => handleConvertToJob(quote.id)}
                                 >
                                   <FileText className="h-4 w-4" />
                                   Convert to Job
                                 </button>
                               )}
                               <button
-                                className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
-                                onClick={() => {
-                                  // TODO: Duplicate quote
-                                  setOpenMenu(null);
-                                }}
+                                className="flex w-full items-center gap-2 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+                                disabled={actionLoading === quote.id}
+                                onClick={() => handleDuplicate(quote.id)}
                               >
                                 <Copy className="h-4 w-4" />
-                                Duplicate
+                                {actionLoading === quote.id ? 'Duplicating...' : 'Duplicate'}
                               </button>
                             </div>
                           </>
