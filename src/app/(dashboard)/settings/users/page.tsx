@@ -194,8 +194,32 @@ const permissionPresets = [
   },
 ];
 
+// Default schedule for team members
+const defaultSchedule = {
+  sunday: null,
+  monday: { start: '7:00 AM', end: '5:00 PM' },
+  tuesday: { start: '7:00 AM', end: '5:00 PM' },
+  wednesday: { start: '7:00 AM', end: '5:00 PM' },
+  thursday: { start: '7:00 AM', end: '5:00 PM' },
+  friday: { start: '7:00 AM', end: '5:00 PM' },
+  saturday: null
+};
+
+// Role label mapping
+const roleLabelMap: Record<string, string> = {
+  admin: 'Admin',
+  owner: 'Account Owner',
+  manager: 'Manager',
+  office: 'Office',
+  tech: 'Field Tech',
+  field: 'Field Tech',
+  worker: 'Field Tech',
+  worker_limited: 'Worker (Limited)',
+};
+
 export default function UsersSettingsPage() {
-  const [teamMembers, setTeamMembers] = useState(mockTeamMembers);
+  const [teamMembers, setTeamMembers] = useState<typeof mockTeamMembers>([]);
+  const [loading, setLoading] = useState(true);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [selectedUser, setSelectedUser] = useState<typeof mockTeamMembers[0] | null>(null);
@@ -208,6 +232,37 @@ export default function UsersSettingsPage() {
     role: 'tech' as UserRole,
     laborCost: 0,
   });
+
+  // Fetch team members from API
+  useEffect(() => {
+    const fetchTeamMembers = async () => {
+      try {
+        const res = await fetch('/api/users?active=true');
+        if (res.ok) {
+          const data = await res.json();
+          // Transform API data to match UI format
+          const users = (data.users || []).map((user: any) => ({
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            phone: user.phone || '',
+            role: user.role || 'field',
+            roleLabel: roleLabelMap[user.role] || 'Field Tech',
+            laborCost: 0, // Not in DB yet
+            lastLogin: null,
+            avatar: null,
+            schedule: defaultSchedule,
+          }));
+          setTeamMembers(users);
+        }
+      } catch (error) {
+        console.error('Failed to fetch team members:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchTeamMembers();
+  }, []);
 
   const activeCount = teamMembers.length;
   const maxUsers = 10; // Simulated plan limit
@@ -334,7 +389,18 @@ export default function UsersSettingsPage() {
 
         {/* Team Members List */}
         <div className="divide-y divide-gray-100">
-          {teamMembers.map((member) => (
+          {loading ? (
+            <div className="p-8 text-center">
+              <Loader2 className="h-8 w-8 animate-spin mx-auto text-gray-400" />
+              <p className="mt-2 text-gray-500">Loading team members...</p>
+            </div>
+          ) : teamMembers.length === 0 ? (
+            <div className="p-8 text-center text-gray-500">
+              <Users className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+              <p className="font-medium">No team members found</p>
+              <p className="text-sm mt-1">Add your first team member to get started</p>
+            </div>
+          ) : teamMembers.map((member) => (
             <div key={member.id} className="px-6 py-4 hover:bg-gray-50 transition-colors">
               <div className="flex items-start gap-4">
                 {/* Avatar */}

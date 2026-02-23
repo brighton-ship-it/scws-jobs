@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createSessionClient } from '@/lib/supabase/service';
+import { createServiceClient } from '@/lib/supabase/server';
 import type { TaskStatus, TaskPriority } from '@/types/database';
 
 interface RouteParams {
@@ -11,7 +11,7 @@ interface RouteParams {
  */
 export async function GET(request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
-  const supabase = createSessionClient();
+  const supabase = createServiceClient();
 
   const { data: task, error } = await supabase
     .from('tasks')
@@ -41,7 +41,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     const body = await request.json();
     const { title, description, assigned_to, due_date, due_time, status, priority, related_job_id, related_customer_id } = body;
 
-    const supabase = createSessionClient();
+    const supabase = createServiceClient();
 
     // Build update object with only provided fields
     const updates: Record<string, any> = {};
@@ -88,7 +88,7 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
  */
 export async function DELETE(request: NextRequest, { params }: RouteParams) {
   const { id } = await params;
-  const supabase = createSessionClient();
+  const supabase = createServiceClient();
 
   const { error } = await supabase
     .from('tasks')

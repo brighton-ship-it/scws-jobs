@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createSessionClient, createServiceClient } from '@/lib/supabase/service';
+import { createServiceClient } from '@/lib/supabase/server';
 import type { Task, TaskStatus, TaskPriority } from '@/types/database';
 
 /**
@@ -13,7 +13,7 @@ export async function GET(request: NextRequest) {
   const limit = parseInt(searchParams.get('limit') || '100');
   const includeCompleted = searchParams.get('include_completed') === 'true';
 
-  const supabase = createSessionClient();
+  const supabase = createServiceClient();
 
   let query = supabase
     .from('tasks')
@@ -82,7 +82,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Title is required' }, { status: 400 });
     }
 
-    const supabase = createSessionClient();
+    const supabase = createServiceClient();
 
     // Get current user for created_by
     const { data: { user } } = await supabase.auth.getUser();
