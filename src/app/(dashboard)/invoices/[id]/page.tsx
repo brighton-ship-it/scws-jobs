@@ -163,21 +163,48 @@ export default function InvoiceDetailPage() {
     }
 
     setSavingPayment(true);
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // TODO: Implement actual payment recording logic
+    try {
+      const res = await fetch(`/api/invoices/${invoiceId}/payments`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          amount: parseFloat(paymentAmount),
+          payment_method: paymentMethod || null,
+          reference_number: paymentReference || null,
+          payment_date: paymentDate,
+          notes: paymentNotes || null,
+        }),
+      });
 
-    setSavingPayment(false);
-    setShowPaymentModal(false);
-    
-    // Reset form
-    setPaymentAmount('');
-    setPaymentMethod('');
-    setPaymentReference('');
-    setPaymentDate(format(new Date(), 'yyyy-MM-dd'));
-    setPaymentNotes('');
-    
-    // In a real app, this would refresh the data
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to record payment');
+      }
+
+      // Refresh invoice data
+      const refreshRes = await fetch(`/api/invoices/${invoiceId}`);
+      if (refreshRes.ok) {
+        const refreshData = await refreshRes.json();
+        setInvoiceData(refreshData.invoice);
+      }
+
+      setShowPaymentModal(false);
+      
+      // Reset form
+      setPaymentAmount('');
+      setPaymentMethod('');
+      setPaymentReference('');
+      setPaymentDate(format(new Date(), 'yyyy-MM-dd'));
+      setPaymentNotes('');
+      
+      alert(`Payment of $${parseFloat(paymentAmount).toFixed(2)} recorded successfully!`);
+    } catch (err) {
+      console.error('Payment error:', err);
+      alert(err instanceof Error ? err.message : 'Failed to record payment');
+    } finally {
+      setSavingPayment(false);
+    }
   };
 
   const handlePrint = () => {
