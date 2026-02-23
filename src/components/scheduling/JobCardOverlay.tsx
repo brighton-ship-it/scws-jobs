@@ -1,18 +1,46 @@
 'use client';
 
 import type { Job } from '@/types/database';
-import { getPropertyById, getCustomerById, getJobTypeByName } from '@/lib/mock-data';
 import { Clock, MapPin, AlertTriangle, GripVertical } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 
-interface JobCardOverlayProps {
-  job: Job;
+// Extended job type with included relations from API
+interface JobWithRelations extends Job {
+  property?: {
+    id: string;
+    address: string;
+    city?: string;
+    customer?: {
+      id: string;
+      name: string;
+    };
+  };
+  customer_name?: string;
+  service_address?: string;
 }
 
+interface JobCardOverlayProps {
+  job: JobWithRelations;
+}
+
+// Job type color mapping
+const JOB_TYPE_COLORS: Record<string, string> = {
+  'Well Inspection': '#0d9488',
+  'Pump Installation': '#2563eb',
+  'Pump Repair': '#7c3aed',
+  'Water Testing': '#059669',
+  'Emergency Service': '#dc2626',
+  'Maintenance': '#d97706',
+  'Consultation': '#6366f1',
+  'Well Drilling': '#0891b2',
+  'default': '#3B82F6',
+};
+
 export function JobCardOverlay({ job }: JobCardOverlayProps) {
-  const property = getPropertyById(job.property_id);
-  const customer = property ? getCustomerById(property.customer_id) : null;
-  const jobType = getJobTypeByName(job.job_type);
+  // Use included property/customer data or fallback to direct fields
+  const customerName = job.property?.customer?.name || job.customer_name || 'Unknown Customer';
+  const location = job.property?.city || job.property?.address || job.service_address || '';
+  const jobTypeColor = JOB_TYPE_COLORS[job.job_type] || JOB_TYPE_COLORS['default'];
 
   const getPriorityIndicator = () => {
     if (job.priority === 'urgent') {
@@ -32,7 +60,7 @@ export function JobCardOverlay({ job }: JobCardOverlayProps) {
       {/* Color indicator bar */}
       <div
         className="h-1"
-        style={{ backgroundColor: jobType?.color || '#3B82F6' }}
+        style={{ backgroundColor: jobTypeColor }}
       />
       
       <div className="p-3">
@@ -50,17 +78,17 @@ export function JobCardOverlay({ job }: JobCardOverlayProps) {
               {getPriorityIndicator()}
             </div>
             <p className="text-sm text-gray-600 truncate">
-              {customer?.name || 'Unknown Customer'}
+              {customerName}
             </p>
           </div>
         </div>
 
         {/* Details */}
         <div className="mt-2 space-y-1">
-          {property && (
+          {location && (
             <div className="flex items-center gap-1 text-xs text-gray-500">
               <MapPin className="h-3 w-3 flex-shrink-0" />
-              <span className="truncate">{property.city || property.address}</span>
+              <span className="truncate">{location}</span>
             </div>
           )}
           
