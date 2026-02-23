@@ -64,12 +64,13 @@ export async function POST(request: NextRequest) {
     const statusUrl = 'https://scws-jobs.vercel.app/api/calls/status';
     
     // Ensure caller ID is properly formatted (E.164)
+    // Note: + in URL form data decodes as space, so we handle that
     let formattedCallerId = callerNumber?.trim() || '';
-    if (formattedCallerId && !formattedCallerId.startsWith('+')) {
-      formattedCallerId = '+' + formattedCallerId.replace(/\D/g, '');
-    }
+    // Strip non-digits and re-add +
+    const digits = formattedCallerId.replace(/\D/g, '');
+    formattedCallerId = digits ? `+${digits}` : '';
     // Fallback to tracking number if caller ID is invalid
-    if (!formattedCallerId || formattedCallerId.length < 10) {
+    if (!formattedCallerId || digits.length < 10) {
       formattedCallerId = calledNumber;
     }
     

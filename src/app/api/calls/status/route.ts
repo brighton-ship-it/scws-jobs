@@ -21,11 +21,10 @@ export async function POST(request: NextRequest) {
     }
     
     // Brighton didn't answer - forward to Sarah
-    // Ensure caller ID is properly formatted
+    // Ensure caller ID is properly formatted (+ decodes as space in form data)
     let formattedCallerId = callerNumber?.trim() || '';
-    if (formattedCallerId && !formattedCallerId.startsWith('+')) {
-      formattedCallerId = '+' + formattedCallerId.replace(/\D/g, '');
-    }
+    const digits = formattedCallerId.replace(/\D/g, '');
+    formattedCallerId = digits.length >= 10 ? `+${digits}` : '';
     
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
