@@ -1,7 +1,7 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { getRecentActivity, getUserById } from '@/lib/mock-data';
 import { formatDistanceToNow } from 'date-fns';
 import Link from 'next/link';
 import { 
@@ -14,18 +14,31 @@ import {
   CheckCircle,
   Clock,
   Send,
+  Inbox,
+  Loader2,
 } from 'lucide-react';
 
-// Jobber-style activity icons
+// Activity type icons and colors
 const activityIcons = {
   job: { icon: Briefcase, color: 'bg-blue-50 text-blue-600' },
-  invoice: { icon: DollarSign, color: 'bg-emerald-50 text-emerald-600' },
+  invoice: { icon: DollarSign, color: 'bg-amber-50 text-amber-600' },
   customer: { icon: User, color: 'bg-purple-50 text-purple-600' },
-  quote: { icon: FileText, color: 'bg-amber-50 text-amber-600' },
+  quote: { icon: FileText, color: 'bg-indigo-50 text-indigo-600' },
   payment: { icon: CheckCircle, color: 'bg-emerald-50 text-emerald-600' },
   schedule: { icon: Clock, color: 'bg-blue-50 text-blue-600' },
   sent: { icon: Send, color: 'bg-indigo-50 text-indigo-600' },
+  booking: { icon: Inbox, color: 'bg-orange-50 text-orange-600' },
 };
+
+interface Activity {
+  id: string;
+  type: string;
+  description: string;
+  timestamp: string;
+  entity_id: string;
+  entity_type: string;
+  user_name?: string;
+}
 
 interface ActivityFeedProps {
   limit?: number;
@@ -34,7 +47,40 @@ interface ActivityFeedProps {
 }
 
 export function ActivityFeed({ limit = 5, showHeader = true, showViewAll = false }: ActivityFeedProps) {
-  const activities = getRecentActivity(limit);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchActivity = async () => {
+      try {
+        const res = await fetch(`/api/activity?limit=${limit}`);
+        if (res.ok) {
+          const data = await res.json();
+          setActivities(data.activities || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch activity:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchActivity();
+  }, [limit]);
+
+  if (loading) {
+    return (
+      <Card>
+        {showHeader && (
+          <CardHeader>
+            <CardTitle className="text-base">Recent Activity</CardTitle>
+          </CardHeader>
+        )}
+        <CardContent className="py-10 text-center">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto text-gray-400" />
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (activities.length === 0) {
     return (
@@ -55,6 +101,18 @@ export function ActivityFeed({ limit = 5, showHeader = true, showViewAll = false
     );
   }
 
+  // Helper to get link for activity
+  const getActivityLink = (activity: Activity): string => {
+    switch (activity.entity_type) {
+      case 'job': return `/jobs/${activity.entity_id}`;
+      case 'invoice': return `/invoices/${activity.entity_id}`;
+      case 'quote': return `/quotes/${activity.entity_id}`;
+      case 'customer': return `/customers/${activity.entity_id}`;
+      case 'booking': return `/requests`;
+      default: return '#';
+    }
+  };
+
   return (
     <Card>
       {showHeader && (
@@ -72,18 +130,19 @@ export function ActivityFeed({ limit = 5, showHeader = true, showViewAll = false
       )}
       <CardContent className="space-y-1 pt-0">
         {activities.map((activity, index) => {
-          const config = activityIcons[activity.entity_type as keyof typeof activityIcons] || {
+          const config = activityIcons[activity.type as keyof typeof activityIcons] || {
             icon: Activity,
             color: 'bg-gray-50 text-gray-600',
           };
           const Icon = config.icon;
-          const user = getUserById(activity.user_id);
           const isLast = index === activities.length - 1;
+          const link = getActivityLink(activity);
 
           return (
-            <div 
-              key={activity.id} 
-              className={`flex items-start gap-3 py-3 ${!isLast ? 'border-b border-gray-50' : ''}`}
+            <Link 
+              key={activity.id}
+              href={link}
+              className={`flex items-start gap-3 py-3 hover:bg-gray-50 rounded-lg px-2 -mx-2 transition-colors ${!isLast ? 'border-b border-gray-50' : ''}`}
             >
               <div className={`rounded-lg p-2 ${config.color}`}>
                 <Icon className="h-4 w-4" />
@@ -92,60 +151,20 @@ export function ActivityFeed({ limit = 5, showHeader = true, showViewAll = false
                 <p className="text-sm text-gray-700 leading-snug">{activity.description}</p>
                 <div className="flex items-center gap-2 mt-1">
                   <p className="text-xs text-gray-400">
-                    {formatDistanceToNow(new Date(activity.created_at), { addSuffix: true })}
+                    {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}
                   </p>
-                  {user && (
+                  {activity.user_name && (
                     <>
                       <span className="text-gray-300">•</span>
-                      <p className="text-xs text-gray-400">{user.name}</p>
+                      <p className="text-xs text-gray-400">{activity.user_name}</p>
                     </>
                   )}
                 </div>
               </div>
-            </div>
+            </Link>
           );
         })}
       </CardContent>
     </Card>
-  );
-}
-
-// Compact version for sidebars
-export function ActivityFeedCompact({ limit = 3 }: { limit?: number }) {
-  const activities = getRecentActivity(limit);
-
-  if (activities.length === 0) {
-    return (
-      <div className="text-center py-6">
-        <Activity className="mx-auto h-8 w-8 text-gray-300" />
-        <p className="mt-2 text-xs text-gray-500">No recent activity</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-3">
-      {activities.map((activity) => {
-        const config = activityIcons[activity.entity_type as keyof typeof activityIcons] || {
-          icon: Activity,
-          color: 'bg-gray-50 text-gray-600',
-        };
-        const Icon = config.icon;
-
-        return (
-          <div key={activity.id} className="flex items-start gap-2">
-            <div className={`rounded p-1.5 ${config.color}`}>
-              <Icon className="h-3 w-3" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <p className="text-xs text-gray-600 line-clamp-2">{activity.description}</p>
-              <p className="text-xs text-gray-400 mt-0.5">
-                {formatDistanceToNow(new Date(activity.created_at), { addSuffix: true })}
-              </p>
-            </div>
-          </div>
-        );
-      })}
-    </div>
   );
 }
