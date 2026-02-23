@@ -70,19 +70,22 @@ export async function POST(request: NextRequest) {
     // Analysis might be at different levels
     const analysis = message.analysis || call.analysis || body.analysis || {};
     
-    // Log for debugging
-    console.log('[Receptionist] Webhook received:', JSON.stringify({
-      hasMessage: !!body.message,
-      messageKeys: Object.keys(message),
-      callId: call.id,
-      hasCustomer: !!call.customer,
-      hasTranscript: !!call.transcript,
-    }));
+    // Extract phone early since we need it for call ID generation
+    const phone = (call.customer?.number || message.customer?.number || body.customer?.number || '').replace(/\D/g, '');
     
     // Try to get call ID from multiple places, generate one if not found
     const callId = call.id || message.callId || message.call?.id || body.callId || body.call?.id || 
       `generated-${message.timestamp || Date.now()}-${phone.slice(-4) || 'unknown'}`;
     call.id = callId;
+    
+    // Log for debugging
+    console.log('[Receptionist] Webhook received:', JSON.stringify({
+      hasMessage: !!body.message,
+      messageKeys: Object.keys(message),
+      callId: call.id,
+      phone,
+      hasTranscript: !!call.transcript,
+    }));
 
     const supabase = createServiceClient();
     
@@ -97,9 +100,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, skipped: true, reason: 'already-processed' });
     }
 
-    // Extract customer info - check multiple locations
-    const phone = (call.customer?.number || message.customer?.number || body.customer?.number || '').replace(/\D/g, '');
-    
     // Transcript might be in multiple places
     const artifact = message.artifact || body.artifact || {};
     const transcript = message.transcript || call.transcript || body.transcript ||
