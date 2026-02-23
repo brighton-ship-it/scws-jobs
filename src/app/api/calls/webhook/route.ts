@@ -58,8 +58,16 @@ export async function POST(request: NextRequest) {
       console.log(`Logged call from ${source}: ${callerNumber}`);
     }
     
-    // Return empty TwiML (we're just logging, forwarding handled by twimlets)
-    return new NextResponse('<?xml version="1.0" encoding="UTF-8"?><Response></Response>', {
+    // Forward call to Sarah (Vapi AI Receptionist)
+    const SARAH_VAPI_NUMBER = '+17604915348';
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial callerId="${callerNumber}" timeout="30" action="/api/calls/status">
+    <Number>${SARAH_VAPI_NUMBER}</Number>
+  </Dial>
+</Response>`;
+    
+    return new NextResponse(twiml, {
       headers: { 'Content-Type': 'text/xml' },
     });
   } catch (error) {
