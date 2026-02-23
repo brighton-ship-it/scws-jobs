@@ -369,10 +369,10 @@ View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.ap
       email_sent: emailResult?.success || false,
       email_error: emailResult?.error || null,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Receptionist webhook error:', error);
     return NextResponse.json(
-      { ok: false, error: 'Internal server error' },
+      { ok: false, error: 'Internal server error', details: error?.message || String(error) },
       { status: 500 }
     );
   }
