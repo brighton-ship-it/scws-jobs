@@ -1,24 +1,26 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Search, User, Briefcase, FileText, ArrowRight, Command } from 'lucide-react';
+import { Search, User, Briefcase, FileText, ArrowRight, Command, Loader2, Receipt } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useSearch, SearchResult } from '@/contexts/SearchContext';
 
-const resultTypeIcons = {
+const resultTypeIcons: Record<string, any> = {
   customer: User,
   job: Briefcase,
   invoice: FileText,
+  quote: Receipt,
 };
 
-const resultTypeColors = {
+const resultTypeColors: Record<string, string> = {
   customer: 'bg-emerald-50 text-emerald-600',
   job: 'bg-blue-50 text-blue-600',
   invoice: 'bg-purple-50 text-purple-600',
+  quote: 'bg-amber-50 text-amber-600',
 };
 
 export function GlobalSearch() {
-  const { isOpen, query, results, setQuery, closeSearch } = useSearch();
+  const { isOpen, query, results, isSearching, setQuery, closeSearch } = useSearch();
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -73,10 +75,19 @@ export function GlobalSearch() {
                   Search across your business
                 </p>
                 <p className="mt-1 text-sm text-gray-500">
-                  Find customers, jobs, and invoices quickly
+                  Find customers, jobs, invoices, and quotes
                 </p>
                 <p className="mt-4 text-xs text-gray-400 flex items-center justify-center gap-1">
                   Tip: Press <kbd className="rounded bg-gray-100 px-1.5 py-0.5 font-mono">⌘K</kbd> to open search anytime
+                </p>
+              </div>
+            ) : isSearching ? (
+              <div className="px-5 py-12 text-center">
+                <div className="mx-auto h-14 w-14 rounded-full bg-gray-100 flex items-center justify-center mb-4">
+                  <Loader2 className="h-7 w-7 text-gray-400 animate-spin" />
+                </div>
+                <p className="text-sm font-medium text-gray-900">
+                  Searching...
                 </p>
               </div>
             ) : results.length === 0 ? (
@@ -88,7 +99,7 @@ export function GlobalSearch() {
                   No results found
                 </p>
                 <p className="mt-1 text-sm text-gray-500">
-                  Try searching for a customer name, job type, or invoice number
+                  Try searching for a customer name, job number, or invoice number
                 </p>
               </div>
             ) : (

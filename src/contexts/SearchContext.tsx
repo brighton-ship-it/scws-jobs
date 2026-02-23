@@ -1,10 +1,9 @@
 'use client';
 
-import { createContext, useContext, useState, useCallback, ReactNode, useEffect } from 'react';
-import { mockCustomers, mockJobs, mockInvoices, getPropertyById, getCustomerById } from '@/lib/mock-data';
+import { createContext, useContext, useState, useCallback, ReactNode, useEffect, useRef } from 'react';
 
 export interface SearchResult {
-  type: 'customer' | 'job' | 'invoice';
+  type: 'customer' | 'job' | 'invoice' | 'quote';
   id: string;
   title: string;
   subtitle: string;
@@ -15,6 +14,7 @@ interface SearchContextType {
   isOpen: boolean;
   query: string;
   results: SearchResult[];
+  isSearching: boolean;
   setQuery: (query: string) => void;
   openSearch: () => void;
   closeSearch: () => void;
@@ -27,77 +27,60 @@ export function SearchProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<SearchResult[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const debounceRef = useRef<NodeJS.Timeout>();
 
-  const search = useCallback((searchQuery: string) => {
-    if (!searchQuery.trim()) {
+  const search = useCallback(async (searchQuery: string) => {
+    if (!searchQuery.trim() || searchQuery.length < 2) {
       setResults([]);
+      setIsSearching(false);
       return;
     }
 
-    const q = searchQuery.toLowerCase();
-    const searchResults: SearchResult[] = [];
+    setIsSearching(true);
 
-    // Search customers
-    mockCustomers.forEach(customer => {
-      if (
-        customer.name.toLowerCase().includes(q) ||
-        customer.email?.toLowerCase().includes(q) ||
-        customer.phone?.includes(q)
-      ) {
-        searchResults.push({
-          type: 'customer',
-          id: customer.id,
-          title: customer.name,
-          subtitle: customer.email || customer.phone || 'Customer',
-          href: `/customers/${customer.id}`,
-        });
+    try {
+      const res = await fetch(`/api/search?q=${encodeURIComponent(searchQuery)}&limit=15`);
+      if (res.ok) {
+        const data = await res.json();
+        const searchResults: SearchResult[] = (data.results || []).map((r: any) => ({
+          type: r.type,
+          id: r.id,
+          title: r.title,
+          subtitle: r.subtitle,
+          href: r.url,
+        }));
+        setResults(searchResults);
       }
-    });
-
-    // Search jobs
-    mockJobs.forEach(job => {
-      const property = getPropertyById(job.property_id);
-      const customer = property ? getCustomerById(property.customer_id) : null;
-      
-      if (
-        job.job_type.toLowerCase().includes(q) ||
-        job.description?.toLowerCase().includes(q) ||
-        customer?.name.toLowerCase().includes(q) ||
-        property?.address.toLowerCase().includes(q)
-      ) {
-        searchResults.push({
-          type: 'job',
-          id: job.id,
-          title: `${job.job_type} - ${customer?.name || 'Unknown'}`,
-          subtitle: `${property?.address || ''} • ${job.scheduled_date || 'Unscheduled'}`,
-          href: `/jobs/${job.id}/edit`,
-        });
-      }
-    });
-
-    // Search invoices
-    mockInvoices.forEach(invoice => {
-      const customer = getCustomerById(invoice.customer_id);
-      
-      if (
-        invoice.invoice_number.toLowerCase().includes(q) ||
-        customer?.name.toLowerCase().includes(q)
-      ) {
-        searchResults.push({
-          type: 'invoice',
-          id: invoice.id,
-          title: `Invoice ${invoice.invoice_number}`,
-          subtitle: `${customer?.name || 'Unknown'} • $${invoice.amount.toLocaleString()}`,
-          href: `/invoices/${invoice.id}`,
-        });
-      }
-    });
-
-    setResults(searchResults.slice(0, 10));
+    } catch (error) {
+      console.error('Search failed:', error);
+      setResults([]);
+    } finally {
+      setIsSearching(false);
+    }
   }, []);
 
+  // Debounced search
   useEffect(() => {
-    search(query);
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
+    
+    if (query.length >= 2) {
+      setIsSearching(true);
+      debounceRef.current = setTimeout(() => {
+        search(query);
+      }, 200);
+    } else {
+      setResults([]);
+      setIsSearching(false);
+    }
+
+    return () => {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+      }
+    };
   }, [query, search]);
 
   const openSearch = useCallback(() => setIsOpen(true), []);
@@ -105,6 +88,7 @@ export function SearchProvider({ children }: { children: ReactNode }) {
     setIsOpen(false);
     setQuery('');
     setResults([]);
+    setIsSearching(false);
   }, []);
   const toggleSearch = useCallback(() => {
     if (isOpen) {
@@ -136,6 +120,7 @@ export function SearchProvider({ children }: { children: ReactNode }) {
         isOpen,
         query,
         results,
+        isSearching,
         setQuery,
         openSearch,
         closeSearch,
