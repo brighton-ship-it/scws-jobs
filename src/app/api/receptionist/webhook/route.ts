@@ -52,24 +52,45 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, skipped: true, reason: 'not-completed-call' });
     }
 
-    // Extract call data - handle both direct payload and nested message format
-    const call: VapiCall = body.message?.call || body.call || body;
+    // Extract call data - handle multiple Vapi payload formats
+    // Format 1: body.message.call (older format)
+    // Format 2: call data directly in body.message (newer format)
+    // Format 3: call data in body directly
+    const message = body.message || {};
+    const call: VapiCall = message.call || body.call || {
+      id: message.callId || body.callId || message.id || body.id,
+      customer: message.customer || body.customer,
+      transcript: message.transcript || body.transcript,
+      startedAt: message.startedAt || body.startedAt,
+      endedAt: message.endedAt || body.endedAt,
+      analysis: message.analysis || body.analysis,
+      status: message.status || body.status || 'ended',
+    };
     
-    // Analysis might be at message level, not call level
-    const analysis = body.message?.analysis || call.analysis || body.analysis || {};
+    // Analysis might be at different levels
+    const analysis = message.analysis || call.analysis || body.analysis || {};
     
     // Log for debugging
     console.log('[Receptionist] Webhook received:', JSON.stringify({
       hasMessage: !!body.message,
-      hasCall: !!call,
-      hasAnalysis: !!analysis,
+      messageKeys: Object.keys(message),
       callId: call.id,
-      analysisKeys: Object.keys(analysis),
+      hasCustomer: !!call.customer,
+      hasTranscript: !!call.transcript,
     }));
     
-    if (!call.id) {
-      return NextResponse.json({ ok: false, error: 'No call ID' }, { status: 400 });
+    // Try to get call ID from multiple places
+    const callId = call.id || message.callId || body.callId;
+    if (!callId) {
+      return NextResponse.json({ 
+        ok: false, 
+        error: 'No call ID found',
+        debug: { messageKeys: Object.keys(message), bodyKeys: Object.keys(body) }
+      }, { status: 400 });
     }
+    
+    // Use the resolved call ID
+    call.id = callId;
 
     const supabase = createServiceClient();
     
@@ -84,10 +105,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: true, skipped: true, reason: 'already-processed' });
     }
 
-    // Extract customer info
-    const phone = call.customer?.number?.replace(/\D/g, '') || '';
-    // Transcript might be at message level too
-    const transcript = body.message?.transcript || call.transcript || 
+    // Extract customer info - check multiple locations
+    const phone = (call.customer?.number || message.customer?.number || body.customer?.number || '').replace(/\D/g, '');
+    
+    // Transcript might be in multiple places
+    const artifact = message.artifact || body.artifact || {};
+    const transcript = message.transcript || call.transcript || body.transcript ||
+      artifact.transcript ||
+      artifact.messages?.map((m: any) => `${m.role}: ${m.content}`).join('\n') ||
       call.messages?.map(m => `${m.role}: ${m.content}`).join('\n') || 
       'No transcript available';
     const summary = analysis.summary || '';
