@@ -1,12 +1,12 @@
 'use client';
 
-
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Input } from '@/components/forms/Input';
 import { Button } from '@/components/forms/Button';
-import { Upload, Building2 } from 'lucide-react';
+import { useToast } from '@/components/feedback/Toaster';
+import { Upload, Building2, Loader2 } from 'lucide-react';
 
 // Default company settings
 const defaultCompanySettings = {
@@ -18,13 +18,33 @@ const defaultCompanySettings = {
   phone: '(760) 440-8520',
   email: 'info@scwellservice.com',
   website: 'www.scwellservice.com',
-  tax_rate: 8.75,
-  payment_terms_days: 30,
+  logo_url: '',
 };
 
 export default function CompanySettingsPage() {
+  const toast = useToast();
   const [settings, setSettings] = useState(defaultCompanySettings);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const res = await fetch('/api/settings?key=company');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.settings) {
+            setSettings({ ...defaultCompanySettings, ...data.settings });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch settings:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSettings();
+  }, []);
 
   const handleChange = (field: string, value: string) => {
     setSettings(prev => ({ ...prev, [field]: value }));
@@ -32,11 +52,33 @@ export default function CompanySettingsPage() {
 
   const handleSave = async () => {
     setSaving(true);
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setSaving(false);
-    alert('Settings saved!');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'company', value: settings }),
+      });
+      
+      if (res.ok) {
+        toast.success('Settings saved', 'Company information has been updated.');
+      } else {
+        const data = await res.json();
+        toast.error('Failed to save', data.error || 'Please try again.');
+      }
+    } catch (error) {
+      toast.error('Failed to save', 'Please check your connection and try again.');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -88,8 +130,8 @@ export default function CompanySettingsPage() {
           <div className="grid gap-4 sm:grid-cols-2">
             <Input
               label="Company Name"
-              value={settings.name}
-              onChange={(e) => handleChange('name', e.target.value)}
+              value={settings.company_name}
+              onChange={(e) => handleChange('company_name', e.target.value)}
             />
             <Input
               label="Email"
@@ -99,11 +141,18 @@ export default function CompanySettingsPage() {
             />
           </div>
 
-          <Input
-            label="Phone"
-            value={settings.phone}
-            onChange={(e) => handleChange('phone', e.target.value)}
-          />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Input
+              label="Phone"
+              value={settings.phone}
+              onChange={(e) => handleChange('phone', e.target.value)}
+            />
+            <Input
+              label="Website"
+              value={settings.website}
+              onChange={(e) => handleChange('website', e.target.value)}
+            />
+          </div>
 
           <Input
             label="Street Address"

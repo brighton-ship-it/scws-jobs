@@ -1,10 +1,10 @@
 'use client';
 
-
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Button } from '@/components/forms/Button';
 import { Badge } from '@/components/ui/badge';
+import { useToast } from '@/components/feedback/Toaster';
 import { QuickBooksConnect } from '@/components/quickbooks/QuickBooksConnect';
 import { 
   CreditCard, 
@@ -67,12 +67,16 @@ const integrations = [
 ];
 
 export default function IntegrationsSettingsPage() {
+  const toast = useToast();
+  
   const handleConnect = (id: string) => {
-    alert(`Connecting to ${id}...`);
+    const integration = integrations.find(i => i.id === id);
+    toast.info('Coming soon', `${integration?.name || id} integration will be available soon.`);
   };
 
   const handleDisconnect = (id: string) => {
-    alert(`Disconnecting from ${id}...`);
+    const integration = integrations.find(i => i.id === id);
+    toast.info('Disconnecting', `${integration?.name || id} will be disconnected.`);
   };
 
   return (

@@ -1,32 +1,79 @@
 'use client';
 
-
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Breadcrumbs } from '@/components/navigation/Breadcrumbs';
 import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { Button } from '@/components/forms/Button';
+import { useToast } from '@/components/feedback/Toaster';
+import { Loader2 } from 'lucide-react';
+
+const defaultBillingSettings = {
+  tax_rate: 8.75,
+  payment_terms_days: 30,
+  invoice_prefix: 'INV',
+  invoice_notes: 'Thank you for your business!',
+  late_fee_percentage: 1.5,
+  accept_credit_cards: true,
+  accept_checks: true,
+  accept_cash: true,
+};
 
 export default function BillingSettingsPage() {
-  const [settings, setSettings] = useState({
-    tax_rate: 8.75,
-    payment_terms_days: 30,
-    invoice_prefix: 'INV',
-    invoice_notes: 'Thank you for your business!',
-    late_fee_percentage: 1.5,
-    accept_credit_cards: true,
-    accept_checks: true,
-    accept_cash: true,
-  });
+  const toast = useToast();
+  const [settings, setSettings] = useState(defaultBillingSettings);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const fetchSettings = async () => {
+      try {
+        const res = await fetch('/api/settings?key=billing');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.settings) {
+            setSettings({ ...defaultBillingSettings, ...data.settings });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch settings:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSettings();
+  }, []);
 
   const handleSave = async () => {
     setSaving(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    setSaving(false);
-    alert('Billing settings saved!');
+    try {
+      const res = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: 'billing', value: settings }),
+      });
+      
+      if (res.ok) {
+        toast.success('Settings saved', 'Billing settings have been updated.');
+      } else {
+        const data = await res.json();
+        toast.error('Failed to save', data.error || 'Please try again.');
+      }
+    } catch (error) {
+      toast.error('Failed to save', 'Please check your connection and try again.');
+    } finally {
+      setSaving(false);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

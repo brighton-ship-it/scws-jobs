@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/contexts/AuthContext';
+import { useToast } from '@/components/feedback/Toaster';
 import { roleInfo } from '@/lib/permissions';
 import type { UserRole } from '@/types/database';
 import { 
@@ -136,6 +137,7 @@ const roleLabelMap: Record<string, string> = {
 };
 
 export default function UsersSettingsPage() {
+  const toast = useToast();
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
@@ -198,13 +200,13 @@ export default function UsersSettingsPage() {
         const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
         if (res.ok) {
           setTeamMembers(prev => prev.filter(u => u.id !== userId));
+          toast.success('User removed', 'Team member has been removed.');
         } else {
           const data = await res.json();
-          alert(data.error || 'Failed to remove user');
+          toast.error('Failed to remove user', data.error);
         }
       } catch (error) {
-        console.error('Delete user error:', error);
-        alert('Failed to remove user');
+        toast.error('Failed to remove user', 'Please try again.');
       }
     }
     setActiveDropdown(null);
@@ -242,13 +244,13 @@ export default function UsersSettingsPage() {
         setTeamMembers(prev => [...prev, newUser]);
         setShowNewUserModal(false);
         setNewUserForm({ name: '', email: '', phone: '', role: 'tech', laborCost: 0 });
+        toast.success('User created', `${data.user.name} has been added to the team.`);
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to create user');
+        toast.error('Failed to create user', data.error);
       }
     } catch (error) {
-      console.error('Create user error:', error);
-      alert('Failed to create user');
+      toast.error('Failed to create user', 'Please try again.');
     }
   };
 
@@ -276,13 +278,13 @@ export default function UsersSettingsPage() {
         ));
         setShowEditModal(false);
         setSelectedUser(null);
+        toast.success('User updated', 'Changes have been saved.');
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to save user');
+        toast.error('Failed to save user', data.error);
       }
     } catch (error) {
-      console.error('Save user error:', error);
-      alert('Failed to save user');
+      toast.error('Failed to save user', 'Please try again.');
     } finally {
       setSaving(false);
     }
