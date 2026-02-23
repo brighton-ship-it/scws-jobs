@@ -30,109 +30,27 @@ import {
   Loader2
 } from 'lucide-react';
 
-// Mock team data matching Jobber structure
-const mockTeamMembers = [
-  { 
-    id: '1', 
-    name: 'Brighton Scala', 
-    email: 'brighton@scwellservice.com', 
-    phone: '(760) 440-8520',
-    role: 'owner',
-    roleLabel: 'Account Owner',
-    laborCost: 0,
-    lastLogin: '2026-01-31',
-    avatar: null,
-    schedule: {
-      sunday: null,
-      monday: { start: '7:00 AM', end: '5:00 PM' },
-      tuesday: { start: '7:00 AM', end: '5:00 PM' },
-      wednesday: { start: '7:00 AM', end: '5:00 PM' },
-      thursday: { start: '7:00 AM', end: '5:00 PM' },
-      friday: { start: '7:00 AM', end: '5:00 PM' },
-      saturday: null
-    }
-  },
-  { 
-    id: '2', 
-    name: 'Brian Schroeder', 
-    email: 'bschroeder@scwellservice.com', 
-    phone: '(760) 555-0102',
-    role: 'admin',
-    roleLabel: 'Admin',
-    laborCost: 35,
-    lastLogin: '2026-01-30',
-    avatar: null,
-    schedule: {
-      sunday: null,
-      monday: { start: '7:00 AM', end: '5:00 PM' },
-      tuesday: { start: '7:00 AM', end: '5:00 PM' },
-      wednesday: { start: '7:00 AM', end: '5:00 PM' },
-      thursday: { start: '7:00 AM', end: '5:00 PM' },
-      friday: { start: '7:00 AM', end: '5:00 PM' },
-      saturday: null
-    }
-  },
-  { 
-    id: '3', 
-    name: 'Roger Scala', 
-    email: 'roger@scwellservice.com', 
-    phone: '(760) 555-0103',
-    role: 'manager',
-    roleLabel: 'Manager',
-    laborCost: 40,
-    lastLogin: '2026-01-30',
-    avatar: null,
-    schedule: {
-      sunday: null,
-      monday: { start: '6:00 AM', end: '4:00 PM' },
-      tuesday: { start: '6:00 AM', end: '4:00 PM' },
-      wednesday: { start: '6:00 AM', end: '4:00 PM' },
-      thursday: { start: '6:00 AM', end: '4:00 PM' },
-      friday: { start: '6:00 AM', end: '4:00 PM' },
-      saturday: null
-    }
-  },
-  { 
-    id: '4', 
-    name: 'Travis Sego', 
-    email: 'travis@scwellservice.com', 
-    phone: '(760) 555-0104',
-    role: 'worker',
-    roleLabel: 'Field Tech',
-    laborCost: 28,
-    lastLogin: '2026-01-30',
-    avatar: null,
-    schedule: {
-      sunday: null,
-      monday: { start: '7:00 AM', end: '5:00 PM' },
-      tuesday: { start: '7:00 AM', end: '5:00 PM' },
-      wednesday: { start: '7:00 AM', end: '5:00 PM' },
-      thursday: { start: '7:00 AM', end: '5:00 PM' },
-      friday: { start: '7:00 AM', end: '5:00 PM' },
-      saturday: null
-    }
-  },
-  { 
-    id: '5', 
-    name: 'Dakota Cole', 
-    email: 'dakota@scwellservice.com', 
-    phone: '(760) 555-0105',
-    role: 'worker_limited',
-    roleLabel: 'Worker (Limited)',
-    laborCost: 25,
-    lastLogin: '2026-01-29',
-    avatar: null,
-    schedule: {
-      sunday: null,
-      monday: { start: '8:00 AM', end: '4:00 PM' },
-      tuesday: { start: '8:00 AM', end: '4:00 PM' },
-      wednesday: { start: '8:00 AM', end: '4:00 PM' },
-      thursday: { start: '8:00 AM', end: '4:00 PM' },
-      friday: { start: '8:00 AM', end: '4:00 PM' },
-      saturday: null
-    }
-  },
-];
+// Team member type for UI display
+interface TeamMember {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  roleLabel: string;
+  laborCost: number;
+  lastLogin: string | null;
+  avatar: string | null;
+  schedule: {
+    sunday: { start: string; end: string } | null;
+    monday: { start: string; end: string } | null;
+    tuesday: { start: string; end: string } | null;
+    wednesday: { start: string; end: string } | null;
+    thursday: { start: string; end: string } | null;
+    friday: { start: string; end: string } | null;
+    saturday: { start: string; end: string } | null;
+  };
+}
 
 const roleColors: Record<string, string> = {
   owner: 'bg-amber-100 text-amber-800',
@@ -222,7 +140,7 @@ export default function UsersSettingsPage() {
   const [loading, setLoading] = useState(true);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<typeof mockTeamMembers[0] | null>(null);
+  const [selectedUser, setSelectedUser] = useState<TeamMember | null>(null);
   const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
   
   const [newUserForm, setNewUserForm] = useState({
@@ -232,6 +150,7 @@ export default function UsersSettingsPage() {
     role: 'tech' as UserRole,
     laborCost: 0,
   });
+  const [saving, setSaving] = useState(false);
 
   // Fetch team members from API
   useEffect(() => {
@@ -267,44 +186,106 @@ export default function UsersSettingsPage() {
   const activeCount = teamMembers.length;
   const maxUsers = 10; // Simulated plan limit
 
-  const handleEditUser = (user: typeof mockTeamMembers[0]) => {
+  const handleEditUser = (user: TeamMember) => {
     setSelectedUser(user);
     setShowEditModal(true);
     setActiveDropdown(null);
   };
 
-  const handleDeleteUser = (userId: string) => {
+  const handleDeleteUser = async (userId: string) => {
     if (confirm('Are you sure you want to remove this team member?')) {
-      setTeamMembers(prev => prev.filter(u => u.id !== userId));
+      try {
+        const res = await fetch(`/api/users/${userId}`, { method: 'DELETE' });
+        if (res.ok) {
+          setTeamMembers(prev => prev.filter(u => u.id !== userId));
+        } else {
+          const data = await res.json();
+          alert(data.error || 'Failed to remove user');
+        }
+      } catch (error) {
+        console.error('Delete user error:', error);
+        alert('Failed to remove user');
+      }
     }
     setActiveDropdown(null);
   };
 
-  const handleCreateUser = () => {
-    const roleLabel = rolePresets.find(p => p.value === newUserForm.role)?.label || 'Technician';
-    const newUser = {
-      id: Date.now().toString(),
-      name: newUserForm.name,
-      email: newUserForm.email,
-      phone: newUserForm.phone,
-      role: newUserForm.role,
-      roleLabel,
-      laborCost: newUserForm.laborCost,
-      lastLogin: null as any,
-      avatar: null,
-      schedule: {
-        sunday: null,
-        monday: { start: '7:00 AM', end: '5:00 PM' },
-        tuesday: { start: '7:00 AM', end: '5:00 PM' },
-        wednesday: { start: '7:00 AM', end: '5:00 PM' },
-        thursday: { start: '7:00 AM', end: '5:00 PM' },
-        friday: { start: '7:00 AM', end: '5:00 PM' },
-        saturday: null
+  const handleCreateUser = async () => {
+    try {
+      const res = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newUserForm.name,
+          email: newUserForm.email,
+          phone: newUserForm.phone,
+          role: newUserForm.role,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        const roleLabel = rolePresets.find(p => p.value === data.user.role)?.label || 
+                          roleLabelMap[data.user.role] || 'Technician';
+        const newUser = {
+          id: data.user.id,
+          name: data.user.name,
+          email: data.user.email,
+          phone: data.user.phone || '',
+          role: data.user.role,
+          roleLabel,
+          laborCost: 0, // Not in DB yet
+          lastLogin: null,
+          avatar: null,
+          schedule: defaultSchedule,
+        };
+        setTeamMembers(prev => [...prev, newUser]);
+        setShowNewUserModal(false);
+        setNewUserForm({ name: '', email: '', phone: '', role: 'tech', laborCost: 0 });
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to create user');
       }
-    };
-    setTeamMembers(prev => [...prev, newUser]);
-    setShowNewUserModal(false);
-    setNewUserForm({ name: '', email: '', phone: '', role: 'tech', laborCost: 0 });
+    } catch (error) {
+      console.error('Create user error:', error);
+      alert('Failed to create user');
+    }
+  };
+
+  const handleSaveUser = async () => {
+    if (!selectedUser) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/users/${selectedUser.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: selectedUser.name,
+          email: selectedUser.email,
+          phone: selectedUser.phone,
+          role: selectedUser.role,
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setTeamMembers(prev => prev.map(u => 
+          u.id === selectedUser.id 
+            ? { ...u, ...data.user, roleLabel: roleLabelMap[data.user.role] || 'Field Tech' }
+            : u
+        ));
+        setShowEditModal(false);
+        setSelectedUser(null);
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to save user');
+      }
+    } catch (error) {
+      console.error('Save user error:', error);
+      alert('Failed to save user');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const getInitials = (name: string) => {
@@ -633,7 +614,7 @@ export default function UsersSettingsPage() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
             <div className="p-6 border-b border-gray-200 flex items-center justify-between">
-              <h2 className="text-xl font-bold">{selectedUser.name}</h2>
+              <h2 className="text-xl font-bold">Edit User</h2>
               <button 
                 onClick={() => setShowEditModal(false)}
                 className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
@@ -644,35 +625,58 @@ export default function UsersSettingsPage() {
             
             <div className="p-6 space-y-6">
               {/* Personal Info */}
-              <div className="bg-gray-50 rounded-lg p-4">
+              <div>
                 <h3 className="font-semibold text-gray-900 mb-4">Personal info</h3>
                 <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm text-gray-500">Email</label>
-                    <p className="font-medium">{selectedUser.email}</p>
+                  <div className="col-span-2 sm:col-span-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Full name *</label>
+                    <input
+                      type="text"
+                      value={selectedUser.name}
+                      onChange={(e) => setSelectedUser({ ...selectedUser, name: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                    />
                   </div>
-                  <div>
-                    <label className="block text-sm text-gray-500">Phone</label>
-                    <p className="font-medium">{selectedUser.phone || 'Not set'}</p>
+                  <div className="col-span-2 sm:col-span-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Email address *</label>
+                    <input
+                      type="email"
+                      value={selectedUser.email}
+                      onChange={(e) => setSelectedUser({ ...selectedUser, email: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                    />
                   </div>
-                  <div>
-                    <label className="block text-sm text-gray-500">Role</label>
-                    <span className={`inline-block mt-1 text-xs px-2 py-0.5 rounded-full font-medium ${roleColors[selectedUser.role]}`}>
-                      {selectedUser.roleLabel}
-                    </span>
+                  <div className="col-span-2 sm:col-span-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Phone</label>
+                    <input
+                      type="tel"
+                      value={selectedUser.phone}
+                      onChange={(e) => setSelectedUser({ ...selectedUser, phone: e.target.value })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                      placeholder="(760) 555-0100"
+                    />
                   </div>
-                  <div>
-                    <label className="block text-sm text-gray-500">Labor Cost</label>
-                    <p className="font-medium">${selectedUser.laborCost.toFixed(2)}/hr</p>
+                  <div className="col-span-2 sm:col-span-1">
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+                    <select
+                      value={selectedUser.role}
+                      onChange={(e) => setSelectedUser({ ...selectedUser, role: e.target.value, roleLabel: roleLabelMap[e.target.value] || 'Field Tech' })}
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                      disabled={selectedUser.role === 'owner'}
+                    >
+                      <option value="tech">Technician</option>
+                      <option value="office">Office Staff</option>
+                      <option value="admin">Administrator</option>
+                    </select>
                   </div>
                 </div>
               </div>
 
-              {/* Schedule */}
+              {/* Schedule (read-only for now) */}
               <div className="bg-gray-50 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-4">
                   <h3 className="font-semibold text-gray-900">Working hours</h3>
-                  <button className="text-sm text-green-600 hover:text-green-700">Edit</button>
+                  <span className="text-xs text-gray-500">Coming soon</span>
                 </div>
                 <div className="space-y-2 text-sm">
                   {Object.entries(selectedUser.schedule).map(([day, hours]) => (
@@ -699,11 +703,14 @@ export default function UsersSettingsPage() {
                 onClick={() => setShowEditModal(false)}
                 className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
               >
-                Close
+                Cancel
               </button>
               <button 
-                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors"
+                onClick={handleSaveUser}
+                disabled={saving || !selectedUser.name || !selectedUser.email}
+                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
+                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
                 Save Changes
               </button>
             </div>

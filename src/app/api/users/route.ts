@@ -51,3 +51,50 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: 'Failed to fetch users' }, { status: 500 });
   }
 }
+
+// POST - Create a new team member
+export async function POST(request: NextRequest) {
+  try {
+    const supabase = createServiceClient();
+    const body = await request.json();
+    
+    const { name, email, phone, role } = body;
+    
+    if (!name || !email) {
+      return NextResponse.json({ error: 'Name and email are required' }, { status: 400 });
+    }
+
+    // Check if email already exists
+    const { data: existing } = await supabase
+      .from('team_members')
+      .select('id')
+      .eq('email', email)
+      .single();
+
+    if (existing) {
+      return NextResponse.json({ error: 'A user with this email already exists' }, { status: 409 });
+    }
+
+    const { data: user, error } = await supabase
+      .from('team_members')
+      .insert({
+        name,
+        email,
+        phone: phone || null,
+        role: role || 'tech',
+        active: true,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      console.error('User create error:', error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    return NextResponse.json({ user }, { status: 201 });
+  } catch (error) {
+    console.error('Users POST error:', error);
+    return NextResponse.json({ error: 'Failed to create user' }, { status: 500 });
+  }
+}
