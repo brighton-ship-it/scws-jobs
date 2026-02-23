@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useToast } from '@/components/feedback/Toaster';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { JobStatusBadge, PriorityBadge, InvoiceStatusBadge } from '@/components/ui/badge';
@@ -83,6 +84,7 @@ interface JobData {
 export default function JobDetailPage() {
   const params = useParams();
   const id = params.id as string;
+  const toast = useToast();
   const [showProfitability, setShowProfitability] = useState(true);
   const [showAssignmentHistory, setShowAssignmentHistory] = useState(false);
   const [showRecurringModal, setShowRecurringModal] = useState(false);
@@ -203,13 +205,13 @@ export default function JobDetailPage() {
       if (res.ok) {
         const data = await res.json();
         setJob(data.job);
+        toast.success('Job completed', 'Job has been marked as complete');
       } else {
         const error = await res.json();
-        alert(error.error || 'Failed to mark complete');
+        toast.error('Failed to complete', error.error || 'Please try again');
       }
     } catch (err) {
-      console.error('Failed to mark complete:', err);
-      alert('Failed to mark job as complete');
+      toast.error('Failed to complete', 'Please check your connection');
     } finally {
       setIsMarkingComplete(false);
     }
