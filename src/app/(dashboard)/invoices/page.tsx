@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
+import { useToast } from '@/components/feedback/Toaster';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
@@ -41,6 +42,7 @@ const statusFilters = [
 ];
 
 export default function InvoicesPage() {
+  const toast = useToast();
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -90,8 +92,9 @@ export default function InvoicesPage() {
       // Refresh the list
       fetchInvoices();
       setOpenMenu(null);
+      toast.success('Invoice sent', 'Invoice has been sent to the customer');
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to send invoice');
+      toast.error('Failed to send', err instanceof Error ? err.message : 'Please try again');
     } finally {
       setSendingId(null);
     }

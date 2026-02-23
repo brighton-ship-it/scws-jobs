@@ -1,8 +1,8 @@
 'use client';
 
-
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
+import { useToast } from '@/components/feedback/Toaster';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Table, TableHeader, TableBody, TableRow, TableCell, TableEmpty } from '@/components/ui/table';
@@ -39,6 +39,7 @@ const statusFilters = [
 ];
 
 export default function QuotesPage() {
+  const toast = useToast();
   const [quotes, setQuotes] = useState<Quote[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -69,13 +70,13 @@ export default function QuotesPage() {
       const res = await fetch(`/api/quotes/${quoteId}/send`, { method: 'POST' });
       const data = await res.json();
       if (res.ok) {
-        alert(data.message || 'Quote sent!');
+        toast.success('Quote sent', data.message || 'Quote has been emailed to the customer');
         fetchQuotes(); // Refresh list
       } else {
-        alert(data.error || 'Failed to send quote');
+        toast.error('Failed to send', data.error || 'Please try again');
       }
     } catch (error) {
-      alert('Failed to send quote');
+      toast.error('Failed to send', 'Please check your connection and try again');
     } finally {
       setActionLoading(null);
       setOpenMenu(null);
@@ -122,10 +123,10 @@ export default function QuotesPage() {
         window.location.href = `/quotes/${newQuote.id}`;
       } else {
         const data = await newQuoteRes.json();
-        alert(data.error || 'Failed to duplicate quote');
+        toast.error('Failed to duplicate', data.error || 'Please try again');
       }
     } catch (error) {
-      alert('Failed to duplicate quote');
+      toast.error('Failed to duplicate', 'Please check your connection and try again');
     } finally {
       setActionLoading(null);
       setOpenMenu(null);
