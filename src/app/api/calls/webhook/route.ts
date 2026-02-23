@@ -62,9 +62,20 @@ export async function POST(request: NextRequest) {
     const BRIGHTON_NUMBER = '+17604408520';
     const SARAH_VAPI_NUMBER = '+17604915348';
     const statusUrl = 'https://scws-jobs.vercel.app/api/calls/status';
+    
+    // Ensure caller ID is properly formatted (E.164)
+    let formattedCallerId = callerNumber?.trim() || '';
+    if (formattedCallerId && !formattedCallerId.startsWith('+')) {
+      formattedCallerId = '+' + formattedCallerId.replace(/\D/g, '');
+    }
+    // Fallback to tracking number if caller ID is invalid
+    if (!formattedCallerId || formattedCallerId.length < 10) {
+      formattedCallerId = calledNumber;
+    }
+    
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${callerNumber}" timeout="20" action="${statusUrl}">
+  <Dial callerId="${formattedCallerId}" timeout="20" action="${statusUrl}">
     <Number>${BRIGHTON_NUMBER}</Number>
   </Dial>
 </Response>`;

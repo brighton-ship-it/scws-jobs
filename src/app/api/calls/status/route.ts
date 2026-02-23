@@ -21,9 +21,15 @@ export async function POST(request: NextRequest) {
     }
     
     // Brighton didn't answer - forward to Sarah
+    // Ensure caller ID is properly formatted
+    let formattedCallerId = callerNumber?.trim() || '';
+    if (formattedCallerId && !formattedCallerId.startsWith('+')) {
+      formattedCallerId = '+' + formattedCallerId.replace(/\D/g, '');
+    }
+    
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${callerNumber}" timeout="30">
+  <Dial${formattedCallerId ? ` callerId="${formattedCallerId}"` : ''} timeout="30">
     <Number>${SARAH_VAPI_NUMBER}</Number>
   </Dial>
 </Response>`;
