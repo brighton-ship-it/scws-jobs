@@ -32,9 +32,9 @@ export async function POST(request: NextRequest) {
     // Determine source from tracking number
     const source = TRACKING_NUMBERS[calledNumber] || 'unknown';
     
-    // Upsert call record
-    const { data, error } = await supabase
-      .from('tracked_calls')
+    // Upsert call record (don't await - fire and forget to avoid blocking)
+    supabase
+      .from('calls')
       .upsert({
         call_sid: callSid,
         source,
@@ -50,13 +50,11 @@ export async function POST(request: NextRequest) {
         updated_at: new Date().toISOString(),
       }, {
         onConflict: 'call_sid',
+      })
+      .then(({ error }) => {
+        if (error) console.error('Error logging call:', error);
+        else console.log(`Logged call from ${source}: ${callerNumber}`);
       });
-    
-    if (error) {
-      console.error('Error logging call:', error);
-    } else {
-      console.log(`Logged call from ${source}: ${callerNumber}`);
-    }
     
     // Forward call to Brighton first, then Sarah if no answer
     const BRIGHTON_NUMBER = '+17604408520';
@@ -86,7 +84,16 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Call webhook error:', error);
-    return NextResponse.json({ error: 'Internal error' }, { status: 500 });
+    // Always return valid TwiML even on error - forward to Sarah directly
+    const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="30">
+    <Number>+17604915348</Number>
+  </Dial>
+</Response>`;
+    return new NextResponse(fallbackTwiml, {
+      headers: { 'Content-Type': 'text/xml' },
+    });
   }
 }
 
