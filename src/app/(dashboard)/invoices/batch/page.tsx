@@ -108,7 +108,13 @@ export default function BatchInvoicePage() {
           body: JSON.stringify({
             customer_id: job.property.customer.id,
             job_id: jobId,
-            // Invoice will be created as draft with job details
+            status: 'draft',
+            items: [{
+              description: job.job_type,
+              quantity: 1,
+              unit_price: 0, // To be filled in when editing the invoice
+              type: 'service',
+            }],
           }),
         })
         
