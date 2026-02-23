@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import dynamic from 'next/dynamic';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -82,11 +82,13 @@ export default function DrillingPipelinePage() {
       const res = await fetch('/api/drilling/sync', { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
-        alert(`Synced ${data.imported} new projects from Jobber`);
+        toast.success(`Synced ${data.imported} new projects from Jobber`);
         fetchProjects();
+      } else {
+        toast.error('Could not sync with Jobber');
       }
-    } catch (error) {
-      console.error('Sync failed:', error);
+    } catch {
+      toast.error('Could not connect to Jobber');
     } finally {
       setSyncing(false);
     }

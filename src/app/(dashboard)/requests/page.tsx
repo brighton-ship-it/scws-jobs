@@ -21,6 +21,7 @@ import {
   Trash2,
   X
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { format } from 'date-fns';
@@ -134,9 +135,8 @@ export default function RequestsPage() {
       });
       
       router.push(`/quotes/new?${params.toString()}`);
-    } catch (error) {
-      console.error('Failed to create quote:', error);
-      alert('Failed to create quote. Please try again.');
+    } catch {
+      toast.error('Failed to create quote. Please try again.');
     } finally {
       setActionLoading(null);
     }
@@ -177,9 +177,8 @@ export default function RequestsPage() {
       });
       
       router.push(`/jobs/new?${params.toString()}`);
-    } catch (error) {
-      console.error('Failed to create job:', error);
-      alert('Failed to create job. Please try again.');
+    } catch {
+      toast.error('Failed to create job. Please try again.');
     } finally {
       setActionLoading(null);
     }

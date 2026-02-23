@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { Plus, Package, Receipt, Trash2, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -133,6 +134,7 @@ export function JobPartsExpenses({ jobId }: Props) {
       });
       
       if (res.ok) {
+        toast.success('Part added');
         setAddPartOpen(false);
         setSelectedItem('');
         setPartQuantity('1');
@@ -141,11 +143,10 @@ export function JobPartsExpenses({ jobId }: Props) {
         fetchInventory(); // Refresh inventory counts
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to add part');
+        toast.error(data.error || 'Failed to add part');
       }
-    } catch (error) {
-      console.error('Failed to add part:', error);
-      alert('Failed to add part');
+    } catch {
+      toast.error('Failed to add part');
     } finally {
       setAddingPart(false);
     }

@@ -12,11 +12,10 @@ import {
   Play,
   User,
   MapPin,
-  Clock,
   DollarSign,
-  ChevronRight,
   Loader2
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -135,14 +134,14 @@ export default function RecurringJobsPage() {
       const res = await fetch(`/api/recurring/${id}/generate`, { method: 'POST' })
       if (res.ok) {
         const data = await res.json()
-        alert(`Job created! Job ID: ${data.job.id}`)
+        toast.success(`Job created: ${data.job.id.slice(0, 8)}...`)
         fetchSchedules()
       } else {
         const data = await res.json()
-        alert(data.error || 'Failed to create job')
+        toast.error(data.error || 'Failed to create job')
       }
-    } catch (error) {
-      console.error('Failed to generate job:', error)
+    } catch {
+      toast.error('Failed to create job')
     } finally {
       setActionLoading(null)
     }

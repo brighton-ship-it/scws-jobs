@@ -9,6 +9,7 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
+import { toast } from 'sonner';
 import type { Product } from '@/types/database';
 import { ArrowLeft, Loader2, Save } from 'lucide-react';
 import { format, addDays, parseISO } from 'date-fns';
@@ -129,11 +130,11 @@ export default function EditInvoicePage() {
 
   const handleSave = async (andSend = false) => {
     if (!customerId) {
-      alert('Please select a customer');
+      toast.warning('Please select a customer');
       return;
     }
     if (lineItems.length === 0 || !lineItems[0].description) {
-      alert('Please add at least one line item');
+      toast.warning('Please add at least one line item');
       return;
     }
 
@@ -172,8 +173,7 @@ export default function EditInvoicePage() {
 
       router.push(`/invoices/${invoiceId}`);
     } catch (err) {
-      console.error('Save error:', err);
-      alert(err instanceof Error ? err.message : 'Failed to save invoice');
+      toast.error(err instanceof Error ? err.message : 'Failed to save invoice');
     } finally {
       setSaving(false);
     }

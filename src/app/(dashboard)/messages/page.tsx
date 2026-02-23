@@ -6,9 +6,6 @@ import {
   Send,
   Phone,
   User,
-  Clock,
-  Check,
-  CheckCheck,
   MoreVertical,
   Archive,
   Trash2,
@@ -18,6 +15,7 @@ import {
   RefreshCw,
   AlertTriangle
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -123,11 +121,10 @@ export default function MessagesPage() {
         fetchConversations()
       } else {
         const error = await res.json()
-        alert('Failed to send: ' + (error.error || 'Unknown error'))
+        toast.error(error.error || 'Failed to send message')
       }
-    } catch (error) {
-      console.error('Failed to send message:', error)
-      alert('Failed to send message')
+    } catch {
+      toast.error('Failed to send message')
     } finally {
       setSending(false)
     }

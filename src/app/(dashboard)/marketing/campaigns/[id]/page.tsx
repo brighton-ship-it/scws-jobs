@@ -16,6 +16,7 @@ import {
   AlertCircle,
   CheckCircle
 } from 'lucide-react'
+import { toast } from 'sonner'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -191,8 +192,7 @@ export default function CampaignPage() {
       
       router.push('/marketing')
     } catch (error: any) {
-      console.error('Save error:', error)
-      alert(`Failed to save: ${error.message}`)
+      toast.error(error.message || 'Failed to save campaign')
     }
   }
 
@@ -234,15 +234,14 @@ export default function CampaignPage() {
       const data = await sendRes.json()
       
       if (!sendRes.ok) {
-        alert(`Failed to send: ${data.error}${data.details ? '\n' + data.details : ''}`)
+        toast.error(data.error + (data.details ? `: ${data.details}` : ''))
         return
       }
       
-      alert(`Campaign sent successfully!\n${data.stats.sent} delivered, ${data.stats.failed} failed`)
+      toast.success(`Campaign sent! ${data.stats.sent} delivered, ${data.stats.failed} failed`)
       router.push('/marketing')
     } catch (error: any) {
-      console.error('Send error:', error)
-      alert(`Failed to send campaign: ${error.message}`)
+      toast.error(error.message || 'Failed to send campaign')
     } finally {
       setIsSending(false)
       setShowSendConfirm(false)

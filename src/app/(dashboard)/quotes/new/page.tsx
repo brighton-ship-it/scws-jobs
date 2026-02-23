@@ -13,6 +13,7 @@ import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
 import { CustomerSearch } from '@/components/customer-search';
+import { toast } from 'sonner';
 import type { Property, Product } from '@/types/database';
 import { ArrowLeft, DollarSign } from 'lucide-react';
 
@@ -90,14 +91,14 @@ export default function NewQuotePage() {
 
   const handleSubmit = async (asDraft: boolean = true) => {
     if (!customerId) {
-      alert('Please select a customer');
+      toast.warning('Please select a customer');
       return;
     }
 
     // Validate line items
     const validLineItems = lineItems.filter(item => item.description.trim());
     if (validLineItems.length === 0) {
-      alert('Please add at least one line item');
+      toast.warning('Please add at least one line item');
       return;
     }
 
@@ -143,19 +144,17 @@ export default function NewQuotePage() {
           });
           const sendData = await sendRes.json();
           if (!sendRes.ok) {
-            alert(`Quote saved but email failed: ${sendData.error}`);
+            toast.warning(`Quote saved but email failed: ${sendData.error}`);
           }
-        } catch (sendError) {
-          console.error('Send error:', sendError);
-          alert('Quote saved but failed to send email');
+        } catch {
+          toast.warning('Quote saved but failed to send email');
         }
       }
 
       // Redirect to quotes list
       router.push('/quotes');
     } catch (error) {
-      console.error('Save error:', error);
-      alert(error instanceof Error ? error.message : 'Failed to save quote');
+      toast.error(error instanceof Error ? error.message : 'Failed to save quote');
     } finally {
       setSaving(false);
     }

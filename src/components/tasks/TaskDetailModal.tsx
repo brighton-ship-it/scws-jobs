@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { format, parseISO } from 'date-fns';
+import { toast } from 'sonner';
 import { 
   X, 
   Calendar, 
@@ -106,15 +107,15 @@ export function TaskDetailModal({ task, isOpen, onClose, onTaskUpdated }: TaskDe
       });
 
       if (res.ok) {
+        toast.success('Task updated');
         onTaskUpdated?.();
         setIsEditing(false);
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to update task');
+        toast.error(data.error || 'Failed to update task');
       }
-    } catch (error) {
-      console.error('Update task error:', error);
-      alert('Failed to update task');
+    } catch {
+      toast.error('Failed to update task');
     } finally {
       setIsSubmitting(false);
     }

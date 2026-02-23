@@ -9,6 +9,7 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
+import { toast } from 'sonner';
 import type { Product, Customer, Property } from '@/types/database';
 import { ArrowLeft, DollarSign, Loader2 } from 'lucide-react';
 
@@ -178,7 +179,7 @@ export default function EditQuotePage() {
 
   const handleSubmit = async (asDraft: boolean = true) => {
     if (!customerId) {
-      alert('Please select a customer');
+      toast.warning('Please select a customer');
       return;
     }
 
@@ -226,9 +227,7 @@ export default function EditQuotePage() {
 
       router.push(`/quotes/${quoteId}`);
     } catch (err) {
-      console.error('Failed to save quote:', err);
-      const message = err instanceof Error ? err.message : 'Unknown error';
-      alert(`Failed to save quote: ${message}`);
+      toast.error(err instanceof Error ? err.message : 'Failed to save quote');
     } finally {
       setSaving(false);
     }

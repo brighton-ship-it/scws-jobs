@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useAuth } from '@/contexts/AuthContext';
+import { toast } from 'sonner';
 import {
   ArrowLeft,
   Calendar,
@@ -88,13 +89,14 @@ export default function TechOnCallPage() {
       });
 
       if (res.ok) {
+        toast.success('Signed up for on-call');
         fetchData();
       } else {
         const error = await res.json();
-        alert(error.error || 'Failed to sign up');
+        toast.error(error.error || 'Failed to sign up');
       }
-    } catch (error) {
-      console.error('Failed to sign up:', error);
+    } catch {
+      toast.error('Failed to sign up');
     } finally {
       setSigning(null);
     }

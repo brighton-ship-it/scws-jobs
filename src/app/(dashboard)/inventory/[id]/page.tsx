@@ -15,6 +15,7 @@ import {
   Save,
   X
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -142,12 +143,13 @@ export default function InventoryDetailPage() {
         setAdjustmentQuantity('');
         setAdjustmentNotes('');
         fetchItem();
+        toast.success('Stock adjusted successfully');
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to adjust stock');
+        toast.error(data.error || 'Failed to adjust stock');
       }
-    } catch (error) {
-      console.error('Adjustment failed:', error);
+    } catch {
+      toast.error('Failed to adjust stock');
     } finally {
       setAdjusting(false);
     }

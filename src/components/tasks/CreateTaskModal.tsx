@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { X, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/FormElements';
 import type { TaskPriority } from '@/types/database';
@@ -102,6 +103,7 @@ export function CreateTaskModal({
 
       if (res.ok) {
         onTaskCreated?.();
+        toast.success('Task created');
         onClose();
         // Reset form
         setFormData({
@@ -116,11 +118,10 @@ export function CreateTaskModal({
         });
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to create task');
+        toast.error(data.error || 'Failed to create task');
       }
-    } catch (error) {
-      console.error('Create task error:', error);
-      alert('Failed to create task');
+    } catch {
+      toast.error('Failed to create task');
     } finally {
       setIsSubmitting(false);
     }

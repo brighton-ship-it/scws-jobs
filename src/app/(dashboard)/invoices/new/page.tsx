@@ -9,7 +9,7 @@ import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
 import { TextArea } from '@/components/forms/TextArea';
 import { DraggableLineItems, type LineItem } from '@/components/line-items/DraggableLineItems';
-// Removed mock-data imports - using real API
+import { toast } from 'sonner';
 import type { Product } from '@/types/database';
 import { ArrowLeft, Briefcase } from 'lucide-react';
 import { format, addDays } from 'date-fns';
@@ -249,12 +249,12 @@ export default function NewInvoicePage() {
 
   const handleSubmit = async (asDraft: boolean = true) => {
     if (!customerId) {
-      alert('Please select a customer');
+      toast.warning('Please select a customer');
       return;
     }
 
     if (lineItems.length === 0 || lineItems.every(item => !item.description)) {
-      alert('Please add at least one line item');
+      toast.warning('Please add at least one line item');
       return;
     }
 
@@ -299,8 +299,7 @@ export default function NewInvoicePage() {
 
       router.push('/invoices');
     } catch (error) {
-      console.error('Error creating invoice:', error);
-      alert(error instanceof Error ? error.message : 'Failed to create invoice');
+      toast.error(error instanceof Error ? error.message : 'Failed to create invoice');
     } finally {
       setSaving(false);
     }

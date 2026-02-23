@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Plus, Search, Package, AlertTriangle, ArrowDown, ArrowUp, DollarSign, MoreVertical, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -100,13 +101,13 @@ export default function InventoryPage() {
         setAdjustmentQuantity('');
         setAdjustmentNotes('');
         fetchInventory();
+        toast.success('Stock adjusted successfully');
       } else {
         const data = await res.json();
-        alert(data.error || 'Failed to adjust stock');
+        toast.error(data.error || 'Failed to adjust stock');
       }
-    } catch (error) {
-      console.error('Adjustment failed:', error);
-      alert('Failed to adjust stock');
+    } catch {
+      toast.error('Failed to adjust stock');
     } finally {
       setAdjusting(false);
     }

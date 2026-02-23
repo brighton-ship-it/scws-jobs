@@ -4,6 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { ArrowLeft, FileText, CheckCircle, Clock, AlertCircle, Download, Loader2 } from 'lucide-react';
 import Link from 'next/link';
+import { toast } from 'sonner';
 
 interface QuoteItem {
   id: string;
@@ -137,7 +138,7 @@ export default function PortalQuotePage() {
 
   const handleApprove = async () => {
     if (!hasSignature || !signerName.trim()) {
-      alert('Please enter your name and sign the quote');
+      toast.warning('Please enter your name and sign the quote');
       return;
     }
 
@@ -158,16 +159,17 @@ export default function PortalQuotePage() {
       const data = await res.json();
 
       if (!res.ok) {
-        alert(data.error || 'Failed to approve quote');
+        toast.error(data.error || 'Failed to approve quote');
         return;
       }
 
       setApproved(true);
       setShowSignature(false);
+      toast.success('Quote approved successfully!');
       // Refresh quote data
       fetchQuote();
-    } catch (err) {
-      alert('Failed to approve quote');
+    } catch {
+      toast.error('Failed to approve quote');
     } finally {
       setSubmitting(false);
     }
