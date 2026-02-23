@@ -1,8 +1,9 @@
 'use client';
 
+import { useState, useEffect } from 'react';
 import { useActivityFeed } from '@/contexts/ActivityFeedContext';
-import { getRecentActivity, getUserById } from '@/lib/mock-data';
 import { formatDistanceToNow } from 'date-fns';
+import Link from 'next/link';
 import { 
   X, 
   Settings2,
@@ -14,22 +15,76 @@ import {
   CheckCircle,
   Clock,
   Send,
+  Inbox,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 
 // Activity type icons matching Jobber style
-const activityIcons = {
+const activityIcons: Record<string, { icon: any; color: string; label: string }> = {
   job: { icon: Briefcase, color: 'bg-blue-50 text-blue-600', label: 'Job' },
-  invoice: { icon: DollarSign, color: 'bg-emerald-50 text-emerald-600', label: 'Invoice' },
+  invoice: { icon: DollarSign, color: 'bg-amber-50 text-amber-600', label: 'Invoice' },
   customer: { icon: User, color: 'bg-purple-50 text-purple-600', label: 'Customer' },
-  quote: { icon: FileText, color: 'bg-amber-50 text-amber-600', label: 'Quote' },
+  quote: { icon: FileText, color: 'bg-indigo-50 text-indigo-600', label: 'Quote' },
   payment: { icon: CheckCircle, color: 'bg-emerald-50 text-emerald-600', label: 'Payment' },
   schedule: { icon: Clock, color: 'bg-blue-50 text-blue-600', label: 'Schedule' },
   sent: { icon: Send, color: 'bg-indigo-50 text-indigo-600', label: 'Sent' },
+  booking: { icon: Inbox, color: 'bg-orange-50 text-orange-600', label: 'Booking' },
 };
+
+interface Activity {
+  id: string;
+  type: string;
+  description: string;
+  timestamp: string;
+  entity_id: string;
+  entity_type: string;
+  user_name?: string;
+}
 
 export function ActivityFeedSidebar() {
   const { isOpen, close } = useActivityFeed();
-  const activities = getRecentActivity(20);
+  const [activities, setActivities] = useState<Activity[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const fetchActivities = async () => {
+    try {
+      const res = await fetch('/api/activity?limit=30');
+      if (res.ok) {
+        const data = await res.json();
+        setActivities(data.activities || []);
+      }
+    } catch (error) {
+      console.error('Failed to fetch activities:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isOpen) {
+      fetchActivities();
+    }
+  }, [isOpen]);
+
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchActivities();
+  };
+
+  // Helper to get link for activity
+  const getActivityLink = (activity: Activity): string => {
+    switch (activity.entity_type) {
+      case 'job': return `/jobs/${activity.entity_id}`;
+      case 'invoice': return `/invoices/${activity.entity_id}`;
+      case 'quote': return `/quotes/${activity.entity_id}`;
+      case 'customer': return `/customers/${activity.entity_id}`;
+      case 'booking': return `/requests`;
+      default: return '#';
+    }
+  };
 
   return (
     <>
@@ -53,14 +108,16 @@ export function ActivityFeedSidebar() {
           <h2 className="text-lg font-semibold text-gray-900">Activity Feed</h2>
           <div className="flex items-center gap-2">
             <button 
-              className="text-sm font-medium text-emerald-600 hover:text-emerald-700 transition-colors flex items-center gap-1"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors disabled:opacity-50"
+              title="Refresh"
             >
-              <Settings2 className="h-4 w-4" />
-              Customize Feed
+              <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             </button>
             <button
               onClick={close}
-              className="p-1 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
+              className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors"
             >
               <X className="h-5 w-5" />
             </button>
@@ -69,7 +126,12 @@ export function ActivityFeedSidebar() {
 
         {/* Activity List */}
         <div className="flex-1 overflow-y-auto">
-          {activities.length === 0 ? (
+          {loading ? (
+            <div className="flex flex-col items-center justify-center h-64 px-4 text-center">
+              <Loader2 className="h-8 w-8 text-gray-400 animate-spin mb-3" />
+              <p className="text-sm text-gray-500">Loading activity...</p>
+            </div>
+          ) : activities.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full px-4 text-center">
               <div className="h-12 w-12 rounded-full bg-gray-100 flex items-center justify-center mb-3">
                 <Activity className="h-6 w-6 text-gray-400" />
@@ -80,57 +142,55 @@ export function ActivityFeedSidebar() {
           ) : (
             <div className="divide-y divide-gray-100">
               {activities.map((activity) => {
-                const config = activityIcons[activity.entity_type as keyof typeof activityIcons] || {
+                const config = activityIcons[activity.type] || {
                   icon: Activity,
                   color: 'bg-gray-50 text-gray-600',
                   label: 'Activity',
                 };
                 const Icon = config.icon;
-                const user = getUserById(activity.user_id);
+                const link = getActivityLink(activity);
 
                 return (
-                  <div 
+                  <Link 
                     key={activity.id}
-                    className="px-4 py-3 hover:bg-gray-50 transition-colors cursor-pointer"
+                    href={link}
+                    onClick={close}
+                    className="flex items-start gap-3 px-4 py-3 hover:bg-gray-50 transition-colors"
                   >
-                    <div className="flex items-start gap-3">
-                      <div className={`rounded-lg p-2 flex-shrink-0 ${config.color}`}>
-                        <Icon className="h-4 w-4" />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm text-gray-700 leading-snug">{activity.description}</p>
-                        
-                        {/* Status badge if applicable */}
-                        {activity.entity_type === 'job' && (
-                          <span className="inline-flex items-center mt-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                            Completed
-                          </span>
+                    <div className={`rounded-lg p-2 ${config.color} flex-shrink-0`}>
+                      <Icon className="h-4 w-4" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-gray-700 leading-snug line-clamp-2">
+                        {activity.description}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-xs text-gray-400">
+                          {formatDistanceToNow(new Date(activity.timestamp), { addSuffix: true })}
+                        </span>
+                        {activity.user_name && (
+                          <>
+                            <span className="text-gray-300">•</span>
+                            <span className="text-xs text-gray-400">{activity.user_name}</span>
+                          </>
                         )}
-                        {activity.entity_type === 'invoice' && (
-                          <span className="inline-flex items-center mt-1.5 px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                            Sent
-                          </span>
-                        )}
-                        
-                        <div className="flex items-center gap-2 mt-1.5">
-                          <p className="text-xs text-gray-400">
-                            {formatDistanceToNow(new Date(activity.created_at), { addSuffix: true })}
-                          </p>
-                          {user && (
-                            <>
-                              <span className="text-gray-300">•</span>
-                              <p className="text-xs text-gray-400">{user.name}</p>
-                            </>
-                          )}
-                        </div>
                       </div>
                     </div>
-                  </div>
+                  </Link>
                 );
               })}
             </div>
           )}
         </div>
+
+        {/* Footer */}
+        {activities.length > 0 && (
+          <div className="px-4 py-3 border-t border-gray-200 bg-gray-50">
+            <p className="text-xs text-gray-500 text-center">
+              Showing latest {activities.length} activities
+            </p>
+          </div>
+        )}
       </div>
     </>
   );
