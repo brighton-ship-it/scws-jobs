@@ -2,18 +2,14 @@
 
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { useToast } from '@/components/feedback/Toaster';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { TeamMemberMultiSelect } from './TeamMemberMultiSelect';
-import {
-  mockJobTypes,
-  getAssignedUsersForJob,
-  assignUserToJob,
-  unassignUserFromJob,
-} from '@/lib/mock-data';
+import type { JobType } from '@/types/database';
 import { useAuth } from '@/contexts/AuthContext';
 import type { Job, JobPriority } from '@/types/database';
 import {
@@ -66,6 +62,7 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { user: currentUser } = useAuth();
+  const toast = useToast();
   const [customerSearch, setCustomerSearch] = useState('');
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
   const [selectedCustomerId, setSelectedCustomerId] = useState('');
@@ -76,18 +73,17 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
   const [isLoadingCustomer, setIsLoadingCustomer] = useState(false);
   
   // State for team assignments (multiple)
-  const [assignedUserIds, setAssignedUserIds] = useState<string[]>(() => {
-    if (job) {
-      return getAssignedUsersForJob(job.id).map(u => u.id);
-    }
-    return [];
-  });
+  const [assignedUserIds, setAssignedUserIds] = useState<string[]>([]);
+  
+  // Job types from Supabase
+  const [jobTypes, setJobTypes] = useState<JobType[]>([]);
+  const [isLoadingJobTypes, setIsLoadingJobTypes] = useState(true);
   
   // Team members from Supabase
   const [teamMembers, setTeamMembers] = useState<any[]>([]);
   const [isLoadingTeam, setIsLoadingTeam] = useState(true);
   
-  // Fetch team members on mount
+  // Fetch team members and job types on mount
   useEffect(() => {
     const fetchTeamMembers = async () => {
       try {
@@ -102,8 +98,29 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
         setIsLoadingTeam(false);
       }
     };
+    
+    const fetchJobTypes = async () => {
+      try {
+        const res = await fetch('/api/job-types');
+        if (res.ok) {
+          const data = await res.json();
+          setJobTypes(data.jobTypes || []);
+        }
+      } catch (error) {
+        console.error('Failed to fetch job types:', error);
+      } finally {
+        setIsLoadingJobTypes(false);
+      }
+    };
+    
     fetchTeamMembers();
-  }, []);
+    fetchJobTypes();
+    
+    // Fetch assigned users if editing
+    if (job?.assigned_to) {
+      setAssignedUserIds([job.assigned_to]);
+    }
+  }, [job]);
 
   // Get pre-filled date from URL params (from calendar click)
   const prefilledDate = searchParams.get('date');
@@ -218,13 +235,13 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
 
   // Auto-fill duration when job type changes
   useEffect(() => {
-    if (watchJobType) {
-      const jobType = mockJobTypes.find(jt => jt.name === watchJobType);
+    if (watchJobType && jobTypes.length > 0) {
+      const jobType = jobTypes.find(jt => jt.name === watchJobType);
       if (jobType?.default_duration) {
         setValue('estimated_duration', jobType.default_duration);
       }
     }
-  }, [watchJobType, setValue]);
+  }, [watchJobType, setValue, jobTypes]);
 
   // customerProperties is now managed via state when selecting a customer
 
@@ -291,12 +308,9 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
         throw new Error(error?.error || 'Failed to save job');
       }
 
-      const result = await res.json();
-      console.log('Job saved:', result.job);
       router.push('/jobs');
     } catch (error) {
-      console.error('Failed to save job:', error);
-      alert(error instanceof Error ? error.message : 'Failed to save job');
+      toast.error('Failed to save job', error instanceof Error ? error.message : undefined);
     }
   };
 
@@ -417,10 +431,11 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
             </label>
             <select
               {...register('job_type')}
-              className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              disabled={isLoadingJobTypes}
+              className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500 disabled:bg-gray-100"
             >
-              <option value="">Select job type...</option>
-              {mockJobTypes.map(jt => (
+              <option value="">{isLoadingJobTypes ? 'Loading...' : 'Select job type...'}</option>
+              {jobTypes.map(jt => (
                 <option key={jt.id} value={jt.name}>
                   {jt.name} ({jt.default_duration})
                 </option>
