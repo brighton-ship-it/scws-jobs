@@ -136,7 +136,7 @@ const roleLabelMap: Record<string, string> = {
 };
 
 export default function UsersSettingsPage() {
-  const [teamMembers, setTeamMembers] = useState<typeof mockTeamMembers>([]);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [showNewUserModal, setShowNewUserModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
