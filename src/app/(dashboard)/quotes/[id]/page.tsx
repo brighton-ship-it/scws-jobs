@@ -140,10 +140,31 @@ export default function QuoteDetailPage() {
 
   const handleSendQuote = async () => {
     setSending(true);
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    // TODO: Implement actual send logic
-    setSending(false);
-    setShowSendModal(false);
+    try {
+      const res = await fetch(`/api/quotes/${quoteId}/send`, {
+        method: 'POST',
+      });
+      
+      const data = await res.json();
+      
+      if (res.ok) {
+        // Refresh quote data to show updated status
+        const quoteRes = await fetch(`/api/quotes/${quoteId}`);
+        if (quoteRes.ok) {
+          const quoteData = await quoteRes.json();
+          setQuoteData(quoteData.quote);
+        }
+        setShowSendModal(false);
+        alert(data.message || 'Quote sent successfully!');
+      } else {
+        alert(data.error || 'Failed to send quote');
+      }
+    } catch (error) {
+      console.error('Error sending quote:', error);
+      alert('Failed to send quote');
+    } finally {
+      setSending(false);
+    }
   };
 
   const handlePrint = () => {
