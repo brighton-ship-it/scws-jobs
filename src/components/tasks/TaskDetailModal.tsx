@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { format, parseISO } from 'date-fns';
 import { 
   X, 
@@ -12,13 +12,22 @@ import {
   CheckCircle2,
   Trash2,
   Edit2,
+  Loader2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/FormElements';
 import { TaskStatusBadge, TaskPriorityBadge } from './TaskStatusBadge';
-import { mockUsers, mockCustomers, getUserById, getCustomerById, getJobById } from '@/lib/mock-data';
-import { updateTask, deleteTask, completeTask } from '@/lib/tasks';
 import type { Task, TaskWithDetails, TaskStatus, TaskPriority } from '@/types/database';
+
+interface UserOption {
+  id: string;
+  name: string;
+}
+
+interface CustomerOption {
+  id: string;
+  name: string;
+}
 
 interface TaskDetailModalProps {
   task: Task | TaskWithDetails;
@@ -40,41 +49,107 @@ export function TaskDetailModal({ task, isOpen, onClose, onTaskUpdated }: TaskDe
     related_customer_id: task.related_customer_id || '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [users, setUsers] = useState<UserOption[]>([]);
+  const [customers, setCustomers] = useState<CustomerOption[]>([]);
+  const [loadingOptions, setLoadingOptions] = useState(false);
 
   const taskWithDetails = task as TaskWithDetails;
-  const assignedUser = taskWithDetails.assigned_user || (task.assigned_to ? getUserById(task.assigned_to) : null);
-  const relatedCustomer = taskWithDetails.related_customer || (task.related_customer_id ? getCustomerById(task.related_customer_id) : null);
-  const relatedJob = taskWithDetails.related_job || (task.related_job_id ? getJobById(task.related_job_id) : null);
+  const assignedUser = taskWithDetails.assigned_user;
+  const relatedCustomer = taskWithDetails.related_customer;
+  const relatedJob = taskWithDetails.related_job;
+
+  // Fetch users and customers when editing
+  useEffect(() => {
+    if (isEditing && users.length === 0) {
+      const fetchOptions = async () => {
+        setLoadingOptions(true);
+        try {
+          const [usersRes, customersRes] = await Promise.all([
+            fetch('/api/users?active=true'),
+            fetch('/api/customers?limit=100'),
+          ]);
+          
+          if (usersRes.ok) {
+            const data = await usersRes.json();
+            setUsers(data.users || []);
+          }
+          if (customersRes.ok) {
+            const data = await customersRes.json();
+            setCustomers(data.customers || []);
+          }
+        } catch (error) {
+          console.error('Failed to fetch options:', error);
+        } finally {
+          setLoadingOptions(false);
+        }
+      };
+      fetchOptions();
+    }
+  }, [isEditing, users.length]);
 
   const handleSave = async () => {
     setIsSubmitting(true);
     try {
-      updateTask(task.id, {
-        title: formData.title,
-        description: formData.description || null,
-        assigned_to: formData.assigned_to || null,
-        due_date: formData.due_date || null,
-        due_time: formData.due_time || null,
-        priority: formData.priority as TaskPriority,
-        status: formData.status as TaskStatus,
-        related_customer_id: formData.related_customer_id || null,
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: formData.title,
+          description: formData.description || null,
+          assigned_to: formData.assigned_to || null,
+          due_date: formData.due_date || null,
+          due_time: formData.due_time || null,
+          priority: formData.priority,
+          status: formData.status,
+          related_customer_id: formData.related_customer_id || null,
+        }),
       });
-      onTaskUpdated?.();
-      setIsEditing(false);
+
+      if (res.ok) {
+        onTaskUpdated?.();
+        setIsEditing(false);
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to update task');
+      }
+    } catch (error) {
+      console.error('Update task error:', error);
+      alert('Failed to update task');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  const handleComplete = () => {
-    completeTask(task.id);
-    onTaskUpdated?.();
+  const handleComplete = async () => {
+    try {
+      const res = await fetch(`/api/tasks/${task.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          status: 'completed',
+          completed_at: new Date().toISOString(),
+        }),
+      });
+
+      if (res.ok) {
+        onTaskUpdated?.();
+      }
+    } catch (error) {
+      console.error('Complete task error:', error);
+    }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (confirm('Are you sure you want to delete this task?')) {
-      deleteTask(task.id);
-      onTaskUpdated?.();
+      try {
+        const res = await fetch(`/api/tasks/${task.id}`, { method: 'DELETE' });
+        if (res.ok) {
+          onTaskUpdated?.();
+          onClose();
+        }
+      } catch (error) {
+        console.error('Delete task error:', error);
+      }
     }
   };
 
@@ -163,17 +238,24 @@ export function TaskDetailModal({ task, isOpen, onClose, onTaskUpdated }: TaskDe
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Assign To
                 </label>
-                <Select
-                  value={formData.assigned_to}
-                  onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })}
-                >
-                  <option value="">Unassigned</option>
-                  {mockUsers.map((user) => (
-                    <option key={user.id} value={user.id}>
-                      {user.name}
-                    </option>
-                  ))}
-                </Select>
+                {loadingOptions ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading...
+                  </div>
+                ) : (
+                  <Select
+                    value={formData.assigned_to}
+                    onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })}
+                  >
+                    <option value="">Unassigned</option>
+                    {users.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
               </div>
 
               {/* Due Date & Time */}
@@ -221,17 +303,24 @@ export function TaskDetailModal({ task, isOpen, onClose, onTaskUpdated }: TaskDe
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Related Customer
                 </label>
-                <Select
-                  value={formData.related_customer_id}
-                  onChange={(e) => setFormData({ ...formData, related_customer_id: e.target.value })}
-                >
-                  <option value="">None</option>
-                  {mockCustomers.map((customer) => (
-                    <option key={customer.id} value={customer.id}>
-                      {customer.name}
-                    </option>
-                  ))}
-                </Select>
+                {loadingOptions ? (
+                  <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Loading...
+                  </div>
+                ) : (
+                  <Select
+                    value={formData.related_customer_id}
+                    onChange={(e) => setFormData({ ...formData, related_customer_id: e.target.value })}
+                  >
+                    <option value="">None</option>
+                    {customers.map((customer) => (
+                      <option key={customer.id} value={customer.id}>
+                        {customer.name}
+                      </option>
+                    ))}
+                  </Select>
+                )}
               </div>
             </div>
           ) : (

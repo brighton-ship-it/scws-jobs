@@ -1,12 +1,20 @@
 'use client';
 
-import { useState } from 'react';
-import { X } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input, Select, Textarea } from '@/components/ui/FormElements';
-import { mockUsers, mockCustomers } from '@/lib/mock-data';
-import { createTask, type CreateTaskInput } from '@/lib/tasks';
 import type { TaskPriority } from '@/types/database';
+
+interface User {
+  id: string;
+  name: string;
+}
+
+interface Customer {
+  id: string;
+  name: string;
+}
 
 interface CreateTaskModalProps {
   isOpen: boolean;
@@ -27,17 +35,49 @@ export function CreateTaskModal({
   defaultCustomerId,
   defaultJobId,
 }: CreateTaskModalProps) {
-  const [formData, setFormData] = useState<CreateTaskInput>({
+  const [formData, setFormData] = useState({
     title: '',
     description: '',
     assigned_to: defaultAssignee || '',
     due_date: defaultDate || '',
     due_time: '',
-    priority: 'normal',
+    priority: 'normal' as TaskPriority,
     related_customer_id: defaultCustomerId || '',
     related_job_id: defaultJobId || '',
   });
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [users, setUsers] = useState<User[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Fetch users and customers when modal opens
+  useEffect(() => {
+    if (isOpen) {
+      const fetchData = async () => {
+        setLoading(true);
+        try {
+          const [usersRes, customersRes] = await Promise.all([
+            fetch('/api/users?active=true'),
+            fetch('/api/customers?limit=100'),
+          ]);
+          
+          if (usersRes.ok) {
+            const data = await usersRes.json();
+            setUsers(data.users || []);
+          }
+          if (customersRes.ok) {
+            const data = await customersRes.json();
+            setCustomers(data.customers || []);
+          }
+        } catch (error) {
+          console.error('Failed to fetch data:', error);
+        } finally {
+          setLoading(false);
+        }
+      };
+      fetchData();
+    }
+  }, [isOpen]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -45,29 +85,42 @@ export function CreateTaskModal({
 
     setIsSubmitting(true);
     try {
-      createTask({
-        ...formData,
-        assigned_to: formData.assigned_to || undefined,
-        due_date: formData.due_date || undefined,
-        due_time: formData.due_time || undefined,
-        related_customer_id: formData.related_customer_id || undefined,
-        related_job_id: formData.related_job_id || undefined,
-        created_by: '1', // Mock current user
+      const res = await fetch('/api/tasks', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: formData.title,
+          description: formData.description || null,
+          assigned_to: formData.assigned_to || null,
+          due_date: formData.due_date || null,
+          due_time: formData.due_time || null,
+          priority: formData.priority,
+          related_customer_id: formData.related_customer_id || null,
+          related_job_id: formData.related_job_id || null,
+        }),
       });
-      
-      onTaskCreated?.();
-      onClose();
-      // Reset form
-      setFormData({
-        title: '',
-        description: '',
-        assigned_to: '',
-        due_date: '',
-        due_time: '',
-        priority: 'normal',
-        related_customer_id: '',
-        related_job_id: '',
-      });
+
+      if (res.ok) {
+        onTaskCreated?.();
+        onClose();
+        // Reset form
+        setFormData({
+          title: '',
+          description: '',
+          assigned_to: '',
+          due_date: '',
+          due_time: '',
+          priority: 'normal',
+          related_customer_id: '',
+          related_job_id: '',
+        });
+      } else {
+        const data = await res.json();
+        alert(data.error || 'Failed to create task');
+      }
+    } catch (error) {
+      console.error('Create task error:', error);
+      alert('Failed to create task');
     } finally {
       setIsSubmitting(false);
     }
@@ -129,17 +182,24 @@ export function CreateTaskModal({
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Assign To
             </label>
-            <Select
-              value={formData.assigned_to || ''}
-              onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })}
-            >
-              <option value="">Unassigned</option>
-              {mockUsers.map((user) => (
-                <option key={user.id} value={user.id}>
-                  {user.name}
-                </option>
-              ))}
-            </Select>
+            {loading ? (
+              <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading team...
+              </div>
+            ) : (
+              <Select
+                value={formData.assigned_to || ''}
+                onChange={(e) => setFormData({ ...formData, assigned_to: e.target.value })}
+              >
+                <option value="">Unassigned</option>
+                {users.map((user) => (
+                  <option key={user.id} value={user.id}>
+                    {user.name}
+                  </option>
+                ))}
+              </Select>
+            )}
           </div>
 
           {/* Due Date & Time */}
@@ -187,17 +247,24 @@ export function CreateTaskModal({
             <label className="block text-sm font-medium text-gray-700 mb-1">
               Related Customer
             </label>
-            <Select
-              value={formData.related_customer_id || ''}
-              onChange={(e) => setFormData({ ...formData, related_customer_id: e.target.value })}
-            >
-              <option value="">None</option>
-              {mockCustomers.map((customer) => (
-                <option key={customer.id} value={customer.id}>
-                  {customer.name}
-                </option>
-              ))}
-            </Select>
+            {loading ? (
+              <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading customers...
+              </div>
+            ) : (
+              <Select
+                value={formData.related_customer_id || ''}
+                onChange={(e) => setFormData({ ...formData, related_customer_id: e.target.value })}
+              >
+                <option value="">None</option>
+                {customers.map((customer) => (
+                  <option key={customer.id} value={customer.id}>
+                    {customer.name}
+                  </option>
+                ))}
+              </Select>
+            )}
           </div>
 
           {/* Actions */}
