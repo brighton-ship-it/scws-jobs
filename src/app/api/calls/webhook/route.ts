@@ -58,12 +58,14 @@ export async function POST(request: NextRequest) {
       console.log(`Logged call from ${source}: ${callerNumber}`);
     }
     
-    // Forward call to Sarah (Vapi AI Receptionist)
+    // Forward call to Brighton first, then Sarah if no answer
+    const BRIGHTON_NUMBER = '+17604408520';
     const SARAH_VAPI_NUMBER = '+17604915348';
+    const statusUrl = 'https://scws-jobs.vercel.app/api/calls/status';
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${callerNumber}" timeout="30" action="/api/calls/status">
-    <Number>${SARAH_VAPI_NUMBER}</Number>
+  <Dial callerId="${callerNumber}" timeout="20" action="${statusUrl}">
+    <Number>${BRIGHTON_NUMBER}</Number>
   </Dial>
 </Response>`;
     
