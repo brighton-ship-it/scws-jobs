@@ -81,16 +81,20 @@ export default function DashboardPage() {
   const [invoices, setInvoices] = useState<any[]>([]);
   const [quotes, setQuotes] = useState<any[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
+  const [bookingRequests, setBookingRequests] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<any[]>([]);
 
   // Fetch dashboard data
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [jobsRes, invoicesRes, quotesRes, customersRes] = await Promise.all([
+        const [jobsRes, invoicesRes, quotesRes, customersRes, bookingsRes, tasksRes] = await Promise.all([
           fetch('/api/jobs?limit=500'),
           fetch('/api/invoices?limit=500'),
           fetch('/api/quotes?limit=500'),
           fetch('/api/customers?limit=100'),
+          fetch('/api/booking'),
+          fetch('/api/tasks'),
         ]);
         
         if (jobsRes.ok) {
@@ -108,6 +112,14 @@ export default function DashboardPage() {
         if (customersRes.ok) {
           const data = await customersRes.json();
           setCustomers(data.customers || []);
+        }
+        if (bookingsRes.ok) {
+          const data = await bookingsRes.json();
+          setBookingRequests(data.bookings || []);
+        }
+        if (tasksRes.ok) {
+          const data = await tasksRes.json();
+          setTasks(data.tasks || []);
         }
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
@@ -163,11 +175,15 @@ export default function DashboardPage() {
   const unassignedJobs = jobs.filter(j => !j.assigned_to && j.status === 'scheduled');
 
   // Workflow stats
+  const pendingRequests = bookingRequests.filter(r => r.status === 'pending');
+  const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
+  const urgentTasks = tasks.filter(t => t.priority === 'urgent');
+  
   const workflowStats = {
     requests: {
-      new: 3, // TODO: wire up requests API
-      assessmentsComplete: 1,
-      overdue: 0,
+      new: pendingRequests.length,
+      assessmentsComplete: bookingRequests.filter(r => r.status === 'confirmed').length,
+      overdue: bookingRequests.filter(r => r.status === 'pending' && r.created_at && new Date(r.created_at) < new Date(Date.now() - 48 * 60 * 60 * 1000)).length,
     },
     quotes: {
       approved: quotes.filter(q => q.status === 'accepted').length,
