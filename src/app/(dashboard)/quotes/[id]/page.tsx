@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useToast } from '@/components/feedback/Toaster';
 import Image from 'next/image';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -63,6 +64,7 @@ export default function QuoteDetailPage() {
   const params = useParams();
   const quoteId = params.id as string;
   const printRef = useRef<HTMLDivElement>(null);
+  const toast = useToast();
   
   const [quoteData, setQuoteData] = useState<QuoteData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -155,13 +157,12 @@ export default function QuoteDetailPage() {
           setQuoteData(quoteData.quote);
         }
         setShowSendModal(false);
-        alert(data.message || 'Quote sent successfully!');
+        toast.success('Quote sent', data.message || 'Quote has been emailed to the customer');
       } else {
-        alert(data.error || 'Failed to send quote');
+        toast.error('Failed to send', data.error || 'Please try again');
       }
     } catch (error) {
-      console.error('Error sending quote:', error);
-      alert('Failed to send quote');
+      toast.error('Failed to send', 'Please check your connection and try again');
     } finally {
       setSending(false);
     }
@@ -182,18 +183,19 @@ export default function QuoteDetailPage() {
     try {
       const res = await fetch(`/api/quotes/${quoteId}`, { method: 'DELETE' });
       if (res.ok) {
+        toast.success('Quote deleted', 'Quote has been removed');
         router.push('/quotes');
       } else {
-        alert('Failed to delete quote');
+        toast.error('Failed to delete', 'Please try again');
       }
     } catch (error) {
-      alert('Failed to delete quote');
+      toast.error('Failed to delete', 'Please check your connection');
     }
   };
 
   const handleApproveAndPay = () => {
     // TODO: Implement payment flow
-    alert('Payment flow would open here. This will redirect to a payment processor.');
+    toast.info('Coming soon', 'Payment processing will be available soon');
   };
 
   const handleMarkAccepted = async () => {
@@ -205,12 +207,12 @@ export default function QuoteDetailPage() {
       });
       if (res.ok) {
         setQuoteData(prev => prev ? { ...prev, status: 'accepted', accepted_at: new Date().toISOString() } : null);
+        toast.success('Quote accepted', 'Quote has been marked as accepted');
       } else {
-        alert('Failed to mark quote as accepted');
+        toast.error('Failed to update', 'Could not mark quote as accepted');
       }
     } catch (err) {
-      console.error('Failed to mark accepted:', err);
-      alert('Failed to mark quote as accepted');
+      toast.error('Failed to update', 'Please try again');
     }
   };
 
@@ -224,12 +226,12 @@ export default function QuoteDetailPage() {
       });
       if (res.ok) {
         setQuoteData(prev => prev ? { ...prev, status: 'declined' } : null);
+        toast.success('Quote declined', 'Quote has been marked as declined');
       } else {
-        alert('Failed to mark quote as declined');
+        toast.error('Failed to update', 'Could not mark quote as declined');
       }
     } catch (err) {
-      console.error('Failed to mark declined:', err);
-      alert('Failed to mark quote as declined');
+      toast.error('Failed to update', 'Please try again');
     }
   };
 
