@@ -74,13 +74,13 @@ export async function POST(request: NextRequest) {
     const supabase = createServiceClient();
     
     // Check if we already processed this call
-    const { data: existing } = await supabase
+    const { data: existingCalls } = await supabase
       .from('receptionist_calls')
       .select('id')
       .eq('vapi_call_id', call.id)
-      .single();
+      .limit(1);
     
-    if (existing) {
+    if (existingCalls && existingCalls.length > 0) {
       return NextResponse.json({ ok: true, skipped: true, reason: 'already-processed' });
     }
 
