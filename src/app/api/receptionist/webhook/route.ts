@@ -329,12 +329,13 @@ View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}
 View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/requests
     `.trim();
 
-    await sendEmail({
+    const emailResult = await sendEmail({
       to: OFFICE_EMAIL,
       subject: emailSubject,
       html: textToHtml(emailContent),
       text: emailContent,
     });
+    console.log(`[Receptionist] Email result:`, emailResult);
 
     // Discord notification (instant mobile alert)
     await notifyNewCall({
@@ -365,6 +366,8 @@ View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.ap
       is_new_customer: isNewCustomer,
       is_urgent: isUrgent,
       task_created: taskCreated,
+      email_sent: emailResult?.success || false,
+      email_error: emailResult?.error || null,
     });
   } catch (error) {
     console.error('Receptionist webhook error:', error);
