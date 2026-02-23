@@ -108,15 +108,19 @@ export async function POST(request: NextRequest) {
       if (nameMatch) customerName = nameMatch[1];
     }
 
-    // Calculate call duration - timestamps might be at message or call level
+    // Calculate call duration - prefer direct durationSeconds from Vapi
     const startedAt = body.message?.startedAt || call.startedAt || body.startedAt;
     const endedAt = body.message?.endedAt || call.endedAt || body.endedAt;
     
-    const startTime = startedAt ? new Date(startedAt) : new Date();
-    const endTime = endedAt ? new Date(endedAt) : new Date();
-    const durationSec = startedAt && endedAt 
-      ? Math.round((endTime.getTime() - startTime.getTime()) / 1000)
-      : 0;
+    // Vapi sends durationSeconds directly in the end-of-call-report
+    let durationSec = body.message?.durationSeconds || call.durationSeconds || body.durationSeconds || 0;
+    
+    // Fallback to timestamp calculation if direct duration not available
+    if (!durationSec && startedAt && endedAt) {
+      const startTime = new Date(startedAt);
+      const endTime = new Date(endedAt);
+      durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
+    }
 
     // Format phone for display
     const formatPhone = (p: string) => {
