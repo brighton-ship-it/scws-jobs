@@ -56,10 +56,8 @@ export async function POST(request: NextRequest) {
         else console.log(`Logged call from ${source}: ${callerNumber}`);
       });
     
-    // Forward call to Brighton first, then Sarah if no answer
-    const BRIGHTON_NUMBER = '+17604408520';
+    // Forward all calls directly to Sarah (AI Receptionist)
     const SARAH_VAPI_NUMBER = '+17604915348';
-    const statusUrl = 'https://scws-jobs.vercel.app/api/calls/status';
     
     // Ensure caller ID is properly formatted (E.164)
     // Note: + in URL form data decodes as space, so we handle that
@@ -74,8 +72,8 @@ export async function POST(request: NextRequest) {
     
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${formattedCallerId}" timeout="5" action="${statusUrl}">
-    <Number>${BRIGHTON_NUMBER}</Number>
+  <Dial callerId="${formattedCallerId}" timeout="60">
+    <Number>${SARAH_VAPI_NUMBER}</Number>
   </Dial>
 </Response>`;
     
