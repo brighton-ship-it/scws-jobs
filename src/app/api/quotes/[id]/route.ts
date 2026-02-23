@@ -12,8 +12,6 @@ export async function GET(
     const resolvedParams = await params;
     const id = resolvedParams.id;
     
-    console.log('Quote API - ID received:', id);
-    
     const supabase = createServiceClient();
 
     // Try UUID first, then quote_number
@@ -53,8 +51,6 @@ export async function GET(
       quote = result.data;
       error = result.error;
     }
-
-    console.log('Quote API - Query result:', { found: !!quote, error: error?.message });
 
     if (error || !quote) {
       return NextResponse.json({ error: 'Quote not found', id, dbError: error?.message }, { status: 404 });

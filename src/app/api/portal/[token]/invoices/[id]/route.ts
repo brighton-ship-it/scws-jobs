@@ -43,18 +43,8 @@ export async function GET(
       );
     }
 
-    // First, query just by ID to see raw data
-    const { data: rawInvoice } = await supabase
-      .from('invoices')
-      .select('id, total, subtotal, due_date')
-      .eq('id', id)
-      .single();
-    
-    console.log('[Portal Invoice API] Raw invoice by ID only:', JSON.stringify(rawInvoice));
-
     // WORKAROUND: Use simple query without customer_id filter due to Supabase bug
     // The complex query with customer_id filter was returning stale data
-    console.log('[Portal Invoice API] Fetching invoice:', id);
     
     const { data: invoice, error: invoiceError } = await supabase
       .from('invoices')
@@ -101,8 +91,6 @@ export async function GET(
         { status: 404 }
       );
     }
-    
-    console.log('[Portal Invoice API] Invoice result:', JSON.stringify({ invoice, error: invoiceError }));
 
     if (invoiceError || !invoice) {
       return NextResponse.json(
@@ -112,13 +100,11 @@ export async function GET(
     }
 
     // Get line items
-    const { data: lineItems, error: itemsError } = await supabase
+    const { data: lineItems } = await supabase
       .from('invoice_items')
       .select('*')
       .eq('invoice_id', id)
       .order('sort_order', { ascending: true });
-    
-    console.log('[Portal Invoice API] Line items:', JSON.stringify({ lineItems, error: itemsError }));
 
     // Get payments
     const { data: payments } = await supabase

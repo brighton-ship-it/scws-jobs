@@ -256,18 +256,15 @@ export default function PermitResearchPage() {
     async function initMap() {
       // Only init when we have results (which renders the map container)
       if (!isGoogleMapsConfigured() || !mapRef.current) {
-        console.log('Map init skipped - no config or no mapRef');
         return;
       }
       
       // Already initialized
       if (mapInstanceRef.current) {
-        console.log('Map already initialized');
         return;
       }
       
       try {
-        console.log('Initializing map...');
         const { Map } = await getMapsLibrary();
         
         if (!isMounted || !mapRef.current) return;
@@ -282,7 +279,6 @@ export default function PermitResearchPage() {
         
         mapInstanceRef.current = map;
         setMapReady(true);
-        console.log('Map instance created successfully, mapReady set to true');
         
         // Click handler added - but we'll use a separate useEffect for placement
         // to avoid stale closure issues
@@ -305,10 +301,7 @@ export default function PermitResearchPage() {
   
   useEffect(() => {
     const map = mapInstanceRef.current;
-    if (!map) {
-      console.log('Map click effect: no map instance');
-      return;
-    }
+    if (!map) return;
     
     // Remove old listener
     if (mapClickListenerRef.current) {
@@ -317,14 +310,10 @@ export default function PermitResearchPage() {
     
     // Only add listener if in placement mode
     if (!isPlacingSeptic && !isPlacingWell && !isPlacingManualWell) {
-      console.log('Map click effect: not in placement mode');
       return;
     }
     
-    console.log('Map click effect: attaching listener', { isPlacingSeptic, isPlacingWell, isPlacingManualWell });
-    
     mapClickListenerRef.current = google.maps.event.addListener(map, 'click', (e: google.maps.MapMouseEvent) => {
-      console.log('MAP CLICKED!', e.latLng?.toJSON());
       
       if (isPlacingSeptic && e.latLng) {
         setSepticLocation({ lat: e.latLng.lat(), lng: e.latLng.lng() });
@@ -460,7 +449,6 @@ export default function PermitResearchPage() {
 
   // Update map when results change
   useEffect(() => {
-    console.log('Drawing useEffect triggered:', { mapReady, hasResult: !!result, hasMap: !!mapInstanceRef.current });
     
     // Always clear existing markers and polygons first
     if (mapInstanceRef.current) {
@@ -487,10 +475,8 @@ export default function PermitResearchPage() {
     
     // Now check if we should draw new results
     if (!mapInstanceRef.current || !result) {
-      console.log('Drawing skipped - map or result missing');
       return;
     }
-    console.log('Drawing parcel, wells, and septic permits...');
     
     const map = mapInstanceRef.current;
     
@@ -523,7 +509,6 @@ export default function PermitResearchPage() {
     // Add well markers with depth labels (using regular Marker, not AdvancedMarker)
     // Declutter overlapping wells by spreading them in a spiral pattern
     if (result.wells.length > 0) {
-      console.log('Adding', result.wells.length, 'well markers');
       
       // Group wells by location (round to 5 decimal places ~1m precision)
       const locationGroups = new Map<string, { wells: typeof result.wells; indices: number[] }>();
@@ -606,12 +591,10 @@ export default function PermitResearchPage() {
         markersRef.current.push(marker as any);
         });
       });
-      console.log('Added', markersRef.current.length, 'well markers');
     }
     
     // Add septic permit markers (orange squares)
     if (result.septicPermits && result.septicPermits.length > 0) {
-      console.log('Adding', result.septicPermits.length, 'septic permit markers');
       result.septicPermits.forEach((permit, index) => {
         if (!permit.latitude || !permit.longitude) return;
         
@@ -665,7 +648,6 @@ export default function PermitResearchPage() {
         (marker as any)._septicCircle = circle;
         septicPermitMarkersRef.current.push(marker);
       });
-      console.log('Added', septicPermitMarkersRef.current.length, 'septic permit markers');
     }
   }, [result, showSetbacks, mapReady]); // Include mapReady to trigger when map becomes available
 
@@ -2075,8 +2057,6 @@ export default function PermitResearchPage() {
                     
                     const lat = ne.lat() - (y / rect.height) * (ne.lat() - sw.lat());
                     const lng = sw.lng() + (x / rect.width) * (ne.lng() - sw.lng());
-                    
-                    console.log('DIV CLICKED - placing at:', lat, lng);
                     
                     if (isPlacingSeptic) {
                       setSepticLocation({ lat, lng });
