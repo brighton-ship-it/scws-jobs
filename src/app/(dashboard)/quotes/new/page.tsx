@@ -37,15 +37,10 @@ export default function NewQuotePage() {
   useEffect(() => {
     const fetchProducts = async () => {
       try {
-        console.log('Fetching products...');
         const res = await fetch('/api/products?limit=2000');
-        console.log('Products response status:', res.status);
         if (res.ok) {
           const data = await res.json();
-          console.log('Products received:', data.products?.length || 0);
           setProducts(data.products || []);
-        } else {
-          console.error('Products API error:', res.status, res.statusText);
         }
       } catch (error) {
         console.error('Failed to fetch products:', error);
@@ -75,9 +70,6 @@ export default function NewQuotePage() {
   };
 
   const activeProducts = products.filter(p => p.active);
-  
-  // Debug: log product count
-  console.log('Products loaded:', products.length, 'Active:', activeProducts.length);
 
   // Calculate totals
   const subtotal = useMemo(() => 

@@ -3,6 +3,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import Link from 'next/link';
+import { useToast } from '@/components/feedback/Toaster';
 import dynamic from 'next/dynamic';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -41,6 +42,7 @@ export default function InvoiceDetailPage() {
   const router = useRouter();
   const params = useParams();
   const invoiceId = params.id as string;
+  const toast = useToast();
 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showSendModal, setShowSendModal] = useState(false);
@@ -121,7 +123,7 @@ export default function InvoiceDetailPage() {
 
   const handleSendInvoice = async () => {
     if (!sendEmail) {
-      alert('Please enter an email address');
+      toast.warning('Email required', 'Please enter an email address');
       return;
     }
     
@@ -147,10 +149,9 @@ export default function InvoiceDetailPage() {
       }
       
       setShowSendModal(false);
-      alert('Invoice sent successfully!');
+      toast.success('Invoice sent', `Invoice sent to ${sendEmail}`);
     } catch (err) {
-      console.error('Send invoice error:', err);
-      alert(err instanceof Error ? err.message : 'Failed to send invoice');
+      toast.error('Failed to send', err instanceof Error ? err.message : 'Please try again');
     } finally {
       setSending(false);
     }
@@ -158,7 +159,7 @@ export default function InvoiceDetailPage() {
 
   const handleRecordPayment = async () => {
     if (!paymentAmount || parseFloat(paymentAmount) <= 0) {
-      alert('Please enter a valid payment amount');
+      toast.warning('Invalid amount', 'Please enter a valid payment amount');
       return;
     }
 
@@ -192,16 +193,16 @@ export default function InvoiceDetailPage() {
       setShowPaymentModal(false);
       
       // Reset form
+      const recordedAmount = parseFloat(paymentAmount).toFixed(2);
       setPaymentAmount('');
       setPaymentMethod('');
       setPaymentReference('');
       setPaymentDate(format(new Date(), 'yyyy-MM-dd'));
       setPaymentNotes('');
       
-      alert(`Payment of $${parseFloat(paymentAmount).toFixed(2)} recorded successfully!`);
+      toast.success('Payment recorded', `$${recordedAmount} payment recorded successfully`);
     } catch (err) {
-      console.error('Payment error:', err);
-      alert(err instanceof Error ? err.message : 'Failed to record payment');
+      toast.error('Payment failed', err instanceof Error ? err.message : 'Please try again');
     } finally {
       setSavingPayment(false);
     }
