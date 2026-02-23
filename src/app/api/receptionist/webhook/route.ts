@@ -79,17 +79,9 @@ export async function POST(request: NextRequest) {
       hasTranscript: !!call.transcript,
     }));
     
-    // Try to get call ID from multiple places
-    const callId = call.id || message.callId || body.callId;
-    if (!callId) {
-      return NextResponse.json({ 
-        ok: false, 
-        error: 'No call ID found',
-        debug: { messageKeys: Object.keys(message), bodyKeys: Object.keys(body) }
-      }, { status: 400 });
-    }
-    
-    // Use the resolved call ID
+    // Try to get call ID from multiple places, generate one if not found
+    const callId = call.id || message.callId || message.call?.id || body.callId || body.call?.id || 
+      `generated-${message.timestamp || Date.now()}-${phone.slice(-4) || 'unknown'}`;
     call.id = callId;
 
     const supabase = createServiceClient();
