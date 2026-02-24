@@ -38,7 +38,7 @@ interface VapiCall {
 
 /**
  * POST /api/receptionist/webhook - Receive AI receptionist call data from Vapi
- * Creates leads/requests in the CRM
+ * Creates leads/requests in the CRM, handles function calls
  */
 export async function POST(request: NextRequest) {
   try {
@@ -47,7 +47,12 @@ export async function POST(request: NextRequest) {
     // Handle different Vapi webhook event types
     const eventType = body.message?.type || body.type || 'end-of-call-report';
     
-    // We only care about completed calls
+    // Handle function calls
+    if (eventType === 'function-call') {
+      return await handleFunctionCall(body);
+    }
+    
+    // We only care about completed calls for the rest
     if (eventType !== 'end-of-call-report' && body.status !== 'ended') {
       return NextResponse.json({ ok: true, skipped: true, reason: 'not-completed-call' });
     }
@@ -402,4 +407,342 @@ export async function GET() {
     service: 'SCWS AI Receptionist Webhook',
     timestamp: new Date().toISOString(),
   });
+}
+
+/**
+ * Handle Vapi function calls
+ */
+async function handleFunctionCall(body: any) {
+  const functionCall = body.message?.functionCall || body.functionCall;
+  const name = functionCall?.name;
+  const params = functionCall?.parameters || {};
+  const phone = body.message?.call?.customer?.number || params.phone || '';
+  
+  console.log(`[Receptionist] Function call: ${name}`, JSON.stringify(params));
+  
+  try {
+    switch (name) {
+      case 'lookupCustomer':
+        return NextResponse.json(await handleLookupCustomer(phone || params.phone));
+      
+      case 'checkSchedule':
+        return NextResponse.json(await handleCheckSchedule(phone || params.phone));
+      
+      case 'getServiceInfo':
+        return NextResponse.json(handleGetServiceInfo(params.serviceType));
+      
+      case 'checkServiceArea':
+        return NextResponse.json(handleCheckServiceArea(params.location));
+      
+      case 'getBusinessHours':
+        return NextResponse.json({
+          result: {
+            hours: "Monday through Friday, 7 AM to 4 PM",
+            emergency: "24/7 emergency service available",
+            note: "We're available for emergencies anytime - someone will call back within 15 minutes for urgent issues."
+          }
+        });
+      
+      case 'createCallback':
+      case 'flagEmergency':
+        // These are handled by the main webhook flow when the call ends
+        return NextResponse.json({
+          result: { success: true, message: "Request noted. I'll make sure this is taken care of." }
+        });
+      
+      default:
+        console.warn(`Unknown function: ${name}`);
+        return NextResponse.json({ result: { error: `Unknown function: ${name}` } });
+    }
+  } catch (error: any) {
+    console.error(`Function call error (${name}):`, error);
+    return NextResponse.json({
+      result: { error: 'Failed to process request', message: error?.message || 'Unknown error' }
+    });
+  }
+}
+
+/**
+ * Look up customer in Jobber by phone
+ */
+async function handleLookupCustomer(phone: string) {
+  const normalized = phone.replace(/\D/g, '').slice(-10);
+  const searchTerm = normalized.slice(-7);
+  
+  const response = await fetch('https://api.getjobber.com/api/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+      'X-JOBBER-GRAPHQL-VERSION': '2023-11-15'
+    },
+    body: JSON.stringify({
+      query: `
+        query SearchClients($searchTerm: String!) {
+          clients(searchTerm: $searchTerm, first: 5) {
+            nodes {
+              id
+              name
+              phones { number }
+            }
+          }
+        }
+      `,
+      variables: { searchTerm }
+    })
+  });
+  
+  const data = await response.json();
+  const clients = data?.data?.clients?.nodes || [];
+  
+  // Find exact phone match
+  for (const client of clients) {
+    for (const phoneObj of client.phones || []) {
+      const clientPhone = phoneObj.number.replace(/\D/g, '').slice(-10);
+      if (clientPhone === normalized) {
+        return {
+          result: {
+            found: true,
+            customerName: client.name,
+            message: `Welcome back, ${client.name}! I have your account pulled up. How can I help you today?`
+          }
+        };
+      }
+    }
+  }
+  
+  return {
+    result: {
+      found: false,
+      message: "I don't see this number in our system yet - no problem! Can I get your name?"
+    }
+  };
+}
+
+/**
+ * Check customer's scheduled appointments
+ */
+async function handleCheckSchedule(phone: string) {
+  const normalized = phone.replace(/\D/g, '').slice(-10);
+  const searchTerm = normalized.slice(-7);
+  
+  // First find the client
+  const clientResponse = await fetch('https://api.getjobber.com/api/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+      'X-JOBBER-GRAPHQL-VERSION': '2023-11-15'
+    },
+    body: JSON.stringify({
+      query: `
+        query SearchClients($searchTerm: String!) {
+          clients(searchTerm: $searchTerm, first: 5) {
+            nodes {
+              id
+              name
+              phones { number }
+            }
+          }
+        }
+      `,
+      variables: { searchTerm }
+    })
+  });
+  
+  const clientData = await clientResponse.json();
+  const clients = clientData?.data?.clients?.nodes || [];
+  
+  // Find exact match
+  let clientId = null;
+  let clientName = null;
+  for (const client of clients) {
+    for (const phoneObj of client.phones || []) {
+      const clientPhone = phoneObj.number.replace(/\D/g, '').slice(-10);
+      if (clientPhone === normalized) {
+        clientId = client.id;
+        clientName = client.name;
+        break;
+      }
+    }
+    if (clientId) break;
+  }
+  
+  if (!clientId) {
+    return {
+      result: {
+        found: false,
+        hasAppointments: false,
+        message: "I don't see an account with this phone number in our system. Would you like me to take down your information and have someone call you back to schedule an appointment?"
+      }
+    };
+  }
+  
+  // Get their scheduled visits
+  const scheduleResponse = await fetch('https://api.getjobber.com/api/graphql', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+      'X-JOBBER-GRAPHQL-VERSION': '2023-11-15'
+    },
+    body: JSON.stringify({
+      query: `
+        query GetClientJobs($clientId: EncodedId!) {
+          client(id: $clientId) {
+            jobs(first: 10, filter: { status: [ACTIVE, TODAY, UPCOMING] }) {
+              nodes {
+                id
+                title
+                jobNumber
+                visits(first: 5) {
+                  nodes {
+                    startAt
+                    endAt
+                    status
+                    assignedUsers {
+                      nodes {
+                        name { full }
+                      }
+                    }
+                  }
+                }
+                property {
+                  address { street1, city }
+                }
+              }
+            }
+          }
+        }
+      `,
+      variables: { clientId }
+    })
+  });
+  
+  const scheduleData = await scheduleResponse.json();
+  const jobs = scheduleData?.data?.client?.jobs?.nodes || [];
+  
+  // Collect upcoming visits
+  const visits: any[] = [];
+  for (const job of jobs) {
+    for (const visit of job.visits?.nodes || []) {
+      if (visit.startAt) {
+        visits.push({
+          date: visit.startAt,
+          service: job.title,
+          technician: visit.assignedUsers?.nodes?.[0]?.name?.full || null,
+          address: job.property?.address ? `${job.property.address.street1}, ${job.property.address.city}` : null
+        });
+      }
+    }
+  }
+  
+  // Sort by date
+  visits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+  
+  // Filter to future only
+  const now = new Date();
+  const upcoming = visits.filter(v => new Date(v.date) > now);
+  
+  if (upcoming.length === 0) {
+    return {
+      result: {
+        found: true,
+        customerName: clientName,
+        hasAppointments: false,
+        message: `I found your account, ${clientName}, but I don't see any upcoming appointments scheduled. Would you like me to create a callback request to get you scheduled?`
+      }
+    };
+  }
+  
+  // Format the first appointment
+  const first = upcoming[0];
+  const date = new Date(first.date);
+  const dateStr = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+  const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  
+  let message = `Yes! I see you're scheduled for ${dateStr} at ${timeStr} for ${first.service}.`;
+  if (first.technician) {
+    message += ` ${first.technician} will be out to help you.`;
+  }
+  if (upcoming.length > 1) {
+    message += ` You also have ${upcoming.length - 1} more appointment${upcoming.length > 2 ? 's' : ''} coming up.`;
+  }
+  
+  return {
+    result: {
+      found: true,
+      customerName: clientName,
+      hasAppointments: true,
+      appointments: upcoming.slice(0, 3),
+      message
+    }
+  };
+}
+
+/**
+ * Get service info and pricing
+ */
+function handleGetServiceInfo(serviceType: string) {
+  const services: Record<string, any> = {
+    'well drilling': { description: 'New well drilling', priceRange: '$15,000 - $50,000+', note: 'Price depends on depth and conditions' },
+    'pump repair': { description: 'Well pump repair', priceRange: '$300 - $3,000', note: 'Depends on the issue' },
+    'pump replacement': { description: 'Well pump replacement', priceRange: '$2,500 - $8,000', note: 'Includes pump and labor' },
+    'pressure tank': { description: 'Pressure tank service/replacement', priceRange: '$400 - $1,500', note: '' },
+    'water testing': { description: 'Well water testing', priceRange: '$150 - $400', note: 'Different tests available' },
+    'well rehabilitation': { description: 'Well rehabilitation/cleaning', priceRange: '$2,000 - $10,000', note: '' },
+  };
+  
+  const key = Object.keys(services).find(k => serviceType.toLowerCase().includes(k));
+  if (key) {
+    return { result: services[key] };
+  }
+  
+  return {
+    result: {
+      description: 'Various well and pump services',
+      priceRange: 'Varies by service',
+      note: "I can have a technician call you back with specific pricing for your situation."
+    }
+  };
+}
+
+/**
+ * Check if location is in service area
+ */
+function handleCheckServiceArea(location: string) {
+  const loc = location.toLowerCase();
+  
+  const sdCounty = ['san diego', 'ramona', 'valley center', 'escondido', 'poway', 'julian', 'fallbrook', 'bonsall', 'alpine', 'lakeside', 'el cajon', 'santee', 'jamul', 'descanso', 'pine valley', 'campo', 'borrego springs', 'warner springs', 'santa ysabel', 'pauma valley'];
+  const riversideCounty = ['riverside', 'anza', 'temecula', 'murrieta', 'hemet', 'menifee', 'winchester', 'idyllwild', 'aguanga'];
+  const sbCounty = ['san bernardino', 'yucaipa', 'redlands', 'big bear', 'highland', 'victorville', 'hesperia', 'apple valley', 'crestline', 'lake arrowhead', 'running springs'];
+  
+  const allAreas = [...sdCounty, ...riversideCounty, ...sbCounty];
+  const inArea = allAreas.some(area => loc.includes(area));
+  
+  if (inArea) {
+    return {
+      result: {
+        inServiceArea: true,
+        message: `Yes, we service ${location}! We'd be happy to help you.`
+      }
+    };
+  }
+  
+  // Check for county names
+  if (loc.includes('san diego county') || loc.includes('riverside county') || loc.includes('san bernardino county')) {
+    return {
+      result: {
+        inServiceArea: true,
+        message: "Yes, we service that area! We cover San Diego, Riverside, and San Bernardino counties."
+      }
+    };
+  }
+  
+  return {
+    result: {
+      inServiceArea: false,
+      message: "That location might be outside our usual service area, but let me take your information. If we can't help, we might be able to recommend someone who can."
+    }
+  };
 }
