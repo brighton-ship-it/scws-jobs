@@ -12,6 +12,7 @@ export async function GET(request: Request) {
     const status = searchParams.get('status');
     const customerId = searchParams.get('customer_id');
     const limit = parseInt(searchParams.get('limit') || '50');
+    const includeCounts = searchParams.get('counts') === 'true';
     
     let query = supabase
       .from('quotes')
@@ -39,7 +40,21 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
     
-    return NextResponse.json({ quotes: quotes || [] });
+    // Optionally include counts by status
+    let counts: Record<string, number> | undefined;
+    if (includeCounts) {
+      counts = {};
+      const statuses = ['draft', 'sent', 'accepted', 'declined', 'expired', 'completed'];
+      for (const s of statuses) {
+        const { count } = await supabase
+          .from('quotes')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', s);
+        if (count !== null) counts[s] = count;
+      }
+    }
+    
+    return NextResponse.json({ quotes: quotes || [], counts });
   } catch (error) {
     console.error('Quotes API error:', error);
     return NextResponse.json({ error: 'Failed to fetch quotes' }, { status: 500 });

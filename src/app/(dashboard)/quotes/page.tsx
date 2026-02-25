@@ -48,28 +48,19 @@ export default function QuotesPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
 
-  // Fetch status counts separately
-  const fetchCounts = async () => {
-    try {
-      const res = await fetch('/api/quotes/counts');
-      if (res.ok) {
-        const data = await res.json();
-        setStatusCounts(data.counts || {});
-      }
-    } catch (error) {
-      console.error('Failed to fetch counts:', error);
-    }
-  };
-
-  // Fetch quotes from API with server-side filtering
-  const fetchQuotes = async () => {
+  // Fetch quotes from API with server-side filtering and counts
+  const fetchQuotes = async (withCounts = false) => {
     setLoading(true);
     try {
       const statusParam = statusFilter !== 'all' ? `&status=${statusFilter}` : '';
-      const res = await fetch(`/api/quotes?limit=500${statusParam}`);
+      const countsParam = withCounts ? '&counts=true' : '';
+      const res = await fetch(`/api/quotes?limit=500${statusParam}${countsParam}`);
       if (res.ok) {
         const data = await res.json();
         setQuotes(data.quotes || []);
+        if (data.counts) {
+          setStatusCounts(data.counts);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch quotes:', error);
@@ -148,14 +139,17 @@ export default function QuotesPage() {
     }
   };
 
-  // Initial fetch
+  // Initial fetch with counts
   useEffect(() => {
-    fetchCounts();
+    fetchQuotes(true);
   }, []);
 
-  // Refetch quotes when filter changes
+  // Refetch quotes when filter changes (no counts needed)
   useEffect(() => {
-    fetchQuotes();
+    if (Object.keys(statusCounts).length > 0) {
+      // Only refetch if we already have counts (skip initial)
+      fetchQuotes(false);
+    }
   }, [statusFilter]);
 
   const filteredQuotes = quotes.filter((quote) => {
