@@ -11,7 +11,8 @@ import Header from '@/components/layout/Header';
 import { ActivityFeedSidebar } from '@/components/layout/ActivityFeedSidebar';
 import { MobileBottomNav } from '@/components/MobileBottomNav';
 import { GlobalSearch } from '@/components/search/GlobalSearch';
-import { Toaster } from '@/components/feedback/Toaster';
+import { ToastProvider } from '@/components/feedback/Toaster';
+import { Toaster } from 'sonner';
 
 function DashboardSkeleton() {
   return (
@@ -54,19 +55,21 @@ function DashboardContent({ children }: { children: ReactNode }) {
 export function DashboardProviders({ children }: { children: ReactNode }) {
   return (
     <Suspense fallback={<DashboardSkeleton />}>
-      <AuthProvider>
-        <NotificationProvider>
-          <SearchProvider>
-            <SidebarProvider>
-              <ActivityFeedProvider>
-                <DashboardContent>{children}</DashboardContent>
-                <GlobalSearch />
-                <Toaster />
-              </ActivityFeedProvider>
-            </SidebarProvider>
-          </SearchProvider>
-        </NotificationProvider>
-      </AuthProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <NotificationProvider>
+            <SearchProvider>
+              <SidebarProvider>
+                <ActivityFeedProvider>
+                  <DashboardContent>{children}</DashboardContent>
+                  <GlobalSearch />
+                  <Toaster position="top-right" richColors />
+                </ActivityFeedProvider>
+              </SidebarProvider>
+            </SearchProvider>
+          </NotificationProvider>
+        </AuthProvider>
+      </ToastProvider>
     </Suspense>
   );
 }
