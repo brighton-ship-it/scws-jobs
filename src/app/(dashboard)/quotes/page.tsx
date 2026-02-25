@@ -46,12 +46,27 @@ export default function QuotesPage() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
 
-  // Fetch quotes from API
+  // Fetch status counts separately
+  const fetchCounts = async () => {
+    try {
+      const res = await fetch('/api/quotes/counts');
+      if (res.ok) {
+        const data = await res.json();
+        setStatusCounts(data.counts || {});
+      }
+    } catch (error) {
+      console.error('Failed to fetch counts:', error);
+    }
+  };
+
+  // Fetch quotes from API with server-side filtering
   const fetchQuotes = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/quotes?limit=100');
+      const statusParam = statusFilter !== 'all' ? `&status=${statusFilter}` : '';
+      const res = await fetch(`/api/quotes?limit=500${statusParam}`);
       if (res.ok) {
         const data = await res.json();
         setQuotes(data.quotes || []);
@@ -135,15 +150,20 @@ export default function QuotesPage() {
 
   // Initial fetch
   useEffect(() => {
-    fetchQuotes();
+    fetchCounts();
   }, []);
+
+  // Refetch quotes when filter changes
+  useEffect(() => {
+    fetchQuotes();
+  }, [statusFilter]);
 
   const filteredQuotes = quotes.filter((quote) => {
     const customerName = quote.customer?.name || '';
     const matchesSearch = customerName.toLowerCase().includes(search.toLowerCase()) ||
       quote.quote_number.toString().includes(search);
-    const matchesStatus = statusFilter === 'all' || quote.status === statusFilter;
-    return matchesSearch && matchesStatus;
+    // Status is already filtered server-side, just filter by search
+    return matchesSearch;
   });
 
   // Sort by date descending
@@ -161,7 +181,7 @@ export default function QuotesPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Quotes</h2>
-          <p className="text-gray-600">{loading ? 'Loading...' : `${quotes.length} total quotes`}</p>
+          <p className="text-gray-600">{loading ? 'Loading...' : `${Object.values(statusCounts).reduce((a, b) => a + b, 0) || quotes.length} total quotes`}</p>
         </div>
         <Button href="/quotes/new">
           <Plus className="h-4 w-4" />
@@ -172,10 +192,10 @@ export default function QuotesPage() {
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {[
-          { label: 'Draft', value: quotes.filter(q => q.status === 'draft').length, color: 'text-gray-600' },
-          { label: 'Sent', value: quotes.filter(q => q.status === 'sent').length, color: 'text-blue-600' },
-          { label: 'Accepted', value: quotes.filter(q => q.status === 'accepted').length, color: 'text-green-600' },
-          { label: 'Declined', value: quotes.filter(q => q.status === 'declined').length, color: 'text-red-600' },
+          { label: 'Draft', value: statusCounts.draft || 0, color: 'text-gray-600' },
+          { label: 'Sent', value: statusCounts.sent || 0, color: 'text-blue-600' },
+          { label: 'Accepted', value: statusCounts.accepted || 0, color: 'text-green-600' },
+          { label: 'Declined', value: statusCounts.declined || 0, color: 'text-red-600' },
         ].map((stat) => (
           <Card key={stat.label}>
             <CardContent className="py-4">
