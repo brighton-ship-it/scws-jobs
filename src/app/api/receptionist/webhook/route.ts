@@ -474,7 +474,7 @@ async function handleLookupCustomer(phone: string) {
     headers: {
       'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
       'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2023-11-15'
+      'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
     },
     body: JSON.stringify({
       query: `
@@ -532,7 +532,7 @@ async function handleCheckSchedule(phone: string) {
     headers: {
       'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
       'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2023-11-15'
+      'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
     },
     body: JSON.stringify({
       query: `
@@ -584,7 +584,7 @@ async function handleCheckSchedule(phone: string) {
     headers: {
       'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
       'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2023-11-15'
+      'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
     },
     body: JSON.stringify({
       query: `
