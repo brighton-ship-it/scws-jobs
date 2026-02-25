@@ -590,24 +590,13 @@ async function handleCheckSchedule(phone: string) {
       query: `
         query GetClientJobs($clientId: EncodedId!) {
           client(id: $clientId) {
-            jobs(first: 20) {
+            jobs(first: 5) {
               nodes {
-                id
                 title
-                jobNumber
-                visits(first: 5) {
+                visits(first: 3) {
                   nodes {
                     startAt
-                    endAt
-                    assignedUsers {
-                      nodes {
-                        name { full }
-                      }
-                    }
                   }
-                }
-                property {
-                  address { street1, city }
                 }
               }
             }
@@ -628,9 +617,7 @@ async function handleCheckSchedule(phone: string) {
       if (visit.startAt) {
         visits.push({
           date: visit.startAt,
-          service: job.title,
-          technician: visit.assignedUsers?.nodes?.[0]?.name?.full || null,
-          address: job.property?.address ? `${job.property.address.street1}, ${job.property.address.city}` : null
+          service: job.title
         });
       }
     }
@@ -657,13 +644,10 @@ async function handleCheckSchedule(phone: string) {
   // Format the first appointment
   const first = upcoming[0];
   const date = new Date(first.date);
-  const dateStr = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const dateStr = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Los_Angeles' });
+  const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Los_Angeles' });
   
   let message = `Yes! I see you're scheduled for ${dateStr} at ${timeStr} for ${first.service}.`;
-  if (first.technician) {
-    message += ` ${first.technician} will be out to help you.`;
-  }
   if (upcoming.length > 1) {
     message += ` You also have ${upcoming.length - 1} more appointment${upcoming.length > 2 ? 's' : ''} coming up.`;
   }
