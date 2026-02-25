@@ -63,7 +63,22 @@ export async function GET(request: NextRequest) {
     
     const { count } = await countQuery;
 
-    return NextResponse.json({ invoices, total: count || 0 });
+    // Optionally include counts by status
+    const includeCounts = searchParams.get('counts') === 'true';
+    let counts: Record<string, number> | undefined;
+    if (includeCounts) {
+      counts = {};
+      const statuses = ['draft', 'sent', 'viewed', 'paid', 'partial', 'overdue', 'void'];
+      for (const s of statuses) {
+        const { count: statusCount } = await supabase
+          .from('invoices')
+          .select('id', { count: 'exact', head: true })
+          .eq('status', s);
+        if (statusCount !== null && statusCount > 0) counts[s] = statusCount;
+      }
+    }
+
+    return NextResponse.json({ invoices, total: count || 0, counts });
   } catch (error) {
     console.error('Invoices API error:', error);
     return NextResponse.json(

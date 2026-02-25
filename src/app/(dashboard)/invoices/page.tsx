@@ -50,8 +50,10 @@ export default function InvoicesPage() {
   const [statusFilter, setStatusFilter] = useState('all');
   const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [sendingId, setSendingId] = useState<string | null>(null);
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  const [totalCount, setTotalCount] = useState(0);
 
-  const fetchInvoices = useCallback(async () => {
+  const fetchInvoices = useCallback(async (withCounts = false) => {
     try {
       setLoading(true);
       setError(null);
@@ -60,7 +62,10 @@ export default function InvoicesPage() {
       if (statusFilter !== 'all') {
         params.set('status', statusFilter === 'sent' ? 'sent' : statusFilter);
       }
-      params.set('limit', '100');
+      params.set('limit', '500');
+      if (withCounts) {
+        params.set('counts', 'true');
+      }
 
       const response = await fetch(`/api/invoices?${params}`);
       if (!response.ok) {
@@ -69,6 +74,10 @@ export default function InvoicesPage() {
 
       const data = await response.json();
       setInvoices(data.invoices || []);
+      setTotalCount(data.total || 0);
+      if (data.counts) {
+        setStatusCounts(data.counts);
+      }
     } catch (err) {
       console.error('Error fetching invoices:', err);
       setError(err instanceof Error ? err.message : 'Failed to load invoices');
@@ -77,9 +86,17 @@ export default function InvoicesPage() {
     }
   }, [statusFilter]);
 
+  // Initial fetch with counts
   useEffect(() => {
-    fetchInvoices();
-  }, [fetchInvoices]);
+    fetchInvoices(true);
+  }, []);
+
+  // Refetch when filter changes (without counts)
+  useEffect(() => {
+    if (Object.keys(statusCounts).length > 0) {
+      fetchInvoices(false);
+    }
+  }, [statusFilter]);
 
   const handleSendInvoice = async (invoiceId: string) => {
     try {
@@ -171,7 +188,7 @@ export default function InvoicesPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Invoices</h2>
-          <p className="text-gray-600">{invoices.length} total invoices</p>
+          <p className="text-gray-600">{Object.values(statusCounts).reduce((a, b) => a + b, 0) || invoices.length} total invoices</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" onClick={fetchInvoices} disabled={loading}>
