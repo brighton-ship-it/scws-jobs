@@ -590,7 +590,7 @@ async function handleCheckSchedule(phone: string) {
       query: `
         query GetClientJobs($clientId: EncodedId!) {
           client(id: $clientId) {
-            jobs(first: 10, filter: { status: [ACTIVE, TODAY, UPCOMING] }) {
+            jobs(first: 20) {
               nodes {
                 id
                 title
@@ -599,7 +599,6 @@ async function handleCheckSchedule(phone: string) {
                   nodes {
                     startAt
                     endAt
-                    status
                     assignedUsers {
                       nodes {
                         name { full }
