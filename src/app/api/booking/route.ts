@@ -27,6 +27,37 @@ export async function POST(request: NextRequest) {
     const supabase = createServiceClient();
     const body = await request.json();
 
+    // Honeypot spam check - if this field is filled, it's a bot
+    if (body.website_url) {
+      console.log('Spam detected - honeypot field filled:', body.website_url);
+      // Return success to not alert the bot, but don't process
+      return NextResponse.json(
+        { success: true, message: 'Request received' },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
+    // Gibberish detection - reject random character strings
+    const isGibberish = (text: string): boolean => {
+      if (!text || text.length < 10) return false;
+      // Check for too many consonant clusters (no vowels)
+      const vowelRatio = (text.match(/[aeiouAEIOU]/g) || []).length / text.length;
+      // Normal text has ~40% vowels, gibberish has very few
+      if (vowelRatio < 0.15) return true;
+      // Check for suspiciously random capitalization
+      const capsPattern = text.match(/[a-z][A-Z][a-z]/g);
+      if (capsPattern && capsPattern.length > 2) return true;
+      return false;
+    };
+
+    if (isGibberish(body.customer_name) || isGibberish(body.address)) {
+      console.log('Spam detected - gibberish content:', { name: body.customer_name, address: body.address });
+      return NextResponse.json(
+        { success: true, message: 'Request received' },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
     const {
       service_type,
       customer_name,
