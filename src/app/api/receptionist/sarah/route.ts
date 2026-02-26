@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 
-const OFFICE_EMAIL = 'brighton@scwellservice.com';
+const OFFICE_EMAILS = ['brighton@scwellservice.com', 'bschroeder@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.SARAH_WEBHOOK_SECRET || 'scws-sarah-2024';
 const BRIGHTON_USER_ID = process.env.BRIGHTON_USER_ID || null; // Set in env
 
@@ -251,12 +251,15 @@ ${customerId ? `View Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scw
 View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/tasks
     `.trim();
 
-    await sendEmail({
-      to: OFFICE_EMAIL,
-      subject: emailSubject,
-      html: textToHtml(emailContent),
-      text: emailContent,
-    });
+    // Send to all office emails
+    for (const email of OFFICE_EMAILS) {
+      await sendEmail({
+        to: email,
+        subject: emailSubject,
+        html: textToHtml(emailContent),
+        text: emailContent,
+      });
+    }
 
     console.log(`[Sarah Webhook] Call processed: ${callId} - ${customerName || phone} - Task created`);
 

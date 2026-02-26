@@ -4,7 +4,7 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
 
-const OFFICE_EMAIL = 'brighton@scwellservice.com';
+const OFFICE_EMAILS = ['brighton@scwellservice.com', 'bschroeder@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
 
 interface VapiMessage {
@@ -351,13 +351,16 @@ View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}
 View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/requests
     `.trim();
 
-    const emailResult = await sendEmail({
-      to: OFFICE_EMAIL,
-      subject: emailSubject,
-      html: textToHtml(emailContent),
-      text: emailContent,
-    });
-    console.log(`[Receptionist] Email result:`, emailResult);
+    // Send to all office emails (Brighton + Brian)
+    for (const email of OFFICE_EMAILS) {
+      const emailResult = await sendEmail({
+        to: email,
+        subject: emailSubject,
+        html: textToHtml(emailContent),
+        text: emailContent,
+      });
+      console.log(`[Receptionist] Email to ${email}:`, emailResult);
+    }
 
     // Discord notification (instant mobile alert)
     await notifyNewCall({
