@@ -2,6 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import OpenAI from 'openai';
 
+// CORS headers for cross-origin requests (widget on scwellservice.com)
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type',
+};
+
+// Handle preflight requests
+export async function OPTIONS() {
+  return NextResponse.json({}, { headers: corsHeaders });
+}
+
 // Lazy initialization to avoid build-time errors
 function getOpenAI() {
   return new OpenAI({
@@ -49,7 +61,7 @@ export async function POST(request: NextRequest) {
     if (!message || !sessionId) {
       return NextResponse.json(
         { error: 'Missing message or sessionId' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -148,15 +160,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       response: aiResponse,
       sessionId,
-    });
-  } catch (error) {
-    console.error('Chat API error:', error);
+    }, { headers: corsHeaders });
+  } catch (error: any) {
+    console.error('Chat API error:', error?.message || error);
     return NextResponse.json(
       { 
         response: "I'm sorry, I'm having trouble right now. Please call us at (760) 440-8520 for immediate assistance.",
-        error: 'Internal error' 
+        error: 'Internal error',
+        debug: error?.message || String(error)
       },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
@@ -166,7 +179,7 @@ export async function GET(request: NextRequest) {
   const sessionId = request.nextUrl.searchParams.get('sessionId');
   
   if (!sessionId) {
-    return NextResponse.json({ error: 'Missing sessionId' }, { status: 400 });
+    return NextResponse.json({ error: 'Missing sessionId' }, { status: 400, headers: corsHeaders });
   }
 
   const supabase = createServiceClient();
@@ -178,8 +191,8 @@ export async function GET(request: NextRequest) {
     .order('created_at', { ascending: true });
 
   if (error) {
-    return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500 });
+    return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500, headers: corsHeaders });
   }
 
-  return NextResponse.json({ messages: messages || [] });
+  return NextResponse.json({ messages: messages || [] }, { headers: corsHeaders });
 }
