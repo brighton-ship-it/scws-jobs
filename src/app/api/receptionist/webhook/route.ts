@@ -137,9 +137,11 @@ export async function POST(request: NextRequest) {
     // Vapi sends durationSeconds directly in the end-of-call-report
     let durationSec = body.message?.durationSeconds || call.durationSeconds || body.durationSeconds || 0;
     
+    // Parse start time (used for email/task templates below)
+    const startTime = startedAt ? new Date(startedAt) : new Date();
+    
     // Fallback to timestamp calculation if direct duration not available
     if (!durationSec && startedAt && endedAt) {
-      const startTime = new Date(startedAt);
       const endTime = new Date(endedAt);
       durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
     }
@@ -352,8 +354,9 @@ View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.ap
     `.trim();
 
     // Send to all office emails (Brighton + Brian)
+    let emailResult: { success?: boolean; error?: string } = {};
     for (const email of OFFICE_EMAILS) {
-      const emailResult = await sendEmail({
+      emailResult = await sendEmail({
         to: email,
         subject: emailSubject,
         html: textToHtml(emailContent),
