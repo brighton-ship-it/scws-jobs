@@ -94,16 +94,37 @@ export async function POST(request: NextRequest) {
 
     const supabase = createServiceClient();
     
-    // Check if we already processed this call
-    const { data: existingCalls } = await supabase
+    // Check if we already processed this call - use upsert pattern to prevent race conditions
+    // First, try to claim this call by inserting a placeholder record
+    const { data: claimResult, error: claimError } = await supabase
       .from('receptionist_calls')
-      .select('id')
-      .eq('vapi_call_id', call.id)
-      .limit(1);
+      .upsert(
+        { 
+          vapi_call_id: call.id, 
+          phone: phone || 'pending',
+          status: 'processing',
+          called_at: new Date().toISOString()
+        },
+        { 
+          onConflict: 'vapi_call_id',
+          ignoreDuplicates: true  // Returns null if already exists
+        }
+      )
+      .select('id, status')
+      .single();
     
-    if (existingCalls && existingCalls.length > 0) {
+    // If we didn't get a result, the record already existed (another request got it first)
+    if (!claimResult || claimError) {
+      console.log(`[Receptionist] Call ${call.id} already being processed, skipping`);
+      return NextResponse.json({ ok: true, skipped: true, reason: 'already-processing' });
+    }
+    
+    // If status is not 'processing', this call was already fully processed
+    if (claimResult.status !== 'processing') {
       return NextResponse.json({ ok: true, skipped: true, reason: 'already-processed' });
     }
+    
+    const callRecordId = claimResult.id;
 
     // Transcript might be in multiple places
     const artifact = message.artifact || body.artifact || {};
@@ -202,11 +223,10 @@ export async function POST(request: NextRequest) {
     const isUrgent = urgency === 'urgent' || 
       /urgent|emergency|no water|no pressure|flooding/i.test(transcript + summary);
 
-    // Create the receptionist call record
+    // Update the receptionist call record with full details (we created a placeholder above)
     const { data: callRecord, error: callError } = await supabase
       .from('receptionist_calls')
-      .insert({
-        vapi_call_id: call.id,
+      .update({
         phone: phone,
         customer_name: customerName || null,
         customer_id: customerId,
@@ -220,11 +240,12 @@ export async function POST(request: NextRequest) {
         priority: isUrgent ? 'urgent' : 'normal',
         called_at: startedAt || new Date().toISOString(),
       } as any)
+      .eq('id', callRecordId)
       .select()
       .single();
 
     if (callError) {
-      console.error('Error creating call record:', callError);
+      console.error('Error updating call record:', callError);
       // Don't fail - still try to email
     }
 
@@ -384,6 +405,12 @@ View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.ap
       isUrgent,
       customerId,
     });
+
+    // Mark as completed to prevent any future duplicate processing
+    await supabase
+      .from('receptionist_calls')
+      .update({ status: 'completed', email_sent: emailResult?.success || false })
+      .eq('id', callRecordId);
 
     console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Task: ${taskCreated}`);
 
