@@ -31,7 +31,7 @@ import {
   Sparkles,
   Loader2,
 } from 'lucide-react';
-import { format, startOfWeek, endOfWeek } from 'date-fns';
+import { format } from 'date-fns';
 import Link from 'next/link';
 
 // To-do items with time estimates
@@ -78,48 +78,25 @@ export default function DashboardPage() {
   
   // Data from API
   const [jobs, setJobs] = useState<any[]>([]);
-  const [invoices, setInvoices] = useState<any[]>([]);
-  const [quotes, setQuotes] = useState<any[]>([]);
-  const [customers, setCustomers] = useState<any[]>([]);
-  const [bookingRequests, setBookingRequests] = useState<any[]>([]);
-  const [tasks, setTasks] = useState<any[]>([]);
+  const [workflowStats, setWorkflowStats] = useState<any>(null);
 
   // Fetch dashboard data
   useEffect(() => {
     const fetchData = async () => {
       try {
-        const [jobsRes, invoicesRes, quotesRes, customersRes, bookingsRes, tasksRes] = await Promise.all([
-          fetch('/api/jobs?limit=500'),
-          fetch('/api/invoices?limit=500'),
-          fetch('/api/quotes?limit=500'),
-          fetch('/api/customers?limit=100'),
-          fetch('/api/booking'),
-          fetch('/api/tasks'),
+        // Fetch stats (accurate counts) and today's jobs in parallel
+        const [statsRes, jobsRes] = await Promise.all([
+          fetch('/api/dashboard/stats'),
+          fetch('/api/jobs?limit=100'), // Only need today's jobs for schedule
         ]);
         
+        if (statsRes.ok) {
+          const stats = await statsRes.json();
+          setWorkflowStats(stats);
+        }
         if (jobsRes.ok) {
           const data = await jobsRes.json();
           setJobs(data.jobs || []);
-        }
-        if (invoicesRes.ok) {
-          const data = await invoicesRes.json();
-          setInvoices(data.invoices || []);
-        }
-        if (quotesRes.ok) {
-          const data = await quotesRes.json();
-          setQuotes(data.quotes || []);
-        }
-        if (customersRes.ok) {
-          const data = await customersRes.json();
-          setCustomers(data.customers || []);
-        }
-        if (bookingsRes.ok) {
-          const data = await bookingsRes.json();
-          setBookingRequests(data.bookings || []);
-        }
-        if (tasksRes.ok) {
-          const data = await tasksRes.json();
-          setTasks(data.tasks || []);
         }
       } catch (error) {
         console.error('Failed to fetch dashboard data:', error);
@@ -145,68 +122,16 @@ export default function DashboardPage() {
   // Filter out dismissed todos
   const visibleTodos = initialTodoItems.filter(t => !dismissedTodos.includes(t.id));
 
-  // Calculate stats from real data
+  // Calculate today's jobs from the fetched jobs
   const today = new Date().toISOString().split('T')[0];
   const todaysJobs = jobs.filter(j => j.scheduled_date === today);
-  
-  // This week's stats
-  const weekStart = startOfWeek(new Date());
-  const weekEnd = endOfWeek(new Date());
 
-  // Revenue calculations
-  const thisWeekRevenue = invoices
-    .filter(inv => inv.status === 'paid' && inv.paid_at)
-    .filter(inv => {
-      const paidDate = new Date(inv.paid_at);
-      return paidDate >= weekStart && paidDate <= weekEnd;
-    })
-    .reduce((sum, inv) => sum + (inv.amount || inv.total || 0), 0);
-
-  const pendingInvoices = invoices.filter(i => i.status === 'sent');
-  const pendingAmount = pendingInvoices.reduce((sum, inv) => sum + (inv.total || 0), 0);
-
-  // Overdue invoices
-  const overdueInvoices = pendingInvoices.filter(inv => {
-    if (!inv.due_date) return false;
-    return new Date(inv.due_date) < new Date();
-  });
-
-  // Unassigned jobs
-  const unassignedJobs = jobs.filter(j => !j.assigned_to && j.status === 'scheduled');
-
-  // Workflow stats
-  const pendingRequests = bookingRequests.filter(r => r.status === 'pending');
-  const pendingTasks = tasks.filter(t => t.status === 'pending' || t.status === 'in_progress');
-  const urgentTasks = tasks.filter(t => t.priority === 'urgent');
-  
-  const workflowStats = {
-    requests: {
-      new: pendingRequests.length,
-      assessmentsComplete: bookingRequests.filter(r => r.status === 'confirmed').length,
-      overdue: bookingRequests.filter(r => r.status === 'pending' && r.created_at && new Date(r.created_at) < new Date(Date.now() - 48 * 60 * 60 * 1000)).length,
-    },
-    quotes: {
-      approved: quotes.filter(q => q.status === 'accepted').length,
-      approvedAmount: quotes.filter(q => q.status === 'accepted').reduce((sum, q) => sum + (q.total || 0), 0),
-      draft: quotes.filter(q => q.status === 'draft').length,
-      draftAmount: quotes.filter(q => q.status === 'draft').reduce((sum, q) => sum + (q.total || 0), 0),
-      changesRequested: quotes.filter(q => q.status === 'declined').length,
-    },
-    jobs: {
-      requiresInvoicing: jobs.filter(j => j.status === 'completed').length,
-      requiresInvoicingAmount: jobs.filter(j => j.status === 'completed').length * 450,
-      active: jobs.filter(j => j.status === 'scheduled' || j.status === 'in_progress').length,
-      activeAmount: jobs.filter(j => j.status === 'scheduled' || j.status === 'in_progress').length * 350,
-      actionRequired: jobs.filter(j => j.priority === 'urgent' || j.priority === 'high').length,
-    },
-    invoices: {
-      awaitingPayment: invoices.filter(i => i.status === 'sent').length,
-      awaitingPaymentAmount: invoices.filter(i => i.status === 'sent').reduce((sum, inv) => sum + ((inv.total || 0) - (inv.amount_paid || 0)), 0),
-      draft: invoices.filter(i => i.status === 'draft').length,
-      draftAmount: invoices.filter(i => i.status === 'draft').reduce((sum, inv) => sum + (inv.total || 0), 0),
-      pastDue: overdueInvoices.length,
-      pastDueAmount: overdueInvoices.reduce((sum, inv) => sum + ((inv.total || 0) - (inv.amount_paid || 0)), 0),
-    },
+  // Default stats while loading
+  const stats = workflowStats || {
+    requests: { new: 0, assessmentsComplete: 0, overdue: 0 },
+    quotes: { approved: 0, approvedAmount: 0, draft: 0, draftAmount: 0, changesRequested: 0 },
+    jobs: { requiresInvoicing: 0, active: 0, actionRequired: 0 },
+    invoices: { awaitingPayment: 0, awaitingPaymentAmount: 0, draft: 0, draftAmount: 0, pastDue: 0, pastDueAmount: 0 },
   };
 
   if (loading) {
@@ -259,16 +184,16 @@ export default function DashboardPage() {
               <div className="space-y-2">
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">New</span>
-                  <span className="text-sm font-semibold text-blue-600">{workflowStats.requests.new}</span>
+                  <span className="text-sm font-semibold text-blue-600">{stats.requests.new}</span>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Assessment complete</span>
-                  <span className="text-sm font-semibold">{workflowStats.requests.assessmentsComplete}</span>
+                  <span className="text-sm font-semibold">{stats.requests.assessmentsComplete}</span>
                 </div>
-                {workflowStats.requests.overdue > 0 && (
+                {stats.requests.overdue > 0 && (
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-red-500">Overdue</span>
-                    <span className="text-sm font-semibold text-red-600">{workflowStats.requests.overdue}</span>
+                    <span className="text-sm font-semibold text-red-600">{stats.requests.overdue}</span>
                   </div>
                 )}
               </div>
@@ -290,21 +215,21 @@ export default function DashboardPage() {
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Approved</span>
                   <div className="text-right">
-                    <span className="text-sm font-semibold text-green-600">{workflowStats.quotes.approved}</span>
-                    <span className="text-xs text-gray-400 ml-1">${workflowStats.quotes.approvedAmount.toLocaleString()}</span>
+                    <span className="text-sm font-semibold text-green-600">{stats.quotes.approved}</span>
+                    <span className="text-xs text-gray-400 ml-1">${stats.quotes.approvedAmount.toLocaleString()}</span>
                   </div>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Draft</span>
                   <div className="text-right">
-                    <span className="text-sm font-semibold">{workflowStats.quotes.draft}</span>
-                    <span className="text-xs text-gray-400 ml-1">${workflowStats.quotes.draftAmount.toLocaleString()}</span>
+                    <span className="text-sm font-semibold">{stats.quotes.draft}</span>
+                    <span className="text-xs text-gray-400 ml-1">${stats.quotes.draftAmount.toLocaleString()}</span>
                   </div>
                 </div>
-                {workflowStats.quotes.changesRequested > 0 && (
+                {stats.quotes.changesRequested > 0 && (
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-amber-500">Changes requested</span>
-                    <span className="text-sm font-semibold text-amber-600">{workflowStats.quotes.changesRequested}</span>
+                    <span className="text-sm font-semibold text-amber-600">{stats.quotes.changesRequested}</span>
                   </div>
                 )}
               </div>
@@ -326,19 +251,19 @@ export default function DashboardPage() {
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Requires invoicing</span>
                   <div className="text-right">
-                    <span className="text-sm font-semibold text-green-600">{workflowStats.jobs.requiresInvoicing}</span>
+                    <span className="text-sm font-semibold text-green-600">{stats.jobs.requiresInvoicing}</span>
                   </div>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Active</span>
                   <div className="text-right">
-                    <span className="text-sm font-semibold">{workflowStats.jobs.active}</span>
+                    <span className="text-sm font-semibold">{stats.jobs.active}</span>
                   </div>
                 </div>
-                {workflowStats.jobs.actionRequired > 0 && (
+                {stats.jobs.actionRequired > 0 && (
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-red-500">Action required</span>
-                    <span className="text-sm font-semibold text-red-600">{workflowStats.jobs.actionRequired}</span>
+                    <span className="text-sm font-semibold text-red-600">{stats.jobs.actionRequired}</span>
                   </div>
                 )}
               </div>
@@ -360,23 +285,23 @@ export default function DashboardPage() {
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Awaiting payment</span>
                   <div className="text-right">
-                    <span className="text-sm font-semibold">{workflowStats.invoices.awaitingPayment}</span>
-                    <span className="text-xs text-gray-400 ml-1">${workflowStats.invoices.awaitingPaymentAmount.toLocaleString()}</span>
+                    <span className="text-sm font-semibold">{stats.invoices.awaitingPayment}</span>
+                    <span className="text-xs text-gray-400 ml-1">${stats.invoices.awaitingPaymentAmount.toLocaleString()}</span>
                   </div>
                 </div>
                 <div className="flex justify-between items-center">
                   <span className="text-sm text-gray-500">Draft</span>
                   <div className="text-right">
-                    <span className="text-sm font-semibold">{workflowStats.invoices.draft}</span>
-                    <span className="text-xs text-gray-400 ml-1">${workflowStats.invoices.draftAmount.toLocaleString()}</span>
+                    <span className="text-sm font-semibold">{stats.invoices.draft}</span>
+                    <span className="text-xs text-gray-400 ml-1">${stats.invoices.draftAmount.toLocaleString()}</span>
                   </div>
                 </div>
-                {workflowStats.invoices.pastDue > 0 && (
+                {stats.invoices.pastDue > 0 && (
                   <div className="flex justify-between items-center">
                     <span className="text-sm text-red-500">Past due</span>
                     <div className="text-right">
-                      <span className="text-sm font-semibold text-red-600">{workflowStats.invoices.pastDue}</span>
-                      <span className="text-xs text-red-400 ml-1">${workflowStats.invoices.pastDueAmount.toLocaleString()}</span>
+                      <span className="text-sm font-semibold text-red-600">{stats.invoices.pastDue}</span>
+                      <span className="text-xs text-red-400 ml-1">${stats.invoices.pastDueAmount.toLocaleString()}</span>
                     </div>
                   </div>
                 )}
