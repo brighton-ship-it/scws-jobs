@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
@@ -12,9 +13,15 @@ import {
   Shield,
   Settings,
   ChevronRight,
+  ChevronLeft,
   Bell,
   HelpCircle,
   Smartphone,
+  Home,
+  Calendar,
+  Clock,
+  Search,
+  MoreHorizontal,
 } from 'lucide-react';
 
 export default function TechProfilePage() {
@@ -36,18 +43,25 @@ export default function TechProfilePage() {
   };
 
   const menuItems = [
-    { icon: Bell, label: 'Notifications', href: '#' },
-    { icon: Smartphone, label: 'App Settings', href: '#' },
-    { icon: HelpCircle, label: 'Help & Support', href: '#' },
+    { icon: Bell, label: 'Notifications', href: '/tech/notifications' },
+    { icon: Smartphone, label: 'App Settings', href: '/tech/settings' },
+    { icon: HelpCircle, label: 'Help & Support', href: '/tech/help' },
   ];
 
   return (
-    <div className="p-4 space-y-4">
+    <div className="min-h-screen bg-gray-50 pb-24">
       {/* Header */}
-      <div>
-        <h1 className="text-xl font-bold text-[#1f3b4d]">Profile</h1>
-        <p className="text-sm text-gray-500">Manage your account</p>
+      <div className="bg-white px-4 pt-6 pb-4 border-b flex items-center gap-3">
+        <Link href="/tech/more" className="p-2 -ml-2 rounded-full hover:bg-gray-100">
+          <ChevronLeft className="h-5 w-5 text-gray-600" />
+        </Link>
+        <div>
+          <h1 className="text-xl font-bold text-[#1f3b4d]">Profile</h1>
+          <p className="text-sm text-gray-500">Manage your account</p>
+        </div>
       </div>
+      
+      <div className="p-4 space-y-4">
 
       {/* User Info Card */}
       <Card>
@@ -96,7 +110,7 @@ export default function TechProfilePage() {
       <Card>
         <CardContent className="py-2">
           {menuItems.map((item, index) => (
-            <a
+            <Link
               key={item.label}
               href={item.href}
               className={`flex items-center justify-between py-3 ${
@@ -108,7 +122,7 @@ export default function TechProfilePage() {
                 <span className="font-medium text-gray-700">{item.label}</span>
               </div>
               <ChevronRight className="h-5 w-5 text-gray-400" />
-            </a>
+            </Link>
           ))}
         </CardContent>
       </Card>
@@ -134,6 +148,33 @@ export default function TechProfilePage() {
       >
         Sign Out
       </Button>
+      </div>
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-gray-200 px-6 py-2 safe-area-pb">
+        <div className="flex items-center justify-between max-w-md mx-auto">
+          <Link href="/tech" className="flex flex-col items-center py-2 text-gray-400">
+            <Home className="h-5 w-5" />
+            <span className="text-xs mt-1">Home</span>
+          </Link>
+          <Link href="/tech/schedule" className="flex flex-col items-center py-2 text-gray-400">
+            <Calendar className="h-5 w-5" />
+            <span className="text-xs mt-1">Schedule</span>
+          </Link>
+          <Link href="/tech/timesheet" className="flex flex-col items-center py-2 text-gray-400">
+            <Clock className="h-5 w-5" />
+            <span className="text-xs mt-1">Timesheet</span>
+          </Link>
+          <Link href="/tech/search" className="flex flex-col items-center py-2 text-gray-400">
+            <Search className="h-5 w-5" />
+            <span className="text-xs mt-1">Search</span>
+          </Link>
+          <Link href="/tech/more" className="flex flex-col items-center py-2 text-[#1f3b4d]">
+            <MoreHorizontal className="h-5 w-5" />
+            <span className="text-xs mt-1 font-medium">More</span>
+          </Link>
+        </div>
+      </nav>
     </div>
   );
 }
