@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 
-const OFFICE_EMAILS = ['brighton@scwellservice.com', 'bschroeder@scwellservice.com'];
+const OFFICE_EMAILS = ['brighton@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.SARAH_WEBHOOK_SECRET || 'scws-sarah-2024';
 const BRIGHTON_USER_ID = process.env.BRIGHTON_USER_ID || null; // Set in env
 
