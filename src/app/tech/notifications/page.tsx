@@ -4,9 +4,11 @@ import { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { useAuth } from '@/contexts/AuthContext';
+import { usePushNotifications } from '@/hooks/usePushNotifications';
 import { createClient } from '@/lib/supabase/client';
 import {
   Bell,
+  BellRing,
   Home,
   Calendar,
   Clock,
@@ -21,6 +23,7 @@ import {
   Check,
   RefreshCw,
   Settings,
+  Loader2,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -48,7 +51,15 @@ export default function TechNotificationsPage() {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [pushLoading, setPushLoading] = useState(false);
   const supabase = createClient();
+  
+  const {
+    isSupported: pushSupported,
+    permission: pushPermission,
+    isSubscribed: pushSubscribed,
+    subscribe: subscribeToPush,
+  } = usePushNotifications();
 
   const fetchNotifications = useCallback(async () => {
     const { data } = await supabase
@@ -153,6 +164,64 @@ export default function TechNotificationsPage() {
           </Link>
         </div>
       </div>
+
+      {/* Push Notification Banner */}
+      {pushSupported && !pushSubscribed && (
+        <div className="mx-4 mt-4">
+          <Card className="bg-gradient-to-r from-blue-500 to-blue-600 text-white border-0">
+            <CardContent className="py-4 px-4">
+              <div className="flex items-center gap-3">
+                <div className="h-12 w-12 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+                  <BellRing className="h-6 w-6" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold">Enable Push Notifications</h3>
+                  <p className="text-sm text-blue-100">
+                    Get notified about new jobs, schedule changes & more
+                  </p>
+                </div>
+                <button
+                  onClick={async () => {
+                    setPushLoading(true);
+                    await subscribeToPush(user?.id);
+                    setPushLoading(false);
+                  }}
+                  disabled={pushLoading}
+                  className="px-4 py-2 bg-white text-blue-600 rounded-lg font-medium text-sm hover:bg-blue-50 disabled:opacity-50 flex items-center gap-2"
+                >
+                  {pushLoading ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Enabling...
+                    </>
+                  ) : (
+                    'Enable'
+                  )}
+                </button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+      
+      {/* Show success message if subscribed */}
+      {pushSupported && pushSubscribed && (
+        <div className="mx-4 mt-4">
+          <Card className="bg-green-50 border-green-200">
+            <CardContent className="py-3 px-4">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+                  <Check className="h-5 w-5 text-green-600" />
+                </div>
+                <div className="flex-1">
+                  <p className="font-medium text-green-800">Push notifications enabled</p>
+                  <p className="text-sm text-green-600">You'll receive alerts on this device</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       <div className="p-4">
         {loading ? (
