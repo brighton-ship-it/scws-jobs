@@ -77,26 +77,45 @@ export function usePushNotifications(): UsePushNotificationsReturn {
   const subscribe = useCallback(async (userId?: string): Promise<boolean> => {
     if (!isSupported || !VAPID_PUBLIC_KEY) {
       console.error('[Push] Not supported or no VAPID key');
+      alert('Push notifications not supported on this device');
       return false;
     }
 
     try {
+      console.log('[Push] Starting subscribe flow...');
+      
       // Ensure permission
       if (Notification.permission !== 'granted') {
+        console.log('[Push] Requesting permission...');
         const granted = await requestPermission();
-        if (!granted) return false;
+        if (!granted) {
+          console.log('[Push] Permission denied');
+          alert('Please allow notifications when prompted');
+          return false;
+        }
       }
+      console.log('[Push] Permission granted');
 
-      // Get service worker registration
-      const registration = await navigator.serviceWorker.ready;
+      // Get service worker registration with timeout
+      console.log('[Push] Waiting for service worker...');
+      const registration = await Promise.race([
+        navigator.serviceWorker.ready,
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('Service worker timeout')), 10000)
+        )
+      ]);
+      console.log('[Push] Service worker ready');
 
       // Subscribe to push
+      console.log('[Push] Subscribing to push manager...');
       const subscription = await registration.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
       });
+      console.log('[Push] Push subscription created');
 
       // Send subscription to server
+      console.log('[Push] Saving to server...');
       const response = await fetch('/api/push/subscribe', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -107,7 +126,8 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to save subscription');
+        const err = await response.text();
+        throw new Error(`Failed to save subscription: ${err}`);
       }
 
       setIsSubscribed(true);
@@ -115,6 +135,7 @@ export function usePushNotifications(): UsePushNotificationsReturn {
       return true;
     } catch (error) {
       console.error('[Push] Subscribe error:', error);
+      alert(`Push setup failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
       return false;
     }
   }, [isSupported, requestPermission]);
