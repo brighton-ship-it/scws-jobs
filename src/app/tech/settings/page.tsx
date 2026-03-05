@@ -21,7 +21,7 @@ export default function TechSettingsPage() {
   const { user } = useAuth();
 
   const settingsItems = [
-    { icon: Bell, label: 'Notifications', href: '/tech/notifications', description: 'Push notifications & alerts' },
+    { icon: Bell, label: 'Notifications', href: '/tech/settings/notifications', description: 'Push notifications & alerts' },
     { icon: Moon, label: 'Appearance', href: '#', description: 'Coming soon', disabled: true },
     { icon: Globe, label: 'Language', href: '#', description: 'English (US)', disabled: true },
     { icon: Shield, label: 'Privacy', href: '#', description: 'Coming soon', disabled: true },
