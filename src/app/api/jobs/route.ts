@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
+import { sendPushToUser } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
@@ -154,6 +155,23 @@ export async function POST(request: NextRequest) {
     if (error) {
       console.error('Job creation error:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Send push notification to assigned tech
+    if (assigned_to && job) {
+      const customerName = job.property?.customer?.name || 'Customer';
+      const address = job.property?.address || job.property?.city || '';
+      const dateStr = scheduled_date 
+        ? new Date(scheduled_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : 'TBD';
+      
+      sendPushToUser(assigned_to, {
+        title: '📋 New Job Assigned',
+        body: `${job_type} - ${customerName}${address ? ` at ${address}` : ''} (${dateStr})`,
+        tag: `job-${job.id}`,
+        url: `/tech/jobs/${job.id}`,
+        data: { jobId: job.id, type: 'job_assigned' }
+      }).catch(err => console.error('[Push] Failed to send job notification:', err));
     }
 
     return NextResponse.json({ job });

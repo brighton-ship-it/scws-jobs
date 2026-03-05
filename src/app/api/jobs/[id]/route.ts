@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
+import { sendPushToUser } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
@@ -51,6 +52,13 @@ export async function PATCH(
     const supabase = createServiceClient();
     const body = await request.json();
 
+    // Get current job to check if assigned_to is changing
+    const { data: currentJob } = await supabase
+      .from('jobs')
+      .select('assigned_to')
+      .eq('id', id)
+      .single();
+
     // Remove undefined values
     const updates = Object.fromEntries(
       Object.entries(body).filter(([_, v]) => v !== undefined)
@@ -74,6 +82,23 @@ export async function PATCH(
     if (error) {
       console.error('Job update error:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
+    }
+
+    // Send push notification if assigned_to changed to a new user
+    if (body.assigned_to && body.assigned_to !== currentJob?.assigned_to && job) {
+      const customerName = job.property?.customer?.name || 'Customer';
+      const address = job.property?.address || job.property?.city || '';
+      const dateStr = job.scheduled_date 
+        ? new Date(job.scheduled_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
+        : 'TBD';
+      
+      sendPushToUser(body.assigned_to, {
+        title: '📋 Job Assigned to You',
+        body: `${job.job_type} - ${customerName}${address ? ` at ${address}` : ''} (${dateStr})`,
+        tag: `job-${job.id}`,
+        url: `/tech/jobs/${job.id}`,
+        data: { jobId: job.id, type: 'job_assigned' }
+      }).catch(err => console.error('[Push] Failed to send job notification:', err));
     }
 
     return NextResponse.json({ job });
