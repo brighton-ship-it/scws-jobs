@@ -44,13 +44,19 @@ export function usePushNotifications(): UsePushNotificationsReturn {
 
       setPermission(Notification.permission);
 
-      // Check if already subscribed
+      // Check if already subscribed (with timeout to prevent hanging)
       try {
-        const registration = await navigator.serviceWorker.ready;
+        const registration = await Promise.race([
+          navigator.serviceWorker.ready,
+          new Promise<ServiceWorkerRegistration>((_, reject) => 
+            setTimeout(() => reject(new Error('timeout')), 5000)
+          )
+        ]);
         const subscription = await registration.pushManager.getSubscription();
         setIsSubscribed(!!subscription);
       } catch (error) {
-        console.error('[Push] Error checking subscription:', error);
+        console.log('[Push] Could not check subscription status:', error);
+        // Still allow user to try subscribing
       }
 
       setIsLoading(false);
