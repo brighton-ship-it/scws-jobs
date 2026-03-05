@@ -1,26 +1,65 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextResponse } from 'next/server';
+import { createServiceClient } from '@/lib/supabase/service';
+import webpush from 'web-push';
 
-export async function POST(request: NextRequest) {
+const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY!;
+const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY!;
+
+webpush.setVapidDetails(
+  'mailto:brighton@scwellservice.com',
+  VAPID_PUBLIC_KEY,
+  VAPID_PRIVATE_KEY
+);
+
+export async function POST() {
   try {
-    // Dynamic import to avoid build-time VAPID configuration
-    const { sendPushToAdmins } = await import('@/lib/push');
+    const supabase = createServiceClient();
     
-    const body = await request.json();
-    const { title, message } = body;
+    // Get all subscriptions
+    const { data: subs, error } = await supabase
+      .from('push_subscriptions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(5);
 
-    const sent = await sendPushToAdmins({
-      title: title || '🔔 Test Notification',
-      body: message || 'Push notifications are working!',
-      url: '/notifications',
-    });
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
 
-    return NextResponse.json({ 
-      success: true, 
-      sent,
-      message: sent > 0 ? `Sent to ${sent} device(s)` : 'No subscribed devices found'
-    });
-  } catch (error) {
-    console.error('[Push Test] Error:', error);
-    return NextResponse.json({ error: 'Failed to send test' }, { status: 500 });
+    if (!subs || subs.length === 0) {
+      return NextResponse.json({ error: 'No subscriptions found' }, { status: 404 });
+    }
+
+    const results = [];
+    
+    for (const sub of subs) {
+      try {
+        const pushSubscription = {
+          endpoint: sub.endpoint,
+          keys: {
+            p256dh: sub.keys_p256dh,
+            auth: sub.keys_auth,
+          },
+        };
+
+        await webpush.sendNotification(
+          pushSubscription,
+          JSON.stringify({
+            title: '🔔 Test Notification',
+            body: 'Push notifications are working!',
+            tag: 'test',
+            data: { url: '/tech' },
+          })
+        );
+        
+        results.push({ endpoint: sub.endpoint.slice(0, 50), status: 'sent' });
+      } catch (e: any) {
+        results.push({ endpoint: sub.endpoint.slice(0, 50), status: 'failed', error: e.message });
+      }
+    }
+
+    return NextResponse.json({ sent: results.length, results });
+  } catch (error: any) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
