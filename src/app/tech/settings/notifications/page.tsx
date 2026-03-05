@@ -35,6 +35,13 @@ export default function NotificationSettingsPage() {
     unsubscribe,
   } = usePushNotifications();
 
+  // Detect iOS and standalone mode
+  const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const isStandalone = typeof window !== 'undefined' && (
+    (window.navigator as any).standalone === true || 
+    window.matchMedia('(display-mode: standalone)').matches
+  );
+
   const handleTogglePush = async () => {
     setLoading(true);
     if (isSubscribed) {
@@ -153,6 +160,45 @@ export default function NotificationSettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* iOS Help */}
+        {!isSupported && isIOS && (
+          <Card className="border-orange-200 bg-orange-50">
+            <CardContent className="py-4 px-4">
+              <h3 className="font-medium text-orange-800 mb-2">📱 iOS Setup Required</h3>
+              <p className="text-sm text-orange-700 mb-2">
+                Push notifications on iPhone require a few steps:
+              </p>
+              <ol className="text-sm text-orange-700 ml-4 list-decimal space-y-1">
+                <li><strong>iOS 16.4 or later</strong> — Check Settings → General → About</li>
+                {!isStandalone && (
+                  <li><strong>Install the app</strong> — Tap Share → "Add to Home Screen"</li>
+                )}
+                {!isStandalone && (
+                  <li><strong>Open from Home Screen</strong> — Not from Safari</li>
+                )}
+                <li><strong>Enable in iOS Settings</strong> — Settings → Safari → Advanced → Feature Flags → "Notifications" ON</li>
+              </ol>
+              {isStandalone && (
+                <p className="text-sm text-green-700 mt-2">
+                  ✓ You're running from the Home Screen — good!
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Not Supported (non-iOS) Help */}
+        {!isSupported && !isIOS && (
+          <Card className="border-yellow-200 bg-yellow-50">
+            <CardContent className="py-4 px-4">
+              <h3 className="font-medium text-yellow-800 mb-2">Browser Not Supported</h3>
+              <p className="text-sm text-yellow-700">
+                Your browser doesn't support push notifications. Try using Chrome, Edge, or Firefox on desktop/Android.
+              </p>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Permission Denied Help */}
         {permission === 'denied' && (
