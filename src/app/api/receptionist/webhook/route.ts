@@ -52,9 +52,9 @@ export async function POST(request: NextRequest) {
       return await handleFunctionCall(body);
     }
     
-    // We only care about completed calls for the rest
-    if (eventType !== 'end-of-call-report' && body.status !== 'ended') {
-      return NextResponse.json({ ok: true, skipped: true, reason: 'not-completed-call' });
+    // Only process end-of-call-report events (ignore status-update, hang, etc.)
+    if (eventType !== 'end-of-call-report') {
+      return NextResponse.json({ ok: true, skipped: true, reason: 'not-end-of-call-report' });
     }
 
     // Extract call data - handle multiple Vapi payload formats
@@ -122,6 +122,18 @@ export async function POST(request: NextRequest) {
     // If status is not 'processing', this call was already fully processed
     if (claimResult.status !== 'processing') {
       return NextResponse.json({ ok: true, skipped: true, reason: 'already-processed' });
+    }
+    
+    // Double-check: query to see if this call already has email_sent status
+    const { data: existingCall } = await supabase
+      .from('receptionist_calls')
+      .select('status')
+      .eq('vapi_call_id', call.id)
+      .eq('status', 'completed')
+      .single();
+    if (existingCall) {
+      console.log(`[Receptionist] Call ${call.id} already completed, skipping duplicate`);
+      return NextResponse.json({ ok: true, skipped: true, reason: 'already-completed' });
     }
     
     const callRecordId = claimResult.id;
