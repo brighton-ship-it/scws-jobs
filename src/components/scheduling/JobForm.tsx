@@ -71,6 +71,11 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isLoadingCustomer, setIsLoadingCustomer] = useState(false);
+  const [showNewProperty, setShowNewProperty] = useState(false);
+  const [newPropertyAddress, setNewPropertyAddress] = useState('');
+  const [newPropertyCity, setNewPropertyCity] = useState('');
+  const [newPropertyZip, setNewPropertyZip] = useState('');
+  const [isSavingProperty, setIsSavingProperty] = useState(false);
   
   // State for team assignments (multiple)
   const [assignedUserIds, setAssignedUserIds] = useState<string[]>([]);
@@ -405,11 +410,109 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
                 </option>
               ))}
             </select>
-            {customerProperties.length === 0 && selectedCustomerId && (
+            {customerProperties.length === 0 && selectedCustomerId && !showNewProperty && (
               <p className="mt-1 text-sm text-gray-500">No properties found for this customer</p>
             )}
             {errors.property_id && (
               <p className="mt-1 text-sm text-red-500">{errors.property_id.message}</p>
+            )}
+            
+            {/* Add New Property */}
+            {selectedCustomerId && !showNewProperty && (
+              <button
+                type="button"
+                onClick={() => setShowNewProperty(true)}
+                className="mt-2 text-sm text-blue-600 hover:text-blue-800 font-medium"
+              >
+                + Add new address
+              </button>
+            )}
+            {showNewProperty && (
+              <div className="mt-3 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
+                <p className="text-sm font-medium text-gray-700">New Property Address</p>
+                <input
+                  type="text"
+                  value={newPropertyAddress}
+                  onChange={(e) => setNewPropertyAddress(e.target.value)}
+                  placeholder="Street address"
+                  className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <input
+                    type="text"
+                    value={newPropertyCity}
+                    onChange={(e) => setNewPropertyCity(e.target.value)}
+                    placeholder="City"
+                    className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    value={newPropertyZip}
+                    onChange={(e) => setNewPropertyZip(e.target.value)}
+                    placeholder="ZIP code"
+                    className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    disabled={!newPropertyAddress || !newPropertyCity || isSavingProperty}
+                    onClick={async () => {
+                      setIsSavingProperty(true);
+                      try {
+                        const res = await fetch(`/api/customers/${selectedCustomerId}`, {
+                          method: 'PATCH',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            add_property: {
+                              address: newPropertyAddress,
+                              city: newPropertyCity,
+                              zip: newPropertyZip,
+                              county: 'San Diego',
+                              customer_id: selectedCustomerId,
+                            }
+                          }),
+                        });
+                        if (res.ok) {
+                          // Refetch customer to get updated properties
+                          const custRes = await fetch(`/api/customers/${selectedCustomerId}`);
+                          if (custRes.ok) {
+                            const data = await custRes.json();
+                            const props = data.customer.properties || [];
+                            setCustomerProperties(props);
+                            // Select the newly added property (last one)
+                            const newProp = props.find((p: any) => 
+                              p.address === newPropertyAddress && p.city === newPropertyCity
+                            ) || props[props.length - 1];
+                            if (newProp) setValue('property_id', newProp.id);
+                          }
+                          setShowNewProperty(false);
+                          setNewPropertyAddress('');
+                          setNewPropertyCity('');
+                          setNewPropertyZip('');
+                          toast.success('Property added');
+                        } else {
+                          toast.error('Failed to add property');
+                        }
+                      } catch (err) {
+                        toast.error('Failed to add property');
+                      } finally {
+                        setIsSavingProperty(false);
+                      }
+                    }}
+                    className="px-4 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {isSavingProperty ? 'Saving...' : 'Add Property'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setShowNewProperty(false); setNewPropertyAddress(''); setNewPropertyCity(''); setNewPropertyZip(''); }}
+                    className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
         </CardContent>

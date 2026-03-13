@@ -56,7 +56,39 @@ export async function PATCH(request: NextRequest, { params }: RouteParams) {
     const { id } = await params;
 
     const body = await request.json();
-    const { name, email, phone, billing_address, notes } = body;
+    const { name, email, phone, billing_address, notes, add_property } = body;
+
+    // Handle adding a new property
+    if (add_property) {
+      const { data: newProp, error: propError } = await supabase
+        .from('properties')
+        .insert({
+          customer_id: id,
+          address: add_property.address,
+          city: add_property.city,
+          zip: add_property.zip || null,
+          county: add_property.county || null,
+        })
+        .select()
+        .single();
+
+      if (propError) {
+        console.error('Error adding property:', propError);
+        return NextResponse.json(
+          { error: 'Failed to add property', details: propError.message },
+          { status: 500 }
+        );
+      }
+
+      // Return updated customer with properties
+      const { data: customer } = await supabase
+        .from('customers')
+        .select('*, properties (*)')
+        .eq('id', id)
+        .single();
+
+      return NextResponse.json({ customer, newProperty: newProp });
+    }
 
     // Build update object with only provided fields
     const updates: Record<string, string | null> = {};
