@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Card, CardContent } from '@/components/ui/card';
@@ -33,6 +33,10 @@ export default function TechHomePage() {
   const [clockInTime, setClockInTime] = useState<Date | null>(null);
   const [jobs, setJobs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [pullDistance, setPullDistance] = useState(0);
+  const touchStartY = useRef(0);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   
   const today = format(new Date(), 'yyyy-MM-dd');
   const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
@@ -48,27 +52,66 @@ export default function TechHomePage() {
     }
   }, []);
 
-  // Fetch today's jobs - MUST be before any conditional returns
+  // Fetch today's jobs
+  const fetchJobs = useCallback(async () => {
+    try {
+      const url = user?.id 
+        ? `/api/jobs?scheduled_date=${today}&assigned_to=${user.id}`
+        : `/api/jobs?scheduled_date=${today}&limit=50`;
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setJobs(data.jobs || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch jobs:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, [user?.id, today]);
+
   useEffect(() => {
-    if (authLoading || !user) return; // Skip fetch if not authenticated
-    const fetchJobs = async () => {
-      try {
-        const url = user?.id 
-          ? `/api/jobs?scheduled_date=${today}&assigned_to=${user.id}`
-          : `/api/jobs?scheduled_date=${today}&limit=50`;
-        const res = await fetch(url);
-        if (res.ok) {
-          const data = await res.json();
-          setJobs(data.jobs || []);
-        }
-      } catch (err) {
-        console.error('Failed to fetch jobs:', err);
-      } finally {
-        setLoading(false);
+    if (authLoading || !user) return;
+    fetchJobs();
+  }, [fetchJobs, authLoading, user]);
+
+  // Pull-to-refresh
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchJobs();
+    setRefreshing(false);
+  }, [fetchJobs]);
+
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const onTouchStart = (e: TouchEvent) => {
+      touchStartY.current = e.touches[0].clientY;
+    };
+    const onTouchMove = (e: TouchEvent) => {
+      if (container.scrollTop > 0 || refreshing) return;
+      const diff = e.touches[0].clientY - touchStartY.current;
+      if (diff > 0) {
+        setPullDistance(Math.min(diff * 0.5, 80));
       }
     };
-    fetchJobs();
-  }, [user?.id, today, authLoading, user]);
+    const onTouchEnd = () => {
+      if (pullDistance > 60) {
+        handleRefresh();
+      }
+      setPullDistance(0);
+    };
+
+    container.addEventListener('touchstart', onTouchStart, { passive: true });
+    container.addEventListener('touchmove', onTouchMove, { passive: true });
+    container.addEventListener('touchend', onTouchEnd);
+    return () => {
+      container.removeEventListener('touchstart', onTouchStart);
+      container.removeEventListener('touchmove', onTouchMove);
+      container.removeEventListener('touchend', onTouchEnd);
+    };
+  }, [pullDistance, refreshing, handleRefresh]);
 
   // Show login prompt if not authenticated - AFTER all hooks
   if (!authLoading && !user) {
@@ -128,7 +171,21 @@ export default function TechHomePage() {
   const weekEnd = endOfWeek(new Date());
 
   return (
-    <div className="min-h-screen bg-gray-50 pb-20">
+    <div ref={scrollContainerRef} className="min-h-screen bg-gray-50 pb-20 overflow-auto" style={{ overscrollBehavior: 'none' }}>
+      {/* Pull to refresh indicator */}
+      {(pullDistance > 0 || refreshing) && (
+        <div 
+          className="flex items-center justify-center transition-all"
+          style={{ height: refreshing ? 48 : pullDistance }}
+        >
+          <div className={`text-gray-400 text-sm flex items-center gap-2 ${refreshing ? 'animate-pulse' : ''}`}>
+            <svg className={`h-5 w-5 ${refreshing ? 'animate-spin' : ''}`} style={{ transform: `rotate(${pullDistance * 3}deg)` }} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 12a9 9 0 11-6.219-8.56" />
+            </svg>
+            {refreshing ? 'Refreshing...' : pullDistance > 60 ? 'Release to refresh' : 'Pull to refresh'}
+          </div>
+        </div>
+      )}
       {/* Header */}
       <div className="bg-white px-4 pt-4 pb-3">
         <div className="flex items-center justify-between mb-2">
