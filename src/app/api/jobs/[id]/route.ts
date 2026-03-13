@@ -59,6 +59,25 @@ export async function PATCH(
       .eq('id', id)
       .single();
 
+    // If assigned_to is a users table ID, map it to team_members ID
+    if (body.assigned_to) {
+      const { data: userProfile } = await supabase
+        .from('users')
+        .select('email')
+        .eq('id', body.assigned_to)
+        .single();
+      if (userProfile?.email) {
+        const { data: teamMember } = await supabase
+          .from('team_members')
+          .select('id')
+          .eq('email', userProfile.email)
+          .single();
+        if (teamMember) {
+          body.assigned_to = teamMember.id;
+        }
+      }
+    }
+
     // Remove undefined values
     const updates = Object.fromEntries(
       Object.entries(body).filter(([_, v]) => v !== undefined)
