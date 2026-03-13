@@ -56,7 +56,24 @@ export async function GET(request: NextRequest) {
       if (assignedTo === 'unassigned') {
         query = query.is('assigned_to', null);
       } else {
-        query = query.eq('assigned_to', assignedTo);
+        // assignedTo might be a users.id — look up the team_member by email
+        let teamMemberId = assignedTo;
+        const { data: userProfile } = await supabase
+          .from('users')
+          .select('email')
+          .eq('id', assignedTo)
+          .single();
+        if (userProfile?.email) {
+          const { data: teamMember } = await supabase
+            .from('team_members')
+            .select('id')
+            .eq('email', userProfile.email)
+            .single();
+          if (teamMember) {
+            teamMemberId = teamMember.id;
+          }
+        }
+        query = query.eq('assigned_to', teamMemberId);
       }
     }
 
