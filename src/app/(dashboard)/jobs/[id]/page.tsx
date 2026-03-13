@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useState, useEffect, useRef } from 'react';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useToast } from '@/components/feedback/Toaster';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -35,6 +35,9 @@ import {
   History,
   RefreshCw,
   Loader2,
+  Trash2,
+  Copy,
+  Archive,
 } from 'lucide-react';
 import { MakeRecurringModal } from '@/components/jobs/MakeRecurringModal';
 import { RecurringBadge } from '@/components/ui/badge';
@@ -83,12 +86,47 @@ interface JobData {
 
 export default function JobDetailPage() {
   const params = useParams();
+  const router = useRouter();
   const id = params.id as string;
   const toast = useToast();
   const [showProfitability, setShowProfitability] = useState(true);
   const [showAssignmentHistory, setShowAssignmentHistory] = useState(false);
   const [showRecurringModal, setShowRecurringModal] = useState(false);
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const { user: currentUser } = useAuth();
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node)) {
+        setShowMoreMenu(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const handleDeleteJob = async () => {
+    if (!confirm('Are you sure you want to delete this job? This cannot be undone.')) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        toast.success('Job deleted');
+        router.push('/jobs');
+      } else {
+        const data = await res.json();
+        toast.error(data.error || 'Failed to delete job');
+      }
+    } catch (err) {
+      toast.error('Failed to delete job');
+    } finally {
+      setIsDeleting(false);
+      setShowMoreMenu(false);
+    }
+  };
   
   // Data state
   const [job, setJob] = useState<JobData | null>(null);
@@ -311,9 +349,28 @@ export default function JobDetailPage() {
             <Edit className="h-4 w-4" />
             Edit
           </Button>
-          <Button variant="outline">
-            <MoreHorizontal className="h-4 w-4" />
-          </Button>
+          <div className="relative" ref={moreMenuRef}>
+            <Button variant="outline" onClick={() => setShowMoreMenu(!showMoreMenu)}>
+              <MoreHorizontal className="h-4 w-4" />
+            </Button>
+            {showMoreMenu && (
+              <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg border border-gray-200 py-1 z-50">
+                <button
+                  onClick={() => { navigator.clipboard.writeText(window.location.href); toast.success('Link copied'); setShowMoreMenu(false); }}
+                  className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100"
+                >
+                  <Copy className="h-4 w-4" /> Copy Link
+                </button>
+                <button
+                  onClick={handleDeleteJob}
+                  disabled={isDeleting}
+                  className="flex items-center gap-2 w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                >
+                  <Trash2 className="h-4 w-4" /> {isDeleting ? 'Deleting...' : 'Delete Job'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
