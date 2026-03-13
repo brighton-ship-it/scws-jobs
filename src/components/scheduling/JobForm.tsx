@@ -76,6 +76,54 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
   const [newPropertyCity, setNewPropertyCity] = useState('');
   const [newPropertyZip, setNewPropertyZip] = useState('');
   const [isSavingProperty, setIsSavingProperty] = useState(false);
+  const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
+  const [showAddressSuggestions, setShowAddressSuggestions] = useState(false);
+  
+  // Google Places autocomplete
+  const searchAddress = useCallback(async (query: string) => {
+    if (query.length < 3) { setAddressSuggestions([]); return; }
+    try {
+      const res = await fetch(`/api/places/autocomplete?input=${encodeURIComponent(query)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setAddressSuggestions(data.predictions || []);
+        setShowAddressSuggestions(true);
+      }
+    } catch (err) {
+      console.error('Address search failed:', err);
+    }
+  }, []);
+
+  const selectAddress = useCallback(async (placeId: string, description: string) => {
+    setShowAddressSuggestions(false);
+    try {
+      const res = await fetch(`/api/places/details?place_id=${placeId}`);
+      if (res.ok) {
+        const data = await res.json();
+        const result = data.result;
+        if (result) {
+          setNewPropertyAddress(result.address || description.split(',')[0]);
+          setNewPropertyCity(result.city || '');
+          setNewPropertyZip(result.zip || '');
+        }
+      }
+    } catch (err) {
+      // Fallback: parse from description
+      const parts = description.split(',').map((s: string) => s.trim());
+      setNewPropertyAddress(parts[0] || '');
+      setNewPropertyCity(parts[1] || '');
+    }
+  }, []);
+
+  // Debounced address search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (newPropertyAddress && showNewProperty) {
+        searchAddress(newPropertyAddress);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [newPropertyAddress, showNewProperty, searchAddress]);
   
   // State for team assignments (multiple)
   const [assignedUserIds, setAssignedUserIds] = useState<string[]>([]);
@@ -430,13 +478,32 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
             {showNewProperty && (
               <div className="mt-3 p-4 bg-gray-50 rounded-lg border border-gray-200 space-y-3">
                 <p className="text-sm font-medium text-gray-700">New Property Address</p>
-                <input
-                  type="text"
-                  value={newPropertyAddress}
-                  onChange={(e) => setNewPropertyAddress(e.target.value)}
-                  placeholder="Street address"
-                  className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-                />
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={newPropertyAddress}
+                    onChange={(e) => setNewPropertyAddress(e.target.value)}
+                    onFocus={() => addressSuggestions.length > 0 && setShowAddressSuggestions(true)}
+                    placeholder="Start typing an address..."
+                    className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                    autoComplete="off"
+                  />
+                  {showAddressSuggestions && addressSuggestions.length > 0 && (
+                    <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                      {addressSuggestions.map((suggestion: any) => (
+                        <button
+                          key={suggestion.place_id}
+                          type="button"
+                          onClick={() => selectAddress(suggestion.place_id, suggestion.description)}
+                          className="w-full px-4 py-2.5 text-left hover:bg-gray-50 border-b last:border-0 text-sm"
+                        >
+                          <p className="font-medium text-gray-900">{suggestion.structured_formatting?.main_text || suggestion.description.split(',')[0]}</p>
+                          <p className="text-xs text-gray-500">{suggestion.structured_formatting?.secondary_text || suggestion.description}</p>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <div className="grid grid-cols-2 gap-3">
                   <input
                     type="text"
