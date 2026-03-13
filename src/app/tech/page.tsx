@@ -242,34 +242,42 @@ export default function TechHomePage() {
       </div>
 
       {/* Map Preview */}
-      <div className="px-4 mt-4">
-        <div className="relative h-48 bg-[#e8f4ea] rounded-xl overflow-hidden">
-          {/* Simplified map background */}
-          <div className="absolute inset-0 opacity-50">
-            <svg viewBox="0 0 400 200" className="w-full h-full">
-              <path d="M0,100 Q100,80 200,100 T400,100" stroke="#c5dfc9" strokeWidth="3" fill="none" />
-              <path d="M50,150 Q150,130 250,150 T400,140" stroke="#c5dfc9" strokeWidth="2" fill="none" />
-            </svg>
-          </div>
-          
-          {/* Job markers */}
-          {sortedJobs.slice(0, 3).map((job, idx) => (
-            <div 
-              key={job.id}
-              className="absolute flex items-center gap-1 bg-white rounded-full px-2 py-1 shadow-md"
-              style={{ 
-                top: `${30 + idx * 25}%`, 
-                left: `${20 + idx * 20}%` 
-              }}
-            >
-              <div className="h-3 w-3 bg-[#1f3b4d] rounded-full" />
-              <span className="text-xs font-medium text-[#1f3b4d]">
-                {job.scheduled_time?.slice(0, 5) || '—'}
-              </span>
+      {sortedJobs.length > 0 && (
+        <div className="px-4 mt-4">
+          <div className="relative h-48 rounded-xl overflow-hidden">
+            {(() => {
+              const addresses = sortedJobs
+                .map(j => j.property?.address ? `${j.property.address}, ${j.property.city || 'CA'}` : null)
+                .filter(Boolean);
+              if (addresses.length === 0) return null;
+              const markers = addresses.map((addr, i) => `markers=color:0x1f3b4d%7Clabel:${i + 1}%7C${encodeURIComponent(addr as string)}`).join('&');
+              const mapUrl = `https://maps.googleapis.com/maps/api/staticmap?size=800x400&maptype=roadmap&${markers}&key=${process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}`;
+              return (
+                <img 
+                  src={mapUrl} 
+                  alt="Job locations" 
+                  className="w-full h-full object-cover"
+                  onClick={() => {
+                    const addr = addresses[0];
+                    if (addr) window.open(`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(addr)}`, '_blank');
+                  }}
+                />
+              );
+            })()}
+            {/* Time labels */}
+            <div className="absolute bottom-2 left-2 flex gap-2">
+              {sortedJobs.slice(0, 3).map((job) => (
+                <div key={job.id} className="flex items-center gap-1 bg-white rounded-full px-2 py-1 shadow-md">
+                  <div className="h-3 w-3 bg-[#1f3b4d] rounded-full" />
+                  <span className="text-xs font-medium text-[#1f3b4d]">
+                    {job.scheduled_time?.slice(0, 5) || '—'}
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Visits Summary */}
       <div className="px-4 mt-4">
