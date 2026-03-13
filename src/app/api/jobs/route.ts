@@ -175,14 +175,31 @@ export async function POST(request: NextRequest) {
     }
 
     // Send push notification to assigned tech
+    // assigned_to is team_members.id, but push_subscriptions uses users.id
+    // Map via email to find the correct user
     if (assigned_to && job) {
+      let pushUserId = assigned_to;
+      const { data: teamMember } = await supabase
+        .from('team_members')
+        .select('email')
+        .eq('id', assigned_to)
+        .single();
+      if (teamMember?.email) {
+        const { data: authUser } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', teamMember.email)
+          .single();
+        if (authUser?.id) pushUserId = authUser.id;
+      }
+
       const customerName = job.property?.customer?.name || 'Customer';
       const address = job.property?.address || job.property?.city || '';
       const dateStr = scheduled_date 
         ? new Date(scheduled_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
         : 'TBD';
       
-      sendPushToUser(assigned_to, {
+      sendPushToUser(pushUserId, {
         title: '📋 New Job Assigned',
         body: `${job_type} - ${customerName}${address ? ` at ${address}` : ''} (${dateStr})`,
         tag: `job-${job.id}`,

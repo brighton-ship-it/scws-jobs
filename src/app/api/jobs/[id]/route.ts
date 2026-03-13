@@ -104,14 +104,30 @@ export async function PATCH(
     }
 
     // Send push notification if assigned_to changed to a new user
+    // body.assigned_to is now team_members.id, but push_subscriptions uses users.id
     if (body.assigned_to && body.assigned_to !== currentJob?.assigned_to && job) {
+      let pushUserId = body.assigned_to;
+      const { data: tm } = await supabase
+        .from('team_members')
+        .select('email')
+        .eq('id', body.assigned_to)
+        .single();
+      if (tm?.email) {
+        const { data: au } = await supabase
+          .from('users')
+          .select('id')
+          .eq('email', tm.email)
+          .single();
+        if (au?.id) pushUserId = au.id;
+      }
+
       const customerName = job.property?.customer?.name || 'Customer';
       const address = job.property?.address || job.property?.city || '';
       const dateStr = job.scheduled_date 
         ? new Date(job.scheduled_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
         : 'TBD';
       
-      sendPushToUser(body.assigned_to, {
+      sendPushToUser(pushUserId, {
         title: '📋 Job Assigned to You',
         body: `${job.job_type} - ${customerName}${address ? ` at ${address}` : ''} (${dateStr})`,
         tag: `job-${job.id}`,
