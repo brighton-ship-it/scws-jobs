@@ -20,9 +20,10 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { Input } from '@/components/forms/Input';
 import { Select } from '@/components/forms/Select';
-import { GripVertical, Trash2, Package, Plus, Receipt } from 'lucide-react';
+import { GripVertical, Trash2, Package, Plus, Receipt, Store } from 'lucide-react';
 import type { LineItemType, Product } from '@/types/database';
 import { Search } from 'lucide-react';
+import { HomeDepotProductPicker } from './HomeDepotProductPicker';
 
 // Searchable Product Picker Component
 function ProductPicker({ 
@@ -125,6 +126,10 @@ interface SortableItemProps {
   products: Product[];
   onProductPick: (itemId: string, productId: string) => void;
   onCloseProductPicker: () => void;
+  onHomeDepotSelect: (id: string) => void;
+  showHomeDepotPicker: boolean;
+  onHomeDepotPick: (itemId: string, product: any, markup: number) => void;
+  onCloseHomeDepotPicker: () => void;
   canRemove: boolean;
 }
 
@@ -149,6 +154,10 @@ function SortableItem({
   products,
   onProductPick,
   onCloseProductPicker,
+  onHomeDepotSelect,
+  showHomeDepotPicker,
+  onHomeDepotPick,
+  onCloseHomeDepotPicker,
   canRemove,
 }: SortableItemProps) {
   const {
@@ -216,9 +225,17 @@ function SortableItem({
                 type="button"
                 onClick={() => onProductSelect(item.id)}
                 className="shrink-0 p-2 rounded-lg border border-gray-300 hover:bg-gray-100 text-gray-500"
-                title="Browse all products"
+                title="Browse internal catalog"
               >
                 <Package className="h-5 w-5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onHomeDepotSelect(item.id)}
+                className="shrink-0 p-2 rounded-lg border border-orange-300 hover:bg-orange-50 text-orange-600"
+                title="Search Home Depot"
+              >
+                <Store className="h-5 w-5" />
               </button>
             </div>
 
@@ -228,6 +245,15 @@ function SortableItem({
                 products={products}
                 onSelect={(productId) => onProductPick(item.id, productId)}
                 onClose={onCloseProductPicker}
+              />
+            )}
+
+            {/* Home Depot product picker */}
+            {showHomeDepotPicker && (
+              <HomeDepotProductPicker
+                onSelect={(product, markup) => onHomeDepotPick(item.id, product, markup)}
+                onClose={onCloseHomeDepotPicker}
+                initialSearch={item.description}
               />
             )}
           </div>
@@ -325,6 +351,7 @@ interface DraggableLineItemsProps {
 
 export function DraggableLineItems({ items, onChange, products }: DraggableLineItemsProps) {
   const [showProductPicker, setShowProductPicker] = useState<string | null>(null);
+  const [showHomeDepotPicker, setShowHomeDepotPicker] = useState<string | null>(null);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -420,6 +447,28 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
     setShowProductPicker(null);
   };
 
+  const addHomeDepotProductToLineItem = (itemId: string, product: any, markup: number) => {
+    const cost = product.price || 0;
+    const markupMultiplier = 1 + (markup / 100);
+    const customerPrice = cost * markupMultiplier;
+
+    onChange(
+      items.map((item) => {
+        if (item.id !== itemId) return item;
+        return {
+          ...item,
+          description: product.name,
+          item_description: `${product.brand ? product.brand + ' - ' : ''}Model: ${product.modelNumber || 'N/A'}\nHome Depot SKU: ${product.sku || product.productId}\nCost: $${cost.toFixed(2)} + ${markup}% markup`,
+          unit_price: customerPrice,
+          total: item.quantity * customerPrice,
+          item_type: 'part' as LineItemType,
+          taxable: true, // Parts are taxable
+        };
+      })
+    );
+    setShowHomeDepotPicker(null);
+  };
+
   return (
     <div className="space-y-3">
       {/* Header */}
@@ -451,6 +500,10 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
               products={products}
               onProductPick={addProductToLineItem}
               onCloseProductPicker={() => setShowProductPicker(null)}
+              onHomeDepotSelect={(id) => setShowHomeDepotPicker(showHomeDepotPicker === id ? null : id)}
+              showHomeDepotPicker={showHomeDepotPicker === item.id}
+              onHomeDepotPick={addHomeDepotProductToLineItem}
+              onCloseHomeDepotPicker={() => setShowHomeDepotPicker(null)}
               canRemove={items.length > 1}
             />
           ))}

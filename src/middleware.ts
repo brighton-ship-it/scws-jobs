@@ -5,6 +5,11 @@ import { checkRateLimit, rateLimitedResponse, getRateLimitHeaders } from '@/lib/
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
   
+  // Home Depot API doesn't require auth - skip middleware
+  if (path.startsWith('/api/homedepot')) {
+    return NextResponse.next();
+  }
+  
   // Apply rate limiting to API routes
   if (path.startsWith('/api/')) {
     const rateLimitResult = checkRateLimit(request);
