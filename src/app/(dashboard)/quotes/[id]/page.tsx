@@ -145,6 +145,8 @@ export default function QuoteDetailPage() {
     try {
       const res = await fetch(`/api/quotes/${quoteId}/send`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: sendEmail }),
       });
       
       const data = await res.json();

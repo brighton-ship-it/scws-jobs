@@ -142,6 +142,8 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+    const body = await request.json().catch(() => ({}));
+    const emailOverride = body?.email;
     const supabase = createServiceClient();
 
     // Check email is configured
@@ -168,7 +170,8 @@ export async function POST(
       return NextResponse.json({ error: 'Quote not found' }, { status: 404 });
     }
 
-    if (!quote.customer?.email) {
+    const recipientEmail = emailOverride || quote.customer?.email;
+    if (!recipientEmail) {
       return NextResponse.json(
         { error: 'Customer has no email address' },
         { status: 400 }
@@ -289,7 +292,7 @@ export async function POST(
 
     // Send email with PDF attachment
     const result = await sendEmail({
-      to: quote.customer.email,
+      to: recipientEmail,
       subject: `Quote #${quote.quote_number} from Southern California Well Service`,
       html,
       attachments: [
@@ -318,7 +321,7 @@ export async function POST(
 
     return NextResponse.json({ 
       success: true,
-      message: `Quote sent to ${quote.customer.email}`
+      message: `Quote sent to ${recipientEmail}`
     });
   } catch (error) {
     console.error('Quote send error:', error);
