@@ -342,7 +342,7 @@ export default function CustomerDetailPage({
             ) : (
               <div className="space-y-4">
                 {properties.map((property) => {
-                  const wellInfo = getWellInfoByPropertyId(property.id);
+                  const wellInfo = null; // TODO: fetch from equipment API
 
                   return (
                     <div
