@@ -22,7 +22,11 @@ export default function NewQuotePage() {
   const [customerId, setCustomerId] = useState('');
   const [propertyId, setPropertyId] = useState('');
   const [properties, setProperties] = useState<Property[]>([]);
-  const [validUntil, setValidUntil] = useState('');
+  const [validUntil, setValidUntil] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 30);
+    return d.toISOString().split('T')[0];
+  });
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
   const [taxRate, setTaxRate] = useState(8.75);
