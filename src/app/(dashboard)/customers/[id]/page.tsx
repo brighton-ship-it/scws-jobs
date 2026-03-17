@@ -1,9 +1,9 @@
 'use client';
 
 
-import { use, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge, JobStatusBadge } from '@/components/ui/badge';
@@ -57,12 +57,8 @@ const LEAD_STAGE_COLORS: Record<LeadStage, string> = {
   paid: 'bg-emerald-100 text-emerald-700',
 };
 
-export default function CustomerDetailPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
+export default function CustomerDetailPage() {
+  const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [customer, setCustomer] = useState<any>(null);
   const [customerLoading, setCustomerLoading] = useState(true);

@@ -1,19 +1,15 @@
 'use client';
 
-import { use, useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useRouter, useParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { EquipmentList } from '@/components/equipment/EquipmentList';
 import { ArrowLeft, User, Wrench } from 'lucide-react';
 import type { Customer, Property, CustomerEquipment } from '@/types/database';
 
-export default function CustomerEquipmentPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const { id } = use(params);
+export default function CustomerEquipmentPage() {
+  const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [customer, setCustomer] = useState<Customer | null>(null);
