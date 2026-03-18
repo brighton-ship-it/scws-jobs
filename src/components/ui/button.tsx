@@ -76,6 +76,20 @@ const sizeStyles: Record<ButtonSize, string> = {
   lg: 'px-6 py-3 text-base gap-2',
 };
 
+// cva-style helper for alert-dialog and other shadcn components
+export function buttonVariants(opts?: { variant?: string; size?: string }) {
+  const v = (opts?.variant || 'primary') as ButtonVariant;
+  const s = (opts?.size || 'md') as ButtonSize;
+  return `
+    inline-flex items-center justify-center font-medium rounded-lg
+    transition-all duration-150
+    focus:outline-none focus:ring-2 focus:ring-offset-0
+    disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none
+    ${variantStyles[v] || variantStyles.primary}
+    ${v !== 'link' ? (sizeStyles[s] || sizeStyles.md) : 'text-sm'}
+  `.trim();
+}
+
 export function Button({
   children,
   variant = 'primary',

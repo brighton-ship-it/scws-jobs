@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from 'next/server';
 
 const STAX_API_BASE = 'https://apiprod.fattlabs.com';
