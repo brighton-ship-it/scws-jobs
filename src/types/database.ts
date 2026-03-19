@@ -133,11 +133,42 @@ export interface Product {
   name: string;
   description: string | null;
   default_price: number;
+  unit_cost: number | null;  // Internal cost per unit (for margin tracking)
   item_type: LineItemType;
   sku: string | null;
   active: boolean;
   created_at: string;
   updated_at?: string;
+}
+
+// Quote Templates
+export interface QuoteTemplate {
+  id: string;
+  name: string;
+  description: string | null;
+  template_type: string;
+  line_items: QuoteTemplateLineItem[];
+  variables: Record<string, QuoteTemplateVariable>;
+  active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface QuoteTemplateLineItem {
+  description: string;
+  item_description: string | null;
+  quantity_formula: string;  // e.g. 'depth', 'depth * 0.8', '1'
+  unit_price: number;
+  unit_cost: number;
+  taxable: boolean;
+  item_type: string;
+}
+
+export interface QuoteTemplateVariable {
+  label: string;
+  default: number;
+  min?: number;
+  max?: number;
 }
 
 // Quotes

@@ -111,6 +111,7 @@ export interface LineItem {
   item_description: string | null;  // Extended description shown below the item name
   quantity: number;
   unit_price: number;
+  unit_cost: number | null;  // Internal cost per unit (for margin tracking)
   total: number;
   item_type: LineItemType | null;
   taxable: boolean;  // Whether this item is subject to tax (default true)
@@ -390,6 +391,7 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
       item_description: null,
       quantity: 1,
       unit_price: 0,
+      unit_cost: null,
       total: 0,
       item_type: null,
       taxable: true,
@@ -437,6 +439,7 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
           description: product.name,
           item_description: product.description || null,
           unit_price: product.default_price,
+          unit_cost: (product as Product & { unit_cost?: number }).unit_cost || null,
           total: item.quantity * product.default_price,
           item_type: product.item_type as LineItemType,
           // Labor is not taxable in California

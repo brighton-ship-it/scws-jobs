@@ -16,6 +16,8 @@ import { CustomerSearch } from '@/components/customer-search';
 import { toast } from 'sonner';
 import type { Property, Product } from '@/types/database';
 import { ArrowLeft, DollarSign } from 'lucide-react';
+import { QuoteTemplateSelector } from '@/components/quotes/QuoteTemplateSelector';
+import { MarginSummary } from '@/components/quotes/MarginSummary';
 
 export default function NewQuotePage() {
   const router = useRouter();
@@ -32,7 +34,7 @@ export default function NewQuotePage() {
   const [taxRate, setTaxRate] = useState(8.75);
   const [requiredDeposit, setRequiredDeposit] = useState<string>('');
   const [lineItems, setLineItems] = useState<LineItem[]>([
-    { id: '1', description: '', item_description: null, quantity: 1, unit_price: 0, total: 0, item_type: null, taxable: true, sort_order: 0 }
+    { id: '1', description: '', item_description: null, quantity: 1, unit_price: 0, unit_cost: null, total: 0, item_type: null, taxable: true, sort_order: 0 }
   ]);
   const [saving, setSaving] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
@@ -126,6 +128,7 @@ export default function NewQuotePage() {
             item_description: item.item_description,
             quantity: item.quantity,
             unit_price: item.unit_price,
+            unit_cost: item.unit_cost,
             total: item.total,
             item_type: item.item_type,
             taxable: item.taxable,
@@ -178,6 +181,15 @@ export default function NewQuotePage() {
           </div>
         </div>
       </div>
+
+      {/* Quote Template Selector */}
+      <QuoteTemplateSelector
+        onApplyTemplate={(items, templateNotes) => {
+          setLineItems(items);
+          setNotes(templateNotes);
+          setRequiredDeposit('2500');
+        }}
+      />
 
       {/* Customer & Property */}
       <Card>
@@ -310,6 +322,9 @@ export default function NewQuotePage() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Margin Analysis (Internal Only) */}
+      <MarginSummary lineItems={lineItems} />
 
       {/* Notes */}
       <Card>
