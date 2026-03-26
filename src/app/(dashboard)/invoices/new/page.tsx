@@ -157,7 +157,7 @@ export default function NewInvoicePage() {
                 unit_price: 125,
                 total: hours * 125,
                 item_type: 'labor',
-                taxable: true,
+                taxable: false,
                 sort_order: 0,
               }]);
               
@@ -266,7 +266,7 @@ export default function NewInvoicePage() {
           unit_price: 125,
           total: hours * 125,
           item_type: 'labor',
-          taxable: true,
+          taxable: false,
           sort_order: 0,
         },
         {
