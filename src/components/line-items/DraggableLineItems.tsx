@@ -414,7 +414,7 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
 
         // Labor is not taxable in California - auto-set when type changes
         if (field === 'item_type') {
-          updated.taxable = value !== 'labor';
+          updated.taxable = value !== 'labor' && value !== 'service';
         }
 
         return updated;
@@ -443,7 +443,7 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
           total: item.quantity * product.default_price,
           item_type: product.item_type as LineItemType,
           // Labor is not taxable in California
-          taxable: product.item_type !== 'labor',
+          taxable: product.item_type !== 'labor' && product.item_type !== 'service',
         };
       })
     );
