@@ -137,6 +137,8 @@ export interface Product {
   item_type: LineItemType;
   sku: string | null;
   active: boolean;
+  default_taxable: boolean;  // Whether this product is taxable by default
+  jobber_category: string | null;  // Original category from Jobber (SERVICE/PRODUCT)
   created_at: string;
   updated_at?: string;
 }

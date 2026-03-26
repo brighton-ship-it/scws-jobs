@@ -442,8 +442,10 @@ export function DraggableLineItems({ items, onChange, products }: DraggableLineI
           unit_cost: (product as Product & { unit_cost?: number }).unit_cost || null,
           total: item.quantity * product.default_price,
           item_type: product.item_type as LineItemType,
-          // Labor is not taxable in California
-          taxable: product.item_type !== 'labor' && product.item_type !== 'service',
+          // Use product's default_taxable setting, fallback to type-based logic
+          taxable: (product as any).default_taxable !== undefined 
+            ? (product as any).default_taxable 
+            : (product.item_type !== 'labor' && product.item_type !== 'service'),
         };
       })
     );
