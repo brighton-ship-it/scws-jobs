@@ -18,6 +18,7 @@ import type { Property, Product } from '@/types/database';
 import { ArrowLeft, DollarSign } from 'lucide-react';
 import { QuoteTemplateSelector } from '@/components/quotes/QuoteTemplateSelector';
 import { MarginSummary } from '@/components/quotes/MarginSummary';
+import { getTaxRateByCity, getCountyByCity } from '@/lib/tax-rates';
 
 export default function NewQuotePage() {
   const router = useRouter();
@@ -31,7 +32,8 @@ export default function NewQuotePage() {
   });
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
-  const [taxRate, setTaxRate] = useState(8.75);
+  const [taxRate, setTaxRate] = useState(7.75);
+  const [taxCounty, setTaxCounty] = useState<string | null>(null);
   const [requiredDeposit, setRequiredDeposit] = useState<string>('');
   const [lineItems, setLineItems] = useState<LineItem[]>([
     { id: '1', description: '', item_description: null, quantity: 1, unit_price: 0, unit_cost: null, total: 0, item_type: null, taxable: true, sort_order: 0 }
@@ -73,8 +75,24 @@ export default function NewQuotePage() {
     // Auto-select first property if only one
     if (loadedProperties.length === 1) {
       setPropertyId(loadedProperties[0].id);
+      // Auto-set tax rate from property city
+      const city = loadedProperties[0].city;
+      if (city) {
+        setTaxRate(getTaxRateByCity(city));
+        setTaxCounty(getCountyByCity(city));
+      }
     }
   };
+
+  // Auto-set tax rate when property changes
+  useEffect(() => {
+    if (!propertyId) return;
+    const property = properties.find(p => p.id === propertyId);
+    if (property?.city) {
+      setTaxRate(getTaxRateByCity(property.city));
+      setTaxCounty(getCountyByCity(property.city));
+    }
+  }, [propertyId, properties]);
 
   const activeProducts = products.filter(p => p.active);
 
@@ -223,11 +241,14 @@ export default function NewQuotePage() {
               onChange={(e) => setValidUntil(e.target.value)}
             />
             <Input
-              label="Tax Rate (%)"
+              label={`Tax Rate (%)${taxCounty ? ` — ${taxCounty} County` : ''}`}
               type="number"
               step="0.01"
               value={taxRate}
-              onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
+              onChange={(e) => {
+                setTaxRate(parseFloat(e.target.value) || 0);
+                setTaxCounty(null);
+              }}
             />
           </div>
         </CardContent>

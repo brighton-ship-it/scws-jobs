@@ -10,7 +10,7 @@ import { useToast } from '@/components/feedback/Toaster';
 import { Loader2 } from 'lucide-react';
 
 const defaultBillingSettings = {
-  tax_rate: 8.75,
+  tax_rate: 7.75,
   payment_terms_days: 30,
   invoice_prefix: 'INV',
   invoice_notes: 'Thank you for your business!',

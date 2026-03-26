@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 import type { Product } from '@/types/database';
 import { ArrowLeft, Briefcase } from 'lucide-react';
 import { format, addDays } from 'date-fns';
+import { getTaxRateByCity, getCountyByCity } from '@/lib/tax-rates';
 
 const paymentTermsOptions = [
   { value: '0', label: 'Due on Receipt' },
@@ -36,7 +37,8 @@ export default function NewInvoicePage() {
   const [dueDate, setDueDate] = useState(format(addDays(new Date(), 30), 'yyyy-MM-dd'));
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
-  const [taxRate, setTaxRate] = useState(8.75);
+  const [taxRate, setTaxRate] = useState(7.75);
+  const [taxCounty, setTaxCounty] = useState<string | null>(null);
   const [lineItems, setLineItems] = useState<LineItem[]>([
     { id: '1', description: '', item_description: null, quantity: 1, unit_price: 0, total: 0, item_type: null, taxable: true, sort_order: 0 }
   ]);
@@ -137,6 +139,12 @@ export default function NewInvoicePage() {
               }
               setJobId(fromJobId);
               
+              // Auto-set tax rate from job property city
+              if (job.property?.city) {
+                setTaxRate(getTaxRateByCity(job.property.city));
+                setTaxCounty(getCountyByCity(job.property.city));
+              }
+              
               // Create line items from job info
               const hours = job.estimated_duration 
                 ? parseInt(job.estimated_duration.split(':')[0]) || 2 
@@ -165,6 +173,31 @@ export default function NewInvoicePage() {
       loadFromJob();
     }
   }, [fromJobId]);
+
+  // Auto-set tax rate based on customer's property city/county
+  useEffect(() => {
+    if (!customerId) return;
+    
+    const updateTaxRate = async () => {
+      try {
+        const res = await fetch(`/api/customers/${customerId}`);
+        if (res.ok) {
+          const data = await res.json();
+          const city = data.customer?.properties?.[0]?.city || 
+                       data.customer?.billing_city || null;
+          if (city) {
+            const rate = getTaxRateByCity(city);
+            const county = getCountyByCity(city);
+            setTaxRate(rate);
+            setTaxCounty(county);
+          }
+        }
+      } catch (err) {
+        // Silently fail - user can still manually set rate
+      }
+    };
+    updateTaxRate();
+  }, [customerId]);
 
   // Update due date when payment terms or issue date change
   useEffect(() => {
@@ -215,6 +248,12 @@ export default function NewInvoicePage() {
         setCustomerId(jobCustomer.id);
       }
       
+      // Auto-set tax rate from job property city
+      if (job.property?.city) {
+        setTaxRate(getTaxRateByCity(job.property.city));
+        setTaxCounty(getCountyByCity(job.property.city));
+      }
+
       const hours = job.estimated_duration 
         ? parseInt(job.estimated_duration.split(':')[0]) || 2 
         : 2;
@@ -394,13 +433,18 @@ export default function NewInvoicePage() {
             />
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="Tax Rate (%)"
-              type="number"
-              step="0.01"
-              value={taxRate}
-              onChange={(e) => setTaxRate(parseFloat(e.target.value) || 0)}
-            />
+            <div>
+              <Input
+                label={`Tax Rate (%)${taxCounty ? ` — ${taxCounty} County` : ''}`}
+                type="number"
+                step="0.01"
+                value={taxRate}
+                onChange={(e) => {
+                  setTaxRate(parseFloat(e.target.value) || 0);
+                  setTaxCounty(null); // Clear auto-detected county on manual change
+                }}
+              />
+            </div>
           </div>
         </CardContent>
       </Card>

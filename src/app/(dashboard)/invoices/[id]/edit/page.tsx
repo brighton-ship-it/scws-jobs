@@ -35,7 +35,7 @@ export default function EditInvoicePage() {
   const [dueDate, setDueDate] = useState('');
   const [notes, setNotes] = useState('');
   const [internalNotes, setInternalNotes] = useState('');
-  const [taxRate, setTaxRate] = useState(8.75);
+  const [taxRate, setTaxRate] = useState(7.75);
   const [lineItems, setLineItems] = useState<LineItem[]>([]);
   const [saving, setSaving] = useState(false);
   const [products, setProducts] = useState<Product[]>([]);
