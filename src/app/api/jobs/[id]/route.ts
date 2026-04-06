@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/server';
-import { sendPushToUser } from '@/lib/push';
 
 export const dynamic = 'force-dynamic';
 
@@ -26,7 +25,9 @@ export async function GET(
           access_notes,
           customer:customers (id, name, email, phone, billing_address, notes)
         ),
-        assigned_user:team_members (id, name, email, phone, role)
+        assigned_user:team_members!jobs_assigned_to_fkey (id, name, email, phone, role),
+        crew_lead:team_members!jobs_crew_lead_id_fkey (id, name, email, phone, role, hourly_rate, tech_type),
+        crew_helper:team_members!jobs_crew_helper_id_fkey (id, name, email, phone, role, hourly_rate, tech_type)
       `)
       .eq('id', id)
       .single();
@@ -52,37 +53,41 @@ export async function PATCH(
     const supabase = createServiceClient();
     const body = await request.json();
 
-    // Get current job to check if assigned_to is changing
-    const { data: currentJob } = await supabase
-      .from('jobs')
-      .select('assigned_to')
-      .eq('id', id)
-      .single();
+    // Remove undefined values and create typed updates object
+    const updates: Record<string, any> = Object.fromEntries(
+      Object.entries(body).filter(([_, v]) => v !== undefined)
+    );
 
-    // If assigned_to is a users table ID, map it to team_members ID
-    if (body.assigned_to) {
-      const { data: userProfile } = await supabase
-        .from('users')
-        .select('email')
-        .eq('id', body.assigned_to)
-        .single();
-      if (userProfile?.email) {
-        const { data: teamMember } = await supabase
-          .from('team_members')
-          .select('id')
-          .eq('email', userProfile.email)
-          .single();
-        if (teamMember) {
-          body.assigned_to = teamMember.id;
+    // Auto-detect crew_type if crew fields are being updated
+    if ((updates.crew_lead_id || updates.crew_helper_id) && !updates.crew_type) {
+      // Get existing job to check job_type
+      const { data: existingJob } = await supabase
+        .from('jobs')
+        .select('job_type, crew_lead_id, crew_helper_id')
+        .eq('id', id)
+        .single() as { data: { job_type: string; crew_lead_id: string | null; crew_helper_id: string | null } | null; error: any };
+      
+      const jobType = (updates.job_type || existingJob?.job_type) as string | undefined;
+      const leadId = updates.crew_lead_id ?? existingJob?.crew_lead_id;
+      const helperId = updates.crew_helper_id ?? existingJob?.crew_helper_id;
+      
+      if (leadId) {
+        if (jobType?.toLowerCase().includes('drill')) {
+          updates.crew_type = 'drill';
+        } else if (helperId) {
+          updates.crew_type = 'two_man';
+        } else {
+          updates.crew_type = 'solo';
         }
       }
     }
 
-    // Remove undefined values
-    const updates = Object.fromEntries(
-      Object.entries(body).filter(([_, v]) => v !== undefined)
-    );
+    // Also update legacy assigned_to if crew_lead_id is set and assigned_to isn't
+    if (updates.crew_lead_id && !updates.assigned_to) {
+      updates.assigned_to = updates.crew_lead_id;
+    }
 
+    // @ts-expect-error - Supabase types don't include new crew columns until migration is applied
     const { data: job, error } = await supabase
       .from('jobs')
       .update(updates)
@@ -101,39 +106,6 @@ export async function PATCH(
     if (error) {
       console.error('Job update error:', error);
       return NextResponse.json({ error: error.message }, { status: 500 });
-    }
-
-    // Send push notification if assigned_to changed to a new user
-    // body.assigned_to is now team_members.id, but push_subscriptions uses users.id
-    if (body.assigned_to && body.assigned_to !== currentJob?.assigned_to && job) {
-      let pushUserId = body.assigned_to;
-      const { data: tm } = await supabase
-        .from('team_members')
-        .select('email')
-        .eq('id', body.assigned_to)
-        .single();
-      if (tm?.email) {
-        const { data: au } = await supabase
-          .from('users')
-          .select('id')
-          .eq('email', tm.email)
-          .single();
-        if (au?.id) pushUserId = au.id;
-      }
-
-      const customerName = job.property?.customer?.name || 'Customer';
-      const address = job.property?.address || job.property?.city || '';
-      const dateStr = job.scheduled_date 
-        ? new Date(job.scheduled_date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })
-        : 'TBD';
-      
-      sendPushToUser(pushUserId, {
-        title: '📋 Job Assigned to You',
-        body: `${job.job_type} - ${customerName}${address ? ` at ${address}` : ''} (${dateStr})`,
-        tag: `job-${job.id}`,
-        url: `/tech/jobs/${job.id}`,
-        data: { jobId: job.id, type: 'job_assigned' }
-      }).catch(err => console.error('[Push] Failed to send job notification:', err));
     }
 
     return NextResponse.json({ job });

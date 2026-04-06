@@ -34,6 +34,7 @@ import {
   Search,
   PhoneCall,
   HardHat,
+  UserCheck,
 } from 'lucide-react';
 
 interface NavItemDef {
@@ -75,6 +76,7 @@ const navigationGroups: { name: string; items: NavItemDef[] }[] = [
       { name: 'Marketing', href: '/marketing', icon: Megaphone, permissions: ['view_marketing'] },
       { name: 'Permit Research', href: '/permits/research', icon: Search, permissions: ['view_permit_research'] },
       { name: 'Reports', href: '/reports', icon: BarChart3, permissions: ['view_reports'] },
+      { name: 'Team Performance', href: '/team-performance', icon: UserCheck, permissions: ['view_reports'] },
     ],
   },
   {

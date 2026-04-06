@@ -29,7 +29,9 @@ export async function GET(request: NextRequest) {
           zip,
           customer:customers (id, name, email, phone)
         ),
-        assigned_user:team_members (id, name, email, role)
+        assigned_user:team_members!jobs_assigned_to_fkey (id, name, email, role),
+        crew_lead:team_members!jobs_crew_lead_id_fkey (id, name, email, role, hourly_rate, tech_type),
+        crew_helper:team_members!jobs_crew_helper_id_fkey (id, name, email, role, hourly_rate, tech_type)
       `)
       .order('created_at', { ascending: false })
       .limit(limit);
@@ -134,6 +136,9 @@ export async function POST(request: NextRequest) {
       description,
       internal_notes,
       priority = 'normal',
+      crew_lead_id,
+      crew_helper_id,
+      crew_type,
     } = body;
 
     if (!property_id) {
@@ -144,11 +149,23 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Job type is required' }, { status: 400 });
     }
 
+    // Auto-detect crew_type if not provided
+    let finalCrewType = crew_type;
+    if (!finalCrewType && crew_lead_id) {
+      if (job_type?.toLowerCase().includes('drill')) {
+        finalCrewType = 'drill';
+      } else if (crew_helper_id) {
+        finalCrewType = 'two_man';
+      } else {
+        finalCrewType = 'solo';
+      }
+    }
+
     const { data: job, error } = await supabase
       .from('jobs')
       .insert({
         property_id,
-        assigned_to: assigned_to || null,
+        assigned_to: assigned_to || crew_lead_id || null, // Fallback to crew_lead for legacy field
         job_type,
         status: 'scheduled',
         scheduled_date: scheduled_date || null,
@@ -157,6 +174,9 @@ export async function POST(request: NextRequest) {
         description: description || null,
         internal_notes: internal_notes || null,
         priority,
+        crew_lead_id: crew_lead_id || null,
+        crew_helper_id: crew_helper_id || null,
+        crew_type: finalCrewType || null,
       })
       .select(`
         *,

@@ -30,6 +30,8 @@ const jobSchema = z.object({
   scheduled_time: z.string().optional(),
   estimated_duration: z.string().optional(),
   assigned_to: z.string().optional(),
+  crew_lead_id: z.string().optional(),
+  crew_helper_id: z.string().optional(),
   priority: z.enum(['low', 'normal', 'high', 'urgent']),
   description: z.string().optional(),
   internal_notes: z.string().optional(),
@@ -194,6 +196,8 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
       scheduled_time: job?.scheduled_time || '',
       estimated_duration: job?.estimated_duration || '',
       assigned_to: job?.assigned_to || '',
+      crew_lead_id: (job as any)?.crew_lead_id || '',
+      crew_helper_id: (job as any)?.crew_helper_id || '',
       priority: job?.priority || 'normal',
       description: initialData?.description || job?.description || '',
       internal_notes: initialData?.notes || job?.internal_notes || '',
@@ -329,6 +333,16 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
 
   const onSubmit = async (data: JobFormData) => {
     try {
+      // Auto-detect crew_type based on crew composition and job type
+      let crewType: 'solo' | 'two_man' | 'drill' | null = null;
+      if (data.job_type?.toLowerCase().includes('drill')) {
+        crewType = 'drill';
+      } else if (data.crew_helper_id) {
+        crewType = 'two_man';
+      } else if (data.crew_lead_id) {
+        crewType = 'solo';
+      }
+
       const payload = {
         property_id: data.property_id,
         job_type: data.job_type,
@@ -338,7 +352,10 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
         description: data.description || null,
         internal_notes: data.internal_notes || null,
         priority: data.priority,
-        assigned_to: assignedUserIds.length > 0 ? assignedUserIds[0] : null, // Primary assignee
+        assigned_to: assignedUserIds.length > 0 ? assignedUserIds[0] : null, // Legacy field
+        crew_lead_id: data.crew_lead_id || null,
+        crew_helper_id: data.crew_helper_id || null,
+        crew_type: crewType,
       };
 
       let res;
@@ -731,11 +748,11 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
             </div>
           </div>
 
-          {/* Assign To (Multiple Team Members) */}
+          {/* Crew Lead (Required) */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              Assign Team Members
+              <User className="h-4 w-4" />
+              Crew Lead *
             </label>
             {isLoadingTeam ? (
               <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
@@ -743,15 +760,49 @@ export function JobForm({ job, mode, initialData }: JobFormProps) {
                 Loading team...
               </div>
             ) : (
-              <TeamMemberMultiSelect
-                teamMembers={teamMembers}
-                selectedIds={assignedUserIds}
-                onChange={setAssignedUserIds}
-                placeholder="Select team members to assign..."
-              />
+              <select
+                {...register('crew_lead_id')}
+                className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">Select crew lead...</option>
+                {teamMembers.filter(m => m.active).map(member => (
+                  <option key={member.id} value={member.id}>
+                    {member.name} {member.tech_type ? `(${member.tech_type})` : ''}
+                  </option>
+                ))}
+              </select>
             )}
             <p className="text-xs text-gray-500 mt-1">
-              You can assign multiple team members to this job.
+              The lead tech gets revenue credit for this job.
+            </p>
+          </div>
+
+          {/* Crew Helper (Optional) */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1 flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Helper (Optional)
+            </label>
+            {isLoadingTeam ? (
+              <div className="flex items-center gap-2 text-gray-500 text-sm py-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Loading team...
+              </div>
+            ) : (
+              <select
+                {...register('crew_helper_id')}
+                className="w-full h-10 px-3 rounded-lg border border-gray-300 focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+              >
+                <option value="">None (solo job)</option>
+                {teamMembers.filter(m => m.active).map(member => (
+                  <option key={member.id} value={member.id}>
+                    {member.name} {member.tech_type ? `(${member.tech_type})` : ''}
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="text-xs text-gray-500 mt-1">
+              Add a helper for two-man crew jobs.
             </p>
           </div>
         </CardContent>

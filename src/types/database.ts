@@ -90,6 +90,9 @@ export interface WellInfo {
 
 export type JobPriority = 'low' | 'normal' | 'high' | 'urgent';
 
+export type CrewType = 'solo' | 'two_man' | 'drill';
+export type TechType = 'service' | 'pump_lead' | 'mixed' | 'driller' | 'helper' | 'office' | 'sales';
+
 export interface Job {
   id: string;
   property_id: string;
@@ -107,6 +110,41 @@ export interface Job {
   priority?: JobPriority;
   recurring_schedule_id?: string | null;
   job_number?: string;
+  // Crew tracking fields
+  crew_lead_id?: string | null;
+  crew_helper_id?: string | null;
+  completed_by_id?: string | null;
+  crew_type?: CrewType | null;
+}
+
+export interface TeamMember {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  phone: string | null;
+  active: boolean;
+  created_at: string;
+  updated_at?: string;
+  // Performance tracking fields
+  hourly_rate?: number | null;
+  tech_type?: TechType | null;
+}
+
+export interface TechPerformanceMonthly {
+  id: string;
+  team_member_id: string;
+  month: string; // First day of month
+  visits: number;
+  unique_jobs: number;
+  revenue: number;
+  parts_revenue: number;
+  labor_revenue: number;
+  days_worked: number;
+  sourced_followups: number;
+  sourced_revenue: number;
+  created_at: string;
+  updated_at?: string;
 }
 
 export interface JobLineItem {

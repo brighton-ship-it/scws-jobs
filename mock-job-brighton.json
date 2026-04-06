@@ -1,0 +1,7 @@
+{
+    "title": "Test Job - Well Inspection",
+    "description": "Perform a standard well inspection for SCWS",
+    "scheduled_at": "2026-03-13T08:45:00-08:00",
+    "assigned_to": "Brighton Scala",
+    "location": "1077 Main St, Ramona, CA"
+}
