@@ -4,7 +4,7 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
 
-const OFFICE_EMAILS = ['brighton@scwellservice.com', 'travis@scwellservice.com'];
+const OFFICE_EMAILS = ['travis@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
 
 interface VapiMessage {
@@ -320,7 +320,7 @@ export async function POST(request: NextRequest) {
       const { data: brightonUser } = await supabase
         .from('users')
         .select('id')
-        .eq('email', 'brighton@scwellservice.com')
+        .eq('email', 'travis@scwellservice.com')
         .single();
 
       const { error: taskError } = await supabase.from('tasks').insert({
