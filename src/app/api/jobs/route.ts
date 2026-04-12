@@ -165,7 +165,7 @@ export async function POST(request: NextRequest) {
       .from('jobs')
       .insert({
         property_id,
-        assigned_to: assigned_to || crew_lead_id || null, // Fallback to crew_lead for legacy field
+        assigned_to: assigned_to || crew_lead_id || null,
         job_type,
         status: 'scheduled',
         scheduled_date: scheduled_date || null,
