@@ -623,7 +623,12 @@ async function handleCheckSchedule(phone: string) {
     };
   }
   
-  // Get their scheduled visits
+  // Get today's date in ISO format (start of day)
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const todayISO = today.toISOString();
+  
+  // Query for upcoming visits directly (more efficient than job-by-job)
   const scheduleResponse = await fetch('https://api.getjobber.com/api/graphql', {
     method: 'POST',
     headers: {
@@ -633,14 +638,27 @@ async function handleCheckSchedule(phone: string) {
     },
     body: JSON.stringify({
       query: `
-        query GetClientJobs($clientId: EncodedId!) {
+        query GetUpcomingVisits($clientId: EncodedId!, $afterDate: DateTime!) {
           client(id: $clientId) {
-            jobs(first: 5) {
+            name
+            jobs(first: 10) {
               nodes {
                 title
-                visits(first: 3) {
+                property {
+                  address {
+                    street1
+                    city
+                  }
+                }
+                visits(first: 5) {
                   nodes {
+                    id
                     startAt
+                    endAt
+                    anytime
+                    assignedUsers {
+                      name
+                    }
                   }
                 }
               }
@@ -648,34 +666,42 @@ async function handleCheckSchedule(phone: string) {
           }
         }
       `,
-      variables: { clientId }
+      variables: { 
+        clientId,
+        afterDate: todayISO
+      }
     })
   });
   
   const scheduleData = await scheduleResponse.json();
   const jobs = scheduleData?.data?.client?.jobs?.nodes || [];
   
-  // Collect upcoming visits
+  // Collect upcoming visits with all details
   const visits: any[] = [];
   for (const job of jobs) {
     for (const visit of job.visits?.nodes || []) {
       if (visit.startAt) {
-        visits.push({
-          date: visit.startAt,
-          service: job.title
-        });
+        const visitDate = new Date(visit.startAt);
+        // Only include future visits
+        if (visitDate >= today) {
+          visits.push({
+            date: visit.startAt,
+            endTime: visit.endAt,
+            anytime: visit.anytime,
+            service: job.title,
+            address: job.property?.address ? 
+              `${job.property.address.street1}, ${job.property.address.city}` : null,
+            technicians: visit.assignedUsers?.map((u: any) => u.name).filter(Boolean) || []
+          });
+        }
       }
     }
   }
   
-  // Sort by date
+  // Sort by date (earliest first)
   visits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   
-  // Filter to future only
-  const now = new Date();
-  const upcoming = visits.filter(v => new Date(v.date) > now);
-  
-  if (upcoming.length === 0) {
+  if (visits.length === 0) {
     return {
       result: {
         found: true,
@@ -686,15 +712,52 @@ async function handleCheckSchedule(phone: string) {
     };
   }
   
-  // Format the first appointment
-  const first = upcoming[0];
-  const date = new Date(first.date);
-  const dateStr = date.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: 'America/Los_Angeles' });
-  const timeStr = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Los_Angeles' });
+  // Format the next appointment with details
+  const next = visits[0];
+  const date = new Date(next.date);
+  const dateStr = date.toLocaleDateString('en-US', { 
+    weekday: 'long', 
+    month: 'long', 
+    day: 'numeric',
+    timeZone: 'America/Los_Angeles' 
+  });
   
-  let message = `Yes! I see you're scheduled for ${dateStr} at ${timeStr} for ${first.service}.`;
-  if (upcoming.length > 1) {
-    message += ` You also have ${upcoming.length - 1} more appointment${upcoming.length > 2 ? 's' : ''} coming up.`;
+  let timeStr = '';
+  if (next.anytime) {
+    timeStr = 'anytime during the day';
+  } else {
+    const startTime = date.toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      timeZone: 'America/Los_Angeles' 
+    });
+    
+    if (next.endTime) {
+      const endDate = new Date(next.endTime);
+      const endTimeStr = endDate.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        timeZone: 'America/Los_Angeles' 
+      });
+      timeStr = `between ${startTime} and ${endTimeStr}`;
+    } else {
+      timeStr = `starting at ${startTime}`;
+    }
+  }
+  
+  let message = `Yes! I see you're scheduled for ${next.service} on ${dateStr}, ${timeStr}.`;
+  
+  if (next.address) {
+    message += ` The appointment is for ${next.address}.`;
+  }
+  
+  if (next.technicians.length > 0) {
+    const techList = next.technicians.join(' and ');
+    message += ` ${techList} will be handling your service.`;
+  }
+  
+  if (visits.length > 1) {
+    message += ` You also have ${visits.length - 1} more appointment${visits.length > 2 ? 's' : ''} coming up.`;
   }
   
   return {
@@ -702,7 +765,14 @@ async function handleCheckSchedule(phone: string) {
       found: true,
       customerName: clientName,
       hasAppointments: true,
-      appointments: upcoming.slice(0, 3),
+      nextAppointment: {
+        date: dateStr,
+        time: timeStr,
+        service: next.service,
+        address: next.address,
+        technicians: next.technicians
+      },
+      totalUpcoming: visits.length,
       message
     }
   };
