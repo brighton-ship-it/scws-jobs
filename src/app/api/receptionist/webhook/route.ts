@@ -4,7 +4,7 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
 
-const OFFICE_EMAILS = ['bschroeder@scwellservice.com', 'brighton@scwellservice.com', 'travis@scwellservice.com', 'shanicey@scwellservice.com'];
+const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
 
 interface VapiMessage {
