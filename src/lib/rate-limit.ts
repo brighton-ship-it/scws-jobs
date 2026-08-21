@@ -32,6 +32,7 @@ export const rateLimitConfigs: Record<string, RateLimitConfig> = {
   '/api/leads': { windowMs: 15 * 60 * 1000, max: 10 },
   '/api/chat': { windowMs: 60 * 1000, max: 20 },
   '/api/pay/lookup': { windowMs: 60 * 1000, max: 10 },
+  '/api/gbp-ratings': { windowMs: 60 * 1000, max: 60 },
   
   // Payment endpoints - moderate limits
   '/api/payments': { windowMs: 60 * 1000, max: 20 },
