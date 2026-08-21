@@ -759,7 +759,7 @@ export interface BookingRequest {
   status: BookingStatus;
   customer_id: string | null;  // Linked customer if matched/created
   job_id: string | null;  // Created job if scheduled
-  source: 'website' | 'embed' | 'manual';
+  source: 'website' | 'embed' | 'manual' | 'phone' | 'google_ads' | 'cost-calculator';
   ip_address: string | null;
   created_at: string;
   updated_at: string;
