@@ -26,6 +26,12 @@ export const rateLimitConfigs: Record<string, RateLimitConfig> = {
   // Auth endpoints - stricter limits
   '/api/auth': { windowMs: 60 * 1000, max: 10 },
   '/api/portal': { windowMs: 60 * 1000, max: 30 },
+
+  // Public marketing-site intake — tighter than the default 100/min
+  '/api/booking': { windowMs: 15 * 60 * 1000, max: 15 },
+  '/api/leads': { windowMs: 15 * 60 * 1000, max: 10 },
+  '/api/chat': { windowMs: 60 * 1000, max: 20 },
+  '/api/pay/lookup': { windowMs: 60 * 1000, max: 10 },
   
   // Payment endpoints - moderate limits
   '/api/payments': { windowMs: 60 * 1000, max: 20 },

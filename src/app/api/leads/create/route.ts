@@ -5,6 +5,16 @@ import type { LeadSource } from '@/types/database';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Accept',
+};
+
+export async function OPTIONS() {
+  return NextResponse.json({}, { headers: corsHeaders });
+}
+
 /**
  * Detect lead source from UTM parameters
  */
@@ -59,6 +69,14 @@ export async function POST(request: NextRequest) {
     const supabase = createServiceClient();
     const body = await request.json();
 
+    // Honeypot — bots that fill a hidden field get a fake success
+    if (body.website_url || body.honeypot) {
+      return NextResponse.json(
+        { success: true, message: 'Request received' },
+        { status: 200, headers: corsHeaders }
+      );
+    }
+
     const {
       customer_name,
       phone,
@@ -87,7 +105,7 @@ export async function POST(request: NextRequest) {
     if (!customer_name || !phone) {
       return NextResponse.json(
         { error: 'Missing required fields: customer_name, phone' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -96,7 +114,7 @@ export async function POST(request: NextRequest) {
     if (cleanPhone.length < 10) {
       return NextResponse.json(
         { error: 'Invalid phone number' },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -180,7 +198,7 @@ export async function POST(request: NextRequest) {
         console.error('Error creating customer:', customerError);
         return NextResponse.json(
           { error: 'Failed to create lead', details: customerError.message },
-          { status: 500 }
+          { status: 500, headers: corsHeaders }
         );
       }
 
@@ -272,12 +290,12 @@ View in Jobs App: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel
       customer_id: customerId,
       is_new_customer: isNewCustomer,
       lead_source: detected_lead_source,
-    });
+    }, { headers: corsHeaders });
   } catch (error) {
     console.error('Lead create API error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }
