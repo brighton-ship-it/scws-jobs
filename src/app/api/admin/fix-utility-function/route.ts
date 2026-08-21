@@ -102,9 +102,9 @@ function createServiceClient() {
 export async function POST(request: NextRequest) {
   // Check for admin secret
   const authHeader = request.headers.get('authorization');
-  const expectedSecret = process.env.ADMIN_SECRET || 'scws-admin-fix-2026';
+  const expectedSecret = process.env.ADMIN_SECRET;
   
-  if (authHeader !== `Bearer ${expectedSecret}`) {
+  if (!expectedSecret || authHeader !== `Bearer ${expectedSecret}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   

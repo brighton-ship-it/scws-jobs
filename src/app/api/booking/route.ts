@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyBooking } from '@/lib/notifications';
 import { notifyNewBooking } from '@/lib/messaging/discord';
+import { requireUser } from '@/lib/require-auth';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -229,9 +230,12 @@ View in Jobs App: ${process.env.NEXT_PUBLIC_APP_URL || 'https://jobs.scwellservi
 }
 
 /**
- * GET /api/booking - List booking requests (for office staff)
+ * GET /api/booking - List booking requests (office staff only)
  */
 export async function GET(request: NextRequest) {
+  const auth = await requireUser();
+  if (auth.response) return auth.response;
+
   try {
     const supabase = createServiceClient();
     const searchParams = request.nextUrl.searchParams;

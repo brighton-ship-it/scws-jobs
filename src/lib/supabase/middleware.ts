@@ -1,5 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { isPublicApiRoute } from '@/lib/public-api';
 
 // Check if we're in demo mode (no Supabase credentials)
 const isDemoMode = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
@@ -67,14 +68,24 @@ export async function updateSession(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
 
   // Protected routes - redirect to login if not authenticated
-  const isAuthPage = request.nextUrl.pathname.startsWith('/login');
-  const isPublicRoute = 
-    request.nextUrl.pathname.startsWith('/api') ||
-    request.nextUrl.pathname.startsWith('/tech') ||  // Tech PWA - handles own auth
-    request.nextUrl.pathname.startsWith('/portal') ||
-    request.nextUrl.pathname.startsWith('/book') ||
-    request.nextUrl.pathname.startsWith('/pay');
-  const isProtectedRoute = !isAuthPage && !isPublicRoute;
+  const pathname = request.nextUrl.pathname;
+  const isAuthPage = pathname.startsWith('/login');
+  const isApi = pathname.startsWith('/api');
+  const isPublicPage =
+    pathname.startsWith('/tech') ||  // Tech PWA - handles own auth
+    pathname.startsWith('/portal') ||
+    pathname.startsWith('/book') ||
+    pathname.startsWith('/pay') ||
+    pathname.startsWith('/unsubscribe');
+
+  if (isApi) {
+    if (!isPublicApiRoute(request.method, pathname) && !user) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+    return response;
+  }
+
+  const isProtectedRoute = !isAuthPage && !isPublicPage;
 
   if (isProtectedRoute && !user) {
     return NextResponse.redirect(new URL('/login', request.url));

@@ -31,12 +31,9 @@ function calculateNextRun(currentDate: Date, frequency: string): Date {
  * Process recurring schedules and create jobs that are due
  */
 export async function POST(request: NextRequest) {
-  // Verify cron secret in production
-  if (CRON_SECRET) {
-    const authHeader = request.headers.get('authorization');
-    if (authHeader !== `Bearer ${CRON_SECRET}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
+  const authHeader = request.headers.get('authorization');
+  if (!CRON_SECRET || authHeader !== `Bearer ${CRON_SECRET}`) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const startTime = Date.now();

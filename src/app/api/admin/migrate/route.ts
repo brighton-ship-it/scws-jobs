@@ -4,9 +4,9 @@ import { pool } from '@/lib/db'
 // POST /api/admin/migrate - Run database migrations
 export async function POST(request: NextRequest) {
   const authHeader = request.headers.get('authorization')
-  const expectedToken = process.env.CRON_SECRET || 'migrate-secret-2024'
+  const expectedToken = process.env.CRON_SECRET
   
-  if (authHeader !== `Bearer ${expectedToken}`) {
+  if (!expectedToken || authHeader !== `Bearer ${expectedToken}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
