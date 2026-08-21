@@ -17,6 +17,7 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   { method: 'POST', path: '/api/booking', match: 'exact' },
   { method: 'POST', path: '/api/leads/create', match: 'exact' },
   { method: '*', path: '/api/chat', match: 'exact' },
+  { method: 'GET', path: '/api/gbp-ratings', match: 'exact' },
 
   // Customer portal (token in path) and public pay lookup
   { method: '*', path: '/api/portal/', match: 'prefix' },
