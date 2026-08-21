@@ -4,6 +4,7 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyBooking } from '@/lib/notifications';
 import { notifyNewBooking } from '@/lib/messaging/discord';
 import { requireUser } from '@/lib/require-auth';
+import { appendSourceToNotes, normalizeBookingSource } from '@/lib/booking-source';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -71,8 +72,15 @@ export async function POST(request: NextRequest) {
       preferred_date,
       preferred_time,
       notes,
-      source = 'website',
+      source: rawSource = 'website',
     } = body;
+
+    // Known sources insert as-is. Unknown UTMs / landing pages become `other`
+    // so a new channel never 500s and silently drops the lead.
+    const { source, original: originalSource } = normalizeBookingSource(rawSource);
+    if (originalSource) {
+      console.warn('[Booking] Unknown source remapped to other:', originalSource);
+    }
 
     // Validate required fields
     if (!service_type || !customer_name || !phone || !address || !city) {
@@ -134,7 +142,9 @@ export async function POST(request: NextRequest) {
         city: city.trim(),
         preferred_date: preferred_date || null,
         preferred_time: preferred_time || null,
-        notes: notes?.trim() || null,
+        notes: originalSource
+          ? appendSourceToNotes(notes, originalSource)
+          : notes?.trim() || null,
         status: 'pending',
         customer_id,
         source,
