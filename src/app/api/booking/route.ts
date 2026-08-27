@@ -5,6 +5,7 @@ import { notifyBooking } from '@/lib/notifications';
 import { notifyNewBooking } from '@/lib/messaging/discord';
 import { requireUser } from '@/lib/require-auth';
 import { appendSourceToNotes, normalizeBookingSource } from '@/lib/booking-source';
+import { extractAdsClickIds } from '@/lib/ads/click-ids';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -102,6 +103,7 @@ export async function POST(request: NextRequest) {
     // Get IP address for tracking
     const forwardedFor = request.headers.get('x-forwarded-for');
     const ip_address = forwardedFor ? forwardedFor.split(',')[0].trim() : null;
+    const clickIds = extractAdsClickIds(body);
 
     // Check for existing customer by phone
     let customer_id: string | null = null;
@@ -149,6 +151,11 @@ export async function POST(request: NextRequest) {
         customer_id,
         source,
         ip_address,
+        gclid: clickIds.gclid,
+        gbraid: clickIds.gbraid,
+        wbraid: clickIds.wbraid,
+        ga_client_id: clickIds.ga_client_id,
+        ga_session_id: clickIds.ga_session_id,
       })
       .select()
       .single();

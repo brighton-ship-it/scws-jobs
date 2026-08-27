@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
+import { extractAdsClickIds } from '@/lib/ads/click-ids';
 import type { LeadSource } from '@/types/database';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
@@ -62,6 +63,7 @@ function detectLeadSource(
  * - customer_name, phone, email, address, city (required)
  * - service_type, notes, preferred_date, preferred_time (optional)
  * - utm_source, utm_medium, utm_campaign, utm_term, utm_content (optional)
+ * - gclid, gbraid, wbraid, ga_client_id, ga_session_id (optional; stored when present)
  * - referrer_url (optional)
  */
 export async function POST(request: NextRequest) {
@@ -121,6 +123,7 @@ export async function POST(request: NextRequest) {
     // Get IP address for tracking
     const forwardedFor = request.headers.get('x-forwarded-for');
     const ip_address = forwardedFor ? forwardedFor.split(',')[0].trim() : null;
+    const clickIds = extractAdsClickIds(body);
 
     // Auto-detect lead source from UTM params
     const detected_lead_source = manual_lead_source || detectLeadSource(utm_source, utm_medium, referrer_url);
@@ -151,9 +154,19 @@ export async function POST(request: NextRequest) {
       // Get current customer data to check what's already set
       const { data: currentData } = await supabase
         .from('customers')
-        .select('lead_source, utm_source, utm_medium, utm_campaign')
+        .select('lead_source, utm_source, utm_medium, utm_campaign, gclid, gbraid, wbraid, ga_client_id, ga_session_id')
         .eq('id', existingId)
-        .single() as { data: { lead_source?: string; utm_source?: string; utm_medium?: string; utm_campaign?: string } | null };
+        .single() as { data: {
+          lead_source?: string;
+          utm_source?: string;
+          utm_medium?: string;
+          utm_campaign?: string;
+          gclid?: string | null;
+          gbraid?: string | null;
+          wbraid?: string | null;
+          ga_client_id?: string | null;
+          ga_session_id?: string | null;
+        } | null };
       
       // Update existing customer with lead tracking if not already set
       const updateFields: Record<string, string | null> = {};
@@ -161,6 +174,11 @@ export async function POST(request: NextRequest) {
       if (!currentData?.utm_source && utm_source) updateFields.utm_source = utm_source;
       if (!currentData?.utm_medium && utm_medium) updateFields.utm_medium = utm_medium;
       if (!currentData?.utm_campaign && utm_campaign) updateFields.utm_campaign = utm_campaign;
+      if (!currentData?.gclid && clickIds.gclid) updateFields.gclid = clickIds.gclid;
+      if (!currentData?.gbraid && clickIds.gbraid) updateFields.gbraid = clickIds.gbraid;
+      if (!currentData?.wbraid && clickIds.wbraid) updateFields.wbraid = clickIds.wbraid;
+      if (!currentData?.ga_client_id && clickIds.ga_client_id) updateFields.ga_client_id = clickIds.ga_client_id;
+      if (!currentData?.ga_session_id && clickIds.ga_session_id) updateFields.ga_session_id = clickIds.ga_session_id;
       
       if (Object.keys(updateFields).length > 0) {
         const { error: updateError } = await (supabase
@@ -190,6 +208,11 @@ export async function POST(request: NextRequest) {
           utm_content: utm_content?.trim() || null,
           referrer_url: referrer_url?.trim() || null,
           lead_stage: 'lead',
+          gclid: clickIds.gclid,
+          gbraid: clickIds.gbraid,
+          wbraid: clickIds.wbraid,
+          ga_client_id: clickIds.ga_client_id,
+          ga_session_id: clickIds.ga_session_id,
         } as any)
         .select()
         .single();
@@ -241,6 +264,11 @@ export async function POST(request: NextRequest) {
           customer_id: customerId,
           source: 'website',
           ip_address,
+          gclid: clickIds.gclid,
+          gbraid: clickIds.gbraid,
+          wbraid: clickIds.wbraid,
+          ga_client_id: clickIds.ga_client_id,
+          ga_session_id: clickIds.ga_session_id,
         } as any);
 
       if (bookingError) {

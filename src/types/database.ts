@@ -42,6 +42,11 @@ export interface Customer {
   utm_term?: string | null;
   utm_content?: string | null;
   referrer_url?: string | null;
+  gclid?: string | null;
+  gbraid?: string | null;
+  wbraid?: string | null;
+  ga_client_id?: string | null;
+  ga_session_id?: string | null;
   lead_stage?: LeadStage | null;
   lead_stage_updated_at?: string | null;
   quote_sent_at?: string | null;
@@ -761,6 +766,11 @@ export interface BookingRequest {
   job_id: string | null;  // Created job if scheduled
   source: 'website' | 'embed' | 'manual' | 'phone' | 'google_ads' | 'cost-calculator' | 'other';
   ip_address: string | null;
+  gclid?: string | null;
+  gbraid?: string | null;
+  wbraid?: string | null;
+  ga_client_id?: string | null;
+  ga_session_id?: string | null;
   created_at: string;
   updated_at: string;
 }

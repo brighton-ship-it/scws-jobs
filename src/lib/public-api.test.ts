@@ -18,4 +18,9 @@ describe('isPublicApiRoute', () => {
     assert.equal(isPublicApiRoute('GET', '/api/jobs'), false);
     assert.equal(isPublicApiRoute('GET', '/api/booking'), false);
   });
+
+  it('allows the Jobber book_job cron (self-authenticates with CRON_SECRET)', () => {
+    assert.equal(isPublicApiRoute('GET', '/api/cron/sync-jobber-book-jobs'), true);
+    assert.equal(isPublicApiRoute('POST', '/api/cron/sync-jobber-book-jobs'), true);
+  });
 });
