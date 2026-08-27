@@ -3,6 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
+import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/receptionist/pay-link';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -463,7 +464,11 @@ async function handleFunctionCall(body: any) {
   const params = functionCall?.parameters || {};
   const phone = body.message?.call?.customer?.number || params.phone || '';
   
-  console.log(`[Receptionist] Function call: ${name}`, JSON.stringify(params));
+  const logParams = { ...params };
+  if (logParams.paymentUrl) {
+    logParams.paymentUrl = paymentHostForLog(String(logParams.paymentUrl));
+  }
+  console.log(`[Receptionist] Function call: ${name}`, JSON.stringify(logParams));
   
   try {
     switch (name) {
@@ -494,6 +499,12 @@ async function handleFunctionCall(body: any) {
         return NextResponse.json({
           result: { success: true, message: "Request noted. I'll make sure this is taken care of." }
         });
+
+      case 'sendPayLink':
+        return NextResponse.json(await handleSendPayLink(params));
+
+      case 'sendPayEmail':
+        return NextResponse.json(await handleSendPayEmail(params));
       
       default:
         console.warn(`Unknown function: ${name}`);
