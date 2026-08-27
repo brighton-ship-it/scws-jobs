@@ -504,7 +504,10 @@ async function handleFunctionCall(body: any) {
         return NextResponse.json(await handleSendPayLink(params));
 
       case 'sendPayEmail':
-        return NextResponse.json(await handleSendPayEmail(params));
+        return NextResponse.json(await handleSendPayEmail(params, {
+          sendEmailFn: sendEmail,
+          textToHtmlFn: textToHtml,
+        }));
       
       default:
         console.warn(`Unknown function: ${name}`);

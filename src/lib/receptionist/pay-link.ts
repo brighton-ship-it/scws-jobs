@@ -1,5 +1,3 @@
-import { sendEmail, textToHtml } from '../messaging/email';
-
 export const SMS_SEND_URL = 'https://scws-receptionist.vercel.app/sms/send';
 const VOICE_PHONE = '(760) 440-8520';
 const TEXT_PHONE = '760-219-5877';
@@ -12,9 +10,17 @@ export type SendPayParams = {
   customerName?: unknown;
 };
 
+export type SendEmailFn = (opts: {
+  to: string;
+  subject: string;
+  html?: string;
+  text?: string;
+}) => Promise<{ success: boolean; messageId?: string; error?: string }>;
+
 export type PayLinkDeps = {
   fetchFn?: typeof fetch;
-  sendEmailFn?: typeof sendEmail;
+  sendEmailFn?: SendEmailFn;
+  textToHtmlFn?: (text: string) => string;
 };
 
 function asTrimmedString(value: unknown): string {
@@ -126,7 +132,6 @@ export async function handleSendPayEmail(
   params: SendPayParams,
   deps: PayLinkDeps = {}
 ) {
-  const sendEmailFn = deps.sendEmailFn ?? sendEmail;
   const to = asTrimmedString(params.to);
   const invoiceNumber = asTrimmedString(params.invoiceNumber);
   const paymentUrl = asTrimmedString(params.paymentUrl);
@@ -145,12 +150,25 @@ export async function handleSendPayEmail(
     };
   }
 
+  if (!deps.sendEmailFn) {
+    console.log(`[Receptionist] sendPayEmail fail invoice=${invoiceNumber} host=${host} error=mailer-missing`);
+    return {
+      result: {
+        success: false,
+        channel: 'email' as const,
+        to,
+        invoiceNumber,
+        error: 'Email sender not configured',
+      },
+    };
+  }
+
   const text = buildPayEmailBody(invoiceNumber, params.amount, paymentUrl, params.customerName);
-  const emailResult = await sendEmailFn({
+  const emailResult = await deps.sendEmailFn({
     to,
     subject: `Invoice ${invoiceNumber} from Southern California Well Service`,
     text,
-    html: textToHtml(text),
+    html: (deps.textToHtmlFn ?? ((body: string) => body))(text),
   });
 
   if (emailResult.success) {
