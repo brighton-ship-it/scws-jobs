@@ -172,8 +172,12 @@ npm run lint     # Run ESLint
 
 1. Push to GitHub
 2. Import to Vercel
-3. Add environment variables
+3. Add environment variables (see `.env.example`)
 4. Deploy
+
+**Production cron (`/api/cron/*`, including Jobber `book_job`):** `CRON_SECRET` must exist in the Vercel **Production** environment (variable name only — never commit the value). Vercel Cron sends `Authorization: Bearer <CRON_SECRET>` and `x-vercel-cron`. Vercel Authentication (SSO) on this project must stay **Preview only** — there is no custom domain, so SSO on `*.vercel.app` 401s cron at the edge.
+
+**Click-id / `book_job` SQL:** if `booking_requests` is missing `ga_client_id` (PGRST204), a human must run `supabase/migrations/20260827_book_job_click_ids_and_conversions.sql` in the Supabase SQL Editor. Do not apply it from this repo.
 
 ### Other Platforms
 

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isPublicApiRoute } from './public-api.ts';
+import { isCronApiPath, isPublicApiRoute } from './public-api.ts';
 
 describe('isPublicApiRoute', () => {
   it('allows GET /api/gbp-ratings for the marketing-site widget', () => {
@@ -22,5 +22,8 @@ describe('isPublicApiRoute', () => {
   it('allows the Jobber book_job cron (self-authenticates with CRON_SECRET)', () => {
     assert.equal(isPublicApiRoute('GET', '/api/cron/sync-jobber-book-jobs'), true);
     assert.equal(isPublicApiRoute('POST', '/api/cron/sync-jobber-book-jobs'), true);
+    assert.equal(isCronApiPath('/api/cron/sync-jobber-book-jobs'), true);
+    assert.equal(isCronApiPath('/api/cron/process-automations'), true);
+    assert.equal(isCronApiPath('/api/booking'), false);
   });
 });

@@ -1,9 +1,26 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { checkRateLimit, rateLimitedResponse, getRateLimitHeaders } from '@/lib/rate-limit';
+import { isCronApiPath } from '@/lib/public-api';
 
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
+
+  // Vercel Cron is cookie-less. Session auth here 401s it at edge-middleware
+  // and can drop Authorization before the route sees Bearer CRON_SECRET.
+  // Rate-limit only; the handler still requires CRON_SECRET.
+  if (isCronApiPath(path)) {
+    const rateLimitResult = checkRateLimit(request);
+    if (!rateLimitResult.success) {
+      return rateLimitedResponse(rateLimitResult);
+    }
+    const response = NextResponse.next();
+    const headers = getRateLimitHeaders(rateLimitResult);
+    for (const [key, value] of Object.entries(headers)) {
+      response.headers.set(key, value);
+    }
+    return response;
+  }
   
   // Apply rate limiting to API routes
   if (path.startsWith('/api/')) {

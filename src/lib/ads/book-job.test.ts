@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractAdsClickIds } from './click-ids.ts';
+import {
+  extractAdsClickIds,
+  isMissingClickIdColumnError,
+  omitClickIdColumns,
+} from './click-ids.ts';
 import {
   BOOK_JOB_EVENT_NAME,
   FORBIDDEN_ADS_LABELS,
@@ -60,6 +64,40 @@ describe('extractAdsClickIds', () => {
       ga_client_id: null,
       ga_session_id: null,
     });
+  });
+});
+
+describe('missing click-id columns (PGRST204)', () => {
+  it('detects PostgREST missing-column errors', () => {
+    assert.equal(
+      isMissingClickIdColumnError({
+        code: 'PGRST204',
+        message: "Could not find the 'ga_client_id' column of 'booking_requests' in the schema cache",
+      }),
+      true
+    );
+    assert.equal(
+      isMissingClickIdColumnError({
+        message: "Could not find the 'gclid' column of 'booking_requests' in the schema cache",
+      }),
+      true
+    );
+    assert.equal(isMissingClickIdColumnError({ code: '23505', message: 'duplicate' }), false);
+  });
+
+  it('omits click-id fields so the lead can still insert', () => {
+    assert.deepEqual(
+      omitClickIdColumns({
+        customer_name: 'Pat',
+        phone: '7605550100',
+        gclid: 'abc',
+        gbraid: null,
+        wbraid: null,
+        ga_client_id: '123.456',
+        ga_session_id: '789',
+      }),
+      { customer_name: 'Pat', phone: '7605550100' }
+    );
   });
 });
 

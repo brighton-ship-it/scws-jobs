@@ -1,5 +1,11 @@
 -- Fortune-500 CRM conversion: store website click IDs on leads,
 -- and remember which Jobber jobs already fired GA4 book_job.
+--
+-- HUMAN ACTION REQUIRED if this has not been applied in production:
+-- Open the Supabase SQL Editor for this project and paste/run this entire file.
+-- Do not apply it from the app repo (no service-role migrate-from-git).
+-- Until this runs, booking still saves the lead but drops click IDs
+-- (PGRST204: missing ga_client_id / gclid / gbraid / wbraid / ga_session_id).
 
 ALTER TABLE booking_requests
   ADD COLUMN IF NOT EXISTS gclid text,

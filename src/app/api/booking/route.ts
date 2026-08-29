@@ -5,7 +5,12 @@ import { notifyBooking } from '@/lib/notifications';
 import { notifyNewBooking } from '@/lib/messaging/discord';
 import { requireUser } from '@/lib/require-auth';
 import { appendSourceToNotes, normalizeBookingSource } from '@/lib/booking-source';
-import { extractAdsClickIds } from '@/lib/ads/click-ids';
+import {
+  extractAdsClickIds,
+  isMissingClickIdColumnError,
+  MISSING_CLICK_ID_COLUMNS_WARNING,
+  omitClickIdColumns,
+} from '@/lib/ads/click-ids';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -131,34 +136,48 @@ export async function POST(request: NextRequest) {
     }
 
     // Create the booking request
-    const { data: booking, error: bookingError } = await supabase
+    const bookingRow = {
+      service_type,
+      customer_name: customer_name.trim(),
+      first_name: first_name?.trim() || null,
+      last_name: last_name?.trim() || null,
+      phone: cleanPhone,
+      email: email?.toLowerCase()?.trim() || null,
+      address: address.trim(),
+      city: city.trim(),
+      preferred_date: preferred_date || null,
+      preferred_time: preferred_time || null,
+      notes: originalSource
+        ? appendSourceToNotes(notes, originalSource)
+        : notes?.trim() || null,
+      status: 'pending',
+      customer_id,
+      source,
+      ip_address,
+      gclid: clickIds.gclid,
+      gbraid: clickIds.gbraid,
+      wbraid: clickIds.wbraid,
+      ga_client_id: clickIds.ga_client_id,
+      ga_session_id: clickIds.ga_session_id,
+    };
+
+    let { data: booking, error: bookingError } = await supabase
       .from('booking_requests')
-      .insert({
-        service_type,
-        customer_name: customer_name.trim(),
-        first_name: first_name?.trim() || null,
-        last_name: last_name?.trim() || null,
-        phone: cleanPhone,
-        email: email?.toLowerCase()?.trim() || null,
-        address: address.trim(),
-        city: city.trim(),
-        preferred_date: preferred_date || null,
-        preferred_time: preferred_time || null,
-        notes: originalSource
-          ? appendSourceToNotes(notes, originalSource)
-          : notes?.trim() || null,
-        status: 'pending',
-        customer_id,
-        source,
-        ip_address,
-        gclid: clickIds.gclid,
-        gbraid: clickIds.gbraid,
-        wbraid: clickIds.wbraid,
-        ga_client_id: clickIds.ga_client_id,
-        ga_session_id: clickIds.ga_session_id,
-      })
+      .insert(bookingRow)
       .select()
       .single();
+
+    // Migration 20260827 may not be applied yet (PGRST204). Keep the lead.
+    if (bookingError && isMissingClickIdColumnError(bookingError)) {
+      console.warn(MISSING_CLICK_ID_COLUMNS_WARNING, bookingError.message);
+      const retry = await supabase
+        .from('booking_requests')
+        .insert(omitClickIdColumns(bookingRow))
+        .select()
+        .single();
+      booking = retry.data;
+      bookingError = retry.error;
+    }
 
     if (bookingError) {
       console.error('Error creating booking:', bookingError);
