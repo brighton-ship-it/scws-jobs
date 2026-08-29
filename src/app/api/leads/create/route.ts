@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
-import { extractAdsClickIds } from '@/lib/ads/click-ids';
+import {
+  extractAdsClickIds,
+  isMissingClickIdColumnError,
+  MISSING_CLICK_ID_COLUMNS_WARNING,
+  omitClickIdColumns,
+} from '@/lib/ads/click-ids';
 import type { LeadSource } from '@/types/database';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
@@ -192,30 +197,43 @@ export async function POST(request: NextRequest) {
       }
     } else {
       // Create new customer
-      const { data: newCustomer, error: customerError } = await supabase
+      const customerRow = {
+        name: customer_name.trim(),
+        email: email?.toLowerCase()?.trim() || null,
+        phone: cleanPhone,
+        billing_address: address ? `${address.trim()}, ${city?.trim() || ''} ${zip || ''}`.trim() : null,
+        lead_source: detected_lead_source,
+        lead_source_detail: finalLeadSourceDetail,
+        utm_source: utm_source?.trim() || null,
+        utm_medium: utm_medium?.trim() || null,
+        utm_campaign: utm_campaign?.trim() || null,
+        utm_term: utm_term?.trim() || null,
+        utm_content: utm_content?.trim() || null,
+        referrer_url: referrer_url?.trim() || null,
+        lead_stage: 'lead',
+        gclid: clickIds.gclid,
+        gbraid: clickIds.gbraid,
+        wbraid: clickIds.wbraid,
+        ga_client_id: clickIds.ga_client_id,
+        ga_session_id: clickIds.ga_session_id,
+      };
+
+      let { data: newCustomer, error: customerError } = await supabase
         .from('customers')
-        .insert({
-          name: customer_name.trim(),
-          email: email?.toLowerCase()?.trim() || null,
-          phone: cleanPhone,
-          billing_address: address ? `${address.trim()}, ${city?.trim() || ''} ${zip || ''}`.trim() : null,
-          lead_source: detected_lead_source,
-          lead_source_detail: finalLeadSourceDetail,
-          utm_source: utm_source?.trim() || null,
-          utm_medium: utm_medium?.trim() || null,
-          utm_campaign: utm_campaign?.trim() || null,
-          utm_term: utm_term?.trim() || null,
-          utm_content: utm_content?.trim() || null,
-          referrer_url: referrer_url?.trim() || null,
-          lead_stage: 'lead',
-          gclid: clickIds.gclid,
-          gbraid: clickIds.gbraid,
-          wbraid: clickIds.wbraid,
-          ga_client_id: clickIds.ga_client_id,
-          ga_session_id: clickIds.ga_session_id,
-        } as any)
+        .insert(customerRow as any)
         .select()
         .single();
+
+      if (customerError && isMissingClickIdColumnError(customerError)) {
+        console.warn(MISSING_CLICK_ID_COLUMNS_WARNING.replace('booking_requests', 'customers'), customerError.message);
+        const retry = await supabase
+          .from('customers')
+          .insert(omitClickIdColumns(customerRow) as any)
+          .select()
+          .single();
+        newCustomer = retry.data;
+        customerError = retry.error;
+      }
 
       if (customerError) {
         console.error('Error creating customer:', customerError);

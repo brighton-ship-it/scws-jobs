@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { isPublicApiRoute } from '@/lib/public-api';
+import { isCronApiPath, isPublicApiRoute } from '@/lib/public-api';
 
 // Check if we're in demo mode (no Supabase credentials)
 const isDemoMode = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
@@ -79,10 +79,11 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith('/unsubscribe');
 
   if (isApi) {
-    if (!isPublicApiRoute(request.method, pathname) && !user) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    // Vercel Cron must not 401 here. /api/cron/* checks CRON_SECRET itself.
+    if (isCronApiPath(pathname) || isPublicApiRoute(request.method, pathname) || user) {
+      return response;
     }
-    return response;
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const isProtectedRoute = !isAuthPage && !isPublicPage;

@@ -15,16 +15,13 @@ import {
 } from '@/lib/ads/book-job';
 import { sendBookJobEvent } from '@/lib/ads/ga4-measurement-protocol';
 import { fetchRecentlyUpdatedJobs } from '@/lib/jobber/recent-jobs';
+import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 
-const CRON_SECRET = process.env.CRON_SECRET;
+// GET/POST from Vercel Cron: x-vercel-cron + Authorization Bearer CRON_SECRET.
+// Middleware skips session auth for /api/cron/*; this handler still requires the secret.
 
 function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-}
-
-function isAuthorized(request: NextRequest): boolean {
-  const authHeader = request.headers.get('authorization');
-  return Boolean(CRON_SECRET && authHeader === `Bearer ${CRON_SECRET}`);
 }
 
 function mapLeadRow(
@@ -69,7 +66,11 @@ async function loadRecentWebsiteLeads(supabase: ReturnType<typeof createServiceC
 }
 
 export async function POST(request: NextRequest) {
-  if (!isAuthorized(request)) return unauthorized();
+  const cronAuth = authorizeCronRequest(request);
+  if (!cronAuth.ok) {
+    cronUnauthorizedLog(cronAuth.reason);
+    return unauthorized();
+  }
 
   const started = Date.now();
   const results = {

@@ -37,15 +37,25 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   { method: '*', path: '/api/quickbooks/callback', match: 'exact' },
   { method: '*', path: '/api/quickbooks/refresh', match: 'exact' },
 
-  // Scheduled jobs (must check CRON_SECRET / ADMIN_API_KEY themselves)
+  // Vercel Cron (x-vercel-cron + Authorization Bearer CRON_SECRET).
+  // Middleware must not 401 these; the route still requires CRON_SECRET.
   { method: '*', path: '/api/cron/', match: 'prefix' },
 
   // Browser push setup (public key only)
   { method: 'GET', path: '/api/push/vapid-key', match: 'exact' },
 ];
 
+/** Cookie-less Vercel Cron — never 401 in Next.js middleware. Route checks CRON_SECRET. */
+export function isCronApiPath(pathname: string): boolean {
+  return pathname === '/api/cron' || pathname.startsWith('/api/cron/');
+}
+
 export function isPublicApiRoute(method: string, pathname: string): boolean {
   if (method === 'OPTIONS') {
+    return true;
+  }
+
+  if (isCronApiPath(pathname)) {
     return true;
   }
 
