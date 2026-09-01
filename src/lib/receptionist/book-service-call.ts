@@ -104,6 +104,22 @@ const SEARCH_CLIENTS_QUERY = `
   }
 `;
 
+const SEARCH_CLIENTS_BARE_QUERY = `
+  query SearchClients($searchTerm: String!) {
+    clients(searchTerm: $searchTerm, first: 10) {
+      nodes {
+        id
+        name
+        firstName
+        lastName
+        companyName
+        phones { number }
+        emails { address }
+      }
+    }
+  }
+`;
+
 const CLIENT_CREATE = `
   mutation ClientCreate($input: ClientCreateInput!) {
     clientCreate(input: $input) {
@@ -427,8 +443,20 @@ async function findOrCreateClient(
   version: string
 ): Promise<{ client: JobberClientNode; created: boolean }> {
   const seen = new Map<string, JobberClientNode>();
+  let searchQuery = SEARCH_CLIENTS_QUERY;
   for (const term of searchTermsFor(input)) {
-    const data = await jobberGraphql(token, SEARCH_CLIENTS_QUERY, { searchTerm: term }, fetchFn, version);
+    let data: { data?: any };
+    try {
+      data = await jobberGraphql(token, searchQuery, { searchTerm: term }, fetchFn, version);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (searchQuery === SEARCH_CLIENTS_QUERY && /propert/i.test(message)) {
+        searchQuery = SEARCH_CLIENTS_BARE_QUERY;
+        data = await jobberGraphql(token, searchQuery, { searchTerm: term }, fetchFn, version);
+      } else {
+        throw error;
+      }
+    }
     for (const node of data?.data?.clients?.nodes || []) {
       if (node?.id) seen.set(node.id, node);
     }

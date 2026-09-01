@@ -72,6 +72,17 @@ const USERS_QUERY = `
   }
 `;
 
+const USERS_QUERY_BARE = `
+  query ShopUsers {
+    users(first: 50) {
+      nodes {
+        id
+        name { full first last }
+      }
+    }
+  }
+`;
+
 const OCCUPIED_VISITS_QUERY = `
   query OccupiedVisits($startAfter: ISO8601DateTime!, $startBefore: ISO8601DateTime!) {
     visits(first: 100, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
@@ -285,7 +296,17 @@ export async function lookupOpenSlots(
     DEFAULT_JOBBER_GRAPHQL_VERSION;
 
   try {
-    const usersData = await jobberGraphql(token, USERS_QUERY, {}, fetchFn, version);
+    let usersData: { data?: any };
+    try {
+      usersData = await jobberGraphql(token, USERS_QUERY, {}, fetchFn, version);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (/email/i.test(message)) {
+        usersData = await jobberGraphql(token, USERS_QUERY_BARE, {}, fetchFn, version);
+      } else {
+        throw error;
+      }
+    }
     const users = (usersData?.data?.users?.nodes || []) as JobberUser[];
     const resolved = resolveTechUserId(tech, users, deps.env ?? process.env);
     if (!resolved) {
