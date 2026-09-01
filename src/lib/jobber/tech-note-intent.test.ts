@@ -8,6 +8,7 @@ import {
   parseEquipment,
   parseTechNoteIntent,
   requireTechNoteIntent,
+  TechNoteDoNotQuoteError,
   UnclearTechNoteIntentError,
 } from './tech-note-intent.ts';
 
@@ -48,14 +49,78 @@ describe('parseTechNoteIntent', () => {
     assert.equal(noisy.unclear, true);
   });
 
-  it('uses named 2hp 230 1ph on a motor replace and does not invent HP', () => {
-    const parsed = requireTechNoteIntent({
+  it('does not treat a bare motor replace as set-only without pump-out + GPM + depth', () => {
+    const parsed = parseTechNoteIntent({
       techNotes: 'replace 2hp 230 volt single phase motor',
     });
-    assert.equal(parsed.kind, 'pump_replace');
+    assert.equal(parsed.unclear, true);
     assert.equal(parsed.equipment.hp, 2);
     assert.equal(parsed.equipment.volts, 230);
     assert.equal(parsed.equipment.phase, 1);
+  });
+
+  it('quotes set-only Goulds GS + CentriPro when the pump is already out with HP/GPM/depth', () => {
+    const parsed = requireTechNoteIntent({
+      techNotes: 'pump is already out of the well, set 2hp 10 gpm 300 ft',
+    });
+    assert.equal(parsed.kind, 'pump_replace');
+    assert.equal(parsed.equipment.pulledWell, true);
+    assert.equal(parsed.equipment.hp, 2);
+    assert.equal(parsed.equipment.gpm, 10);
+    assert.equal(parsed.equipment.depthFt, 300);
+  });
+
+  it('does not quote good-to-go / on-site parts — the $200 call is the ticket', () => {
+    assert.throws(
+      () => requireTechNoteIntent({ techNotes: 'replaced cap and 40/60, good to go' }),
+      (error: unknown) => {
+        assert.ok(error instanceof TechNoteDoNotQuoteError);
+        assert.equal(error.reason, 'service_call_ticket');
+        return true;
+      }
+    );
+    const parsed = parseTechNoteIntent({ techNotes: 'gauge replaced, pump saver installed on site' });
+    assert.equal(parsed.doNotQuote, 'service_call_ticket');
+    assert.notEqual(parsed.kind, 'pull_and_eval');
+  });
+
+  it('does not sell a tank for precharge-low-only with normal amps', () => {
+    assert.throws(
+      () =>
+        requireTechNoteIntent({
+          techNotes: '2hp 230 volt single phase 11.7 amps precharge low, tank not leaking',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof TechNoteDoNotQuoteError);
+        assert.equal(error.reason, 'precharge_only');
+        return true;
+      }
+    );
+  });
+
+  it('does not quote warranty / no charge notes', () => {
+    assert.throws(
+      () => requireTechNoteIntent({ techNotes: 'warranty, no charge' }),
+      (error: unknown) => {
+        assert.ok(error instanceof TechNoteDoNotQuoteError);
+        assert.equal(error.reason, 'warranty');
+        return true;
+      }
+    );
+  });
+
+  it('treats control box / pump saver with the pump still in as controls, not a pull', () => {
+    const parsed = requireTechNoteIntent({
+      techNotes: 'needs a new control box and pressure switch',
+    });
+    assert.equal(parsed.kind, 'controls');
+    assert.equal(parsed.equipment.pulledWell, false);
+  });
+
+  it('classifies short to ground as pull-and-eval', () => {
+    const ramona = parseTechNoteIntent({ techNotes: 'short to ground, needs pull' });
+    assert.equal(ramona.kind, 'pull_and_eval');
+    assert.equal(ramona.unclear, false);
   });
 
   it('returns a structured guess list when intent is unclear', () => {

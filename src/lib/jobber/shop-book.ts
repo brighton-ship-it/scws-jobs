@@ -6,8 +6,10 @@
 export const PULL_AND_EVAL_TITLE = 'Pull well pump and evaluate';
 export const REPLACE_TITLE = 'Pull well pump and replace';
 export const PRESSURE_TANK_TITLE = 'Replace pressure tank';
+export const CONTROLS_TITLE = 'Well controls';
 export const ELECTRICAL_TITLE = 'Electrical repair';
 export const AIR_ROTARY_TITLE = 'Air rotary new well';
+export const MUD_ROTARY_TITLE = 'Mud rotary new well';
 
 export const PROMAX_PM260_NAME = '86-gal Promax PM260';
 export const PROMAX_PM260_PRICE = 1370;
@@ -18,11 +20,29 @@ export const TANK_SWAP_LABOR_PRICE = 200;
 export const HOIST_NAME = 'Hoist';
 
 export const BT2_LABOR_NAME = 'BT2';
+/** Near-shop band (Ramona / Aguanga / Anza / Menifee / Valley Center / Winchester). */
 export const BT2_LABOR_PRICE = 600;
+/** Lakeside / El Cajon / Poway / Alpine / Rancho Santa Fe — $800 is the mode. */
+export const BT2_LABOR_PRICE_MODE = 800;
+export const BT2_LABOR_PRICE_FAR = 1000;
+export const BT2_LABOR_PRICE_HARD = 1200;
 export const BT2_LABOR_TAXABLE = false;
 
+export const SET_ONLY_HOIST_NEAR = 600;
+export const SET_ONLY_HOIST_MODE = 800;
+export const PULL_SET_HOIST_NEAR = 1000;
+export const PULL_SET_HOIST_MODE = 1200;
+export const PULL_SET_HOIST_FAR = 1400;
+
+export const GOULDS_GS_END_NAME = 'Goulds GS end';
+export const CENTRIPRO_MOTOR_NAME = 'CentriPro / Goulds CP motor';
+
+/** Street air rotary (~$45/ft). Braman quote 4243 sold $48. */
 export const AIR_ROTARY_FOOTAGE_NAME = '7-7/8" Air Rotary with 4.5" SDR17 PVC';
-export const AIR_ROTARY_FOOTAGE_PRICE = 48;
+export const AIR_ROTARY_FOOTAGE_PRICE = 45;
+
+export const MUD_ROTARY_FOOTAGE_NAME = 'Mud Rotary with 4.5" SDR17 PVC';
+export const MUD_ROTARY_FOOTAGE_PRICE = 70;
 
 export const SANITARY_SEAL_NAME = '8" Sanitary Seal';
 export const SANITARY_SEAL_UNIT_PRICE = 220;
@@ -56,13 +76,88 @@ export type QuoteLineDraft = {
   taxable: boolean;
 };
 
-export function buildPullAndEvalLines(): QuoteLineDraft[] {
+const BT2_NEAR_CITIES = new Set([
+  'ramona',
+  'aguanga',
+  'anza',
+  'menifee',
+  'valley center',
+  'winchester',
+]);
+
+const BT2_MODE_CITIES = new Set([
+  'lakeside',
+  'el cajon',
+  'poway',
+  'alpine',
+  'rancho santa fe',
+]);
+
+const BT2_FAR_CITIES = new Set([
+  'julian',
+  'pine valley',
+  'palomar',
+  'palomar mountain',
+  'warner springs',
+  'santa ysabel',
+  'ranchita',
+  'idyllwild',
+  'mountain center',
+]);
+
+const BT2_HARD_CITIES = new Set([
+  'boulevard',
+  'jacumba',
+  'campo',
+  'borrego',
+  'borrego springs',
+  'desert hot springs',
+  'yucca valley',
+]);
+
+function normalizeCity(city: string | null | undefined): string {
+  return (city || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/** BT2 qty-1 lump by city. $800 is the mode. Far/hard only when the city is in that band. */
+export function bt2PriceForCity(city?: string | null): number {
+  const key = normalizeCity(city);
+  if (BT2_NEAR_CITIES.has(key)) return BT2_LABOR_PRICE;
+  if (BT2_HARD_CITIES.has(key)) return BT2_LABOR_PRICE_HARD;
+  if (BT2_FAR_CITIES.has(key)) return BT2_LABOR_PRICE_FAR;
+  return BT2_LABOR_PRICE_MODE;
+}
+
+export function hoistPriceForCity(
+  city: string | null | undefined,
+  mode: 'set-only' | 'pull-set'
+): number {
+  const bt2 = bt2PriceForCity(city);
+  if (mode === 'set-only') {
+    return bt2 <= BT2_LABOR_PRICE ? SET_ONLY_HOIST_NEAR : SET_ONLY_HOIST_MODE;
+  }
+  if (bt2 >= BT2_LABOR_PRICE_HARD) return PULL_SET_HOIST_FAR;
+  if (bt2 >= BT2_LABOR_PRICE_FAR) return PULL_SET_HOIST_FAR;
+  if (bt2 <= BT2_LABOR_PRICE) return PULL_SET_HOIST_NEAR;
+  return PULL_SET_HOIST_MODE;
+}
+
+export function gouldsGsLabel(gpm?: number | null, hp?: number | null): string {
+  const bits = [
+    gpm != null ? `${gpm}GS` : 'GS',
+    hp != null ? `${hp}HP` : null,
+  ].filter(Boolean);
+  return `Goulds ${bits.join(' ')} end`;
+}
+
+/** SKU BT2 qty 1 lump (not hours). Price from the city band. */
+export function buildPullAndEvalLines(city?: string | null): QuoteLineDraft[] {
   return [
     {
       name: BT2_LABOR_NAME,
       description: PULL_AND_EVAL_TITLE,
       quantity: 1,
-      unitPrice: BT2_LABOR_PRICE,
+      unitPrice: bt2PriceForCity(city),
       taxable: BT2_LABOR_TAXABLE,
     },
   ];
@@ -82,16 +177,95 @@ export function buildReplaceMotorLine(
     name: `${brand}${specLabel} submersible motor`,
     description:
       brand === 'Franklin'
-        ? 'Franklin motor — Ramona shop standard. HP taken from notes when present; not invented.'
-        : 'CentriPro motor — Anza / Goulds shop standard. HP taken from notes when present; not invented.',
+        ? 'Franklin motor — only when notes name Franklin/FE. Sold book is CentriPro/Goulds CP (165 CP vs 14 FE).'
+        : 'CentriPro / Goulds CP motor — sold book default. HP taken from notes when present; not invented.',
     quantity: 1,
     unitPrice: 0,
     taxable: true,
   };
 }
 
-export function buildPressureTankLines(input?: { includeHoist?: boolean }): QuoteLineDraft[] {
-  const lines: QuoteLineDraft[] = [
+export function buildPumpReplaceLines(input: {
+  brand: 'Franklin' | 'CentriPro';
+  hp?: number | null;
+  volts?: number | null;
+  phase?: 1 | 3 | null;
+  gpm?: number | null;
+  depthFt?: number | null;
+  setOnly: boolean;
+  city?: string | null;
+}): QuoteLineDraft[] {
+  const hoistMode = input.setOnly ? 'set-only' : 'pull-set';
+  return [
+    {
+      name: gouldsGsLabel(input.gpm, input.hp),
+      description: 'Goulds *GS* end — sold book. GPM/HP taken from notes; not invented.',
+      quantity: 1,
+      unitPrice: 0,
+      taxable: true,
+    },
+    buildReplaceMotorLine(input.brand, {
+      hp: input.hp,
+      volts: input.volts,
+      phase: input.phase,
+    }),
+    {
+      name: HOIST_NAME,
+      description: input.setOnly
+        ? 'Set-only hoist — pull already paid ($600–$800 by city)'
+        : 'Pull + set hoist ($1000–$1400 by city)',
+      quantity: 1,
+      unitPrice: hoistPriceForCity(input.city, hoistMode),
+      taxable: false,
+    },
+  ];
+}
+
+export function buildControlsLines(notes?: string | null): QuoteLineDraft[] {
+  const text = notes || '';
+  const lines: QuoteLineDraft[] = [];
+  if (/\bcontrol\s+box\b/i.test(text)) {
+    lines.push({
+      name: 'Control box',
+      description: 'Control box with the pump still in the well — not a pull.',
+      quantity: 1,
+      unitPrice: 0,
+      taxable: true,
+    });
+  }
+  if (/\bpressure\s+switch\b|\b40\s*\/\s*60\b/i.test(text)) {
+    lines.push({
+      name: 'Pressure switch',
+      description: 'Pressure switch with the pump still in the well — not a pull.',
+      quantity: 1,
+      unitPrice: 0,
+      taxable: true,
+    });
+  }
+  if (/\bpump\s*saver\b/i.test(text)) {
+    lines.push({
+      name: 'Pump saver',
+      description: 'Pump saver with the pump still in the well — not a pull.',
+      quantity: 1,
+      unitPrice: 0,
+      taxable: true,
+    });
+  }
+  if (lines.length === 0) {
+    lines.push({
+      name: CONTROLS_TITLE,
+      description: 'Well controls with the pump still in the well — not a pull.',
+      quantity: 1,
+      unitPrice: 0,
+      taxable: true,
+    });
+  }
+  return lines;
+}
+
+/** Promax PM260 + plumbing $125 (not $250 book) + labor $200. Never a hoist. */
+export function buildPressureTankLines(_input?: { includeHoist?: boolean }): QuoteLineDraft[] {
+  return [
     {
       name: PROMAX_PM260_NAME,
       description: 'Shop-book Promax PM260 86-gallon pressure tank',
@@ -101,7 +275,7 @@ export function buildPressureTankLines(input?: { includeHoist?: boolean }): Quot
     },
     {
       name: PLUMBING_PACKAGE_NAME,
-      description: 'Tank plumbing package at street',
+      description: 'Tank plumbing package at street ($125, not the $250 book)',
       quantity: 1,
       unitPrice: PLUMBING_PACKAGE_PRICE,
       taxable: true,
@@ -114,26 +288,25 @@ export function buildPressureTankLines(input?: { includeHoist?: boolean }): Quot
       taxable: false,
     },
   ];
-  if (input?.includeHoist) {
-    lines.push({
-      name: HOIST_NAME,
-      description: 'Hoist — only when the well was already pulled',
-      quantity: 1,
-      unitPrice: 0,
-      taxable: false,
-    });
-  }
-  return lines;
 }
 
 export function buildAirRotaryLines(input: {
   footageFt: number;
   includeWaterDelivery: boolean;
   travelDays?: number;
+  method?: 'air' | 'mud';
 }): QuoteLineDraft[] {
   if (!Number.isFinite(input.footageFt) || input.footageFt <= 0) {
     throw new Error('Air rotary footage must be a positive number from DWR');
   }
+
+  const method = input.method ?? 'air';
+  const footageName = method === 'mud' ? MUD_ROTARY_FOOTAGE_NAME : AIR_ROTARY_FOOTAGE_NAME;
+  const footagePrice = method === 'mud' ? MUD_ROTARY_FOOTAGE_PRICE : AIR_ROTARY_FOOTAGE_PRICE;
+  const footageDesc =
+    method === 'mud'
+      ? 'Per-foot mud rotary drilling with 4.5" SDR17 PVC liner ($70/ft street)'
+      : 'Per-foot air rotary drilling with 4.5" SDR17 PVC liner (~$45/ft street)';
 
   const lines: QuoteLineDraft[] = [
     {
@@ -143,10 +316,10 @@ export function buildAirRotaryLines(input: {
       taxable: true,
     },
     {
-      name: AIR_ROTARY_FOOTAGE_NAME,
-      description: 'Per-foot air rotary drilling with 4.5" SDR17 PVC liner',
+      name: footageName,
+      description: footageDesc,
       quantity: input.footageFt,
-      unitPrice: AIR_ROTARY_FOOTAGE_PRICE,
+      unitPrice: footagePrice,
       taxable: true,
     },
     {
@@ -222,8 +395,15 @@ export function mentionsServiceCallCredit(text: string | null | undefined): bool
 }
 
 export function customerMessageForTechNote(
-  kind: 'pull_and_eval' | 'replace' | 'pressure_tank' | 'pump_replace' | 'electrical',
-  extras?: { motorBrand?: string; hp?: number | null; volts?: number | null; phase?: 1 | 3 | null }
+  kind: 'pull_and_eval' | 'replace' | 'pressure_tank' | 'pump_replace' | 'electrical' | 'controls',
+  extras?: {
+    motorBrand?: string;
+    hp?: number | null;
+    volts?: number | null;
+    phase?: 1 | 3 | null;
+    gpm?: number | null;
+    setOnly?: boolean;
+  }
 ): string {
   if (kind === 'pressure_tank') {
     return 'Proposal to replace the pressure tank with an 86-gallon Promax PM260, including the plumbing package and tank-swap labor.';
@@ -231,19 +411,18 @@ export function customerMessageForTechNote(
   if (kind === 'pump_replace' || kind === 'replace') {
     const spec = [
       extras?.hp != null ? `${extras.hp} HP` : null,
+      extras?.gpm != null ? `${extras.gpm} GPM Goulds GS` : 'Goulds GS',
       extras?.volts != null ? `${extras.volts}V` : null,
       extras?.phase === 1 ? 'single-phase' : extras?.phase === 3 ? 'three-phase' : null,
     ]
       .filter(Boolean)
       .join(' ');
-    const brand = extras?.motorBrand || '';
-    const named = [spec, brand].filter(Boolean).join(' ');
-    return named
-      ? `Proposal to replace the well pump / motor (${named}).`
-      : 'Proposal to replace the well pump / motor.';
+    const brand = extras?.motorBrand || 'CentriPro';
+    const set = extras?.setOnly ? 'set-only' : 'pull and set';
+    return `Proposal to ${set} a ${spec} end with a ${brand} motor.`;
   }
-  if (kind === 'electrical') {
-    return 'Proposal for electrical repair on the well system.';
+  if (kind === 'controls' || kind === 'electrical') {
+    return 'Proposal for well controls / switch work with the pump still in the well.';
   }
   return 'Proposal to pull the well pump and evaluate the pumping system. Labor is quoted as BT2.';
 }

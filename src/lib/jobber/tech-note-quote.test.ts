@@ -7,7 +7,11 @@ import {
   VILLAGRANDO_PINHOLE_NOTES,
   VILLAGRANDO_SITE_NAME,
 } from './fixtures/villagrando-pinhole.ts';
-import { createTechNoteQuote, UnclearTechNoteIntentError } from './tech-note-quote.ts';
+import {
+  createTechNoteQuote,
+  TechNoteDoNotQuoteError,
+  UnclearTechNoteIntentError,
+} from './tech-note-quote.ts';
 import {
   PLUMBING_PACKAGE_PRICE,
   PROMAX_PM260_PRICE,
@@ -164,17 +168,22 @@ describe('createTechNoteQuote', () => {
     assert.equal(result.quote.id, 'quote-existing');
   });
 
-  it('uses Franklin 2hp 230 1ph on a Ramona replace and CentriPro on Anza', async () => {
+  it('uses Goulds GS + CentriPro on a set-only replace; Anza stays CentriPro', async () => {
     const ramona = jobberFetch(ramonaJob);
     const ramonaResult = await createTechNoteQuote(
-      { jobNumber: 8801, techNotes: 'replace 2hp 230 volt single phase motor' },
+      {
+        jobNumber: 8801,
+        techNotes: 'pump already out of the well, set 2hp 10 gpm 300 ft 230 volt single phase',
+      },
       { fetchImpl: ramona.fetchImpl, token: 'test' }
     );
     assert.equal(ramonaResult.intent, 'pump_replace');
-    assert.equal(ramonaResult.motorBrand, 'Franklin');
+    assert.equal(ramonaResult.motorBrand, 'CentriPro');
     assert.equal(ramonaResult.equipment.hp, 2);
-    assert.ok(ramonaResult.lineItems.some((line) => /Franklin 2 HP 230V 1-phase/.test(line.name)));
-    assert.ok(!ramonaResult.lineItems.some((line) => line.name === 'BT2' && line.unitPrice === 600));
+    assert.ok(ramonaResult.lineItems.some((line) => /Goulds 10GS 2HP end/.test(line.name)));
+    assert.ok(ramonaResult.lineItems.some((line) => /CentriPro 2 HP 230V 1-phase/.test(line.name)));
+    assert.ok(!ramonaResult.lineItems.some((line) => /Franklin/.test(line.name)));
+    assert.ok(!ramonaResult.lineItems.some((line) => line.name === 'BT2'));
 
     const anza = jobberFetch({
       ...ramonaJob,
@@ -186,5 +195,58 @@ describe('createTechNoteQuote', () => {
     );
     assert.equal(anzaResult.shop, 'anza');
     assert.equal(anzaResult.motorBrand, 'CentriPro');
+  });
+
+  it('does not emit BT2 for good-to-go notes', async () => {
+    const { fetchImpl, bodies } = jobberFetch(ramonaJob);
+    await assert.rejects(
+      () =>
+        createTechNoteQuote(
+          { jobNumber: 8801, techNotes: 'replaced cap, 40/60, and gauge — good to go' },
+          { fetchImpl, token: 'test' }
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof TechNoteDoNotQuoteError);
+        assert.equal(error.reason, 'service_call_ticket');
+        return true;
+      }
+    );
+    assert.ok(!bodies.some((body) => body.includes('mutation') && body.includes('QuoteCreate')));
+    assert.ok(!bodies.some((body) => body.includes('"name":"BT2"')));
+  });
+
+  it('quotes Ramona short-to-ground as BT2 $600 and Lakeside / El Cajon as $800', async () => {
+    const ramona = jobberFetch(ramonaJob);
+    const ramonaResult = await createTechNoteQuote(
+      { jobNumber: 8801, techNotes: 'short to ground, needs pull and eval' },
+      { fetchImpl: ramona.fetchImpl, token: 'test' }
+    );
+    assert.equal(ramonaResult.intent, 'pull_and_eval');
+    assert.equal(ramonaResult.lineItems[0]?.name, 'BT2');
+    assert.equal(ramonaResult.lineItems[0]?.quantity, 1);
+    assert.equal(ramonaResult.lineItems[0]?.unitPrice, 600);
+
+    const lakeside = jobberFetch({
+      ...ramonaJob,
+      jobNumber: 4191,
+      property: { id: 'prop-lakeside', address: { city: 'Lakeside' } },
+    });
+    const lakesideResult = await createTechNoteQuote(
+      { jobNumber: 4191, techNotes: 'short to ground, pull and eval' },
+      { fetchImpl: lakeside.fetchImpl, token: 'test' }
+    );
+    assert.equal(lakesideResult.lineItems[0]?.name, 'BT2');
+    assert.equal(lakesideResult.lineItems[0]?.quantity, 1);
+    assert.equal(lakesideResult.lineItems[0]?.unitPrice, 800);
+
+    const elCajon = jobberFetch({
+      ...ramonaJob,
+      property: { id: 'prop-ec', address: { city: 'El Cajon' } },
+    });
+    const elCajonResult = await createTechNoteQuote(
+      { jobNumber: 8801, techNotes: 'high amps, needs pull' },
+      { fetchImpl: elCajon.fetchImpl, token: 'test' }
+    );
+    assert.equal(elCajonResult.lineItems[0]?.unitPrice, 800);
   });
 });

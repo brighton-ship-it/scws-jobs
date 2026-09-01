@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
-import { createTechNoteQuote, UnclearTechNoteIntentError } from '@/lib/jobber/tech-note-quote';
+import {
+  createTechNoteQuote,
+  TechNoteDoNotQuoteError,
+  UnclearTechNoteIntentError,
+} from '@/lib/jobber/tech-note-quote';
 import type { TechNoteKind } from '@/lib/jobber/tech-note-intent';
 
 export const dynamic = 'force-dynamic';
@@ -45,6 +49,19 @@ export async function POST(request: NextRequest) {
       note: 'Drafts stay unsent. sentAt is null. transitionQuoteTo was not set.',
     });
   } catch (error) {
+    if (error instanceof TechNoteDoNotQuoteError) {
+      return NextResponse.json(
+        {
+          error: 'do_not_quote',
+          reason: error.reason,
+          message: error.message,
+          equipment: error.equipment,
+          sentAt: null,
+          draft: true,
+        },
+        { status: 400 }
+      );
+    }
     if (error instanceof UnclearTechNoteIntentError) {
       return NextResponse.json(
         {

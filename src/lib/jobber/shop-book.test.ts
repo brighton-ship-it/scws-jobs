@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import {
   AIR_ROTARY_FOOTAGE_PRICE,
   BT2_LABOR_PRICE,
+  BT2_LABOR_PRICE_MODE,
   HOIST_NAME,
+  MUD_ROTARY_FOOTAGE_PRICE,
   PLUMBING_PACKAGE_PRICE,
   PROMAX_PM260_PRICE,
   SANITARY_SEAL_QTY,
@@ -13,6 +15,7 @@ import {
   TRAVEL_LINE_NAME,
   WATER_DELIVERY_NAME,
   assertShopBookLines,
+  bt2PriceForCity,
   buildAirRotaryLines,
   buildPressureTankLines,
   buildPullAndEvalLines,
@@ -24,12 +27,23 @@ import {
 } from './shop-book.ts';
 
 describe('pull-and-eval shop book', () => {
-  it('quotes BT2 labor at $600 non-taxable', () => {
-    const [labor] = buildPullAndEvalLines();
-    assert.equal(labor.name, 'BT2');
-    assert.equal(labor.unitPrice, BT2_LABOR_PRICE);
-    assert.equal(labor.taxable, false);
-    assert.equal(labor.description, 'Pull well pump and evaluate');
+  it('quotes BT2 qty 1 lump at $600 Ramona and $800 Lakeside / El Cajon', () => {
+    assert.equal(bt2PriceForCity('Ramona'), 600);
+    assert.equal(bt2PriceForCity('Aguanga'), 600);
+    assert.equal(bt2PriceForCity('Lakeside'), 800);
+    assert.equal(bt2PriceForCity('El Cajon'), 800);
+    assert.equal(bt2PriceForCity(null), BT2_LABOR_PRICE_MODE);
+
+    const [ramona] = buildPullAndEvalLines('Ramona');
+    assert.equal(ramona.name, 'BT2');
+    assert.equal(ramona.quantity, 1);
+    assert.equal(ramona.unitPrice, BT2_LABOR_PRICE);
+    assert.equal(ramona.taxable, false);
+    assert.equal(ramona.description, 'Pull well pump and evaluate');
+
+    const [lakeside] = buildPullAndEvalLines('Lakeside');
+    assert.equal(lakeside.quantity, 1);
+    assert.equal(lakeside.unitPrice, 800);
   });
 
   it('customer message never mentions the $200 service call', () => {
@@ -65,16 +79,25 @@ describe('pressure tank shop book', () => {
 });
 
 describe('air rotary shop book', () => {
-  it('uses $48/ft street and sanitary seal qty 20 × $220', () => {
+  it('uses ~$45/ft air street, $70/ft mud, and sanitary seal ALWAYS qty 20 × $220', () => {
     const lines = buildAirRotaryLines({ footageFt: 420, includeWaterDelivery: true });
     const footage = lines.find((line) => line.name.includes('Air Rotary'));
     const seal = lines.find((line) => line.name.includes('Sanitary Seal'));
+    assert.equal(AIR_ROTARY_FOOTAGE_PRICE, 45);
     assert.equal(footage?.unitPrice, AIR_ROTARY_FOOTAGE_PRICE);
     assert.equal(footage?.quantity, 420);
+    assert.equal(seal?.quantity, 20);
     assert.equal(seal?.quantity, SANITARY_SEAL_QTY);
     assert.equal(seal?.unitPrice, SANITARY_SEAL_UNIT_PRICE);
     assert.equal((seal?.quantity || 0) * (seal?.unitPrice || 0), SANITARY_SEAL_TOTAL);
     assert.equal(sanitarySealIsLump(seal!), false);
+
+    const mud = buildAirRotaryLines({ footageFt: 300, includeWaterDelivery: false, method: 'mud' });
+    const mudFt = mud.find((line) => line.name.includes('Mud Rotary'));
+    const mudSeal = mud.find((line) => line.name.includes('Sanitary Seal'));
+    assert.equal(mudFt?.unitPrice, MUD_ROTARY_FOOTAGE_PRICE);
+    assert.equal(mudFt?.unitPrice, 70);
+    assert.equal(mudSeal?.quantity, 20);
   });
 
   it('rejects a qty-1 sanitary seal lump', () => {

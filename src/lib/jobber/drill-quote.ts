@@ -13,6 +13,7 @@ import {
 } from './quotes.ts';
 import {
   AIR_ROTARY_TITLE,
+  MUD_ROTARY_TITLE,
   assertShopBookLines,
   buildAirRotaryLines,
   customerMessageForAirRotary,
@@ -32,6 +33,7 @@ export type DrillQuoteInput = {
   lat?: number | null;
   lng?: number | null;
   city?: string | null;
+  method?: 'air' | 'mud' | null;
 };
 
 export type DrillQuoteSuccess = {
@@ -43,7 +45,7 @@ export type DrillQuoteSuccess = {
   client: { id: string; name: string | null };
   tax: { county: string; taxRateId: string | null; name: string | null };
   shop: 'ramona' | 'anza';
-  method: 'air';
+  method: 'air' | 'mud';
   footageFt: number;
   travelDays: number;
   lineItems: QuoteLineDraft[];
@@ -92,10 +94,9 @@ export async function createDrillQuote(
 
   const city = input.city || site.city || null;
   const shop = assignShop(city);
-  const method = drillMethodForSite(city, site.lng);
-  if (method !== 'air') {
-    throw new Error('This pack only writes air-rotary new-well drafts');
-  }
+  // West Escondido granite stays air. Mud only when the caller asks and the site is not forced air.
+  const forcedAir = drillMethodForSite(city, site.lng) === 'air' && /escondido/i.test(city || '');
+  const method: 'air' | 'mud' = input.method === 'mud' && !forcedAir ? 'mud' : 'air';
 
   const travelDays = travelDaysForHole(shop, { lat: site.lat, lng: site.lng });
   const countyGuess = site.county || (shop === 'ramona' ? 'San Diego' : 'Riverside');
@@ -103,6 +104,7 @@ export async function createDrillQuote(
     footageFt: estimate.footageFt,
     includeWaterDelivery: countyGuess === 'San Diego',
     travelDays,
+    method,
   });
   assertShopBookLines(lineItems);
 
@@ -133,7 +135,7 @@ export async function createDrillQuote(
   }
 
   const live = (client.quotes?.nodes || []).find((quote) => {
-    return isLiveQuote(quote) && /air rotary|new well/i.test(quote?.title || '');
+    return isLiveQuote(quote) && /air rotary|mud rotary|new well/i.test(quote?.title || '');
   });
   if (live) {
     return {
@@ -145,7 +147,7 @@ export async function createDrillQuote(
       client: { id: client.id, name: client.name ?? null },
       tax: { county: countyGuess, taxRateId: null, name: null },
       shop,
-      method: 'air',
+      method,
       footageFt: estimate.footageFt,
       travelDays,
       lineItems,
@@ -166,7 +168,7 @@ export async function createDrillQuote(
     {
       clientId: client.id,
       propertyId,
-      title: AIR_ROTARY_TITLE,
+      title: method === 'mud' ? MUD_ROTARY_TITLE : AIR_ROTARY_TITLE,
       message,
       salespersonId,
       taxRateId: tax.taxRateId,
@@ -184,7 +186,7 @@ export async function createDrillQuote(
     client: { id: client.id, name: client.name ?? null },
     tax: { county: tax.county, taxRateId: tax.taxRateId, name: tax.name },
     shop,
-    method: 'air',
+    method,
     footageFt: estimate.footageFt,
     travelDays,
     lineItems,
