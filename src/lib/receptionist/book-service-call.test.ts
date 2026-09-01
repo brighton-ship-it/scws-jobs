@@ -27,6 +27,10 @@ const COWIN = {
   name: { full: 'Cowin' },
   email: { raw: 'cowin@scwellservice.com' },
 };
+const DOUG = {
+  id: 'user-doug',
+  name: { full: 'Doug Pollack' },
+};
 const TRAVIS = {
   id: 'user-travis',
   name: { full: 'Travis C Sego' },
@@ -76,7 +80,7 @@ function mockJobber(options: {
     const query = body.query || '';
 
     if (query.includes('ShopUsers')) {
-      return jsonResponse({ data: { users: { nodes: options.users || [BRIAN, COWIN] } } });
+      return jsonResponse({ data: { users: { nodes: options.users || [BRIAN, COWIN, DOUG] } } });
     }
 
     if (query.includes('OccupiedVisits')) {
@@ -271,8 +275,8 @@ describe('handleBookServiceCall', () => {
     assert.equal(SERVICE_CALL_PRICE_USD, 200);
   });
 
-  it('creates an Anza Service Call visit assigned to Cowin', async () => {
-    const slot = firstOpenSlot(THU_530PM, 'user-cowin', 'Cowin');
+  it('creates an Anza Service Call visit assigned to Doug Pollack when both have a slot', async () => {
+    const slot = firstOpenSlot(THU_530PM, 'user-doug', 'Doug Pollack');
     const { result } = await handleBookServiceCall(
       {
         phone: '7605550188',
@@ -295,6 +299,52 @@ describe('handleBookServiceCall', () => {
                   id: 'visit-anza',
                   startAt: slot.startAt,
                   endAt: slot.endAt,
+                  assignedUsers: { nodes: [{ id: 'user-doug', name: { full: 'Doug Pollack' } }] },
+                },
+              ],
+            },
+          },
+        }),
+      }
+    );
+
+    assert.equal(result.booked, true);
+    assert.equal(result.canConfirm, true);
+    assert.deepEqual(result.visit?.technicians, ['Doug Pollack']);
+    assert.equal(result.assignedTechName, 'Doug Pollack');
+  });
+
+  it('creates an Anza Service Call visit assigned to Cowin when Doug is booked', async () => {
+    const slot = firstOpenSlot(THU_530PM, 'user-cowin', 'Cowin');
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550188',
+        name: 'Alex Highdesert',
+        address: '10 CA-371',
+        city: 'Anza',
+        zip: '92539',
+        startAt: slot.startAt,
+      },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          occupied: [
+            {
+              startAt: slot.startAt,
+              endAt: slot.endAt,
+              assignedUsers: { nodes: [{ id: 'user-doug', name: { full: 'Doug Pollack' } }] },
+            },
+          ],
+          createdJob: {
+            id: 'job-anza-cowin',
+            title: SERVICE_CALL_TITLE,
+            visits: {
+              nodes: [
+                {
+                  id: 'visit-anza-cowin',
+                  startAt: slot.startAt,
+                  endAt: slot.endAt,
                   assignedUsers: { nodes: [{ id: 'user-cowin', name: { full: 'Cowin' } }] },
                 },
               ],
@@ -308,6 +358,42 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.canConfirm, true);
     assert.deepEqual(result.visit?.technicians, ['Cowin']);
     assert.equal(result.assignedTechName, 'Cowin');
+  });
+
+  it('returns no bookable Anza times when Doug and Cowin are both booked', async () => {
+    const windows = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-doug',
+      technicianName: 'Doug Pollack',
+      maxSlots: 50,
+    });
+    const { result } = await handleCheckSchedule(
+      { phone: '7605550188', city: 'Anza', zip: '92539', intent: 'book' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          occupied: windows.flatMap((slot) => [
+            {
+              startAt: slot.startAt,
+              endAt: slot.endAt,
+              assignedUsers: { nodes: [{ id: 'user-doug', name: { full: 'Doug Pollack' } }] },
+            },
+            {
+              startAt: slot.startAt,
+              endAt: slot.endAt,
+              assignedUsers: { nodes: [{ id: 'user-cowin', name: { full: 'Cowin' } }] },
+            },
+          ]),
+        }),
+      }
+    );
+
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.mayBook, false);
+    assert.deepEqual(result.openSlots, []);
+    assert.deepEqual(result.allowlistedTechIds, ['user-doug', 'user-cowin']);
   });
 
   it('refuses to confirm when jobCreate returns no visit', async () => {

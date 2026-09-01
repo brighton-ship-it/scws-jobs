@@ -58,6 +58,7 @@ export type ScheduleLookupResult = {
   openSlots?: OpenSlotSummary[];
   assignedTechName?: string;
   assignedTechId?: string | null;
+  allowlistedTechIds?: string[];
   weekendEmergency?: boolean;
 };
 
@@ -527,6 +528,7 @@ export async function handleCheckSchedule(
         openSlots: slots.openSlots,
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
+        allowlistedTechIds: slots.allowlistedTechIds,
         bookingMessage:
           slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`

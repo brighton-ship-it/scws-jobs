@@ -1,32 +1,46 @@
 /**
  * Shop assignment for Sarah's $200 service call.
  *
- * ONLY these two service techs, identified from this repo's team roster
- * (scripts/seed-team.ts / supabase team seed) and then pinned to the
- * Jobber user id returned for that person. Never guess "Brian" / "Chris".
+ * Territories (Brighton, authoritative):
+ *   Ramona / west / central SD → Brian Eads only
+ *   Anza / high-desert         → Doug Pollack or Cowin (whoever has an open slot)
  *
- *   Brian Eads  — brian@scwellservice.com — Ramona / west / central SD
- *   Cowin       — cowin@scwellservice.com — Anza / high-desert
+ * Brian and Cowin are identified from this repo's team roster emails
+ * (scripts/seed-team.ts). Doug Pollack is not in that seed file; this repo
+ * also has no Jobber user GIDs. His identity is Brighton's exact name,
+ * then the Jobber users query id for that person. Never guess Travis.
  *
  * Never assign Travis, Brighton, Haze, Chris, a drill crew, or anyone else.
  */
 
 export const TECH_COWIN = 'Cowin';
 export const TECH_BRIAN_EADS = 'Brian Eads';
+export const TECH_DOUG_POLLACK = 'Doug Pollack';
 
-/** Exact identities from this repo's SCWS team roster — not Jobber name guesses. */
+export type ShopTerritory = 'ramona' | 'anza';
+
+/** Exact identities — roster emails where this repo has them; Doug by Brighton’s name. */
 export const SERVICE_TECH_ROSTER = {
   brian: {
     key: 'brian' as const,
     name: TECH_BRIAN_EADS,
     email: 'brian@scwellservice.com',
+    altNames: [] as string[],
     envIdKey: 'JOBBER_TECH_BRIAN_EADS_ID' as const,
   },
   cowin: {
     key: 'cowin' as const,
     name: TECH_COWIN,
     email: 'cowin@scwellservice.com',
+    altNames: [] as string[],
     envIdKey: 'JOBBER_TECH_COWIN_ID' as const,
+  },
+  doug: {
+    key: 'doug' as const,
+    name: TECH_DOUG_POLLACK,
+    email: '',
+    altNames: ['Douglas Pollack'],
+    envIdKey: 'JOBBER_TECH_DOUG_POLLACK_ID' as const,
   },
 };
 
@@ -65,10 +79,11 @@ const BLOCKED_NAME_EXACT = new Set([
 ]);
 
 export type ShopTech = {
-  key: 'cowin' | 'brian';
+  key: 'cowin' | 'brian' | 'doug';
   name: string;
   email: string;
-  envIdKey: 'JOBBER_TECH_COWIN_ID' | 'JOBBER_TECH_BRIAN_EADS_ID';
+  altNames: string[];
+  envIdKey: 'JOBBER_TECH_COWIN_ID' | 'JOBBER_TECH_BRIAN_EADS_ID' | 'JOBBER_TECH_DOUG_POLLACK_ID';
 };
 
 const COWIN_CITIES = [
@@ -165,21 +180,42 @@ function cityMatches(haystack: string, cities: string[]): boolean {
   return cities.some((city) => haystack.includes(city));
 }
 
+export function assignShopTerritory(input: {
+  city?: string | null;
+  address?: string | null;
+  zip?: string | null;
+}): ShopTerritory {
+  const zip = extractZip(input.zip) || extractZip(input.address) || extractZip(input.city);
+  if (zip && COWIN_ZIPS.has(zip)) return 'anza';
+  if (zip && BRIAN_ZIPS.has(zip)) return 'ramona';
+
+  const place = normalizePlace([input.city, input.address].filter(Boolean).join(' '));
+  if (cityMatches(place, COWIN_CITIES)) return 'anza';
+  if (cityMatches(place, BRIAN_CITIES)) return 'ramona';
+
+  // Default to the Ramona / west-central shop, not Anza.
+  return 'ramona';
+}
+
+/** Allowed Sarah assignees for this job location. */
+export function allowedTechsForLocation(input: {
+  city?: string | null;
+  address?: string | null;
+  zip?: string | null;
+}): ShopTech[] {
+  const territory = assignShopTerritory(input);
+  if (territory === 'anza') {
+    return [{ ...SERVICE_TECH_ROSTER.doug }, { ...SERVICE_TECH_ROSTER.cowin }];
+  }
+  return [{ ...SERVICE_TECH_ROSTER.brian }];
+}
+
 export function assignShopTech(input: {
   city?: string | null;
   address?: string | null;
   zip?: string | null;
 }): ShopTech {
-  const zip = extractZip(input.zip) || extractZip(input.address) || extractZip(input.city);
-  if (zip && COWIN_ZIPS.has(zip)) return { ...SERVICE_TECH_ROSTER.cowin };
-  if (zip && BRIAN_ZIPS.has(zip)) return { ...SERVICE_TECH_ROSTER.brian };
-
-  const place = normalizePlace([input.city, input.address].filter(Boolean).join(' '));
-  if (cityMatches(place, COWIN_CITIES)) return { ...SERVICE_TECH_ROSTER.cowin };
-  if (cityMatches(place, BRIAN_CITIES)) return { ...SERVICE_TECH_ROSTER.brian };
-
-  // Default to the Ramona / west-central shop, not Anza.
-  return { ...SERVICE_TECH_ROSTER.brian };
+  return allowedTechsForLocation(input)[0];
 }
 
 export type JobberUser = {
@@ -221,10 +257,11 @@ export function userMatchesTech(user: JobberUser, tech: ShopTech): boolean {
   const email = userEmail(user);
   const name = userDisplayName(user).toLowerCase();
   const expectedEmail = tech.email.toLowerCase();
-  const expectedName = tech.name.toLowerCase();
+  const names = [tech.name, ...(tech.altNames || [])].map((value) => value.toLowerCase());
 
-  if (email) return email === expectedEmail;
-  return name === expectedName;
+  if (expectedEmail && email && email === expectedEmail) return true;
+  if (names.includes(name)) return true;
+  return false;
 }
 
 export function resolveTechUserId(
@@ -247,7 +284,46 @@ export function resolveTechUserId(
 
 export function isAllowlistedTechId(
   technicianId: string | null | undefined,
-  allowlistedId: string | null | undefined
+  allowlistedIds: string | string[] | null | undefined
 ): boolean {
-  return Boolean(technicianId && allowlistedId && technicianId === allowlistedId);
+  if (!technicianId) return false;
+  const ids = Array.isArray(allowlistedIds)
+    ? allowlistedIds
+    : allowlistedIds
+      ? [allowlistedIds]
+      : [];
+  return ids.includes(technicianId);
+}
+
+export function resolveTechsForLocation(
+  location: { city?: string | null; address?: string | null; zip?: string | null },
+  users: JobberUser[],
+  env: NodeJS.ProcessEnv = process.env
+): { id: string; name: string }[] {
+  const resolved: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const tech of allowedTechsForLocation(location)) {
+    const match = resolveTechUserId(tech, users, env);
+    if (!match || seen.has(match.id)) continue;
+    seen.add(match.id);
+    resolved.push(match);
+  }
+  return resolved;
+}
+
+/** Spoken list: "Brian Eads" or "Doug Pollack or Cowin". */
+export function formatTechNames(names: string[]): string {
+  const unique = names.map((name) => name.trim()).filter(Boolean);
+  if (unique.length === 0) return '';
+  if (unique.length === 1) return unique[0];
+  if (unique.length === 2) return `${unique[0]} or ${unique[1]}`;
+  return `${unique.slice(0, -1).join(', ')}, or ${unique[unique.length - 1]}`;
+}
+
+export function allowedTechSpokenName(input: {
+  city?: string | null;
+  address?: string | null;
+  zip?: string | null;
+}): string {
+  return formatTechNames(allowedTechsForLocation(input).map((tech) => tech.name));
 }

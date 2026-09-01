@@ -21,7 +21,12 @@ import {
   normalizePhone10,
 } from './check-schedule.ts';
 import { lookupOpenSlots, slotMatchesRequest, type OpenSlot, type OpenSlotsDeps } from './open-slots.ts';
-import { assignShopTech, isAllowlistedTechId, isBlockedAssignee } from './tech-assignment.ts';
+import {
+  allowedTechSpokenName,
+  assignShopTech,
+  isAllowlistedTechId,
+  isBlockedAssignee,
+} from './tech-assignment.ts';
 
 const FORBIDDEN_SARAH_JOB = /\b(drill|drilling|pump|quote|estimate|rehab|rehabilitation|crew)\b/i;
 
@@ -625,14 +630,22 @@ export async function bookServiceCall(
     });
   }
 
+  const location = {
+    city: input.city,
+    address: input.address,
+    zip: input.zip || input.postalCode,
+  };
+  const spokenAllowed = slots.assignedTechName || allowedTechSpokenName(location);
+  const allowlistedIds = slots.allowlistedTechIds?.length
+    ? slots.allowlistedTechIds
+    : slots.assignedTechId
+      ? [slots.assignedTechId]
+      : [];
   const chosen = slots.openSlots.find((slot) => slotMatchesRequest(slot, input.startAt || ''));
-  if (
-    chosen &&
-    (!slots.assignedTechId || !isAllowlistedTechId(chosen.technicianId, slots.assignedTechId))
-  ) {
+  if (chosen && !isAllowlistedTechId(chosen.technicianId, allowlistedIds)) {
     return blockedResult(
       'wrong_tech',
-      "I don't have an open slot on Brian or Cowin. I won't book anyone else. I'll have the office call you back.",
+      `I don't have an open slot on ${spokenAllowed}. I won't book anyone else. I'll have the office call you back.`,
       NO_VISIT_CONFIRMATION_RULE,
       {
         openSlots: [],
@@ -663,11 +676,7 @@ export async function bookServiceCall(
   try {
     const { client, created } = await findOrCreateClient(input, token, fetchFn, version);
     const propertyId = await findOrCreateProperty(client, input, token, fetchFn, version);
-    const tech = assignShopTech({
-      city: input.city,
-      address: input.address,
-      zip: input.zip || input.postalCode,
-    });
+    const tech = assignShopTech(location);
 
     const jobData = await jobberGraphql(
       token,
@@ -732,7 +741,7 @@ export async function bookServiceCall(
 
     const assigneeIds = visitAssigneeIds(job);
     const assignedSomeoneElse =
-      assigneeIds.some((id) => !isAllowlistedTechId(id, slots.assignedTechId)) ||
+      assigneeIds.some((id) => !isAllowlistedTechId(id, allowlistedIds)) ||
       (job?.visits?.nodes || []).some((node: any) =>
         (node?.assignedUsers?.nodes || []).some((user: any) => isBlockedAssignee(user))
       );
@@ -748,8 +757,7 @@ export async function bookServiceCall(
         clientId: client.id,
         clientCreated: created,
         error: 'Jobber visit assigned to a non-service tech',
-        message:
-          "I won't confirm a visit that isn't on Brian or Cowin. I'll have the office call you back.",
+        message: `I won't confirm a visit that isn't on ${spokenAllowed}. I'll have the office call you back.`,
         confirmationRule: NO_VISIT_CONFIRMATION_RULE,
       };
     }

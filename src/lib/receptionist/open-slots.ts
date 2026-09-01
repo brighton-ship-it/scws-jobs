@@ -2,8 +2,10 @@
  * Open service-call slots from the live Jobber calendar.
  *
  * Candidate windows are shop service-call hours. A slot is returned only
- * when it does not overlap a Jobber visit for the assigned tech.
- * If Jobber is down, return no slots — never invent times.
+ * when it does not overlap a Jobber visit for an allowlisted tech
+ * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin). If neither allowed
+ * tech has a window, return no slots. If Jobber is down, return no slots
+ * — never invent times or assign Travis.
  */
 
 import {
@@ -15,9 +17,11 @@ import {
   ptCalendarDate,
 } from './check-schedule.ts';
 import {
+  allowedTechSpokenName,
   assignShopTech,
+  formatTechNames,
   isAllowlistedTechId,
-  resolveTechUserId,
+  resolveTechsForLocation,
   type JobberUser,
   type ShopTech,
   userDisplayName,
@@ -58,6 +62,7 @@ export type OpenSlotsResult = {
   openSlots: OpenSlot[];
   assignedTechName: string;
   assignedTechId: string | null;
+  allowlistedTechIds: string[];
   error?: string;
 };
 
@@ -248,6 +253,21 @@ export function computeOpenSlots(options: {
   return slots;
 }
 
+/** First allowlisted tech who is free at a window wins (Doug before Cowin on Anza). */
+export function mergeOpenSlots(slotsByTech: OpenSlot[][], maxSlots = MAX_OPEN_SLOTS): OpenSlot[] {
+  const byStart = new Map<string, OpenSlot>();
+  for (const slots of slotsByTech) {
+    for (const slot of slots) {
+      if (!byStart.has(slot.startAt)) {
+        byStart.set(slot.startAt, slot);
+      }
+    }
+  }
+  return [...byStart.values()]
+    .sort((a, b) => a.startAt.localeCompare(b.startAt))
+    .slice(0, maxSlots);
+}
+
 export function slotMatchesRequest(slot: OpenSlot, requestedStartAt: string): boolean {
   if (!requestedStartAt) return false;
   if (slot.startAt === requestedStartAt) return true;
@@ -273,20 +293,31 @@ function mapVisitNode(node: any): OccupiedVisit {
   };
 }
 
+function emptyOpenSlots(
+  assignedTechName: string,
+  extra: { lookupStatus: 'ok' | 'error'; error?: string } = { lookupStatus: 'ok' }
+): OpenSlotsResult {
+  return {
+    lookupStatus: extra.lookupStatus,
+    openSlots: [],
+    assignedTechName,
+    assignedTechId: null,
+    allowlistedTechIds: [],
+    error: extra.error,
+  };
+}
+
 export async function lookupOpenSlots(
   location: { city?: string; address?: string; zip?: string },
   deps: OpenSlotsDeps = {}
 ): Promise<OpenSlotsResult> {
-  const tech = assignShopTech(location);
+  const spokenAllowed = allowedTechSpokenName(location);
   const token = deps.accessToken ?? process.env.JOBBER_ACCESS_TOKEN ?? null;
   if (!token) {
-    return {
+    return emptyOpenSlots(spokenAllowed, {
       lookupStatus: 'error',
-      openSlots: [],
-      assignedTechName: tech.name,
-      assignedTechId: null,
       error: 'JOBBER_ACCESS_TOKEN is not set',
-    };
+    });
   }
 
   const fetchFn = deps.fetchFn ?? fetch;
@@ -309,15 +340,17 @@ export async function lookupOpenSlots(
       }
     }
     const users = (usersData?.data?.users?.nodes || []) as JobberUser[];
-    const resolved = resolveTechUserId(tech, users, deps.env ?? process.env);
-    if (!resolved) {
-      return {
+    const resolved = resolveTechsForLocation(location, users, deps.env ?? process.env);
+    const assignedTechName = resolved.length
+      ? formatTechNames(resolved.map((tech) => tech.name))
+      : spokenAllowed;
+    const allowlistedTechIds = resolved.map((tech) => tech.id);
+
+    if (resolved.length === 0) {
+      return emptyOpenSlots(assignedTechName, {
         lookupStatus: 'ok',
-        openSlots: [],
-        assignedTechName: tech.name,
-        assignedTechId: null,
-        error: `Allowlisted service tech not found in Jobber users (${tech.email})`,
-      };
+        error: `Allowlisted service tech not found in Jobber users (${spokenAllowed})`,
+      });
     }
 
     const startAfter = now.toISOString();
@@ -331,28 +364,28 @@ export async function lookupOpenSlots(
     );
 
     const occupied = (visitsData?.data?.visits?.nodes || []).map(mapVisitNode);
-    const openSlots = computeOpenSlots({
-      occupied,
-      now,
-      technicianId: resolved.id,
-      technicianName: resolved.name,
-    }).filter((slot) => isAllowlistedTechId(slot.technicianId, resolved.id));
+    const perTechMax = SLOT_LOOKAHEAD_DAYS * SLOT_HOURS_PT.length;
+    const slotsByTech = resolved.map((tech) =>
+      computeOpenSlots({
+        occupied,
+        now,
+        technicianId: tech.id,
+        technicianName: tech.name,
+        maxSlots: perTechMax,
+      }).filter((slot) => isAllowlistedTechId(slot.technicianId, allowlistedTechIds))
+    );
+    const openSlots = mergeOpenSlots(slotsByTech);
 
     return {
       lookupStatus: 'ok',
       openSlots,
-      assignedTechName: resolved.name,
-      assignedTechId: resolved.id,
+      assignedTechName,
+      assignedTechId: resolved[0].id,
+      allowlistedTechIds,
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
-    return {
-      lookupStatus: 'error',
-      openSlots: [],
-      assignedTechName: tech.name,
-      assignedTechId: null,
-      error: message,
-    };
+    return emptyOpenSlots(spokenAllowed, { lookupStatus: 'error', error: message });
   }
 }
 
