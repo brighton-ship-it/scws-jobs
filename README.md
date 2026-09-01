@@ -179,6 +179,8 @@ npm run lint     # Run ESLint
 
 **Click-id / `book_job` SQL:** if `booking_requests` is missing `ga_client_id` (PGRST204), a human must run `supabase/migrations/20260827_book_job_click_ids_and_conversions.sql` in the Supabase SQL Editor. Do not apply it from this repo.
 
+**Internal quote GP tracker:** `/ops/quotes-gp` (this app, not the marketing site). Sign in to the CRM, or set `QUOTES_GP_KEY` and open `/ops/quotes-gp?key=<QUOTES_GP_KEY>` (`ADMIN_SECRET` works if the dedicated key is unset). Needs `JOBBER_ACCESS_TOKEN`. Read-only; street prices stay street; FLAG/GP stay off customer titles and messages. See `src/app/ops/quotes-gp/README.md`.
+
 ### Other Platforms
 
 Build the production bundle:

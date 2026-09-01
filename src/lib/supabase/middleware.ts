@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { isCronApiPath, isPublicApiRoute } from '@/lib/public-api';
+import { isCronApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from '@/lib/public-api';
 
 // Check if we're in demo mode (no Supabase credentials)
 const isDemoMode = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
@@ -76,17 +76,27 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith('/portal') ||
     pathname.startsWith('/book') ||
     pathname.startsWith('/pay') ||
-    pathname.startsWith('/unsubscribe');
+    pathname.startsWith('/unsubscribe') ||
+    isOpsPagePath(pathname); // Office key or CRM session checked on the page/API
 
   if (isApi) {
     // Vercel Cron must not 401 here. /api/cron/* checks CRON_SECRET itself.
-    if (isCronApiPath(pathname) || isPublicApiRoute(request.method, pathname) || user) {
+    if (
+      isCronApiPath(pathname) ||
+      isOpsApiPath(pathname) ||
+      isPublicApiRoute(request.method, pathname) ||
+      user
+    ) {
       return response;
     }
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   const isProtectedRoute = !isAuthPage && !isPublicPage;
+
+  if (isOpsPagePath(pathname)) {
+    response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  }
 
   if (isProtectedRoute && !user) {
     return NextResponse.redirect(new URL('/login', request.url));

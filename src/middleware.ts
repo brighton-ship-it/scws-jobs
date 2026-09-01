@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { checkRateLimit, rateLimitedResponse, getRateLimitHeaders } from '@/lib/rate-limit';
-import { isCronApiPath } from '@/lib/public-api';
+import { isCronApiPath, isOpsApiPath, isOpsPagePath } from '@/lib/public-api';
 
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
@@ -9,7 +9,7 @@ export async function middleware(request: NextRequest) {
   // Vercel Cron is cookie-less. Session auth here 401s it at edge-middleware
   // and can drop Authorization before the route sees Bearer CRON_SECRET.
   // Rate-limit only; the handler still requires CRON_SECRET.
-  if (isCronApiPath(path)) {
+  if (isCronApiPath(path) || isOpsApiPath(path)) {
     const rateLimitResult = checkRateLimit(request);
     if (!rateLimitResult.success) {
       return rateLimitedResponse(rateLimitResult);
@@ -18,6 +18,9 @@ export async function middleware(request: NextRequest) {
     const headers = getRateLimitHeaders(rateLimitResult);
     for (const [key, value] of Object.entries(headers)) {
       response.headers.set(key, value);
+    }
+    if (isOpsApiPath(path)) {
+      response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
     }
     return response;
   }
@@ -43,7 +46,11 @@ export async function middleware(request: NextRequest) {
   }
   
   // Non-API routes just get session handling
-  return await updateSession(request);
+  const response = await updateSession(request);
+  if (isOpsPagePath(path)) {
+    response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  }
+  return response;
 }
 
 export const config = {
