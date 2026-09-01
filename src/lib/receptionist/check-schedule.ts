@@ -57,6 +57,7 @@ export type ScheduleLookupResult = {
   bookingMessage?: string;
   openSlots?: OpenSlotSummary[];
   assignedTechName?: string;
+  assignedTechId?: string | null;
   weekendEmergency?: boolean;
 };
 
@@ -525,6 +526,7 @@ export async function handleCheckSchedule(
         mayBook: slots.openSlots.length > 0,
         openSlots: slots.openSlots,
         assignedTechName: slots.assignedTechName,
+        assignedTechId: slots.assignedTechId,
         bookingMessage:
           slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`

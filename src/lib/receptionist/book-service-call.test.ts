@@ -4,6 +4,7 @@ import {
   SERVICE_CALL_PRICE_USD,
   SERVICE_CALL_TITLE,
   handleBookServiceCall,
+  isSarahServiceCallTitle,
   pickExistingClient,
   splitCallerName,
   weekendEmergencyFlag,
@@ -16,8 +17,21 @@ const THU_4PM = new Date('2026-09-03T23:00:00.000Z');
 const THU_530PM = new Date('2026-09-04T00:30:00.000Z');
 const SAT_10AM = new Date('2026-09-05T17:00:00.000Z');
 
-const BRIAN = { id: 'user-brian', name: { full: 'Brian Eads' } };
-const COWIN = { id: 'user-cowin', name: { full: 'Cowin' } };
+const BRIAN = {
+  id: 'user-brian',
+  name: { full: 'Brian Eads' },
+  email: { raw: 'brian@scwellservice.com' },
+};
+const COWIN = {
+  id: 'user-cowin',
+  name: { full: 'Cowin' },
+  email: { raw: 'cowin@scwellservice.com' },
+};
+const TRAVIS = {
+  id: 'user-travis',
+  name: { full: 'Travis C Sego' },
+  email: { raw: 'travis@scwellservice.com' },
+};
 
 type GraphqlBody = {
   query?: string;
@@ -372,6 +386,72 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.clientCreated, false);
     assert.equal(clientCreates, 0);
   });
+
+  it('does not book drill, pump, or quote visits', async () => {
+    const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: slot.startAt,
+        title: 'New well drilling',
+      },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: async () => {
+          throw new Error('should not create a drill job');
+        },
+      }
+    );
+
+    assert.equal(result.booked, false);
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.bookingBlockReason, 'forbidden_job_type');
+    assert.equal(isSarahServiceCallTitle('New well drilling'), false);
+    assert.equal(isSarahServiceCallTitle('Pump replacement'), false);
+    assert.equal(isSarahServiceCallTitle('Quote'), false);
+    assert.equal(isSarahServiceCallTitle('Service Call'), true);
+  });
+
+  it('refuses to confirm when Jobber assigns the visit to Travis', async () => {
+    const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: slot.startAt,
+      },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          createdJob: {
+            id: 'job-wrong',
+            title: SERVICE_CALL_TITLE,
+            visits: {
+              nodes: [
+                {
+                  id: 'visit-travis',
+                  startAt: slot.startAt,
+                  endAt: slot.endAt,
+                  assignedUsers: { nodes: [{ id: 'user-travis', name: { full: 'Travis C Sego' } }] },
+                },
+              ],
+            },
+          },
+        }),
+      }
+    );
+
+    assert.equal(result.booked, false);
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.bookingBlockReason, 'wrong_tech');
+  });
 });
 
 describe('checkSchedule booking attach — confirm-lock still holds', () => {
@@ -413,6 +493,25 @@ describe('checkSchedule booking attach — confirm-lock still holds', () => {
     assert.equal(result.mayBook, false);
     assert.deepEqual(result.openSlots || [], []);
     assert.match(result.message, /office/i);
+  });
+
+  it('returns no bookable slots when Jobber only has Travis (or other non-service techs)', async () => {
+    const { result } = await handleCheckSchedule(
+      { phone: '9499039486', city: 'Ramona', intent: 'book' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          users: [TRAVIS],
+          clients: [guyClient],
+        }),
+      }
+    );
+
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.mayBook, false);
+    assert.deepEqual(result.openSlots, []);
+    assert.equal(result.assignedTechId || null, null);
   });
 
   it('daytime weekday checkSchedule does not offer bookable slots', async () => {

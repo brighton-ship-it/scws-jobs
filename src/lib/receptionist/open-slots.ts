@@ -16,6 +16,7 @@ import {
 } from './check-schedule.ts';
 import {
   assignShopTech,
+  isAllowlistedTechId,
   resolveTechUserId,
   type JobberUser,
   type ShopTech,
@@ -311,11 +312,11 @@ export async function lookupOpenSlots(
     const resolved = resolveTechUserId(tech, users, deps.env ?? process.env);
     if (!resolved) {
       return {
-        lookupStatus: 'error',
+        lookupStatus: 'ok',
         openSlots: [],
         assignedTechName: tech.name,
         assignedTechId: null,
-        error: `Jobber user not found for ${tech.name}`,
+        error: `Allowlisted service tech not found in Jobber users (${tech.email})`,
       };
     }
 
@@ -335,7 +336,7 @@ export async function lookupOpenSlots(
       now,
       technicianId: resolved.id,
       technicianName: resolved.name,
-    });
+    }).filter((slot) => isAllowlistedTechId(slot.technicianId, resolved.id));
 
     return {
       lookupStatus: 'ok',

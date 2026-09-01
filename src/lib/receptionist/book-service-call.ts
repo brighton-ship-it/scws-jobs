@@ -21,7 +21,15 @@ import {
   normalizePhone10,
 } from './check-schedule.ts';
 import { lookupOpenSlots, slotMatchesRequest, type OpenSlot, type OpenSlotsDeps } from './open-slots.ts';
-import { assignShopTech } from './tech-assignment.ts';
+import { assignShopTech, isAllowlistedTechId, isBlockedAssignee } from './tech-assignment.ts';
+
+const FORBIDDEN_SARAH_JOB = /\b(drill|drilling|pump|quote|estimate|rehab|rehabilitation|crew)\b/i;
+
+export function isSarahServiceCallTitle(title: string | null | undefined): boolean {
+  const value = String(title || '').trim();
+  if (!value || FORBIDDEN_SARAH_JOB.test(value)) return false;
+  return /^service call\b/i.test(value);
+}
 
 export const SERVICE_CALL_TITLE = 'Service Call';
 export const SERVICE_CALL_PRICE_USD = 200;
@@ -38,6 +46,8 @@ export type BookServiceCallInput = WeekendNeedInput & {
   zip?: string | null;
   postalCode?: string | null;
   startAt?: string | null;
+  title?: string | null;
+  serviceType?: string | null;
 };
 
 export type BookedVisit = {
@@ -420,7 +430,8 @@ function visitFromJob(job: any, fallbackStart: string, fallbackEnd: string, tech
   const visit = nodes.find((node: any) => node?.startAt) || nodes[0];
   if (!visit?.startAt) return null;
 
-  const technicians = (visit.assignedUsers?.nodes || [])
+  const assigned = visit.assignedUsers?.nodes || [];
+  const technicians = assigned
     .map((user: { name?: { full?: string } }) => user?.name?.full)
     .filter(Boolean);
 
@@ -434,6 +445,13 @@ function visitFromJob(job: any, fallbackStart: string, fallbackEnd: string, tech
     technicians: technicians.length ? technicians : [techName],
     title: job.title || SERVICE_CALL_TITLE,
   };
+}
+
+function visitAssigneeIds(job: any): string[] {
+  const visit = job?.visits?.nodes?.find((node: any) => node?.startAt) || job?.visits?.nodes?.[0];
+  return (visit?.assignedUsers?.nodes || [])
+    .map((user: { id?: string }) => user?.id)
+    .filter(Boolean);
 }
 
 async function findOrCreateClient(
@@ -578,6 +596,15 @@ export async function bookServiceCall(
     return errorResult('JOBBER_ACCESS_TOKEN is not set');
   }
 
+  const requestedTitle = input.title || input.serviceType;
+  if (requestedTitle && !isSarahServiceCallTitle(requestedTitle)) {
+    return blockedResult(
+      'forbidden_job_type',
+      "I can only book a $200 service call. I won't put a drill, pump, or quote visit on the calendar. I'll have the office call you back.",
+      NO_VISIT_CONFIRMATION_RULE
+    );
+  }
+
   if (!input.startAt) {
     return blockedResult(
       'missing_slot',
@@ -599,6 +626,22 @@ export async function bookServiceCall(
   }
 
   const chosen = slots.openSlots.find((slot) => slotMatchesRequest(slot, input.startAt || ''));
+  if (
+    chosen &&
+    (!slots.assignedTechId || !isAllowlistedTechId(chosen.technicianId, slots.assignedTechId))
+  ) {
+    return blockedResult(
+      'wrong_tech',
+      "I don't have an open slot on Brian or Cowin. I won't book anyone else. I'll have the office call you back.",
+      NO_VISIT_CONFIRMATION_RULE,
+      {
+        openSlots: [],
+        assignedTechName: slots.assignedTechName,
+        canConfirm: false,
+      }
+    );
+  }
+
   if (!chosen) {
     return blockedResult(
       'slot_not_open',
@@ -669,6 +712,48 @@ export async function bookServiceCall(
     }
 
     const job = jobData?.data?.jobCreate?.job;
+    if (job?.title && !isSarahServiceCallTitle(job.title)) {
+      return {
+        booked: false,
+        canConfirm: false,
+        mayBook: false,
+        lookupStatus: 'error',
+        weekendEmergency: false,
+        bookingBlockReason: 'forbidden_job_type',
+        assignedTechName: chosen.technician,
+        clientId: client.id,
+        clientCreated: created,
+        error: `Jobber returned title ${job.title}`,
+        message:
+          "I can only book a $200 service call. I'll have the office call you back.",
+        confirmationRule: NO_VISIT_CONFIRMATION_RULE,
+      };
+    }
+
+    const assigneeIds = visitAssigneeIds(job);
+    const assignedSomeoneElse =
+      assigneeIds.some((id) => !isAllowlistedTechId(id, slots.assignedTechId)) ||
+      (job?.visits?.nodes || []).some((node: any) =>
+        (node?.assignedUsers?.nodes || []).some((user: any) => isBlockedAssignee(user))
+      );
+    if (assignedSomeoneElse || (assigneeIds.length > 0 && !assigneeIds.includes(chosen.technicianId))) {
+      return {
+        booked: false,
+        canConfirm: false,
+        mayBook: false,
+        lookupStatus: 'error',
+        weekendEmergency: false,
+        bookingBlockReason: 'wrong_tech',
+        assignedTechName: chosen.technician,
+        clientId: client.id,
+        clientCreated: created,
+        error: 'Jobber visit assigned to a non-service tech',
+        message:
+          "I won't confirm a visit that isn't on Brian or Cowin. I'll have the office call you back.",
+        confirmationRule: NO_VISIT_CONFIRMATION_RULE,
+      };
+    }
+
     const visit = visitFromJob(job, chosen.startAt, chosen.endAt, chosen.technician);
     if (!visit) {
       return {

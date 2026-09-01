@@ -1,15 +1,73 @@
 /**
  * Shop assignment for Sarah's $200 service call.
- * Anza / high-desert → Cowin
- * West/central San Diego (Ramona, Escondido, Poway, …) → Brian Eads
+ *
+ * ONLY these two service techs, identified from this repo's team roster
+ * (scripts/seed-team.ts / supabase team seed) and then pinned to the
+ * Jobber user id returned for that person. Never guess "Brian" / "Chris".
+ *
+ *   Brian Eads  — brian@scwellservice.com — Ramona / west / central SD
+ *   Cowin       — cowin@scwellservice.com — Anza / high-desert
+ *
+ * Never assign Travis, Brighton, Haze, Chris, a drill crew, or anyone else.
  */
 
 export const TECH_COWIN = 'Cowin';
 export const TECH_BRIAN_EADS = 'Brian Eads';
 
+/** Exact identities from this repo's SCWS team roster — not Jobber name guesses. */
+export const SERVICE_TECH_ROSTER = {
+  brian: {
+    key: 'brian' as const,
+    name: TECH_BRIAN_EADS,
+    email: 'brian@scwellservice.com',
+    envIdKey: 'JOBBER_TECH_BRIAN_EADS_ID' as const,
+  },
+  cowin: {
+    key: 'cowin' as const,
+    name: TECH_COWIN,
+    email: 'cowin@scwellservice.com',
+    envIdKey: 'JOBBER_TECH_COWIN_ID' as const,
+  },
+};
+
+/** Everyone else on the roster Sarah must never assign. */
+export const BLOCKED_SERVICE_EMAILS = new Set([
+  'brighton@scwellservice.com',
+  'travis@scwellservice.com',
+  'bschroeder@scwellservice.com',
+  'lizbeth@scwellservice.com',
+  'roger@scwellservice.com',
+  'shanicey@scwellservice.com',
+  'austin@scwellservice.com',
+  'christopher@scwellservice.com',
+  'dakota@scwellservice.com',
+  'damian@scwellservice.com',
+  'dylan@scwellservice.com',
+  'hazemtarbell@gmail.com',
+  'jeff@scwellservice.com',
+  'marshall@scwellservice.com',
+  'sergio@scwellservice.com',
+]);
+
+const BLOCKED_NAME_EXACT = new Set([
+  'travis c sego',
+  'travis sego',
+  'travis',
+  'brighton scala',
+  'brighton',
+  'haze tarbell',
+  'haze',
+  'chris glass',
+  'christopher glass',
+  'chris',
+  'brian schroeder',
+  'brian schroder',
+]);
+
 export type ShopTech = {
   key: 'cowin' | 'brian';
   name: string;
+  email: string;
   envIdKey: 'JOBBER_TECH_COWIN_ID' | 'JOBBER_TECH_BRIAN_EADS_ID';
 };
 
@@ -113,23 +171,15 @@ export function assignShopTech(input: {
   zip?: string | null;
 }): ShopTech {
   const zip = extractZip(input.zip) || extractZip(input.address) || extractZip(input.city);
-  if (zip && COWIN_ZIPS.has(zip)) {
-    return { key: 'cowin', name: TECH_COWIN, envIdKey: 'JOBBER_TECH_COWIN_ID' };
-  }
-  if (zip && BRIAN_ZIPS.has(zip)) {
-    return { key: 'brian', name: TECH_BRIAN_EADS, envIdKey: 'JOBBER_TECH_BRIAN_EADS_ID' };
-  }
+  if (zip && COWIN_ZIPS.has(zip)) return { ...SERVICE_TECH_ROSTER.cowin };
+  if (zip && BRIAN_ZIPS.has(zip)) return { ...SERVICE_TECH_ROSTER.brian };
 
   const place = normalizePlace([input.city, input.address].filter(Boolean).join(' '));
-  if (cityMatches(place, COWIN_CITIES)) {
-    return { key: 'cowin', name: TECH_COWIN, envIdKey: 'JOBBER_TECH_COWIN_ID' };
-  }
-  if (cityMatches(place, BRIAN_CITIES)) {
-    return { key: 'brian', name: TECH_BRIAN_EADS, envIdKey: 'JOBBER_TECH_BRIAN_EADS_ID' };
-  }
+  if (cityMatches(place, COWIN_CITIES)) return { ...SERVICE_TECH_ROSTER.cowin };
+  if (cityMatches(place, BRIAN_CITIES)) return { ...SERVICE_TECH_ROSTER.brian };
 
   // Default to the Ramona / west-central shop, not Anza.
-  return { key: 'brian', name: TECH_BRIAN_EADS, envIdKey: 'JOBBER_TECH_BRIAN_EADS_ID' };
+  return { ...SERVICE_TECH_ROSTER.brian };
 }
 
 export type JobberUser = {
@@ -147,20 +197,34 @@ export function userDisplayName(user: JobberUser): string {
   return `${first} ${last}`.trim();
 }
 
-export function userMatchesTech(user: JobberUser, tech: ShopTech): boolean {
+export function userEmail(user: JobberUser): string {
+  const raw = typeof user.email === 'string' ? user.email : user.email?.raw || '';
+  return raw.trim().toLowerCase();
+}
+
+export function isBlockedAssignee(user: JobberUser): boolean {
+  const email = userEmail(user);
+  if (email && BLOCKED_SERVICE_EMAILS.has(email)) return true;
   const name = userDisplayName(user).toLowerCase();
-  const email =
-    (typeof user.email === 'string' ? user.email : user.email?.raw || '').toLowerCase();
+  if (BLOCKED_NAME_EXACT.has(name)) return true;
+  return false;
+}
 
-  if (tech.key === 'cowin') {
-    return name.includes('cowin') || email.startsWith('cowin@');
-  }
+/**
+ * Identity check against this repo's roster, then the Jobber user id.
+ * Exact email wins. Exact full name is allowed only when Jobber has no email.
+ * Fuzzy "Brian" / "Chris" / first-name-only matches are rejected.
+ */
+export function userMatchesTech(user: JobberUser, tech: ShopTech): boolean {
+  if (!user?.id || isBlockedAssignee(user)) return false;
 
-  return (
-    (name.includes('brian') && name.includes('eads')) ||
-    name === 'brian eads' ||
-    email.startsWith('brian@')
-  );
+  const email = userEmail(user);
+  const name = userDisplayName(user).toLowerCase();
+  const expectedEmail = tech.email.toLowerCase();
+  const expectedName = tech.name.toLowerCase();
+
+  if (email) return email === expectedEmail;
+  return name === expectedName;
 }
 
 export function resolveTechUserId(
@@ -168,13 +232,22 @@ export function resolveTechUserId(
   users: JobberUser[],
   env: NodeJS.ProcessEnv = process.env
 ): { id: string; name: string } | null {
-  const fromEnv = env[tech.envIdKey]?.trim();
-  if (fromEnv) {
-    const matched = users.find((user) => user.id === fromEnv);
-    return { id: fromEnv, name: matched ? userDisplayName(matched) || tech.name : tech.name };
-  }
+  const matches = users.filter((user) => userMatchesTech(user, tech));
+  if (matches.length !== 1 || !matches[0].id) return null;
 
-  const matched = users.find((user) => userMatchesTech(user, tech));
-  if (!matched?.id) return null;
-  return { id: matched.id, name: userDisplayName(matched) || tech.name };
+  const resolved = matches[0];
+  if (isBlockedAssignee(resolved)) return null;
+
+  const fromEnv = env[tech.envIdKey]?.trim();
+  // Env may pin the known Jobber id, but it must be THIS person — never Travis.
+  if (fromEnv && fromEnv !== resolved.id) return null;
+
+  return { id: resolved.id, name: userDisplayName(resolved) || tech.name };
+}
+
+export function isAllowlistedTechId(
+  technicianId: string | null | undefined,
+  allowlistedId: string | null | undefined
+): boolean {
+  return Boolean(technicianId && allowlistedId && technicianId === allowlistedId);
 }
