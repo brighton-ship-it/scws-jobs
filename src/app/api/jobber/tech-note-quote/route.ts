@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
       ...result,
       sentAt: null,
       draft: true,
-      note: 'Drafts stay unsent. sentAt is null. transitionQuoteTo was not set.',
+      note: 'Drafts stay unsent. sentAt is null. transitionQuoteTo was not set. Under-60% GP FLAGs are internal only — not the client message.',
     });
   } catch (error) {
     if (error instanceof TechNoteDoNotQuoteError) {

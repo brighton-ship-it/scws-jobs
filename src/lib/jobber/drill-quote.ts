@@ -1,7 +1,15 @@
 import { estimateFootageFromWcrs, queryNearbyWcrs, type WcrSample } from './dwr.ts';
 import { resolveSiteLocation } from './geocode.ts';
 import {
+  assertCustomerMessageHasNoGp,
+  assertNoInventedSixtyPrices,
+  officeTitleWithGpFlags,
+  scoreGrossProfit,
+  type GpFlag,
+} from './gross-profit.ts';
+import {
   createUnsentQuote,
+  fetchProductCosts,
   fetchTaxRates,
   findBrightonSalespersonId,
   findExistingClient,
@@ -50,6 +58,8 @@ export type DrillQuoteSuccess = {
   travelDays: number;
   lineItems: QuoteLineDraft[];
   customerMessage: string;
+  gpFlags: GpFlag[];
+  internalNote: string | null;
   wcrSample: WcrSample[];
 };
 
@@ -107,6 +117,8 @@ export async function createDrillQuote(
     method,
   });
   assertShopBookLines(lineItems);
+  assertNoInventedSixtyPrices(lineItems);
+  const gpEarly = scoreGrossProfit(lineItems);
 
   const street = site.street || input.address || null;
   const searchTerms = [input.clientId, input.phone, input.email, input.clientName, street, site.ownerName]
@@ -152,27 +164,38 @@ export async function createDrillQuote(
       travelDays,
       lineItems,
       customerMessage: customerMessageForAirRotary(estimate.footageFt),
+      gpFlags: gpEarly.flags,
+      internalNote: gpEarly.internalNote,
       wcrSample: wells.slice(0, 12),
     };
   }
 
-  const [rates, salespersonId] = await Promise.all([
+  const productSearch = lineItems.map((line) => line.sku || line.name).slice(0, 6);
+  const [rates, salespersonId, productCosts] = await Promise.all([
     fetchTaxRates(deps),
     findBrightonSalespersonId(deps),
+    fetchProductCosts(productSearch, deps),
   ]);
+  const gp = scoreGrossProfit(lineItems, productCosts);
   const tax = resolveJobberTax({ city, rates, env: deps?.env });
   const message = customerMessageForAirRotary(estimate.footageFt);
+  assertCustomerMessageHasNoGp(message);
   const propertyId = findExistingPropertyId(client, street);
+  const title = officeTitleWithGpFlags(
+    method === 'mud' ? MUD_ROTARY_TITLE : AIR_ROTARY_TITLE,
+    gp.flags
+  );
 
   const quote = await createUnsentQuote(
     {
       clientId: client.id,
       propertyId,
-      title: method === 'mud' ? MUD_ROTARY_TITLE : AIR_ROTARY_TITLE,
+      title,
       message,
       salespersonId,
       taxRateId: tax.taxRateId,
       lineItems,
+      internalNote: gp.internalNote,
     },
     deps
   );
@@ -191,6 +214,8 @@ export async function createDrillQuote(
     travelDays,
     lineItems,
     customerMessage: message,
+    gpFlags: gp.flags,
+    internalNote: gp.internalNote,
     wcrSample: wells.slice(0, 12),
   };
 }

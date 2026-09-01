@@ -7,6 +7,11 @@
 export const PULL_AND_EVAL_TITLE = 'Pull well pump and evaluate';
 export const REPLACE_TITLE = 'Pull well pump and replace';
 export const PRESSURE_TANK_TITLE = 'Replace pressure tank';
+export const HOUSE_TANK_TITLE = 'Replace house tank';
+export const HOUSE_TANK_SKU = '42043';
+export const HOUSE_TANK_NAME = '42043 5,000-gal poly house tank';
+/** Street median from the sold Jobber book. Never catalog $4,295 or 60% $10,738. */
+export const HOUSE_TANK_STREET_PRICE = 5998;
 export const CONTROLS_TITLE = 'Well controls';
 export const ELECTRICAL_TITLE = 'Electrical repair';
 export const AIR_ROTARY_TITLE = 'Air rotary new well';
@@ -75,6 +80,10 @@ export type QuoteLineDraft = {
   quantity: number;
   unitPrice: number;
   taxable: boolean;
+  /** SKU used for internal GP scoring only — not sent to Jobber. */
+  sku?: string;
+  /** Line-level true cost when already known. Never invent this. */
+  unitCost?: number;
 };
 
 const BT2_NEAR_CITIES = new Set([
@@ -264,6 +273,20 @@ export function buildControlsLines(notes?: string | null): QuoteLineDraft[] {
   return lines;
 }
 
+/** 5k poly house tank at sold street. Catalog book $4,295 is cost-only. */
+export function buildHouseTankLines(): QuoteLineDraft[] {
+  return [
+    {
+      name: HOUSE_TANK_NAME,
+      description: 'Street-book 5,000-gal poly house tank (SKU 42043). Sold at street, not catalog book.',
+      quantity: 1,
+      unitPrice: HOUSE_TANK_STREET_PRICE,
+      taxable: true,
+      sku: HOUSE_TANK_SKU,
+    },
+  ];
+}
+
 /** Promax PM260 + plumbing $125 (not $250 book) + labor $200. Never a hoist. */
 export function buildPressureTankLines(_input?: { includeHoist?: boolean }): QuoteLineDraft[] {
   return [
@@ -273,6 +296,7 @@ export function buildPressureTankLines(_input?: { includeHoist?: boolean }): Quo
       quantity: 1,
       unitPrice: PROMAX_PM260_PRICE,
       taxable: true,
+      sku: 'PM260',
     },
     {
       name: PLUMBING_PACKAGE_NAME,
@@ -396,7 +420,14 @@ export function mentionsServiceCallCredit(text: string | null | undefined): bool
 }
 
 export function customerMessageForTechNote(
-  kind: 'pull_and_eval' | 'replace' | 'pressure_tank' | 'pump_replace' | 'electrical' | 'controls',
+  kind:
+    | 'pull_and_eval'
+    | 'replace'
+    | 'pressure_tank'
+    | 'house_tank'
+    | 'pump_replace'
+    | 'electrical'
+    | 'controls',
   extras?: {
     motorBrand?: string;
     hp?: number | null;
@@ -406,6 +437,9 @@ export function customerMessageForTechNote(
     setOnly?: boolean;
   }
 ): string {
+  if (kind === 'house_tank') {
+    return 'Proposal to replace the house tank with a 5,000-gallon poly tank.';
+  }
   if (kind === 'pressure_tank') {
     return 'Proposal to replace the pressure tank with an 86-gallon Promax PM260, including the plumbing package and tank-swap labor.';
   }

@@ -118,8 +118,54 @@ describe('createTechNoteQuote', () => {
     assert.ok(!result.lineItems.some((line) => /BT2|pump|motor/i.test(line.name)));
     assert.equal(result.customerMessage.toLowerCase().includes('service call'), false);
     assert.equal(result.customerMessage.toLowerCase().includes('credit'), false);
+    assert.equal(result.customerMessage.includes('FLAG'), false);
+    assert.equal(result.customerMessage.includes('55%'), false);
+    assert.equal(result.customerMessage.includes('$1541'), false);
+    assert.ok(!result.lineItems.some((line) => line.unitPrice === 1541));
+    const pmFlag = result.gpFlags.find((flag) => flag.sku === 'PM260');
+    assert.ok(pmFlag);
+    assert.equal(Math.round((pmFlag.gp || 0) * 100), 55);
+    assert.match(pmFlag.text, /FLAG PM260 street \$1370 vs cost \$616\.50 = 55% GP/);
+    assert.match(result.internalNote || '', /not applied/);
+    const createBody = bodies.find((body) => body.includes('QuoteCreate') && !body.includes('LineItems'));
+    assert.ok(createBody);
+    const createVars = JSON.parse(createBody).variables as {
+      attributes?: { title?: string; message?: string };
+      quote?: { title?: string; message?: string };
+    };
+    const attrs = createVars.attributes || createVars.quote || {};
+    assert.match(attrs.title || '', /FLAG under 60% GP/);
+    assert.equal((attrs.message || '').includes('FLAG'), false);
+    assert.ok(bodies.some((body) => body.includes('quoteCreateNote') && body.includes('FLAG PM260')));
     assert.ok(bodies.every((body) => !body.includes('transitionQuoteTo')));
     assert.ok(bodies.some((body) => body.includes('quoteCreate')));
+  });
+
+  it('quotes an unspecified house tank at street $5998 and flags 28% vs book — not $4295 or $10738', async () => {
+    const { fetchImpl, bodies } = jobberFetch(ramonaJob);
+    const result = await createTechNoteQuote(
+      { jobNumber: 8801, techNotes: 'unspecified house tank' },
+      { fetchImpl, token: 'test', env: { JOBBER_TAX_RATE_ID_SAN_DIEGO: 'sd-tax' } }
+    );
+    assert.equal(result.intent, 'house_tank');
+    assert.equal(result.lineItems[0]?.unitPrice, 5998);
+    assert.ok(result.lineItems[0]?.name.includes('42043'));
+    assert.ok(!result.lineItems.some((line) => line.unitPrice === 4295));
+    assert.ok(!result.lineItems.some((line) => line.unitPrice === 10738));
+    const flag = result.gpFlags.find((row) => row.sku === '42043');
+    assert.ok(flag);
+    assert.equal(flag.cost, 4295);
+    assert.equal(Math.round((flag.gp || 0) * 100), 28);
+    assert.match(flag.text, /60% would be \$10738 — not applied/);
+    assert.equal(result.customerMessage.includes('FLAG'), false);
+    assert.equal(result.customerMessage.includes('$200'), false);
+    assert.equal(result.customerMessage.toLowerCase().includes('payment plan'), false);
+    assert.ok(bodies.every((body) => !body.includes('transitionQuoteTo')));
+    for (const body of bodies) {
+      if (body.includes('quoteCreateNote') || body.includes('NoteCreate')) continue;
+      assert.equal(body.includes('10738'), false);
+      assert.equal(body.includes('"unitPrice":4295'), false);
+    }
   });
 
   it('creates a BT2 pull-and-eval only when notes actually say pull/eval', async () => {

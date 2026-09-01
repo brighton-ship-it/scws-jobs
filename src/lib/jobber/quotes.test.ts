@@ -44,6 +44,29 @@ describe('unsent quote attributes', () => {
       /transitionQuoteTo/
     );
   });
+
+  it('refuses to put GP FLAG math on the client-facing message', async () => {
+    await assert.rejects(
+      () =>
+        createUnsentQuote(
+          {
+            clientId: 'client-1',
+            title: 'Replace pressure tank — FLAG under 60% GP',
+            message: 'FLAG PM260 street $1370 vs cost $616.50 = 55% GP (60% would be $1541 — not applied)',
+            lineItems: [{ name: '86-gal Promax PM260', quantity: 1, unitPrice: 1370, taxable: true }],
+          },
+          {
+            fetchImpl: async () =>
+              new Response(JSON.stringify({ data: {} }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+              }),
+            token: 'test',
+          }
+        ),
+      /Customer-facing quote message must not contain GP FLAG/
+    );
+  });
 });
 
 describe('live quote reuse', () => {

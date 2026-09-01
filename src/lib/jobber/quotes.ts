@@ -3,6 +3,7 @@ import {
   jobberGraphql,
   jobberUserErrors,
 } from './client.ts';
+import { mentionsGpFlag, type JobberProductCost } from './gross-profit.ts';
 import type { QuoteLineDraft } from './shop-book.ts';
 import type { JobberTaxRate } from './tax.ts';
 
@@ -202,10 +203,39 @@ const QUOTE_LINE_ITEMS = `
   }
 `;
 
+/** Best-effort private note. Jobber's public schema dropped quoteNoteCreate; try both shapes. */
+const QUOTE_NOTE_CREATE = `
+  mutation QuoteCreateNote($quoteId: EncodedId!, $message: String!) {
+    quoteCreateNote(quoteId: $quoteId, input: { message: $message }) {
+      quoteNote { id }
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_NOTE_CREATE_ALT = `
+  mutation NoteCreate($quoteId: EncodedId!, $message: String!) {
+    noteCreate(input: { linkedTo: $quoteId, message: $message }) {
+      note { id }
+      userErrors { message path }
+    }
+  }
+`;
+
+const PRODUCTS_SEARCH = `
+  query ProductsAndServices($searchTerm: String!) {
+    productsAndServices(searchTerm: $searchTerm, first: 15) {
+      nodes { id name internalUnitCost defaultUnitCost }
+    }
+  }
+`;
+
 export type JobberDeps = {
   fetchImpl?: typeof fetch;
   token?: string | null;
   env?: NodeJS.ProcessEnv;
+  /** Optional Jobber product cost overlay for GP scoring (tests inject this). */
+  productCosts?: JobberProductCost[];
 };
 
 export function isLiveQuote(quote: JobberQuoteSummary | null | undefined): boolean {
@@ -246,6 +276,7 @@ export function buildUnsentQuoteAttributes(input: {
   if (input.salespersonId) attributes.salespersonId = input.salespersonId;
   if (input.taxRateId) attributes.taxRateId = input.taxRateId;
   // Drafts stay unsent. Never set transitionQuoteTo or sentAt.
+  // Never put GP FLAG math on message — that is the client-facing email body.
   return attributes;
 }
 
@@ -267,6 +298,50 @@ export function toJobberLineItems(lines: QuoteLineDraft[]): Array<Record<string,
     taxable: line.taxable,
     saveToProductsAndServices: false,
   }));
+}
+
+export async function attachInternalQuoteNote(
+  quoteId: string,
+  note: string,
+  deps?: JobberDeps
+): Promise<boolean> {
+  if (!note.trim()) return false;
+  for (const query of [QUOTE_NOTE_CREATE, QUOTE_NOTE_CREATE_ALT]) {
+    try {
+      const result = await graphql(query, { quoteId, message: note }, deps);
+      if (result.errors?.length) continue;
+      const payload = result.data?.quoteCreateNote || result.data?.noteCreate;
+      if (jobberUserErrors(payload).length) continue;
+      if (payload?.quoteNote?.id || payload?.note?.id) return true;
+    } catch {
+      // Schema mismatch — title suffix + API JSON still carry the FLAG.
+    }
+  }
+  return false;
+}
+
+export async function fetchProductCosts(
+  searchTerms: string[],
+  deps?: JobberDeps
+): Promise<JobberProductCost[]> {
+  if (deps?.productCosts) return deps.productCosts;
+  const found: JobberProductCost[] = [];
+  const seen = new Set<string>();
+  for (const term of searchTerms.filter(Boolean)) {
+    try {
+      const result = await graphql(PRODUCTS_SEARCH, { searchTerm: term }, deps);
+      if (result.errors?.length) continue;
+      for (const node of (result.data?.productsAndServices?.nodes || []) as JobberProductCost[]) {
+        const key = `${node.name || ''}|${node.sku || ''}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push(node);
+      }
+    } catch {
+      // Live catalog is optional — vendor nets in this repo still score.
+    }
+  }
+  return found;
 }
 
 function graphql(query: string, variables: Record<string, unknown>, deps?: JobberDeps) {
@@ -408,9 +483,13 @@ export async function createUnsentQuote(
     salespersonId?: string | null;
     taxRateId?: string | null;
     lineItems: QuoteLineDraft[];
+    internalNote?: string | null;
   },
   deps?: JobberDeps
 ): Promise<JobberQuoteSummary> {
+  if (mentionsGpFlag(input.message)) {
+    throw new Error('Customer-facing quote message must not contain GP FLAG math');
+  }
   const attributes = buildUnsentQuoteAttributes(input);
   assertUnsentQuoteAttributes(attributes);
 
@@ -442,6 +521,10 @@ export async function createUnsentQuote(
   const lineErrors = jobberUserErrors(linesResult.data?.quoteCreateLineItems);
   if (lineErrors.length) {
     throw new Error(lineErrors.join('; '));
+  }
+
+  if (input.internalNote) {
+    await attachInternalQuoteNote(quote.id, input.internalNote, deps);
   }
 
   return quote;

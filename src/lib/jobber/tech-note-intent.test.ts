@@ -117,6 +117,15 @@ describe('parseTechNoteIntent', () => {
     assert.equal(parsed.equipment.pulledWell, false);
   });
 
+  it('classifies an unspecified house tank as 42043, not a PM260 pressure tank', () => {
+    const house = requireTechNoteIntent({ techNotes: 'needs a house tank, unspecified' });
+    assert.equal(house.kind, 'house_tank');
+    assert.equal(house.unclear, false);
+
+    const sku = requireTechNoteIntent({ techNotes: 'quote 42043 5k poly' });
+    assert.equal(sku.kind, 'house_tank');
+  });
+
   it('classifies short to ground as pull-and-eval', () => {
     const ramona = parseTechNoteIntent({ techNotes: 'short to ground, needs pull' });
     assert.equal(ramona.kind, 'pull_and_eval');

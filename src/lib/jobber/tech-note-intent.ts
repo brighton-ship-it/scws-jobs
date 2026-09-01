@@ -6,6 +6,7 @@
 export type TechNoteKind =
   | 'pull_and_eval'
   | 'pressure_tank'
+  | 'house_tank'
   | 'pump_replace'
   | 'controls'
   | 'electrical'
@@ -172,6 +173,18 @@ function isTankFail(corpus: string): boolean {
   );
 }
 
+/** 5k poly / SKU 42043 / unnamed house or storage tank — not a well pressure tank. */
+export function isHouseTank(corpus: string): boolean {
+  return (
+    /\b42043\b/.test(corpus) ||
+    /\bhouse\s+tanks?\b/.test(corpus) ||
+    /\bstorage\s+tanks?\b/.test(corpus) ||
+    /\b(?:5k|5,000|5000)\s*(?:gal(?:lon)?s?)?\s*poly\b/.test(corpus) ||
+    /\b5,000\s*(?:gal|gallon)s?\b/.test(corpus) ||
+    /\b5000\s*(?:gal|gallon)s?\b/.test(corpus)
+  );
+}
+
 function isPrechargeOnly(corpus: string, tankLeaking: boolean, ampsNormal: boolean): boolean {
   if (tankLeaking || !ampsNormal) return false;
   return (
@@ -216,7 +229,13 @@ function guessList(corpus: string, equipment: ParsedEquipment): IntentGuess[] {
       reason: 'mentions pull/eval but is not a clear street-book match',
     });
   }
-  if (/\btank\b|\bbladder\b/i.test(corpus)) {
+  if (isHouseTank(corpus)) {
+    guesses.push({
+      kind: 'house_tank',
+      confidence: 0.4,
+      reason: 'mentions a house/storage tank but is not a clear street-book match',
+    });
+  } else if (/\btank\b|\bbladder\b/i.test(corpus)) {
     guesses.push({
       kind: 'pressure_tank',
       confidence: 0.3,
@@ -344,6 +363,16 @@ export function parseTechNoteIntent(input: {
       corpus,
       doNotQuote: null,
     };
+  }
+
+  // 4a. Unspecified house / storage / 5k poly tank — street SKU 42043, not PM260.
+  if (isHouseTank(corpus)) {
+    return decided(
+      'house_tank',
+      'House or storage tank (SKU 42043 street). Not a well pressure tank.',
+      equipment,
+      corpus
+    );
   }
 
   // 4. Pinhole / tank leak / waterlogged bladder AND amps normal.

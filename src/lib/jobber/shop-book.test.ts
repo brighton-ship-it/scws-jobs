@@ -17,6 +17,7 @@ import {
   assertShopBookLines,
   bt2PriceForCity,
   buildAirRotaryLines,
+  buildHouseTankLines,
   buildPressureTankLines,
   buildPullAndEvalLines,
   customerMessageForAirRotary,
@@ -50,9 +51,13 @@ describe('pull-and-eval shop book', () => {
     const evalMsg = customerMessageForTechNote('pull_and_eval');
     const replaceMsg = customerMessageForTechNote('replace', { motorBrand: 'Franklin' });
     const tankMsg = customerMessageForTechNote('pressure_tank');
+    const houseMsg = customerMessageForTechNote('house_tank');
     assert.equal(mentionsServiceCallCredit(evalMsg), false);
     assert.equal(mentionsServiceCallCredit(replaceMsg), false);
     assert.equal(mentionsServiceCallCredit(tankMsg), false);
+    assert.equal(mentionsServiceCallCredit(houseMsg), false);
+    assert.equal(houseMsg.includes('FLAG'), false);
+    assert.equal(houseMsg.includes('$200'), false);
     assert.equal(mentionsServiceCallCredit('credit the $200 service call'), true);
   });
 
@@ -75,6 +80,14 @@ describe('pressure tank shop book', () => {
     assert.equal(lines.find((line) => line.name.includes('Tank swap'))?.unitPrice, TANK_SWAP_LABOR_PRICE);
     assert.ok(!lines.some((line) => line.name === HOIST_NAME));
     assert.ok(!lines.some((line) => line.name === 'BT2'));
+  });
+
+  it('quotes unspecified house tank as 42043 street $5998, not catalog $4295 or 60% $10738', () => {
+    const lines = buildHouseTankLines();
+    assert.equal(lines[0]?.unitPrice, 5998);
+    assert.match(lines[0]?.name || '', /42043/);
+    assert.equal(lines.some((line) => line.unitPrice === 4295), false);
+    assert.equal(lines.some((line) => line.unitPrice === 10738), false);
   });
 });
 
