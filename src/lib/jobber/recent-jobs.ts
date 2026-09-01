@@ -3,8 +3,15 @@
  * Does not touch receptionist / vendor / Sarah code.
  */
 
-export const JOBBER_GRAPHQL_URL = 'https://api.getjobber.com/api/graphql';
-export const DEFAULT_JOBBER_GRAPHQL_VERSION = '2025-04-16';
+import {
+  DEFAULT_JOBBER_GRAPHQL_VERSION,
+  JOBBER_GRAPHQL_URL,
+  getJobberAccessToken,
+  jobberGraphql,
+} from './client.ts';
+
+export { DEFAULT_JOBBER_GRAPHQL_VERSION, JOBBER_GRAPHQL_URL, getJobberAccessToken };
+
 export const JOB_POLL_LOOKBACK_MS = 45 * 60 * 1000;
 
 export interface JobberJobNode {
@@ -79,43 +86,6 @@ const FALLBACK_JOBS_QUERY = `
   }
 `;
 
-export function getJobberAccessToken(): string | null {
-  return process.env.JOBBER_ACCESS_TOKEN?.trim() || null;
-}
-
-function jobberHeaders(token: string): HeadersInit {
-  return {
-    Authorization: `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'X-JOBBER-GRAPHQL-VERSION':
-      process.env.JOBBER_GRAPHQL_VERSION?.trim() || DEFAULT_JOBBER_GRAPHQL_VERSION,
-  };
-}
-
-async function jobberGraphql(
-  token: string,
-  query: string,
-  variables: Record<string, unknown>,
-  fetchImpl: typeof fetch
-): Promise<{ data?: any; errors?: Array<{ message?: string }> }> {
-  const response = await fetchImpl(JOBBER_GRAPHQL_URL, {
-    method: 'POST',
-    headers: jobberHeaders(token),
-    body: JSON.stringify({ query, variables }),
-  });
-
-  const json = (await response.json()) as {
-    data?: any;
-    errors?: Array<{ message?: string }>;
-  };
-
-  if (!response.ok) {
-    throw new Error(`Jobber GraphQL HTTP ${response.status}`);
-  }
-
-  return json;
-}
-
 export async function fetchRecentlyUpdatedJobs(options?: {
   lookbackMs?: number;
   now?: Date;
@@ -142,12 +112,11 @@ export async function fetchRecentlyUpdatedJobs(options?: {
 
   for (let page = 0; page < maxPages; page++) {
     const result = await jobberGraphql(
-      token,
       useFallback ? FALLBACK_JOBS_QUERY : RECENT_JOBS_QUERY,
       useFallback
         ? { first: pageSize, after }
         : { first: pageSize, after, updatedAfter },
-      fetchImpl
+      { token, fetchImpl }
     );
 
     if (result.errors?.length && !useFallback && page === 0) {

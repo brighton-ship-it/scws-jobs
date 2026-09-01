@@ -41,6 +41,10 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   // Middleware must not 401 these; the route still requires CRON_SECRET.
   { method: '*', path: '/api/cron/', match: 'prefix' },
 
+  // Jobber unsent quote drafts — route still requires Bearer CRON_SECRET.
+  { method: 'POST', path: '/api/jobber/tech-note-quote', match: 'exact' },
+  { method: 'POST', path: '/api/jobber/drill-quote', match: 'exact' },
+
   // Browser push setup (public key only)
   { method: 'GET', path: '/api/push/vapid-key', match: 'exact' },
 ];
