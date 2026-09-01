@@ -1,6 +1,7 @@
 /**
  * SCWS street book for Jobber draft quotes.
- * Footage / seal prices match Jobber quotes #4238 and #4244.
+ * Street book from 1,307 Jobber quotes + 248 tech notes.
+ * Air ~$45/ft (Braman 4243 sold $48). Mud $70/ft. Seal always qty 20 × $220.
  */
 
 export const PULL_AND_EVAL_TITLE = 'Pull well pump and evaluate';
