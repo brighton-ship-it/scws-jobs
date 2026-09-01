@@ -33,6 +33,7 @@ export async function POST(request: NextRequest) {
       lat?: number;
       lng?: number;
       city?: string;
+      method?: 'air' | 'mud';
     };
 
     const result = await createDrillQuote({
@@ -46,6 +47,7 @@ export async function POST(request: NextRequest) {
       lat: body.lat,
       lng: body.lng,
       city: body.city,
+      method: body.method,
     });
 
     if (!result.success) {

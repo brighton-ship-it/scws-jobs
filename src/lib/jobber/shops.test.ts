@@ -6,14 +6,15 @@ import {
   drillMethodForSite,
   estimateDriveHours,
   motorBrandForShop,
+  soldMotorBrand,
   travelDaysForHole,
 } from './shops.ts';
 
 describe('shop assignment and motors', () => {
-  it('assigns Ramona + Franklin for Ramona / San Diego', () => {
+  it('assigns Ramona shop; sold motor book is CentriPro (165 CP vs 14 FE)', () => {
     assert.equal(assignShop('Ramona'), 'ramona');
     assert.equal(assignShop('Escondido'), 'ramona');
-    assert.equal(motorBrandForShop('ramona'), 'Franklin');
+    assert.equal(motorBrandForShop('ramona'), 'CentriPro');
   });
 
   it('assigns Anza + CentriPro for Anza / Goulds / Riverside', () => {
@@ -21,6 +22,12 @@ describe('shop assignment and motors', () => {
     assert.equal(assignShop('Goulds'), 'anza');
     assert.equal(assignShop('Temecula'), 'anza');
     assert.equal(motorBrandForShop('anza'), 'CentriPro');
+  });
+
+  it('uses Franklin only when notes name Franklin/FE', () => {
+    assert.equal(soldMotorBrand('2hp CentriPro', 'ramona'), 'CentriPro');
+    assert.equal(soldMotorBrand('Franklin FE 2hp', 'ramona'), 'Franklin');
+    assert.equal(soldMotorBrand('set 2hp', 'anza'), 'CentriPro');
   });
 
   it('rejects motor brands other than Franklin or CentriPro', () => {

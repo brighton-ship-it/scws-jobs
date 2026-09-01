@@ -31,8 +31,17 @@ export function assignShop(city: string | null | undefined): ShopKey {
   return 'ramona';
 }
 
-export function motorBrandForShop(shop: ShopKey): MotorBrand {
-  return shop === 'anza' ? 'CentriPro' : 'Franklin';
+/** Sold book is CentriPro / Goulds CP (165 CP vs 14 Franklin FE). Anza is always CP. */
+export function motorBrandForShop(_shop: ShopKey): MotorBrand {
+  return 'CentriPro';
+}
+
+/** Franklin only when notes name Franklin/FE. Otherwise sold book is CentriPro. */
+export function soldMotorBrand(notes: string | null | undefined, shop: ShopKey): MotorBrand {
+  if (/\bfranklin\b|\bfranklin\s+electric\b|\bfe[\s-]?\d/i.test(notes || '')) {
+    return 'Franklin';
+  }
+  return motorBrandForShop(shop);
 }
 
 export function isAllowedMotorBrand(brand: string | null | undefined): boolean {
