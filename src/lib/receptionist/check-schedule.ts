@@ -30,6 +30,15 @@ export type NextAppointment = {
   technicians: string[];
 };
 
+export type OpenSlotSummary = {
+  startAt: string;
+  endAt: string;
+  date: string;
+  time: string;
+  technician: string;
+  technicianId: string;
+};
+
 export type ScheduleLookupResult = {
   lookupStatus: ScheduleLookupStatus;
   found: boolean;
@@ -42,6 +51,26 @@ export type ScheduleLookupResult = {
   message: string;
   confirmationRule: string;
   error?: string;
+  /** True only for an existing Jobber visit — never for an open slot. */
+  mayBook?: boolean;
+  bookingBlockReason?: string;
+  bookingMessage?: string;
+  openSlots?: OpenSlotSummary[];
+  assignedTechName?: string;
+  weekendEmergency?: boolean;
+};
+
+export type CheckScheduleInput = {
+  phone: string;
+  city?: string;
+  address?: string;
+  zip?: string;
+  postalCode?: string;
+  intent?: string;
+  urgency?: string;
+  needNow?: boolean | string;
+  thisWeekend?: boolean | string;
+  notes?: string;
 };
 
 export type CheckScheduleDeps = {
@@ -49,6 +78,7 @@ export type CheckScheduleDeps = {
   now?: Date;
   accessToken?: string | null;
   graphqlVersion?: string;
+  env?: NodeJS.ProcessEnv;
 };
 
 export type CheckScheduleResponse = {
@@ -269,7 +299,9 @@ export function scheduleLookupError(message?: string): ScheduleLookupResult {
     found: false,
     hasAppointments: false,
     canConfirm: false,
+    mayBook: false,
     visits: [],
+    openSlots: [],
     error: message || 'Failed to process request',
     message:
       "I'm not able to pull up the schedule right now. I'll have the office verify and call you back.",
@@ -410,12 +442,96 @@ export async function lookupUpcomingVisits(
   return visitsFoundResult(clientName, visits);
 }
 
+function asCheckScheduleInput(phoneOrInput: string | CheckScheduleInput): CheckScheduleInput {
+  return typeof phoneOrInput === 'string' ? { phone: phoneOrInput } : phoneOrInput;
+}
+
+export function wantsOpenSlots(input: CheckScheduleInput): boolean {
+  const intent = String(input.intent || '').toLowerCase();
+  return intent === 'book' || Boolean(input.city || input.address || input.zip || input.postalCode);
+}
+
 export async function handleCheckSchedule(
-  phone: string,
+  phoneOrInput: string | CheckScheduleInput,
   deps: CheckScheduleDeps = {}
 ): Promise<CheckScheduleResponse> {
+  const input = asCheckScheduleInput(phoneOrInput);
+
   try {
-    return { result: await lookupUpcomingVisits(phone, deps) };
+    const result = await lookupUpcomingVisits(input.phone, deps);
+    if (!wantsOpenSlots(input)) {
+      return { result };
+    }
+
+    const { decideSarahBooking } = await import('./after-hours.ts');
+    const { lookupOpenSlots } = await import('./open-slots.ts');
+    const booking = decideSarahBooking(deps.now ?? new Date(), input);
+
+    if (!booking.mayBook) {
+      return {
+        result: {
+          ...result,
+          canConfirm: result.canConfirm,
+          mayBook: false,
+          weekendEmergency: booking.weekendEmergency,
+          bookingBlockReason: booking.reason,
+          bookingMessage: booking.spoken,
+          openSlots: [],
+          confirmationRule: result.canConfirm ? result.confirmationRule : booking.confirmationRule,
+        },
+      };
+    }
+
+    if (result.lookupStatus === 'error') {
+      return {
+        result: {
+          ...result,
+          mayBook: false,
+          openSlots: [],
+          bookingMessage: result.message,
+        },
+      };
+    }
+
+    const slots = await lookupOpenSlots(
+      {
+        city: input.city,
+        address: input.address,
+        zip: input.zip || input.postalCode,
+      },
+      deps
+    );
+
+    if (slots.lookupStatus === 'error') {
+      return {
+        result: {
+          ...result,
+          lookupStatus: result.lookupStatus === 'ok' ? result.lookupStatus : 'error',
+          canConfirm: result.canConfirm,
+          mayBook: false,
+          openSlots: [],
+          assignedTechName: slots.assignedTechName,
+          bookingBlockReason: 'jobber_slots_error',
+          bookingMessage:
+            "I'm not able to pull up open times on the Jobber calendar. I won't invent a time. I'll have the office call you back.",
+          error: result.error || slots.error,
+        },
+      };
+    }
+
+    return {
+      result: {
+        ...result,
+        mayBook: slots.openSlots.length > 0,
+        openSlots: slots.openSlots,
+        assignedTechName: slots.assignedTechName,
+        bookingMessage:
+          slots.openSlots.length > 0
+            ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`
+            : "I don't see an open Jobber slot I can book. I'll have the office call you back.",
+        bookingBlockReason: slots.openSlots.length === 0 ? 'no_slots' : undefined,
+      },
+    };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { result: scheduleLookupError(message) };

@@ -5,6 +5,7 @@ import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
 import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/receptionist/pay-link';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
+import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -477,8 +478,57 @@ async function handleFunctionCall(body: any) {
         return NextResponse.json(await handleLookupCustomer(phone || params.phone));
       
       case 'checkSchedule':
-        // Confirmation lock: payload sets canConfirm only when Jobber returned a visit.
-        return NextResponse.json(await handleCheckSchedule(phone || params.phone));
+        // Confirmation lock: canConfirm only when Jobber returned a visit.
+        // With city/intent=book, also returns real Jobber openSlots (never invented).
+        return NextResponse.json(
+          await handleCheckSchedule({
+            phone: phone || params.phone,
+            city: params.city,
+            address: params.address,
+            zip: params.zip || params.postalCode,
+            postalCode: params.postalCode,
+            intent: params.intent,
+            urgency: params.urgency,
+            needNow: params.needNow,
+            thisWeekend: params.thisWeekend,
+            notes: params.notes,
+          })
+        );
+
+      case 'bookJob':
+      case 'book_job':
+        return NextResponse.json(
+          await handleBookServiceCall(
+            {
+              phone: phone || params.phone,
+              name: params.name || params.callerName || params.customerName,
+              firstName: params.firstName,
+              lastName: params.lastName,
+              email: params.email,
+              address: params.address,
+              city: params.city,
+              zip: params.zip || params.postalCode,
+              postalCode: params.postalCode,
+              startAt: params.startAt,
+              urgency: params.urgency,
+              needNow: params.needNow,
+              thisWeekend: params.thisWeekend,
+              notes: params.notes || params.reason,
+            },
+            {
+              notifyOffice: async (flag) => {
+                for (const email of OFFICE_FLAG_EMAILS) {
+                  await sendEmail({
+                    to: email,
+                    subject: flag.subject,
+                    html: textToHtml(flag.text),
+                    text: flag.text,
+                  });
+                }
+              },
+            }
+          )
+        );
       
       case 'getServiceInfo':
         return NextResponse.json(handleGetServiceInfo(params.serviceType));
