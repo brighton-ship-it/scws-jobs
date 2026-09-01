@@ -26,4 +26,11 @@ describe('isPublicApiRoute', () => {
     assert.equal(isCronApiPath('/api/cron/process-automations'), true);
     assert.equal(isCronApiPath('/api/booking'), false);
   });
+
+  it('allows Jobber unsent quote draft POSTs (self-authenticate with CRON_SECRET)', () => {
+    assert.equal(isPublicApiRoute('POST', '/api/jobber/tech-note-quote'), true);
+    assert.equal(isPublicApiRoute('POST', '/api/jobber/drill-quote'), true);
+    assert.equal(isPublicApiRoute('GET', '/api/jobber/tech-note-quote'), false);
+    assert.equal(isPublicApiRoute('POST', '/api/jobber/tech-note-quote/extra'), false);
+  });
 });
