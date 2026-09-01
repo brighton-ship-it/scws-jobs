@@ -147,8 +147,24 @@ describe('createDrillQuote', () => {
       assert.ok(!result.lineItems.some((line) => line.name === TRAVEL_LINE_NAME));
       assert.ok(result.lineItems.some((line) => line.name === 'Water Delivery'));
       assert.ok(result.lineItems.some((line) => line.name === 'Mobilization' && line.unitPrice === 2500));
+      const footage = result.lineItems.find((line) => line.name.includes('Air Rotary'));
+      assert.equal(footage?.unitPrice, 45);
+      assert.ok(!result.lineItems.some((line) => line.unitPrice === 95 || line.unitPrice === 137.5));
+      assert.ok(result.gpFlags.some((flag) => flag.kind === 'cannot_score' && /air rotary/i.test(flag.sku)));
+      assert.equal(result.customerMessage.includes('FLAG'), false);
+      assert.ok(!/95|137\.50/.test(result.internalNote || ''));
     }
     assert.ok(bodies.every((body) => !body.includes('transitionQuoteTo')));
+    const createBody = bodies.find((body) => body.includes('QuoteCreate') && !body.includes('LineItems'));
+    if (createBody) {
+      const vars = JSON.parse(createBody).variables as {
+        attributes?: { title?: string; message?: string };
+        quote?: { title?: string; message?: string };
+      };
+      const attrs = vars.attributes || vars.quote || {};
+      assert.match(attrs.title || '', /FLAG under 60% GP/);
+      assert.equal((attrs.message || '').includes('FLAG'), false);
+    }
   });
 
   it('refuses to create a client when none exists', async () => {

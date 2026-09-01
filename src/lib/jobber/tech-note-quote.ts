@@ -1,5 +1,13 @@
 import {
+  assertCustomerMessageHasNoGp,
+  assertNoInventedSixtyPrices,
+  officeTitleWithGpFlags,
+  scoreGrossProfit,
+  type GpFlag,
+} from './gross-profit.ts';
+import {
   createUnsentQuote,
+  fetchProductCosts,
   fetchTaxRates,
   findBrightonSalespersonId,
   findLiveQuoteForJob,
@@ -10,6 +18,7 @@ import {
 import {
   assertShopBookLines,
   buildControlsLines,
+  buildHouseTankLines,
   buildPressureTankLines,
   buildPullAndEvalLines,
   buildPumpReplaceLines,
@@ -17,6 +26,7 @@ import {
   mentionsServiceCallCredit,
   CONTROLS_TITLE,
   ELECTRICAL_TITLE,
+  HOUSE_TANK_TITLE,
   PRESSURE_TANK_TITLE,
   PULL_AND_EVAL_TITLE,
   REPLACE_TITLE,
@@ -56,6 +66,8 @@ export type TechNoteQuoteResult = {
   guesses: IntentGuess[];
   lineItems: QuoteLineDraft[];
   customerMessage: string;
+  gpFlags: GpFlag[];
+  internalNote: string | null;
 };
 
 export { UnclearTechNoteIntentError, TechNoteDoNotQuoteError };
@@ -76,6 +88,7 @@ function emptyEquipment(): ParsedEquipment {
 }
 
 function titleForIntent(kind: TechNoteKind): string {
+  if (kind === 'house_tank') return HOUSE_TANK_TITLE;
   if (kind === 'pressure_tank') return PRESSURE_TANK_TITLE;
   if (kind === 'pump_replace') return REPLACE_TITLE;
   if (kind === 'controls') return CONTROLS_TITLE;
@@ -89,6 +102,13 @@ function linesForIntent(
   equipment: ParsedEquipment,
   notes: string | null | undefined
 ): { lineItems: QuoteLineDraft[]; motorBrand: 'Franklin' | 'CentriPro' | null } {
+  if (kind === 'house_tank') {
+    return {
+      lineItems: buildHouseTankLines(),
+      motorBrand: null,
+    };
+  }
+
   if (kind === 'pressure_tank') {
     if (equipment.tankGallons != null && equipment.tankGallons !== 86) {
       throw new UnclearTechNoteIntentError(
@@ -177,6 +197,8 @@ export async function createTechNoteQuote(
       guesses: [],
       lineItems: [],
       customerMessage: '',
+      gpFlags: [],
+      internalNote: null,
     };
   }
 
@@ -195,6 +217,7 @@ export async function createTechNoteQuote(
     input.techNotes
   );
   assertShopBookLines(lineItems);
+  assertNoInventedSixtyPrices(lineItems);
 
   if (parsed.kind === 'pressure_tank') {
     if (lineItems.some((line) => /hoist/i.test(line.name))) {
@@ -226,11 +249,18 @@ export async function createTechNoteQuote(
   if (/\bpayment\s+plan\b|\bmonthly\s+payment\b|\bfinancing\b/i.test(message)) {
     throw new Error('Customer message must not mention a payment plan');
   }
+  assertCustomerMessageHasNoGp(message);
 
-  const [rates, salespersonId] = await Promise.all([
+  const productSearch = lineItems
+    .map((line) => line.sku || line.name)
+    .filter(Boolean)
+    .slice(0, 6);
+  const [rates, salespersonId, productCosts] = await Promise.all([
     fetchTaxRates(deps),
     findBrightonSalespersonId(deps),
+    fetchProductCosts(productSearch, deps),
   ]);
+  const gp = scoreGrossProfit(lineItems, productCosts);
   const tax = resolveJobberTax({
     city,
     rates,
@@ -238,16 +268,20 @@ export async function createTechNoteQuote(
     env: deps?.env,
   });
 
-  const title = titleForIntent(parsed.kind);
+  const title = officeTitleWithGpFlags(
+    job.jobNumber != null ? `${titleForIntent(parsed.kind)} (job ${job.jobNumber})` : titleForIntent(parsed.kind),
+    gp.flags
+  );
   const quote = await createUnsentQuote(
     {
       clientId: client.id,
       propertyId: job.property?.id,
-      title: job.jobNumber != null ? `${title} (job ${job.jobNumber})` : title,
+      title,
       message,
       salespersonId,
       taxRateId: tax.taxRateId,
       lineItems,
+      internalNote: gp.internalNote,
     },
     deps
   );
@@ -268,5 +302,7 @@ export async function createTechNoteQuote(
     guesses: parsed.guesses,
     lineItems,
     customerMessage: message,
+    gpFlags: gp.flags,
+    internalNote: gp.internalNote,
   };
 }
