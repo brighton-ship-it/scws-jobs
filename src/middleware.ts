@@ -1,7 +1,7 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { checkRateLimit, rateLimitedResponse, getRateLimitHeaders } from '@/lib/rate-limit';
-import { isCronApiPath, isOpsApiPath } from '@/lib/public-api';
+import { isCronApiPath, isOpsApiPath, isOpsPagePath } from '@/lib/public-api';
 
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
@@ -46,7 +46,11 @@ export async function middleware(request: NextRequest) {
   }
   
   // Non-API routes just get session handling
-  return await updateSession(request);
+  const response = await updateSession(request);
+  if (isOpsPagePath(path)) {
+    response.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
+  }
+  return response;
 }
 
 export const config = {

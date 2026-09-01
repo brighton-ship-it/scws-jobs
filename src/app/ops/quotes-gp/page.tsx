@@ -82,7 +82,7 @@ function authHeaders(key: string): HeadersInit {
 export default function QuotesGpPage() {
   const [key, setKey] = useState('');
   const [keyInput, setKeyInput] = useState('');
-  const [needsUnlock, setNeedsUnlock] = useState(false);
+  const [auth, setAuth] = useState<'unknown' | 'locked' | 'ok'>('unknown');
   const [quotes, setQuotes] = useState<TrackedQuote[]>([]);
   const [pageInfo, setPageInfo] = useState<QuotesPageInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,14 +111,14 @@ export default function QuotesGpPage() {
         credentials: 'same-origin',
       });
       if (res.status === 401) {
-        setNeedsUnlock(true);
+        setAuth('locked');
         throw new Error('Unauthorized');
       }
+      setAuth('ok');
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to load Jobber quotes');
       }
-      setNeedsUnlock(false);
       setPageInfo(data.pageInfo as QuotesPageInfo);
       setQuotes((prev) => {
         const next = data.quotes as TrackedQuote[];
@@ -167,7 +167,7 @@ export default function QuotesGpPage() {
     const url = new URL(window.location.href);
     url.searchParams.set(QUOTES_GP_KEY_QUERY, next);
     window.history.replaceState({}, '', url.toString());
-    setNeedsUnlock(false);
+    setAuth('unknown');
     setKey(next);
   };
 
@@ -214,7 +214,16 @@ export default function QuotesGpPage() {
     }
   };
 
-  if (needsUnlock && !loading && quotes.length === 0) {
+  if (auth === 'unknown' && quotes.length === 0 && !error) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-slate-500">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        Checking office access…
+      </div>
+    );
+  }
+
+  if (auth === 'locked' && quotes.length === 0) {
     return (
       <div className="mx-auto max-w-md space-y-4">
         <h2 className="text-xl font-bold text-slate-900">Quote GP tracker</h2>
