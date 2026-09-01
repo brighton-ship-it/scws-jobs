@@ -20,7 +20,13 @@ import {
   formatVisitTime,
   normalizePhone10,
 } from './check-schedule.ts';
-import { lookupOpenSlots, slotMatchesRequest, type OpenSlot, type OpenSlotsDeps } from './open-slots.ts';
+import {
+  isWeekdayVisitStart,
+  lookupOpenSlots,
+  slotMatchesRequest,
+  type OpenSlot,
+  type OpenSlotsDeps,
+} from './open-slots.ts';
 import {
   allowedTechSpokenName,
   assignShopTech,
@@ -618,6 +624,14 @@ export async function bookServiceCall(
     );
   }
 
+  if (!isWeekdayVisitStart(input.startAt)) {
+    return blockedResult(
+      'weekend_visit',
+      "I can only schedule a service call Monday through Friday. I won't put a Saturday or Sunday visit on the calendar. I'll have the office call you back.",
+      NO_VISIT_CONFIRMATION_RULE
+    );
+  }
+
   const slots = await lookupOpenSlots(
     { city: input.city || undefined, address: input.address || undefined, zip: input.zip || input.postalCode || undefined },
     deps
@@ -662,6 +676,18 @@ export async function bookServiceCall(
       NO_VISIT_CONFIRMATION_RULE,
       {
         openSlots: slots.openSlots,
+        assignedTechName: slots.assignedTechName,
+      }
+    );
+  }
+
+  if (!isWeekdayVisitStart(chosen.startAt)) {
+    return blockedResult(
+      'weekend_visit',
+      "I can only schedule a service call Monday through Friday. I won't put a Saturday or Sunday visit on the calendar. I'll have the office call you back.",
+      NO_VISIT_CONFIRMATION_RULE,
+      {
+        openSlots: slots.openSlots.filter((slot) => isWeekdayVisitStart(slot.startAt)),
         assignedTechName: slots.assignedTechName,
       }
     );

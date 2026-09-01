@@ -8,7 +8,7 @@ export const BOOK_JOB_TOOL_NAME = 'bookJob';
 export const BOOK_JOB_TOOL = {
   name: BOOK_JOB_TOOL_NAME,
   description:
-    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit. Call only after hours. Never book a daytime weekday visit (Liz). Never auto-book Monday for a weekend emergency. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
+    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit. Call only after hours. Never book a daytime weekday visit (Liz). Never auto-book Monday for a weekend emergency. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
   parameters: {
     type: 'object',
     properties: {
@@ -40,6 +40,8 @@ You may BOOK only after hours: weeknights Monday–Thursday after 5pm Pacific, p
 Daytime weekday service calls stay with Liz. Do not book those. Take a message and say the office will call back.
 
 A caller who needs someone NOW this weekend (emergency, no water, Airbnb/STR guests) is NOT a yes to a Monday $200 visit. Do not book Monday. Flag the shop and say the office will call.
+
+The Jobber visit itself may only land Monday–Friday. Never offer or book Saturday or Sunday. After-hours callers (Friday night, Saturday, Sunday) may be offered the next weekday if openSlots has one — unless this is a weekend emergency.
 
 To offer a time: call checkSchedule with the caller's phone, city, and intent "book". Offer ONLY times in openSlots. If openSlots is empty or lookupStatus is error, do not invent a time.
 

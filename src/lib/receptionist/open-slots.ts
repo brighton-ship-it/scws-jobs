@@ -1,11 +1,13 @@
 /**
  * Open service-call slots from the live Jobber calendar.
  *
- * Candidate windows are shop service-call hours. A slot is returned only
- * when it does not overlap a Jobber visit for an allowlisted tech
- * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin). If neither allowed
- * tech has a window, return no slots. If Jobber is down, return no slots
- * — never invent times or assign Travis.
+ * Candidate windows are shop service-call hours on weekdays only
+ * (Monday–Friday Pacific). Never Saturday or Sunday. A slot is returned
+ * only when it does not overlap a Jobber visit for an allowlisted tech
+ * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin). After-hours callers
+ * (including Friday night) are offered the next weekday window. If neither
+ * allowed tech has a window, return no slots. If Jobber is down, return no
+ * slots — never invent times or assign Travis.
  */
 
 import {
@@ -166,12 +168,21 @@ function ptClockMinutes(date: Date): number {
   return hour * 60 + minute;
 }
 
-function ptWeekday(date: Date): number {
+export function ptWeekday(date: Date): number {
   const label = new Intl.DateTimeFormat('en-US', {
     timeZone: PACIFIC_TZ,
     weekday: 'short',
   }).format(date);
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(label);
+}
+
+/** Jobber service-call visits may land Monday–Friday PT only. */
+export function isWeekdayVisitStart(startAt: string | Date | null | undefined): boolean {
+  if (!startAt) return false;
+  const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
+  if (Number.isNaN(date.getTime())) return false;
+  const weekday = ptWeekday(date);
+  return weekday >= 1 && weekday <= 5;
 }
 
 function addPtDays(now: Date, days: number): string {
@@ -227,13 +238,13 @@ export function computeOpenSlots(options: {
   for (let day = 0; day <= SLOT_LOOKAHEAD_DAYS && slots.length < maxSlots; day++) {
     const dateStr = addPtDays(options.now, day);
     const weekdayDate = zonedDate(dateStr, 12, 0);
-    const weekday = ptWeekday(weekdayDate);
-    if (weekday === 0 || weekday === 6) continue;
+    if (!isWeekdayVisitStart(weekdayDate)) continue;
 
     for (const hour of SLOT_HOURS_PT) {
       const start = zonedDate(dateStr, hour, 0);
       const end = new Date(start.getTime() + SLOT_DURATION_MINUTES * 60_000);
       if (start <= options.now) continue;
+      if (!isWeekdayVisitStart(start)) continue;
 
       const blocked = techOccupied.some((visit) => visitsOverlapSlot(visit, start, end));
       if (blocked) continue;
@@ -264,6 +275,7 @@ export function mergeOpenSlots(slotsByTech: OpenSlot[][], maxSlots = MAX_OPEN_SL
     }
   }
   return [...byStart.values()]
+    .filter((slot) => isWeekdayVisitStart(slot.startAt))
     .sort((a, b) => a.startAt.localeCompare(b.startAt))
     .slice(0, maxSlots);
 }
@@ -374,7 +386,7 @@ export async function lookupOpenSlots(
         maxSlots: perTechMax,
       }).filter((slot) => isAllowlistedTechId(slot.technicianId, allowlistedTechIds))
     );
-    const openSlots = mergeOpenSlots(slotsByTech);
+    const openSlots = mergeOpenSlots(slotsByTech).filter((slot) => isWeekdayVisitStart(slot.startAt));
 
     return {
       lookupStatus: 'ok',

@@ -83,4 +83,9 @@ describe('decideSarahBooking', () => {
     const decision = decideSarahBooking(THU_530PM, { urgency: 'normal' });
     assert.equal(decision.mayBook, true);
   });
+
+  it('Friday night and Saturday routine calls may book (visit still lands on a weekday)', () => {
+    assert.equal(decideSarahBooking(FRI_6PM, { urgency: 'normal' }).mayBook, true);
+    assert.equal(decideSarahBooking(SAT_10AM, { urgency: 'normal' }).mayBook, true);
+  });
 });

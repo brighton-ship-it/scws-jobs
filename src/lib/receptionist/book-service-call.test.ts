@@ -15,7 +15,10 @@ import { computeOpenSlots } from './open-slots.ts';
 
 const THU_4PM = new Date('2026-09-03T23:00:00.000Z');
 const THU_530PM = new Date('2026-09-04T00:30:00.000Z');
+const FRI_6PM = new Date('2026-09-05T01:00:00.000Z');
 const SAT_10AM = new Date('2026-09-05T17:00:00.000Z');
+/** Saturday Sep 5 2026 8:00 AM PT — not a bookable visit day. */
+const SAT_8AM_START = '2026-09-05T15:00:00.000Z';
 
 const BRIAN = {
   id: 'user-brian',
@@ -231,6 +234,72 @@ describe('handleBookServiceCall', () => {
     assert.deepEqual(flags, ['weekend_emergency']);
     assert.match(result.message, /Monday/i);
     assert.match(weekendEmergencyFlag({ name: 'Pat Wells' }).subject, /do not book Monday/i);
+  });
+
+  it('refuses a Saturday or Sunday visit startAt', async () => {
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: SAT_8AM_START,
+        urgency: 'normal',
+      },
+      {
+        now: FRI_6PM,
+        accessToken: 'test-token',
+        fetchFn: async () => {
+          throw new Error('should not create a Saturday Jobber visit');
+        },
+      }
+    );
+
+    assert.equal(result.booked, false);
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.bookingBlockReason, 'weekend_visit');
+    assert.match(result.message, /Monday through Friday|Saturday or Sunday/i);
+  });
+
+  it('Friday night after-hours books the next weekday (Monday), not Saturday', async () => {
+    const monday = firstOpenSlot(FRI_6PM, 'user-brian', 'Brian Eads');
+    assert.match(monday.date, /Monday/i);
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: monday.startAt,
+        urgency: 'normal',
+      },
+      {
+        now: FRI_6PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          createdJob: {
+            id: 'job-monday',
+            title: SERVICE_CALL_TITLE,
+            visits: {
+              nodes: [
+                {
+                  id: 'visit-monday',
+                  startAt: monday.startAt,
+                  endAt: monday.endAt,
+                  assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+                },
+              ],
+            },
+          },
+        }),
+      }
+    );
+
+    assert.equal(result.booked, true);
+    assert.equal(result.canConfirm, true);
+    assert.equal(result.visit?.startAt, monday.startAt);
+    assert.match(result.visit?.date || '', /Monday/i);
+    assert.deepEqual(result.visit?.technicians, ['Brian Eads']);
   });
 
   it('creates a Ramona Service Call visit assigned to Brian Eads', async () => {
@@ -598,6 +667,25 @@ describe('checkSchedule booking attach — confirm-lock still holds', () => {
     assert.equal(result.mayBook, false);
     assert.deepEqual(result.openSlots, []);
     assert.equal(result.assignedTechId || null, null);
+  });
+
+  it('Friday night checkSchedule offers Monday and no weekend visits', async () => {
+    const { result } = await handleCheckSchedule(
+      { phone: '9499039486', city: 'Ramona', intent: 'book' },
+      {
+        now: FRI_6PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({ clients: [guyClient] }),
+      }
+    );
+
+    assert.equal(result.mayBook, true);
+    assert.ok((result.openSlots || []).length > 0);
+    assert.match(result.openSlots?.[0]?.date || '', /Monday/i);
+    assert.equal(
+      (result.openSlots || []).some((slot) => /saturday|sunday/i.test(slot.date)),
+      false
+    );
   });
 
   it('daytime weekday checkSchedule does not offer bookable slots', async () => {

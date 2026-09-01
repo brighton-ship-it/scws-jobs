@@ -2,8 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeOpenSlots,
+  isWeekdayVisitStart,
   lookupOpenSlots,
   mergeOpenSlots,
+  ptWeekday,
   slotMatchesRequest,
   visitsOverlapSlot,
 } from './open-slots.ts';
@@ -48,6 +50,40 @@ describe('computeOpenSlots', () => {
     assert.ok(blocked.length >= 1);
   });
 
+  it('never returns Saturday or Sunday visit windows', () => {
+    const slots = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 20,
+    });
+    assert.ok(slots.length >= 3);
+    for (const slot of slots) {
+      assert.equal(isWeekdayVisitStart(slot.startAt), true);
+      const weekday = ptWeekday(new Date(slot.startAt));
+      assert.ok(weekday >= 1 && weekday <= 5, `unexpected weekend slot ${slot.date}`);
+      assert.equal(/saturday|sunday/i.test(slot.date), false);
+    }
+  });
+
+  it('Friday night after-hours offers Monday, not Saturday or Sunday', () => {
+    const fridayNight = new Date('2026-09-05T01:00:00.000Z');
+    const slots = computeOpenSlots({
+      occupied: [],
+      now: fridayNight,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 3,
+    });
+    assert.ok(slots.length >= 1);
+    assert.match(slots[0].date, /Monday/i);
+    assert.equal(
+      slots.some((slot) => /saturday|sunday/i.test(slot.date)),
+      false
+    );
+  });
+
   it('does not invent a slot that overlaps an all-day Jobber visit', () => {
     const open = computeOpenSlots({
       occupied: [],
@@ -75,6 +111,16 @@ describe('computeOpenSlots', () => {
       blocked.some((slot) => slot.date === day.date),
       false
     );
+  });
+});
+
+describe('isWeekdayVisitStart', () => {
+  it('allows Monday–Friday PT and rejects Saturday and Sunday', () => {
+    assert.equal(isWeekdayVisitStart('2026-09-07T15:00:00.000Z'), true); // Monday 8am PT
+    assert.equal(isWeekdayVisitStart('2026-09-04T15:00:00.000Z'), true); // Friday 8am PT
+    assert.equal(isWeekdayVisitStart('2026-09-05T15:00:00.000Z'), false); // Saturday 8am PT
+    assert.equal(isWeekdayVisitStart('2026-09-06T15:00:00.000Z'), false); // Sunday 8am PT
+    assert.equal(isWeekdayVisitStart(''), false);
   });
 });
 
