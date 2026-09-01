@@ -54,12 +54,28 @@ export function isCronApiPath(pathname: string): boolean {
   return pathname === '/api/cron' || pathname.startsWith('/api/cron/');
 }
 
+/**
+ * Internal ops APIs authenticate themselves (CRM session or QUOTES_GP_KEY).
+ * Middleware must not 401 before the route sees the office key.
+ */
+export function isOpsApiPath(pathname: string): boolean {
+  return pathname === '/api/ops' || pathname.startsWith('/api/ops/');
+}
+
+export function isOpsPagePath(pathname: string): boolean {
+  return pathname === '/ops' || pathname.startsWith('/ops/');
+}
+
 export function isPublicApiRoute(method: string, pathname: string): boolean {
   if (method === 'OPTIONS') {
     return true;
   }
 
   if (isCronApiPath(pathname)) {
+    return true;
+  }
+
+  if (isOpsApiPath(pathname)) {
     return true;
   }
 

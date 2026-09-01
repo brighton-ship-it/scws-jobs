@@ -106,9 +106,15 @@ export function QuoteStatusBadge({ status }: { status: string }) {
   const statusConfig: Record<string, { label: string; variant: BadgeVariant }> = {
     draft: { label: 'Draft', variant: 'default' },
     sent: { label: 'Awaiting Response', variant: 'info' },
+    awaiting_response: { label: 'Awaiting Response', variant: 'info' },
+    pending: { label: 'Pending', variant: 'info' },
     accepted: { label: 'Approved', variant: 'success' },
+    approved: { label: 'Approved', variant: 'success' },
+    converted: { label: 'Converted', variant: 'teal' },
     declined: { label: 'Declined', variant: 'danger' },
+    rejected: { label: 'Rejected', variant: 'danger' },
     expired: { label: 'Expired', variant: 'warning' },
+    archived: { label: 'Archived', variant: 'default' },
     changes_requested: { label: 'Changes Requested', variant: 'orange' },
   };
 
