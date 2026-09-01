@@ -4,6 +4,8 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
 import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/receptionist/pay-link';
+import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
+import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -476,7 +478,57 @@ async function handleFunctionCall(body: any) {
         return NextResponse.json(await handleLookupCustomer(phone || params.phone));
       
       case 'checkSchedule':
-        return NextResponse.json(await handleCheckSchedule(phone || params.phone));
+        // Confirmation lock: canConfirm only when Jobber returned a visit.
+        // With city/intent=book, also returns real Jobber openSlots (never invented).
+        return NextResponse.json(
+          await handleCheckSchedule({
+            phone: phone || params.phone,
+            city: params.city,
+            address: params.address,
+            zip: params.zip || params.postalCode,
+            postalCode: params.postalCode,
+            intent: params.intent,
+            urgency: params.urgency,
+            needNow: params.needNow,
+            thisWeekend: params.thisWeekend,
+            notes: params.notes,
+          })
+        );
+
+      case 'bookJob':
+      case 'book_job':
+        return NextResponse.json(
+          await handleBookServiceCall(
+            {
+              phone: phone || params.phone,
+              name: params.name || params.callerName || params.customerName,
+              firstName: params.firstName,
+              lastName: params.lastName,
+              email: params.email,
+              address: params.address,
+              city: params.city,
+              zip: params.zip || params.postalCode,
+              postalCode: params.postalCode,
+              startAt: params.startAt,
+              urgency: params.urgency,
+              needNow: params.needNow,
+              thisWeekend: params.thisWeekend,
+              notes: params.notes || params.reason,
+            },
+            {
+              notifyOffice: async (flag) => {
+                for (const email of OFFICE_FLAG_EMAILS) {
+                  await sendEmail({
+                    to: email,
+                    subject: flag.subject,
+                    html: textToHtml(flag.text),
+                    text: flag.text,
+                  });
+                }
+              },
+            }
+          )
+        );
       
       case 'getServiceInfo':
         return NextResponse.json(handleGetServiceInfo(params.serviceType));
@@ -574,220 +626,6 @@ async function handleLookupCustomer(phone: string) {
     result: {
       found: false,
       message: "I don't see this number in our system yet - no problem! Can I get your name?"
-    }
-  };
-}
-
-/**
- * Check customer's scheduled appointments
- */
-async function handleCheckSchedule(phone: string) {
-  const normalized = phone.replace(/\D/g, '').slice(-10);
-  const searchTerm = normalized.slice(-7);
-  
-  // First find the client
-  const clientResponse = await fetch('https://api.getjobber.com/api/graphql', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
-    },
-    body: JSON.stringify({
-      query: `
-        query SearchClients($searchTerm: String!) {
-          clients(searchTerm: $searchTerm, first: 5) {
-            nodes {
-              id
-              name
-              phones { number }
-            }
-          }
-        }
-      `,
-      variables: { searchTerm }
-    })
-  });
-  
-  const clientData = await clientResponse.json();
-  const clients = clientData?.data?.clients?.nodes || [];
-  
-  // Find exact match
-  let clientId = null;
-  let clientName = null;
-  for (const client of clients) {
-    for (const phoneObj of client.phones || []) {
-      const clientPhone = phoneObj.number.replace(/\D/g, '').slice(-10);
-      if (clientPhone === normalized) {
-        clientId = client.id;
-        clientName = client.name;
-        break;
-      }
-    }
-    if (clientId) break;
-  }
-  
-  if (!clientId) {
-    return {
-      result: {
-        found: false,
-        hasAppointments: false,
-        message: "I don't see an account with this phone number in our system. Would you like me to take down your information and have someone call you back to schedule an appointment?"
-      }
-    };
-  }
-  
-  // Get today's date in ISO format (start of day)
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayISO = today.toISOString();
-  
-  // Query for upcoming visits directly (more efficient than job-by-job)
-  const scheduleResponse = await fetch('https://api.getjobber.com/api/graphql', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
-    },
-    body: JSON.stringify({
-      query: `
-        query GetUpcomingVisits($clientId: EncodedId!, $afterDate: DateTime!) {
-          client(id: $clientId) {
-            name
-            jobs(first: 10) {
-              nodes {
-                title
-                property {
-                  address {
-                    street1
-                    city
-                  }
-                }
-                visits(first: 5) {
-                  nodes {
-                    id
-                    startAt
-                    endAt
-                    anytime
-                    assignedUsers {
-                      name
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      `,
-      variables: { 
-        clientId,
-        afterDate: todayISO
-      }
-    })
-  });
-  
-  const scheduleData = await scheduleResponse.json();
-  const jobs = scheduleData?.data?.client?.jobs?.nodes || [];
-  
-  // Collect upcoming visits with all details
-  const visits: any[] = [];
-  for (const job of jobs) {
-    for (const visit of job.visits?.nodes || []) {
-      if (visit.startAt) {
-        const visitDate = new Date(visit.startAt);
-        // Only include future visits
-        if (visitDate >= today) {
-          visits.push({
-            date: visit.startAt,
-            endTime: visit.endAt,
-            anytime: visit.anytime,
-            service: job.title,
-            address: job.property?.address ? 
-              `${job.property.address.street1}, ${job.property.address.city}` : null,
-            technicians: visit.assignedUsers?.map((u: any) => u.name).filter(Boolean) || []
-          });
-        }
-      }
-    }
-  }
-  
-  // Sort by date (earliest first)
-  visits.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-  
-  if (visits.length === 0) {
-    return {
-      result: {
-        found: true,
-        customerName: clientName,
-        hasAppointments: false,
-        message: `I found your account, ${clientName}, but I don't see any upcoming appointments scheduled. Would you like me to create a callback request to get you scheduled?`
-      }
-    };
-  }
-  
-  // Format the next appointment with details
-  const next = visits[0];
-  const date = new Date(next.date);
-  const dateStr = date.toLocaleDateString('en-US', { 
-    weekday: 'long', 
-    month: 'long', 
-    day: 'numeric',
-    timeZone: 'America/Los_Angeles' 
-  });
-  
-  let timeStr = '';
-  if (next.anytime) {
-    timeStr = 'anytime during the day';
-  } else {
-    const startTime = date.toLocaleTimeString('en-US', { 
-      hour: 'numeric', 
-      minute: '2-digit',
-      timeZone: 'America/Los_Angeles' 
-    });
-    
-    if (next.endTime) {
-      const endDate = new Date(next.endTime);
-      const endTimeStr = endDate.toLocaleTimeString('en-US', { 
-        hour: 'numeric', 
-        minute: '2-digit',
-        timeZone: 'America/Los_Angeles' 
-      });
-      timeStr = `between ${startTime} and ${endTimeStr}`;
-    } else {
-      timeStr = `starting at ${startTime}`;
-    }
-  }
-  
-  let message = `Yes! I see you're scheduled for ${next.service} on ${dateStr}, ${timeStr}.`;
-  
-  if (next.address) {
-    message += ` The appointment is for ${next.address}.`;
-  }
-  
-  if (next.technicians.length > 0) {
-    const techList = next.technicians.join(' and ');
-    message += ` ${techList} will be handling your service.`;
-  }
-  
-  if (visits.length > 1) {
-    message += ` You also have ${visits.length - 1} more appointment${visits.length > 2 ? 's' : ''} coming up.`;
-  }
-  
-  return {
-    result: {
-      found: true,
-      customerName: clientName,
-      hasAppointments: true,
-      nextAppointment: {
-        date: dateStr,
-        time: timeStr,
-        service: next.service,
-        address: next.address,
-        technicians: next.technicians
-      },
-      totalUpcoming: visits.length,
-      message
     }
   };
 }
