@@ -52,10 +52,10 @@ describe('live quote reuse', () => {
     assert.equal(isLiveQuote({ id: 'q2', quoteStatus: 'archived' }), false);
   });
 
-  it('finds an existing pull-and-eval on the same job', () => {
+  it('finds an existing live quote on the same job, including a tank swap', () => {
     const found = findLiveQuoteForJob(
-      [{ id: 'q-live', title: 'Pull well pump and evaluate (job 8801)', quoteStatus: 'draft' }],
-      { jobNumber: 8801, property: { id: 'prop-1' } }
+      [{ id: 'q-live', title: 'Replace pressure tank (job 3266)', quoteStatus: 'draft' }],
+      { jobNumber: 3266, property: { id: 'prop-1' } }
     );
     assert.equal(found?.id, 'q-live');
   });

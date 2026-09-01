@@ -219,16 +219,12 @@ export function findLiveQuoteForJob(
   quotes: Array<JobberQuoteSummary | null> | null | undefined,
   job: Pick<JobberJob, 'jobNumber' | 'property'>
 ): JobberQuoteSummary | null {
-  const jobNumber = job.jobNumber != null ? String(job.jobNumber) : '';
   const propertyId = job.property?.id;
   return (
     (quotes || []).find((quote) => {
       if (!isLiveQuote(quote) || !quote) return false;
-      const title = quote.title || '';
-      const sameProperty = !propertyId || !quote.property?.id || quote.property.id === propertyId;
-      const mentionsJob = jobNumber && title.includes(jobNumber);
-      const pullOrWell = /pull well pump|air rotary|new well/i.test(title);
-      return sameProperty && (mentionsJob || pullOrWell || !jobNumber);
+      if (propertyId && quote.property?.id && quote.property.id !== propertyId) return false;
+      return true;
     }) || null
   );
 }

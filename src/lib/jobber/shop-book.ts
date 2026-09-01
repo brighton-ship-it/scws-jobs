@@ -5,7 +5,17 @@
 
 export const PULL_AND_EVAL_TITLE = 'Pull well pump and evaluate';
 export const REPLACE_TITLE = 'Pull well pump and replace';
+export const PRESSURE_TANK_TITLE = 'Replace pressure tank';
+export const ELECTRICAL_TITLE = 'Electrical repair';
 export const AIR_ROTARY_TITLE = 'Air rotary new well';
+
+export const PROMAX_PM260_NAME = '86-gal Promax PM260';
+export const PROMAX_PM260_PRICE = 1370;
+export const PLUMBING_PACKAGE_NAME = 'Plumbing package';
+export const PLUMBING_PACKAGE_PRICE = 125;
+export const TANK_SWAP_LABOR_NAME = 'Tank swap labor';
+export const TANK_SWAP_LABOR_PRICE = 200;
+export const HOIST_NAME = 'Hoist';
 
 export const BT2_LABOR_NAME = 'BT2';
 export const BT2_LABOR_PRICE = 600;
@@ -58,17 +68,62 @@ export function buildPullAndEvalLines(): QuoteLineDraft[] {
   ];
 }
 
-export function buildReplaceMotorLine(brand: 'Franklin' | 'CentriPro'): QuoteLineDraft {
+export function buildReplaceMotorLine(
+  brand: 'Franklin' | 'CentriPro',
+  specs?: { hp?: number | null; volts?: number | null; phase?: 1 | 3 | null }
+): QuoteLineDraft {
+  const bits = [
+    specs?.hp != null ? `${specs.hp} HP` : null,
+    specs?.volts != null ? `${specs.volts}V` : null,
+    specs?.phase === 1 ? '1-phase' : specs?.phase === 3 ? '3-phase' : null,
+  ].filter(Boolean);
+  const specLabel = bits.length ? ` ${bits.join(' ')}` : '';
   return {
-    name: `${brand} submersible motor`,
+    name: `${brand}${specLabel} submersible motor`,
     description:
       brand === 'Franklin'
-        ? 'Franklin motor — Ramona shop standard. Confirm HP before sending.'
-        : 'CentriPro motor — Anza / Goulds shop standard. Confirm HP before sending.',
+        ? 'Franklin motor — Ramona shop standard. HP taken from notes when present; not invented.'
+        : 'CentriPro motor — Anza / Goulds shop standard. HP taken from notes when present; not invented.',
     quantity: 1,
     unitPrice: 0,
     taxable: true,
   };
+}
+
+export function buildPressureTankLines(input?: { includeHoist?: boolean }): QuoteLineDraft[] {
+  const lines: QuoteLineDraft[] = [
+    {
+      name: PROMAX_PM260_NAME,
+      description: 'Shop-book Promax PM260 86-gallon pressure tank',
+      quantity: 1,
+      unitPrice: PROMAX_PM260_PRICE,
+      taxable: true,
+    },
+    {
+      name: PLUMBING_PACKAGE_NAME,
+      description: 'Tank plumbing package at street',
+      quantity: 1,
+      unitPrice: PLUMBING_PACKAGE_PRICE,
+      taxable: true,
+    },
+    {
+      name: TANK_SWAP_LABOR_NAME,
+      description: 'Labor to swap the pressure tank. Not a service-call credit.',
+      quantity: 1,
+      unitPrice: TANK_SWAP_LABOR_PRICE,
+      taxable: false,
+    },
+  ];
+  if (input?.includeHoist) {
+    lines.push({
+      name: HOIST_NAME,
+      description: 'Hoist — only when the well was already pulled',
+      quantity: 1,
+      unitPrice: 0,
+      taxable: false,
+    });
+  }
+  return lines;
 }
 
 export function buildAirRotaryLines(input: {
@@ -159,16 +214,36 @@ export function assertShopBookLines(lines: QuoteLineDraft[]): void {
   }
 }
 
-const SERVICE_CALL_RE = /\$?\s*200\b|\bservice call\b/i;
+const SERVICE_CALL_CREDIT_RE =
+  /\bservice call\b|\bcredit\b.{0,24}\$?\s*200\b|\$?\s*200\b.{0,24}\bcredit\b/i;
 
 export function mentionsServiceCallCredit(text: string | null | undefined): boolean {
-  return Boolean(text && SERVICE_CALL_RE.test(text));
+  return Boolean(text && SERVICE_CALL_CREDIT_RE.test(text));
 }
 
-export function customerMessageForTechNote(kind: 'pull_and_eval' | 'replace', motorBrand?: string): string {
-  if (kind === 'replace') {
-    const brand = motorBrand ? ` Replacement motor brand: ${motorBrand}.` : '';
-    return `Proposal to pull the well pump and replace the pumping equipment.${brand} Labor is quoted as BT2.`;
+export function customerMessageForTechNote(
+  kind: 'pull_and_eval' | 'replace' | 'pressure_tank' | 'pump_replace' | 'electrical',
+  extras?: { motorBrand?: string; hp?: number | null; volts?: number | null; phase?: 1 | 3 | null }
+): string {
+  if (kind === 'pressure_tank') {
+    return 'Proposal to replace the pressure tank with an 86-gallon Promax PM260, including the plumbing package and tank-swap labor.';
+  }
+  if (kind === 'pump_replace' || kind === 'replace') {
+    const spec = [
+      extras?.hp != null ? `${extras.hp} HP` : null,
+      extras?.volts != null ? `${extras.volts}V` : null,
+      extras?.phase === 1 ? 'single-phase' : extras?.phase === 3 ? 'three-phase' : null,
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const brand = extras?.motorBrand || '';
+    const named = [spec, brand].filter(Boolean).join(' ');
+    return named
+      ? `Proposal to replace the well pump / motor (${named}).`
+      : 'Proposal to replace the well pump / motor.';
+  }
+  if (kind === 'electrical') {
+    return 'Proposal for electrical repair on the well system.';
   }
   return 'Proposal to pull the well pump and evaluate the pumping system. Labor is quoted as BT2.';
 }
@@ -182,10 +257,14 @@ export function customerMessageForAirRotary(footageFt: number): string {
   ].join(' ');
 }
 
-export function inferTechNoteKind(notes: string | null | undefined): 'pull_and_eval' | 'replace' {
+/** @deprecated Use parseTechNoteIntent — never default to pull-and-eval. */
+export function inferTechNoteKind(notes: string | null | undefined): 'pull_and_eval' | 'replace' | 'unclear' {
   const text = (notes || '').toLowerCase();
-  if (/\breplace\b|\breplacement\b|\bmotor\b/.test(text)) {
+  if (/\bpull\s*(and|&|\/|-)?\s*eval/.test(text) || /\bout of the well\b/.test(text)) {
+    return 'pull_and_eval';
+  }
+  if (/\breplace\w*(?:\s+\w+){0,8}\s+(the )?(pump|motor)\b/.test(text)) {
     return 'replace';
   }
-  return 'pull_and_eval';
+  return 'unclear';
 }

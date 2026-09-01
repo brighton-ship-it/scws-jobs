@@ -3,13 +3,18 @@ import assert from 'node:assert/strict';
 import {
   AIR_ROTARY_FOOTAGE_PRICE,
   BT2_LABOR_PRICE,
+  HOIST_NAME,
+  PLUMBING_PACKAGE_PRICE,
+  PROMAX_PM260_PRICE,
   SANITARY_SEAL_QTY,
   SANITARY_SEAL_TOTAL,
   SANITARY_SEAL_UNIT_PRICE,
+  TANK_SWAP_LABOR_PRICE,
   TRAVEL_LINE_NAME,
   WATER_DELIVERY_NAME,
   assertShopBookLines,
   buildAirRotaryLines,
+  buildPressureTankLines,
   buildPullAndEvalLines,
   customerMessageForAirRotary,
   customerMessageForTechNote,
@@ -29,15 +34,33 @@ describe('pull-and-eval shop book', () => {
 
   it('customer message never mentions the $200 service call', () => {
     const evalMsg = customerMessageForTechNote('pull_and_eval');
-    const replaceMsg = customerMessageForTechNote('replace', 'Franklin');
+    const replaceMsg = customerMessageForTechNote('replace', { motorBrand: 'Franklin' });
+    const tankMsg = customerMessageForTechNote('pressure_tank');
     assert.equal(mentionsServiceCallCredit(evalMsg), false);
     assert.equal(mentionsServiceCallCredit(replaceMsg), false);
+    assert.equal(mentionsServiceCallCredit(tankMsg), false);
     assert.equal(mentionsServiceCallCredit('credit the $200 service call'), true);
   });
 
-  it('infers replace vs pull-and-eval from tech notes', () => {
-    assert.equal(inferTechNoteKind('pump seized, evaluate'), 'pull_and_eval');
+  it('does not treat tank-swap labor copy as a service-call credit', () => {
+    assert.equal(mentionsServiceCallCredit('Tank swap labor at street'), false);
+  });
+
+  it('only infers pull-and-eval from explicit pull/eval language', () => {
+    assert.equal(inferTechNoteKind('pump seized, evaluate'), 'unclear');
     assert.equal(inferTechNoteKind('replace 2hp motor'), 'replace');
+    assert.equal(inferTechNoteKind('pull and eval'), 'pull_and_eval');
+  });
+});
+
+describe('pressure tank shop book', () => {
+  it('quotes PM260 $1370 + plumbing $125 + tank-swap labor $200 and omits hoist', () => {
+    const lines = buildPressureTankLines();
+    assert.equal(lines.find((line) => line.name.includes('PM260'))?.unitPrice, PROMAX_PM260_PRICE);
+    assert.equal(lines.find((line) => line.name.includes('Plumbing'))?.unitPrice, PLUMBING_PACKAGE_PRICE);
+    assert.equal(lines.find((line) => line.name.includes('Tank swap'))?.unitPrice, TANK_SWAP_LABOR_PRICE);
+    assert.ok(!lines.some((line) => line.name === HOIST_NAME));
+    assert.ok(!lines.some((line) => line.name === 'BT2'));
   });
 });
 
