@@ -17,6 +17,8 @@ describe('isPublicApiRoute', () => {
     assert.equal(isPublicApiRoute('GET', '/api/customers'), false);
     assert.equal(isPublicApiRoute('GET', '/api/jobs'), false);
     assert.equal(isPublicApiRoute('GET', '/api/booking'), false);
+    assert.equal(isPublicApiRoute('GET', '/api/wells/nearby'), false);
+    assert.equal(isPublicApiRoute('GET', '/api/wells/tracker'), false);
   });
 
   it('allows the Jobber book_job cron (self-authenticates with CRON_SECRET)', () => {
