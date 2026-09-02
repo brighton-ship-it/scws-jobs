@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isDemoAuthMode } from '@/lib/demo-auth';
 import { requireUser } from '@/lib/require-auth';
 import { lookupNearbyWells } from '@/lib/wells/nearby';
 
@@ -10,8 +11,10 @@ export const dynamic = 'force-dynamic';
  * (browser Nominatim is blocked).
  */
 export async function GET(request: NextRequest) {
-  const auth = await requireUser();
-  if (auth.response) return auth.response;
+  if (!isDemoAuthMode()) {
+    const auth = await requireUser();
+    if (auth.response) return auth.response;
+  }
 
   const { searchParams } = new URL(request.url);
 

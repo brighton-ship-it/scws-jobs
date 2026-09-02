@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { isDemoAuthMode } from '@/lib/demo-auth';
 import { requireUser } from '@/lib/require-auth';
 import { createServiceClient } from '@/lib/supabase/server';
 import { mapTrackerRows } from '@/lib/wells/tracker';
@@ -10,8 +11,10 @@ export const dynamic = 'force-dynamic';
  * Real CRM well_info only. Empty list if none — never dummy Oak Tree / Johnson / Chen.
  */
 export async function GET() {
-  const auth = await requireUser();
-  if (auth.response) return auth.response;
+  if (!isDemoAuthMode()) {
+    const auth = await requireUser();
+    if (auth.response) return auth.response;
+  }
 
   try {
     const supabase = createServiceClient();
