@@ -17,7 +17,7 @@ const SCWS_INFO = {
 };
 
 interface PermitRequest {
-  county: 'san_diego' | 'riverside';
+  county: 'san_diego' | 'riverside' | 'san_bernardino';
   
   // Property Owner Info (from CRM customer)
   owner: {
@@ -282,9 +282,12 @@ export async function POST(request: NextRequest) {
     }
     
     // Load the appropriate PDF template
-    const formPath = data.county === 'san_diego'
-      ? path.join(process.cwd(), 'public', 'forms', 'san-diego-well-permit.pdf')
-      : path.join(process.cwd(), 'public', 'forms', 'riverside-well-permit.pdf');
+    const formPath =
+      data.county === 'san_diego'
+        ? path.join(process.cwd(), 'public', 'forms', 'san-diego-well-permit.pdf')
+        : data.county === 'san_bernardino'
+          ? path.join(process.cwd(), 'public', 'forms', 'san-bernardino-well-permit.pdf')
+          : path.join(process.cwd(), 'public', 'forms', 'riverside-well-permit.pdf');
     
     let pdfBytes: Buffer;
     try {
@@ -301,9 +304,10 @@ export async function POST(request: NextRequest) {
     
     if (data.county === 'san_diego') {
       await fillSanDiegoPermit(pdfDoc, data);
-    } else {
+    } else if (data.county === 'riverside') {
       await fillRiversidePermit(pdfDoc, data);
     }
+    // San Bernardino: serve the official blank. Do not invent field mappings.
     
     // Flatten form fields (optional - makes it non-editable)
     // pdfDoc.getForm().flatten();

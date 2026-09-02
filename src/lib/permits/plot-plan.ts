@@ -3,6 +3,7 @@ import { fetchAerialJpeg, ringBBox } from './gis.ts';
 import {
   BLOCKED_CSLB,
   COUNTY_LABEL,
+  COUNTY_SETBACKS,
   EXISTING_WELL_SETBACK_FT,
   INVENTORY_RADIUS_FT,
   LEACH_SETBACK_FT,
@@ -12,6 +13,10 @@ import {
   type County,
   type ResearchResult,
 } from './types.ts';
+
+function countyOrSd(county: County | null | undefined): County {
+  return county || 'san_diego';
+}
 
 export const SCWS_LETTERHEAD = {
   name: 'Southern California Well Service',
@@ -95,9 +100,15 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
     : sqft
       ? `${sqft.toLocaleString()} sq ft`
       : 'Not published';
-  const lineSetback = PROPERTY_LINE_SETBACK_FT[result.county];
+  const county = countyOrSd(result.county);
+  const setbacks = result.setbacks || COUNTY_SETBACKS[county];
+  const lineSetback = setbacks.propertyLineFt;
   const notes = [
     ...result.notes,
+    result.countyUnsupported
+      ? result.notes.find((n) => /county not supported/i.test(n)) ||
+        'FLAG: county not supported — plot is not a San Diego default.'
+      : '',
     result.septic?.status === 'missing' ? result.septic.message || '' : '',
     result.septic?.geometry?.some((g) => g.kind === 'tank' || g.kind === 'leach')
       ? 'Tank/leach/existing well drawn from a DEH as-built traced onto county GIS — not invented.'
@@ -119,14 +130,14 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
     !result.wells.length
       ? 'No DWR/CNRA well points are drawn. If the source was down, that is stated in Sources — locations were not invented.'
       : `CNRA/DWR wells within ${INVENTORY_RADIUS_FT} ft of the proposed pin: ${result.wellsWithin250Ft ?? 0}.`,
-    `Property-line setback shown: ${lineSetback} ft (${COUNTY_LABEL[result.county]}).`,
+    `Property-line setback shown: ${lineSetback} ft (${COUNTY_LABEL[county]}). Source: ${setbacks.source}.`,
     'Office plot plan for DEH — NOT a stamped survey. Do not use as a construction staking document.',
     'Always verify current DEH setbacks before submitting.',
   ].filter(Boolean);
 
   return {
     title: 'Well-drilling permit SITE PLAN',
-    county: result.county,
+    county,
     apn: result.parcel?.apn || 'Not found',
     siteAddress: result.parcel?.siteAddress || result.formattedAddress || '—',
     ownerName: result.parcel?.ownerName || 'Unknown (not published)',
@@ -280,9 +291,9 @@ function drawPanel(
           ? 'Maximin to leach/tank/exist. well (not centroid)'
           : 'Best pocket - setbacks FLAGGED (not centroid)'
       );
-      y = line(page, font, x, y, 'To PL', metLabel(pw.distances.propertyLineFt, PROPERTY_LINE_SETBACK_FT[result.county]));
-      y = line(page, font, x, y, 'To tank', metLabel(pw.distances.tankFt, TANK_SETBACK_FT, 'unknown (no as-built geometry)'));
-      y = line(page, font, x, y, 'To leach', metLabel(pw.distances.leachFt, LEACH_SETBACK_FT, 'unknown (no as-built geometry)'));
+      y = line(page, font, x, y, 'To PL', metLabel(pw.distances.propertyLineFt, (result.setbacks || COUNTY_SETBACKS[countyOrSd(result.county)]).propertyLineFt));
+      y = line(page, font, x, y, 'To tank', metLabel(pw.distances.tankFt, (result.setbacks || COUNTY_SETBACKS[countyOrSd(result.county)]).tankFt, 'unknown (no as-built geometry)'));
+      y = line(page, font, x, y, 'To leach', metLabel(pw.distances.leachFt, (result.setbacks || COUNTY_SETBACKS[countyOrSd(result.county)]).leachFt, 'unknown (no as-built geometry)'));
       y = line(page, font, x, y, 'To well', metLabel(pw.distances.existingWellFt, EXISTING_WELL_SETBACK_FT));
       y = line(
         page,
@@ -382,7 +393,7 @@ function drawPanel(
         y,
         `${n.apn}  ${n.system}  ${ids ? `FileRecordId ${ids}` : 'no DEH hits'}  ${leachNote}`,
         48,
-        n.leachFt != null && n.leachFt < 100 ? rgb(0.7, 0.12, 0.1) : rgb(0.2, 0.2, 0.2)
+        n.leachFt != null && n.leachFt < LEACH_SETBACK_FT ? rgb(0.7, 0.12, 0.1) : rgb(0.2, 0.2, 0.2)
       );
     }
   }
@@ -392,7 +403,14 @@ function drawPanel(
   y -= 14;
   legendRow(page, font, x, y, rgb(0.95, 0.82, 0.1), 'Subject parcel');
   y -= 12;
-  legendRow(page, font, x, y, rgb(0.85, 0.75, 0.15), '10 ft PL inset / 40 ft west easement');
+  legendRow(
+    page,
+    font,
+    x,
+    y,
+    rgb(0.85, 0.75, 0.15),
+    `${(input.result.setbacks || COUNTY_SETBACKS[countyOrSd(input.result.county)]).propertyLineFt} ft PL inset / easement if recorded`
+  );
   y -= 12;
   legendRow(page, font, x, y, rgb(0.92, 0.48, 0.12), 'Existing structure (BUILDING_OUTLINES)');
   y -= 12;
@@ -1160,5 +1178,68 @@ function drawWellsPage(page: PDFPage, font: PDFFont, bold: PDFFont, input: PlotP
     font,
     color: rgb(0.35, 0.35, 0.35),
   });
+}
+
+/** 11×17 landscape PNG (same page size as the PDF). */
+export async function renderPlotPlanPng(input: PlotPlanInput): Promise<Uint8Array> {
+  const { createCanvas } = await import('canvas');
+  const model = buildPlotPlanModel(input);
+  const canvas = createCanvas(PAGE.width, PAGE.height);
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#f7f7f5';
+  ctx.fillRect(0, 0, PAGE.width, PAGE.height);
+  ctx.fillStyle = '#142436';
+  ctx.fillRect(0, PAGE.height - 36, PAGE.width, 36);
+  ctx.fillStyle = '#ffe05a';
+  ctx.font = 'bold 14px sans-serif';
+  ctx.fillText(model.disclaimer, 24, PAGE.height - 14);
+  ctx.fillStyle = '#102030';
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(`${model.title} — ${COUNTY_LABEL[model.county]}`, 24, 36);
+  ctx.font = '14px sans-serif';
+  ctx.fillText(`${SCWS_LETTERHEAD.name}  ${SCWS_LETTERHEAD.license}  APN ${model.apn}`, 24, 58);
+  ctx.fillText(`${model.siteAddress}  ·  ${model.lotSize}  ·  Owner ${model.ownerName}`, 24, 78);
+  const ring = input.result.parcel?.geometry?.rings?.[0];
+  if (ring?.length) {
+    const lats = ring.map((p) => p[1]);
+    const lngs = ring.map((p) => p[0]);
+    const minX = Math.min(...lngs);
+    const maxX = Math.max(...lngs);
+    const minY = Math.min(...lats);
+    const maxY = Math.max(...lats);
+    const pad = 40;
+    const mapW = 820;
+    const mapH = 620;
+    const sx = (mapW - pad * 2) / Math.max(maxX - minX, 1e-9);
+    const sy = (mapH - pad * 2) / Math.max(maxY - minY, 1e-9);
+    const s = Math.min(sx, sy);
+    const toX = (lng: number) => 24 + pad + (lng - minX) * s;
+    const toY = (lat: number) => 100 + pad + (maxY - lat) * s;
+    ctx.strokeStyle = '#d4b40a';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ring.forEach((p, i) => (i === 0 ? ctx.moveTo(toX(p[0]), toY(p[1])) : ctx.lineTo(toX(p[0]), toY(p[1]))));
+    ctx.closePath();
+    ctx.stroke();
+    const pin = resolvePin(input);
+    if (pin) {
+      ctx.fillStyle = '#2666d9';
+      ctx.beginPath();
+      ctx.arc(toX(pin.lng), toY(pin.lat), 6, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.fillStyle = '#222';
+  ctx.font = '12px sans-serif';
+  let y = 120;
+  ctx.fillText('Office PNG companion to the 11×17 PDF. Tank/leach/wells are never invented.', 870, y);
+  y += 20;
+  for (const note of model.notes.filter((n) => /FLAG/i.test(n)).slice(0, 8)) {
+    ctx.fillStyle = '#a01810';
+    const line = note.length > 70 ? `${note.slice(0, 70)}…` : note;
+    ctx.fillText(line, 870, y);
+    y += 16;
+  }
+  return canvas.toBuffer('image/png');
 }
 

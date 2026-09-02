@@ -8,17 +8,14 @@ import {
   overlayCrystalliteNeighbor,
   traceLarc009777,
 } from './as-built.ts';
-import { cleanApn, detectCounty, isCounty } from './county.ts';
-import { asBuiltOnFile, fileRecordIds, searchDehDocuments } from './deh-docs.ts';
+import { getCountyAdapter } from './adapters/index.ts';
+import { cleanApn, isCounty, resolveCounty } from './county.ts';
+import { asBuiltOnFile, fileRecordIds } from './deh-docs.ts';
 import {
   centroidFromRings,
   expandBboxFeet,
-  fetchNearbyStructures,
-  fetchParcelForCounty,
-  fetchParcelsInEnvelope,
-  fetchRoadLabels,
-  fetchWwSepticFlags,
   geocodeAddress,
+  geocodeFccCounty,
   haversineFeet,
   minDistanceToPolygonsFt,
   minRingsDistanceFt,
@@ -41,6 +38,8 @@ export interface ResearchInput {
   apn?: string;
   address?: string;
   county?: County | string;
+  /** Explicit UI picker. Wins over geocode. Omit / 'auto' to detect. */
+  countyOverride?: County | string | 'auto' | null;
   lat?: number;
   lng?: number;
   septicRadiusFeet?: number;
@@ -150,6 +149,7 @@ export async function runPermitResearch(
   let lng = input.lng;
   let formattedAddress = input.address;
   let geoCity: string | null = null;
+  let geoCountyName: string | null = null;
 
   if ((lat == null || lng == null) && input.address) {
     const geo = await geocodeAddress(input.address, fetchImpl);
@@ -158,10 +158,13 @@ export async function runPermitResearch(
       lng = geo.lng;
       formattedAddress = geo.formatted || input.address;
       geoCity = geo.city || null;
+      geoCountyName = geo.countyName || null;
       sources.push({
         name: 'Address geocode',
         status: 'success',
-        message: geo.formatted || `${geo.lat.toFixed(6)}, ${geo.lng.toFixed(6)}`,
+        message:
+          (geo.formatted || `${geo.lat.toFixed(6)}, ${geo.lng.toFixed(6)}`) +
+          (geo.countyName ? ` · ${geo.countyName}` : ''),
       });
     } else {
       sources.push({
@@ -170,14 +173,81 @@ export async function runPermitResearch(
         message: 'Could not geocode that address',
       });
     }
+  } else if (lat != null && lng != null && !geoCountyName) {
+    try {
+      geoCountyName = await geocodeFccCounty(lat, lng, fetchImpl);
+    } catch {
+      geoCountyName = null;
+    }
   }
 
-  const county = detectCounty({
+  const override =
+    input.countyOverride && input.countyOverride !== 'auto' && isCounty(String(input.countyOverride))
+      ? (input.countyOverride as County)
+      : undefined;
+  const resolved = resolveCounty({
     lat,
     lng,
     address: [input.address, formattedAddress, geoCity].filter(Boolean).join(', '),
-    county: input.county && isCounty(String(input.county)) ? (input.county as County) : undefined,
+    geocodeCounty: geoCountyName,
+    countyOverride: override,
+    county: !override && input.county && isCounty(String(input.county)) ? (input.county as County) : undefined,
   });
+
+  if (resolved.status === 'unsupported') {
+    notes.push(resolved.flag);
+    sources.push({ name: 'County', status: 'error', message: resolved.flag });
+    return {
+      parcel: null,
+      wells: [],
+      septic: null,
+      septicPermits: [],
+      zoning: null,
+      sources,
+      county: null,
+      countyUnsupported: true,
+      unsupportedCountyName: resolved.countyName,
+      countyDetection: { source: resolved.source, label: resolved.countyName },
+      searchPoint: lat != null && lng != null ? { lat, lng } : null,
+      formattedAddress,
+      notes,
+      structures: [],
+      proposedWell: null,
+      dehDocuments: [],
+      neighbors: [],
+      roads: [],
+      wellsWithin250Ft: 0,
+    };
+  }
+
+  if (resolved.status === 'unknown') {
+    notes.push(resolved.flag);
+    sources.push({ name: 'County', status: 'error', message: resolved.flag });
+    return {
+      parcel: null,
+      wells: [],
+      septic: null,
+      septicPermits: [],
+      zoning: null,
+      sources,
+      county: null,
+      countyUnsupported: true,
+      unsupportedCountyName: 'unknown',
+      countyDetection: { source: resolved.source, label: 'unknown' },
+      searchPoint: lat != null && lng != null ? { lat, lng } : null,
+      formattedAddress,
+      notes,
+      structures: [],
+      proposedWell: null,
+      dehDocuments: [],
+      neighbors: [],
+      roads: [],
+      wellsWithin250Ft: 0,
+    };
+  }
+
+  const county = resolved.county;
+  const adapter = getCountyAdapter(county);
 
   const result: ResearchResult = {
     parcel: null,
@@ -187,6 +257,10 @@ export async function runPermitResearch(
     zoning: null,
     sources,
     county,
+    countyUnsupported: false,
+    countyDetection: { source: resolved.source, label: resolved.label },
+    setbacks: adapter.setbacks,
+    portals: adapter.portals,
     searchPoint: lat != null && lng != null ? { lat, lng } : null,
     formattedAddress,
     notes,
@@ -196,17 +270,13 @@ export async function runPermitResearch(
     neighbors: [],
     roads: [],
     wellsWithin250Ft: 0,
+    countyWellPermits: [],
   };
 
-  const gisName =
-    county === 'san_diego'
-      ? 'San Diego County GIS'
-      : county === 'riverside'
-        ? 'Riverside County Assessor GIS'
-        : 'San Bernardino County GIS';
+  const gisName = adapter.gisName;
 
   try {
-    result.parcel = await fetchParcelForCounty(county, {
+    result.parcel = await adapter.fetchParcel({
       apn: input.apn,
       address: input.address,
       lat,
@@ -284,9 +354,9 @@ export async function runPermitResearch(
     });
   }
 
-  if (county === 'san_diego' && searchLat != null && searchLng != null) {
+  if (searchLat != null && searchLng != null) {
     try {
-      result.structures = await fetchNearbyStructures(
+      result.structures = await adapter.fetchBuildings(
         searchLat,
         searchLng,
         fetchImpl,
@@ -296,8 +366,10 @@ export async function runPermitResearch(
         name: 'Building outlines',
         status: result.structures.length ? 'success' : 'missing',
         message: result.structures.length
-          ? `${result.structures.length} footprints from San Diego BUILDING_OUTLINES`
-          : 'No building outlines in the public envelope — footprints were not invented',
+          ? `${result.structures.length} footprints from the public ${adapter.label} building layer`
+          : county === 'riverside'
+            ? 'No public building-outline layer for Riverside — footprints were not invented'
+            : 'No building outlines in the public envelope — footprints were not invented',
       });
     } catch (error) {
       sources.push({
@@ -306,21 +378,15 @@ export async function runPermitResearch(
         message:
           error instanceof Error
             ? error.message
-            : 'BUILDING_OUTLINES query failed — footprints were not invented',
+            : 'Building-outline query failed — footprints were not invented',
       });
     }
-  } else {
-    sources.push({
-      name: 'Building outlines',
-      status: 'missing',
-      message: 'No public building-outline layer is wired for this county',
-    });
   }
 
   let dehDocs: DehDocument[] = [];
   if (county === 'san_diego' && (result.parcel?.apn || input.apn)) {
     try {
-      dehDocs = await searchDehDocuments(result.parcel?.apn || input.apn || '', fetchImpl);
+      dehDocs = await adapter.searchAsBuilts(result.parcel?.apn || input.apn || '', fetchImpl);
       result.dehDocuments = dehDocs;
       const asBuilts = asBuiltOnFile(dehDocs);
       sources.push({
@@ -345,29 +411,52 @@ export async function runPermitResearch(
         message: error instanceof Error ? error.message : 'DEH search failed',
       });
     }
+  } else if (adapter.asBuiltBlocker) {
+    notes.push(adapter.asBuiltBlocker);
+    sources.push({
+      name: 'Septic as-built geometry',
+      status: 'missing',
+      message: adapter.asBuiltBlocker,
+    });
   }
 
-  let wwFlags: Awaited<ReturnType<typeof fetchWwSepticFlags>> = [];
-  if (county === 'san_diego' && result.parcel?.geometry?.rings?.[0]) {
+  let wwFlags: Awaited<ReturnType<typeof adapter.fetchSepticFlags>> = [];
+  const inventoryBbox = result.parcel?.geometry?.rings?.[0]
+    ? expandBboxFeet(ringBBox(result.parcel.geometry.rings[0]), NEIGHBOR_ENVELOPE_FT)
+    : searchLat != null && searchLng != null
+      ? expandBboxFeet({ minX: searchLng, minY: searchLat, maxX: searchLng, maxY: searchLat }, NEIGHBOR_ENVELOPE_FT)
+      : null;
+  if (inventoryBbox) {
     try {
-      const bbox = expandBboxFeet(ringBBox(result.parcel.geometry.rings[0]), NEIGHBOR_ENVELOPE_FT);
-      wwFlags = await fetchWwSepticFlags({ bbox }, fetchImpl);
+      wwFlags = await adapter.fetchSepticFlags(inventoryBbox, fetchImpl);
       const site = wwFlags.find((f) => f.apn === result.parcel?.apn);
       sources.push({
-        name: 'WW_SEPTIC_SEWER_PUBLIC',
+        name: county === 'san_diego' ? 'WW_SEPTIC_SEWER_PUBLIC' : `${adapter.label} OWTS / septic points`,
         status: site ? 'success' : wwFlags.length ? 'success' : 'missing',
         message: site
-          ? `${site.designation} (parcel flag only — not tank/leach polygons)`
+          ? `${site.designation} (parcel/permit flag only — not tank/leach polygons)`
           : wwFlags.length
-            ? `${wwFlags.length} nearby parcel flags (not tank GPS)`
+            ? `${wwFlags.length} nearby parcel/permit flags (not tank GPS)`
             : 'No septic/sewer parcel flag in the public layer',
       });
     } catch (error) {
       sources.push({
-        name: 'WW_SEPTIC_SEWER_PUBLIC',
+        name: county === 'san_diego' ? 'WW_SEPTIC_SEWER_PUBLIC' : `${adapter.label} OWTS / septic points`,
         status: 'error',
         message: error instanceof Error ? error.message : 'Septic flag query failed',
       });
+    }
+    try {
+      result.countyWellPermits = await adapter.fetchCountyWells(inventoryBbox, fetchImpl);
+      if (result.countyWellPermits?.length) {
+        sources.push({
+          name: `${adapter.label} well permits`,
+          status: 'success',
+          message: `${result.countyWellPermits.length} official well-permit point(s) — not invented`,
+        });
+      }
+    } catch {
+      result.countyWellPermits = [];
     }
   }
 
@@ -433,8 +522,12 @@ export async function runPermitResearch(
   }
 
   notes.push(
-    'Streets and easements come from public road labels when present. Surveyed tank/leach geometry is drawn only from a parsed DEH as-built — never invented.'
+    'Streets and easements come from public road labels when present. Surveyed tank/leach geometry is drawn only from a parsed county as-built — never invented.'
   );
+  notes.push(
+    `Setbacks (${adapter.label}): tank ${adapter.setbacks.tankFt} ft, leach ${adapter.setbacks.leachFt} ft, property line ${adapter.setbacks.propertyLineFt} ft. Source: ${adapter.setbacks.source}.`
+  );
+  for (const n of adapter.setbacks.notes) notes.push(n);
 
   const overlayApplied = applyKnownAsBuiltOverlay(result, dehDocs, notes, sources);
 
@@ -468,6 +561,25 @@ export async function runPermitResearch(
     notes.push('Could not place a proposed-well pin inside the parcel. Centroid was not used as a silent fallback.');
   }
 
+  if (searchLat != null && searchLng != null) {
+    for (const permit of result.countyWellPermits || []) {
+      const already = result.wells.some(
+        (w) => haversineFeet(w.latitude, w.longitude, permit.lat, permit.lng) < 40
+      );
+      if (already) continue;
+      result.wells.push({
+        wcr_number: permit.permitId,
+        well_use: permit.wellType,
+        latitude: permit.lat,
+        longitude: permit.lng,
+        distance_from_parcel: Math.round(haversineFeet(searchLat, searchLng, permit.lat, permit.lng)),
+        apn: permit.apn,
+        source: permit.source,
+      });
+    }
+    result.wells.sort((a, b) => (a.distance_from_parcel || 0) - (b.distance_from_parcel || 0));
+  }
+
   const pin = result.proposedWell || (searchLat != null && searchLng != null ? { lat: searchLat, lng: searchLng } : null);
   result.wellsWithin250Ft = pin
     ? result.wells.filter(
@@ -483,11 +595,11 @@ export async function runPermitResearch(
         : `${result.wellsWithin250Ft} well(s) within ${INVENTORY_RADIUS_FT} ft`,
   });
 
-  if (county === 'san_diego' && result.parcel?.geometry?.rings?.[0]) {
+  if (result.parcel?.geometry?.rings?.[0]) {
     try {
       const subjectRing = result.parcel.geometry.rings[0];
       const bbox = expandBboxFeet(ringBBox(subjectRing), NEIGHBOR_ENVELOPE_FT);
-      const nearbyParcels = await fetchParcelsInEnvelope(bbox, fetchImpl);
+      const nearbyParcels = await adapter.fetchParcelsInEnvelope(bbox, fetchImpl);
       const pinPt = result.proposedWell;
       const candidates: NeighborParcel[] = [];
       for (const parcel of nearbyParcels) {
@@ -529,7 +641,7 @@ export async function runPermitResearch(
       const docsByApn = await Promise.all(
         toSearch.map(async (n) => {
           try {
-            return { apn: n.apn, docs: await searchDehDocuments(n.apn, fetchImpl) };
+            return { apn: n.apn, docs: await adapter.searchAsBuilts(n.apn, fetchImpl) };
           } catch {
             return { apn: n.apn, docs: [] as DehDocument[] };
           }
@@ -569,7 +681,7 @@ export async function runPermitResearch(
         name: 'Neighbor parcels',
         status: result.neighbors.length ? 'success' : 'missing',
         message: result.neighbors.length
-          ? `${result.neighbors.length} neighbor(s) (${septicCount} septic / ${sewerCount} sewer / WW_SEPTIC flag only). FileRecordIds: ${listedIds.join(', ') || 'none'}.`
+          ? `${result.neighbors.length} neighbor(s) (${septicCount} septic / ${sewerCount} sewer / public flag only). FileRecordIds: ${listedIds.join(', ') || 'none'}.`
           : `No neighbor parcels within ${NEIGHBOR_ENVELOPE_FT} ft`,
       });
       const pin = result.proposedWell;
@@ -596,7 +708,7 @@ export async function runPermitResearch(
         return n;
       });
       if (result.proposedWell) {
-        result.proposedWell = flagNeighborSetbacks(result.proposedWell, result.neighbors);
+        result.proposedWell = flagNeighborSetbacks(result.proposedWell, result.neighbors, county);
         if (!result.proposedWell.meetsSetbacks && result.proposedWell.flags.some((f) => /neighbor leach/i.test(f))) {
           notes.push(
             `Proposed-well pin stays in the SE pocket; neighbor leach setback FLAGGED: ${result.proposedWell.flags.filter((f) => /FLAG/i.test(f)).join('; ')}`
@@ -609,10 +721,12 @@ export async function runPermitResearch(
         message: `${extracted} neighbor as-built(s) traced onto GIS buildings; ${labelOnly} on file without extracted geometry (no building or sheet not parsed). Tank/leach were not invented.`,
       });
       notes.push(
-        'Neighbor tank/leach are drawn only from a parsed DEH as-built fitted to that parcel\'s GIS building. No building outline → FileRecordId only.'
+        county === 'san_diego'
+          ? 'Neighbor tank/leach are drawn only from a parsed DEH as-built fitted to that parcel\'s GIS building. No building outline → FileRecordId only.'
+          : 'Neighbor tank/leach were not drawn — no public as-built geometry for this county. Permit/parcel flags only.'
       );
       try {
-        result.roads = await fetchRoadLabels(bbox, fetchImpl);
+        result.roads = await adapter.fetchRoads(bbox, fetchImpl);
       } catch {
         result.roads = [];
       }

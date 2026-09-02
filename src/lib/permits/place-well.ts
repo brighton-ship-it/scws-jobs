@@ -7,6 +7,7 @@ import {
 } from './gis.ts';
 import {
   BUILDING_CLEAR_FT,
+  COUNTY_SETBACKS,
   EXISTING_WELL_SETBACK_FT,
   LEACH_SETBACK_FT,
   PROPERTY_LINE_SETBACK_FT,
@@ -18,6 +19,14 @@ import {
   type StructureFootprint,
   type WellInfo,
 } from './types.ts';
+
+function tankSetback(county: County): number {
+  return COUNTY_SETBACKS[county]?.tankFt ?? TANK_SETBACK_FT;
+}
+
+function leachSetback(county: County): number {
+  return COUNTY_SETBACKS[county]?.leachFt ?? LEACH_SETBACK_FT;
+}
 
 const GRID_STEP_FT = 8;
 const REFINE_STEP_FT = 2;
@@ -135,11 +144,13 @@ export function evaluatePin(lat: number, lng: number, input: PlaceWellInput): Pi
   if (!inBuilding && structureFt != null && structureFt < BUILDING_CLEAR_FT) {
     flags.push(`${Math.round(structureFt)} ft to building (need >=${BUILDING_CLEAR_FT} ft)`);
   }
-  if (tankFt != null && tankFt < TANK_SETBACK_FT) {
-    flags.push(`${Math.round(tankFt)} ft to septic tank (need >=${TANK_SETBACK_FT} ft)`);
+  const tankNeed = tankSetback(input.county);
+  const leachNeed = leachSetback(input.county);
+  if (tankFt != null && tankFt < tankNeed) {
+    flags.push(`${Math.round(tankFt)} ft to septic tank (need >=${tankNeed} ft)`);
   }
-  if (leachFt != null && leachFt < LEACH_SETBACK_FT) {
-    flags.push(`${Math.round(leachFt)} ft to leach field (need >=${LEACH_SETBACK_FT} ft)`);
+  if (leachFt != null && leachFt < leachNeed) {
+    flags.push(`${Math.round(leachFt)} ft to leach field (need >=${leachNeed} ft)`);
   }
   if (existingWellFt != null && existingWellFt < EXISTING_WELL_SETBACK_FT) {
     flags.push(
@@ -151,8 +162,8 @@ export function evaluatePin(lat: number, lng: number, input: PlaceWellInput): Pi
   const buildingClear = !inBuilding && (structureFt == null || structureFt >= BUILDING_CLEAR_FT);
   const feasible = Boolean(insideParcel && !inEasement && plOk && buildingClear);
   const setbacksMet =
-    (tankFt == null || tankFt >= TANK_SETBACK_FT) &&
-    (leachFt == null || leachFt >= LEACH_SETBACK_FT) &&
+    (tankFt == null || tankFt >= tankNeed) &&
+    (leachFt == null || leachFt >= leachNeed) &&
     (existingWellFt == null || existingWellFt >= EXISTING_WELL_SETBACK_FT);
   const ok = feasible && setbacksMet;
 
@@ -293,11 +304,17 @@ export function septicGeometryFromKnown(geometry: SepticGeometry[] | undefined):
  * Apply neighbor tank/leach setbacks after placement. Neighbor leach does not
  * move the pin (SE orchard stays); it FLAGGED if leach < 100 or tank < 50.
  */
-export function flagNeighborSetbacks(pin: ProposedWell, neighbors: NeighborParcel[]): ProposedWell {
+export function flagNeighborSetbacks(
+  pin: ProposedWell,
+  neighbors: NeighborParcel[],
+  county: County = 'san_diego'
+): ProposedWell {
   let neighborTankFt: number | null = null;
   let neighborLeachFt: number | null = null;
   const flags = [...pin.flags];
   let neighborOk = true;
+  const tankNeed = tankSetback(county);
+  const leachNeed = leachSetback(county);
 
   for (const n of neighbors) {
     const tank = (n.geometry || []).find((g) => g.kind === 'tank');
@@ -307,20 +324,20 @@ export function flagNeighborSetbacks(pin: ProposedWell, neighbors: NeighborParce
     if (tankFt != null) {
       n.tankFt = Math.round(tankFt);
       neighborTankFt = neighborTankFt == null ? tankFt : Math.min(neighborTankFt, tankFt);
-      if (tankFt < TANK_SETBACK_FT) {
+      if (tankFt < tankNeed) {
         neighborOk = false;
         flags.push(
-          `FLAG: ${Math.round(tankFt)} ft to neighbor tank ${n.apn} (need >=${TANK_SETBACK_FT} ft)`
+          `FLAG: ${Math.round(tankFt)} ft to neighbor tank ${n.apn} (need >=${tankNeed} ft)`
         );
       }
     }
     if (leachFt != null) {
       n.leachFt = Math.round(leachFt);
       neighborLeachFt = neighborLeachFt == null ? leachFt : Math.min(neighborLeachFt, leachFt);
-      if (leachFt < LEACH_SETBACK_FT) {
+      if (leachFt < leachNeed) {
         neighborOk = false;
         flags.push(
-          `FLAG: ${Math.round(leachFt)} ft to neighbor leach ${n.apn} (need >=${LEACH_SETBACK_FT} ft)`
+          `FLAG: ${Math.round(leachFt)} ft to neighbor leach ${n.apn} (need >=${leachNeed} ft)`
         );
       }
     }

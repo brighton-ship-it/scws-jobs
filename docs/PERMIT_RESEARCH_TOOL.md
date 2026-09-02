@@ -58,7 +58,9 @@ Since septic records aren't available via API, users can:
 
 2. **Search for property**:
    - Enter address, APN, or coordinates
-   - Select county (San Diego or Riverside)
+   - County picker defaults to **Auto-detect** (Census / Nominatim county name)
+   - Manual override for San Diego, Riverside, or San Bernardino only
+   - Addresses outside those three counties return FLAG: county not supported (no San Diego default)
    - Click Search
 
 3. **Add septic location** (if known):
@@ -148,12 +150,12 @@ Save and retrieve research reports linked to customers/jobs.
 
 ## Setback Requirements
 
-Standard California requirements used:
-- **100 feet** - Minimum distance from septic system to well
-- **50 feet** - Minimum distance from property line to well
-- **50 feet** - Minimum distance from buildings to well
+County-specific (FLAG the source on the plot plan):
+- **San Diego** — tank 50 ft / leach 100 ft / PL 10 ft (Bulletin 74 + typical DEH plot-plan practice; Chapter 4 has no numeric PL)
+- **Riverside** — tank 100 ft / leach 100 ft / PL 50 ft (Ordinance 682.6)
+- **San Bernardino** — tank 100 ft / leach 100 ft / PL 5 ft (EHS Minimum Setbacks / LAMP 3.1; well-to-PL not published in § 33.0638)
 
-*Always verify current requirements with local health department.*
+*Always verify current requirements with the county environmental health department.*
 
 ## Database Tables
 
@@ -171,15 +173,24 @@ Requires `NEXT_PUBLIC_GOOGLE_MAPS_API_KEY` with:
 
 ### ArcGIS REST API Endpoints
 
-**San Diego County Parcels:**
+**San Diego County Parcels (public, token-free):**
 ```
-https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/PARCELS_ALL/MapServer/0
+https://gis-public.sandiegocounty.gov/arcgis/rest/services/cosd_warehouse/parcels_all_for_public_use/MapServer/0
 ```
 
-**Riverside County Parcels:**
+**Riverside County Parcels (MMC Parcels, Public — live fields APN / SITUS_STREET / FULL_SITUS_ADDRESS / ACREAGE / CLASS_CODE):**
 ```
-https://content.rcflood.org/arcgis/rest/services/FacilitiesAndProperties/DynamicLayerEP/MapServer/5
+https://gis.countyofriverside.us/arcgis/rest/services/mmc/mmc_mSrvc/MapServer/8
 ```
+Address points: `.../MapServer/4` (HOUSE_NUMBER, STREET_NAME, APN).
+OWTS points (not tank/leach polygons): `.../MapServer/30`.
+Well permit points: `.../MapServer/33`.
+
+**San Bernardino County Parcels:**
+```
+https://services.arcgis.com/aA3snZwJfFkVyDuP/arcgis/rest/services/Parcels_for_San_Bernardino_County/FeatureServer/0
+```
+Building footprints (2021): `.../2D_Building_Footprints_2021/FeatureServer/0`. OwnerName may be redacted (CA Gov Code 7928.205).
 
 **CA DWR Well Completion Reports:**
 ```
@@ -199,6 +210,11 @@ The tool auto-fills official county permit application PDFs:
 - Form: Monitoring/Water Well Application (EPO-243)
 - Source: https://rivcoeh.org/wells
 - Stored at: `/public/forms/riverside-well-permit.pdf`
+
+### San Bernardino County
+- Form: Application for Well Permit (official blank — not a filled mapping)
+- Source: https://ehs.sbcounty.gov/wp-content/uploads/sites/97/Programs/WaterAndWaste/well-permit-application.pdf
+- Stored at: `/public/forms/san-bernardino-well-permit.pdf`
 
 ### Updating Forms
 If the county updates their permit forms:

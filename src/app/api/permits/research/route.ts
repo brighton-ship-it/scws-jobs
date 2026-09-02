@@ -19,7 +19,7 @@ function supabaseOrNull() {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
-    const { apn, address, county, lat, lng, septicRadiusFeet } = body || {};
+    const { apn, address, county, countyOverride, lat, lng, septicRadiusFeet } = body || {};
 
     if (!apn && !address && lat == null && lng == null) {
       return NextResponse.json(
@@ -34,6 +34,10 @@ export async function POST(request: NextRequest) {
         apn,
         address,
         county: county && isCounty(county) ? (county as County) : undefined,
+        countyOverride:
+          countyOverride && countyOverride !== 'auto' && isCounty(countyOverride)
+            ? (countyOverride as County)
+            : undefined,
         lat: lat != null ? Number(lat) : undefined,
         lng: lng != null ? Number(lng) : undefined,
         septicRadiusFeet,

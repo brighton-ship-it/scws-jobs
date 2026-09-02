@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { countyFromCoords, detectCounty, formatApn, parseStreetAddress } from './county.ts';
-import { publicAttrs, ringAreaSqFt } from './gis.ts';
+import { countyFromCoords, detectCounty, formatApn, parseCountyName, parseStreetAddress, resolveCounty } from './county.ts';
+import { publicAttrs, ringAreaSqFt, RIV_PARCEL_FIELDS } from './gis.ts';
+import { COUNTY_SETBACKS } from './types.ts';
 import { PDFDocument } from 'pdf-lib';
 import { buildPlotPlanModel, renderPlotPlanPdf, SCWS_LETTERHEAD } from './plot-plan.ts';
 import { runPermitResearch } from './research.ts';
@@ -20,6 +21,20 @@ describe('permit county + APN helpers', () => {
     );
     assert.equal(detectCounty({ lat: 33.0414, lng: -116.8698 }), 'san_diego');
     assert.equal(detectCounty({ lat: 33.5551, lng: -116.6583 }), 'riverside');
+    assert.equal(detectCounty({ address: '23933 Lake Dr, Crestline, CA 92325' }), 'san_bernardino');
+    assert.equal(detectCounty({}), null);
+  });
+
+  it('does not default Los Angeles or Imperial to San Diego', () => {
+    const la = parseCountyName('Los Angeles County');
+    assert.equal(la.status, 'unsupported');
+    const resolved = resolveCounty({
+      geocodeCounty: 'Los Angeles County',
+      address: '200 N Spring St, Los Angeles, CA 90012',
+    });
+    assert.equal(resolved.status, 'unsupported');
+    assert.match(resolved.status === 'unsupported' ? resolved.flag : '', /not supported/i);
+    assert.equal(detectCounty({ lat: 32.78, lng: -115.57 }), null);
   });
 
   it('keeps Temecula in Riverside and Fallbrook in San Diego', () => {
@@ -38,6 +53,25 @@ describe('permit county + APN helpers', () => {
     assert.equal(parsed.name, 'MAIN');
     assert.equal(parsed.city, 'Ramona');
     assert.equal(parsed.zip, '92065');
+  });
+});
+
+describe('Riverside live field map', () => {
+  it('does not request OWNERNAME / SITEADDR / MAIL_TO_NAME / HOUSE_NO on MMC parcels', () => {
+    assert.equal(RIV_PARCEL_FIELDS.includes('OWNERNAME'), false);
+    assert.equal(RIV_PARCEL_FIELDS.includes('SITEADDR'), false);
+    assert.equal(RIV_PARCEL_FIELDS.includes('MAIL_TO_NAME'), false);
+    assert.equal(RIV_PARCEL_FIELDS.includes('HOUSE_NO'), false);
+    assert.ok(RIV_PARCEL_FIELDS.includes('APN'));
+    assert.ok(RIV_PARCEL_FIELDS.includes('FULL_SITUS_ADDRESS'));
+    assert.ok(RIV_PARCEL_FIELDS.includes('ACREAGE'));
+  });
+
+  it('uses Riverside Ord. 682.6 tank 100 / PL 50, not SD tank 50', () => {
+    assert.equal(COUNTY_SETBACKS.riverside.tankFt, 100);
+    assert.equal(COUNTY_SETBACKS.riverside.propertyLineFt, 50);
+    assert.equal(COUNTY_SETBACKS.san_diego.tankFt, 50);
+    assert.equal(COUNTY_SETBACKS.san_bernardino.tankFt, 100);
   });
 });
 
@@ -184,6 +218,41 @@ describe('runPermitResearch', () => {
     assert.ok(result.searchPoint);
   });
 
+  it('FLAGs an unsupported county and does not query San Diego parcels', async () => {
+    let sdParcelHits = 0;
+    const fetchImpl = async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes('parcels_all_for_public_use') || href.includes('ADDRAPN') || href.includes('addrapn_Composite')) {
+        sdParcelHits += 1;
+      }
+      if (href.includes('geocoding.geo.census.gov')) {
+        return json({
+          result: {
+            addressMatches: [
+              {
+                matchedAddress: '200 N SPRING ST, LOS ANGELES, CA, 90012',
+                coordinates: { x: -118.2437, y: 34.0522 },
+                addressComponents: { city: 'LOS ANGELES' },
+                geographies: { Counties: [{ NAME: 'Los Angeles County', BASENAME: 'Los Angeles' }] },
+              },
+            ],
+          },
+        });
+      }
+      return json({ features: [] });
+    };
+    const result = await runPermitResearch(
+      { address: '200 N Spring St, Los Angeles, CA 90012' },
+      { fetchImpl: fetchImpl as typeof fetch }
+    );
+    assert.equal(result.county, null);
+    assert.equal(result.countyUnsupported, true);
+    assert.match(result.unsupportedCountyName || '', /Los Angeles/i);
+    assert.ok(result.notes.some((n) => /not supported/i.test(n)));
+    assert.equal(sdParcelHits, 0);
+    assert.equal(result.parcel, null);
+  });
+
   it('rejects Riverside right-of-way APN RW instead of inventing a parcel', async () => {
     const fetchImpl = async (url: string | URL | Request) => {
       const href = String(url);
@@ -283,6 +352,65 @@ describe('runPermitResearch', () => {
     assert.ok(result.notes.some((n) => /not invented/i.test(n)));
     assert.equal(JSON.stringify(result).includes('nope'), false);
     assert.equal(result.wellsWithin250Ft, 0);
+    assert.equal(result.countyUnsupported, false);
+    assert.ok(result.notes.some((n) => /as-built not found/i.test(n) || /Ord\. 682/i.test(n) || /FLAG/i.test(n)));
+  });
+
+  it('resolves a Crestline-style SB parcel without defaulting to San Diego', async () => {
+    const fetchImpl = async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes('geocoding.geo.census.gov')) {
+        return json({
+          result: {
+            addressMatches: [
+              {
+                matchedAddress: '23933 LAKE DR, CRESTLINE, CA, 92325',
+                coordinates: { x: -117.2813, y: 34.2431 },
+                addressComponents: { city: 'CRESTLINE' },
+                geographies: { Counties: [{ NAME: 'San Bernardino County', BASENAME: 'San Bernardino' }] },
+              },
+            ],
+          },
+        });
+      }
+      if (href.includes('Parcels_for_San_Bernardino_County')) {
+        return json({
+          features: [
+            {
+              attributes: {
+                ParcelNumber: '033813115',
+                OwnerName: 'Protected Per CA Gov Code 7928.205',
+                Acreage: 0.24,
+                Zoning: 'CF/RS-14M',
+                AssessDescription: 'SFR',
+              },
+              geometry: {
+                rings: [[
+                  [-117.2816, 34.2429],
+                  [-117.2810, 34.2429],
+                  [-117.2810, 34.2433],
+                  [-117.2816, 34.2433],
+                  [-117.2816, 34.2429],
+                ]],
+              },
+            },
+          ],
+        });
+      }
+      if (href.includes('WellCompletionReports') || href.includes('datastore_search_sql')) {
+        return json({ features: [], success: true, result: { records: [] } });
+      }
+      return json({ features: [] });
+    };
+    const result = await runPermitResearch(
+      { address: '23933 Lake Dr, Crestline, CA 92325' },
+      { fetchImpl: fetchImpl as typeof fetch }
+    );
+    assert.equal(result.county, 'san_bernardino');
+    assert.equal(result.countyUnsupported, false);
+    assert.equal(result.parcel?.apn, '0338-131-15');
+    assert.equal(result.parcel?.ownerName, undefined);
+    assert.ok(result.notes.some((n) => /as-built not found/i.test(n)));
   });
 
   it('traces the Crystallite as-built and places the proposed well in the SE orchard pocket', async () => {
