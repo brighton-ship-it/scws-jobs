@@ -612,6 +612,9 @@ describe('runPermitResearch', () => {
     const east = (result.neighbors || []).find((n) => n.apn === '133-241-01-00');
     assert.ok(east?.leachFt != null && east.leachFt < 100);
     assert.ok(east?.geometry?.length);
+    const nw = (result.neighbors || []).find((n) => n.apn === '129-092-69-00');
+    assert.ok(nw?.geometry?.length, 'NW 31189 Moonlight OWTS layout must stay in the neighbor set');
+    assert.equal(nw!.tankLeach, 'as_built_extracted');
     assert.ok(result.notes.some((n) => /fitted to that parcel/i.test(n) || /neighbor leach setback FLAGGED/i.test(n)));
   });
 });
