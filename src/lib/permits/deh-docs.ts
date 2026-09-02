@@ -110,15 +110,13 @@ export async function searchDehDocuments(
         body: new URLSearchParams(fields),
       });
       pushRecords(await parseSearchRecords(posted));
-      if (out.length) break;
     } catch {
-      // Fall through to GET.
+      // County library often 405s POST; fall through to GET.
     }
     try {
       const getUrl = DEH_SEARCH_URL + '?' + new URLSearchParams(fields);
       const got = await fetchImpl(getUrl, { headers: DEH_HEADERS });
       pushRecords(await parseSearchRecords(got));
-      if (out.length) break;
     } catch {
       // Honest miss — do not invent documents.
     }

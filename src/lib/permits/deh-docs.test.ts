@@ -63,4 +63,44 @@ describe('DEH document library mapping', () => {
     assert.equal(docs[0].fileRecordId, '36954960');
     assert.equal(docs.every((d) => d.geometryExtracted === false), true);
   });
+
+  it('merges the 8-digit dashed APN so OWTS Layout 35347714 is not dropped', async () => {
+    const docs = await searchDehDocuments('129-092-69-00', async (url, init) => {
+      const body = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body || url);
+      const parcel = decodeURIComponent(body.match(/parcel_number=([^&]+)/)?.[1] || String(url).match(/parcel_number=([^&]+)/)?.[1] || '');
+      if (init?.method === 'POST') {
+        return new Response('{}', { status: 405 });
+      }
+      const records =
+        parcel === '129-092-69'
+          ? [
+              {
+                url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=35347714',
+                permit_id: 'DEH2017-LOWTS-008122',
+                parcel_nbr: '129-092-69',
+                lueg_type: 'DEH-LWQD',
+                lueg_subtype: 'DEH-LWQD-OWTS Layout',
+              },
+              {
+                url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010971',
+                parcel_nbr: '129-092-69',
+                lueg_type: 'DEH-LWQD',
+                lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+              },
+            ]
+          : parcel === '129-092-69-00'
+            ? [
+                {
+                  url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010971',
+                  parcel_nbr: '129-092-69-00',
+                  lueg_type: 'DEH-LWQD',
+                  lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+                },
+              ]
+            : [];
+      return new Response(JSON.stringify({ records }), { status: 200 });
+    });
+    assert.ok(docs.some((d) => d.fileRecordId === '35347714' && d.isAsBuiltCandidate));
+    assert.ok(docs.some((d) => d.fileRecordId === '37010971'));
+  });
 });
