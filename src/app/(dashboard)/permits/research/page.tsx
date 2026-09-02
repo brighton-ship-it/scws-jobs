@@ -2256,11 +2256,11 @@ export default function PermitResearchPage() {
                           ) : (
                             <p className="text-gray-500 mt-1">No DEH-LWQD hits</p>
                           )}
-                          <p className="text-amber-700 mt-1">
+                          <p className={(n.leachFt != null && n.leachFt < 100) ? 'text-red-700 mt-1' : 'text-amber-700 mt-1'}>
                             {n.tankLeach === 'as_built_extracted'
-                              ? 'as-built traced onto GIS'
+                              ? `as-built traced onto GIS${n.tankFt != null ? ` · tank ${n.tankFt} ft` : ''}${n.leachFt != null ? ` · leach ${n.leachFt} ft${n.leachFt < 100 ? ' FLAG <100' : ' MET'}` : ''}`
                               : n.tankLeach === 'as_built_on_file'
-                                ? 'as-built on file, geometry not extracted'
+                                ? 'as-built on file, geometry not placed (no GIS building or sheet not parsed)'
                                 : 'no tank/leach drawn'}
                           </p>
                         </div>
