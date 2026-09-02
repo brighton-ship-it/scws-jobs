@@ -1,15 +1,15 @@
 export const dynamic = "force-dynamic";
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { optionalServiceClient } from '@/lib/supabase/service';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+const supabase = optionalServiceClient();
 
 // GET /api/calls - List calls with optional filters
 export async function GET(request: NextRequest) {
   try {
+    if (!supabase) {
+      return NextResponse.json({ error: 'Database not configured' }, { status: 503 });
+    }
     const { searchParams } = new URL(request.url);
     const source = searchParams.get('source');
     const days = parseInt(searchParams.get('days') || '30');

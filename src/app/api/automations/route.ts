@@ -1,16 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { optionalServiceClient } from '@/lib/supabase/service';
 import type { Automation, CreateAutomationInput } from '@/types/automations';
 
-// Check if we're in demo/mock mode
-const useMockData = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                    process.env.NEXT_PUBLIC_SUPABASE_URL === 'your-supabase-url';
-
-// Use service key for server-side operations
-const supabase = useMockData ? null : createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const supabase = optionalServiceClient();
+const useMockData = !supabase;
 
 // Mock automations for demo mode
 const mockAutomations: Automation[] = [

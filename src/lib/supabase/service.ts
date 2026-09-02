@@ -21,3 +21,16 @@ export function createServiceClient() {
     },
   });
 }
+
+/** Safe at module import / Vercel page-data collect when preview env lacks keys. */
+export function optionalServiceClient() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  if (!url || url === 'your-supabase-url' || !key) return null;
+  return createClient<Database>(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+}
