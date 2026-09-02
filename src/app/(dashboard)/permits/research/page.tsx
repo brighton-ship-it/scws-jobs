@@ -28,7 +28,7 @@ import {
 import { getMapsLibrary, isGoogleMapsConfigured, SOCAL_CENTER } from '@/components/maps/GoogleMapsLoader';
 import jsPDF from 'jspdf';
 import { detectCounty as detectCountyFromInput } from '@/lib/permits/county';
-import { COUNTY_LABEL, type County as PermitCounty } from '@/lib/permits/types';
+import { COUNTY_LABEL, PROPERTY_LINE_SETBACK_FT, type County as PermitCounty } from '@/lib/permits/types';
 
 interface ParcelInfo {
   apn: string;
@@ -107,6 +107,7 @@ interface ResearchResult {
   formattedAddress?: string;
   notes?: string[];
   cached?: boolean;
+  structures?: { rings: number[][][] }[];
 }
 
 type County = PermitCounty;
@@ -215,6 +216,7 @@ export default function PermitResearchPage() {
   const propertyLineSetbackRef = useRef<google.maps.Polygon | null>(null);
   const septicMarkerRef = useRef<google.maps.Marker | null>(null);
   const proposedWellSetbackRef = useRef<google.maps.Circle | null>(null); // Separate ref for proposed well setback
+  const structurePolygonsRef = useRef<google.maps.Polygon[]>([]);
   
   // Coordinates for search
   const [coordinates, setCoordinates] = useState<{ lat: number; lng: number } | null>(null);
@@ -458,6 +460,8 @@ export default function PermitResearchPage() {
         propertyLineSetbackRef.current.setMap(null);
         propertyLineSetbackRef.current = null;
       }
+      structurePolygonsRef.current.forEach((p) => p.setMap(null));
+      structurePolygonsRef.current = [];
     }
     
     // Now check if we should draw new results
@@ -487,11 +491,26 @@ export default function PermitResearchPage() {
       parcelCoords.forEach((coord: { lat: number; lng: number }) => bounds.extend(coord));
       map.fitBounds(bounds, 100);
       
-      // Draw property line setback (50ft inward) if showSetbacks
       if (showSetbacks) {
         drawPropertyLineSetback(parcelCoords, map);
       }
     }
+
+    (result.structures || []).forEach((structure) => {
+      const sring = structure.rings?.[0];
+      if (!sring || sring.length < 3) return;
+      const path = sring.map((pt: number[]) => ({ lat: pt[1], lng: pt[0] }));
+      const poly = new google.maps.Polygon({
+        paths: path,
+        strokeColor: '#6B7280',
+        strokeOpacity: 0.9,
+        strokeWeight: 1.5,
+        fillColor: '#9CA3AF',
+        fillOpacity: 0.25,
+        map,
+      });
+      structurePolygonsRef.current.push(poly);
+    });
     
     // Add well markers with depth labels (using regular Marker, not AdvancedMarker)
     // Declutter overlapping wells by spreading them in a spiral pattern
@@ -621,7 +640,7 @@ export default function PermitResearchPage() {
               <strong style="font-size: 14px; color: #F97316;">🚽 Septic Parcel</strong><br/>
               <b>APN:</b> ${permit.apn}<br/>
               <b>Status:</b> ${permit.designation}<br/>
-              <b>Setback:</b> 50ft radius shown<br/>
+              <b>Note:</b> Parcel centroid, not tank/leach location<br/>
               ${permit.distance_feet ? `<b>Distance:</b> ${permit.distance_feet.toLocaleString()}ft from subject` : ''}
             </div>
           `,
@@ -828,7 +847,7 @@ export default function PermitResearchPage() {
     if (parcelCoords.length < 3) return;
     
     // County-specific setback distances (property line setbacks)
-    const setbackFeet = county === 'san_diego' ? 10 : county === 'san_bernardino' ? 20 : 50;
+    const setbackFeet = PROPERTY_LINE_SETBACK_FT[county];
     // Convert feet to degrees at ~33° latitude (~364000 ft per degree)
     const offsetDeg = setbackFeet / 364000;
     
@@ -1224,7 +1243,7 @@ export default function PermitResearchPage() {
       pdf.setFont('helvetica', 'normal');
       pdf.text('Company: Southern California Well Service', 20, yPos);
       yPos += 6;
-      pdf.text('License: C-57 #1011552', 20, yPos);
+      pdf.text('License: C-57 #1086994', 20, yPos);
       yPos += 6;
       pdf.text('Phone: (760) 440-8520', 20, yPos);
       yPos += 15;
@@ -1701,15 +1720,15 @@ export default function PermitResearchPage() {
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-3 border-2 border-red-500 rounded-full"></span>
-                    50ft Setback
+                    50ft well setback
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-3 border-2 border-orange-500 rounded-full"></span>
-                    100ft Setback
+                    100ft septic setback
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-0 border border-blue-500"></span>
-                    Property Setback
+                    {PROPERTY_LINE_SETBACK_FT[result.county || county]}ft property setback
                   </span>
                 </div>
               </div>
@@ -1956,8 +1975,12 @@ export default function PermitResearchPage() {
                       <label className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
                         <User className="h-3 w-3" /> Owner
                       </label>
-                      <p className="font-medium text-gray-900">{result.parcel.ownerName || '—'}</p>
-                      <p className="text-sm text-gray-500">{result.parcel.ownerAddress || '—'}</p>
+                      <p className="font-medium text-gray-900">
+                        {result.parcel.ownerName || 'Unknown (not published on public GIS)'}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        {result.parcel.ownerAddress || 'Unknown'}
+                      </p>
                     </div>
                     <div>
                       <label className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
@@ -2037,7 +2060,9 @@ export default function PermitResearchPage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-gray-500 text-center py-4">No wells found within 1 mile</p>
+                  <p className="text-gray-500 text-center py-4">
+                    No DWR wells returned. If the source is down, that is an honest GIS miss — locations were not invented.
+                  </p>
                 )}
                 <p className="text-xs text-gray-400 mt-3">
                   Data from CA DWR Well Completion Reports. Wells shown within 1 mile radius.
@@ -2108,7 +2133,7 @@ export default function PermitResearchPage() {
                 {result.septicPermits && result.septicPermits.length > 0 && (
                   <div>
                     <h4 className="text-sm font-medium text-gray-700 mb-2">
-                      Nearby Septic Parcels (within 1 mile)
+                      Nearby septic parcels (centroids, not tank/leach geometry)
                     </h4>
                     <div className="space-y-2 max-h-48 overflow-y-auto">
                       {result.septicPermits.slice(0, 10).map((permit, i) => (
@@ -2133,7 +2158,7 @@ export default function PermitResearchPage() {
                       )}
                     </div>
                     <p className="text-xs text-orange-600 mt-2">
-                      🔶 Orange markers on map show nearby septic parcels
+                      🔶 Orange markers are parcel centroids — tank and leach locations are unknown unless placed by the office
                     </p>
                   </div>
                 )}
@@ -2337,7 +2362,7 @@ export default function PermitResearchPage() {
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Contractor (SCWS)</h3>
                 <div className="bg-green-50 rounded-lg p-4 space-y-1 text-sm">
                   <p><strong>Company:</strong> Southern California Well Service</p>
-                  <p><strong>License:</strong> C-57 #1011552</p>
+                  <p><strong>License:</strong> C-57 #1086994</p>
                   <p><strong>Phone:</strong> (760) 440-8520</p>
                 </div>
               </div>

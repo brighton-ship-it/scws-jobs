@@ -2,10 +2,15 @@ import { cleanApn, formatApn, parseStreetAddress } from './county.ts';
 import type { County, ParcelInfo } from './types.ts';
 
 export const GIS = {
+  // Token-free public parcels (PARCELS_ALL on gis-public is 499 Token Required).
   sdParcels:
-    'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1',
+    'https://gis-public.sandiegocounty.gov/arcgis/rest/services/cosd_warehouse/parcels_all_for_public_use/MapServer/0',
   sdAddrApn:
     'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/ADDRAPN/FeatureServer/0',
+  sdLocator:
+    'https://gis-public.sandiegocounty.gov/arcgis/rest/services/addrapn_Composite/GeocodeServer/findAddressCandidates',
+  sdBuildings:
+    'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/BUILDING_OUTLINES/FeatureServer/0',
   rivParcels:
     'https://gis.countyofriverside.us/arcgis/rest/services/mmc/mmc_mSrvc/MapServer/8',
   sbParcels:
@@ -13,6 +18,9 @@ export const GIS = {
   dwrWells:
     'https://gis.water.ca.gov/arcgis/rest/services/Environment/i07_WellCompletionReports/FeatureServer/0',
 };
+
+const SD_PARCEL_FIELDS =
+  'APN,APN_8,SITUS_ADDRESS,SITUS_STREET,SITUS_SUFFIX,SITUS_ZIP,SITUS_JURIS,ACREAGE,SITUS_BUILDING,SITUS_SUITE';
 
 const BLOCKED_ATTRS = new Set([
   'FLAG',
@@ -109,9 +117,40 @@ export async function geocodeAddress(
   address: string,
   fetchImpl: typeof fetch = fetch
 ): Promise<GeoResult | null> {
+  const locator = await geocodeSdLocator(address, fetchImpl);
+  if (locator) return locator;
   const census = await geocodeCensus(address, fetchImpl);
   if (census) return census;
   return geocodeNominatim(address, fetchImpl);
+}
+
+async function geocodeSdLocator(address: string, fetchImpl: typeof fetch): Promise<GeoResult | null> {
+  try {
+    const url =
+      GIS.sdLocator +
+      '?' +
+      new URLSearchParams({
+        f: 'json',
+        singleLine: address,
+        outSR: '4326',
+        maxLocations: '3',
+      });
+    const response = await fetchImpl(url, {
+      headers: { Accept: 'application/json', 'User-Agent': 'SCWS-PermitResearch/1.0' },
+    });
+    if (!response.ok) return null;
+    const data = await response.json();
+    const hit = (data?.candidates || []).find((c: any) => c?.score >= 90 && c?.location);
+    if (!hit) return null;
+    return {
+      lat: Number(hit.location.y),
+      lng: Number(hit.location.x),
+      formatted: hit.address,
+      city: null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 async function geocodeCensus(address: string, fetchImpl: typeof fetch): Promise<GeoResult | null> {
@@ -174,17 +213,33 @@ async function geocodeNominatim(address: string, fetchImpl: typeof fetch): Promi
   }
 }
 
-function parcelFromSd(attrs: Record<string, any>, geometry: any, county: County): ParcelInfo {
+function publishedOwner(...values: Array<string | null | undefined>): string | undefined {
+  const name = values.filter(Boolean).join(' ').trim();
+  if (!name) return undefined;
+  if (/protected|redacted|unknown/i.test(name)) return undefined;
+  return name;
+}
+
+function isUsableApn(apn: string | undefined): boolean {
+  const clean = cleanApn(apn || '');
+  if (!clean || clean.length < 6) return false;
+  if (clean === 'RW' || /^RW/i.test(apn || '')) return false;
+  return true;
+}
+
+function parcelFromSd(attrs: Record<string, any>, geometry: any, county: County): ParcelInfo | null {
   const a = publicAttrs(attrs);
+  const rawApn = a.APN || a.APN_8 || a.APN_10;
+  if (!isUsableApn(rawApn)) return null;
   const siteAddr = [a.SITUS_ADDRESS, a.SITUS_STREET, a.SITUS_SUFFIX].filter(Boolean).join(' ');
   const acres = parseFloat(a.ACREAGE) || undefined;
   const ring = geometry?.rings?.[0];
   const sqftFromRing = ring ? Math.round(ringAreaSqFt(ring)) : undefined;
   return {
-    apn: formatApn(a.APN, county),
-    ownerName: [a.OWN_NAME1, a.OWN_NAME2].filter(Boolean).join(' ') || undefined,
+    apn: formatApn(rawApn, county),
+    ownerName: publishedOwner(a.OWN_NAME1, a.OWN_NAME2),
     ownerAddress: [a.OWN_ADDR1, a.OWN_ADDR2].filter(Boolean).join(', ') || undefined,
-    siteAddress: [siteAddr, a.SITUS_COMMUNITY, a.SITUS_ZIP].filter(Boolean).join(', ') || undefined,
+    siteAddress: [siteAddr, a.SITUS_ZIP].filter(Boolean).join(', ') || undefined,
     lotSizeAcres: acres || (sqftFromRing ? Math.round((sqftFromRing / 43560) * 100) / 100 : undefined),
     lotSizeSqFt: acres ? Math.round(acres * 43560) : sqftFromRing,
     geometry: geometry?.rings ? { rings: geometry.rings, spatialReference: { wkid: 4326 } } : undefined,
@@ -193,23 +248,25 @@ function parcelFromSd(attrs: Record<string, any>, geometry: any, county: County)
   };
 }
 
-function parcelFromRiv(attrs: Record<string, any>, geometry: any): ParcelInfo {
+function parcelFromRiv(attrs: Record<string, any>, geometry: any): ParcelInfo | null {
   const a = publicAttrs(attrs);
-  const acres = parseFloat(a.ACREAGE) || undefined;
+  if (!isUsableApn(a.APN)) return null;
+  const acres = parseFloat(a.ACREAGE ?? a.ACRE) || undefined;
   const ring = geometry?.rings?.[0];
   const sqftFromRing = ring ? Math.round(ringAreaSqFt(ring)) : undefined;
   return {
     apn: formatApn(a.APN, 'riverside'),
-    ownerName: a.PRIMARY_OWNER || a.OWNERNAME || a.OWNER_NAME || undefined,
+    ownerName: publishedOwner(a.PRIMARY_OWNER, a.OWNERNAME, a.OWNER_NAME, a.MAIL_TO_NAME),
     ownerAddress: [a.MAIL_STREET, a.MAIL_CITY].filter(Boolean).join(', ') || undefined,
     siteAddress:
       a.FULL_SITUS_ADDRESS ||
       [a.SITUS_STREET, a.SITUS_CITY].filter(Boolean).join(', ') ||
+      [a.HOUSE_NO, a.STREET].filter(Boolean).join(' ') ||
       undefined,
     lotSizeAcres: acres || (sqftFromRing ? Math.round((sqftFromRing / 43560) * 100) / 100 : undefined),
     lotSizeSqFt: acres ? Math.round(acres * 43560) : sqftFromRing,
     geometry: geometry?.rings ? { rings: geometry.rings, spatialReference: { wkid: 4326 } } : undefined,
-    landUse: a.CLASS_CODE || undefined,
+    landUse: a.CLASS_CODE || a.REALUSE || undefined,
     zoning: a.CLASS_CODE || undefined,
   };
 }
@@ -268,9 +325,8 @@ export async function fetchSanDiegoParcel(input: {
     const result = await queryArcGis(
       GIS.sdParcels,
       {
-        where: `APN = '${clean}'`,
-        outFields:
-          'APN,OWN_NAME1,OWN_NAME2,OWN_ADDR1,OWN_ADDR2,SITUS_ADDRESS,SITUS_STREET,SITUS_SUFFIX,SITUS_COMMUNITY,SITUS_ZIP,ACREAGE,NUCLEUS_USE_CD,NUCLEUS_ZONE_CD',
+        where: `APN = '${clean}' OR APN_8 = '${clean.slice(0, 8)}'`,
+        outFields: SD_PARCEL_FIELDS,
         returnGeometry: 'true',
         outSR: '4326',
       },
@@ -312,16 +368,39 @@ export async function fetchSanDiegoParcel(input: {
   }
 
   if (input.lat != null && input.lng != null) {
-    const feature = await queryPoint(
-      GIS.sdParcels,
-      input.lat,
-      input.lng,
-      'APN,OWN_NAME1,OWN_NAME2,OWN_ADDR1,OWN_ADDR2,SITUS_ADDRESS,SITUS_STREET,SITUS_SUFFIX,SITUS_COMMUNITY,SITUS_ZIP,ACREAGE,NUCLEUS_USE_CD,NUCLEUS_ZONE_CD',
-      fetchImpl
-    );
+    const feature = await queryPoint(GIS.sdParcels, input.lat, input.lng, SD_PARCEL_FIELDS, fetchImpl);
     if (feature) return parcelFromSd(feature.attributes, feature.geometry, 'san_diego');
   }
   return null;
+}
+
+export async function fetchNearbyStructures(
+  lat: number,
+  lng: number,
+  fetchImpl: typeof fetch = fetch
+): Promise<import('./types').StructureFootprint[]> {
+  const pad = 0.002;
+  try {
+    const result = await queryArcGis(
+      GIS.sdBuildings,
+      {
+        geometry: `${lng - pad},${lat - pad},${lng + pad},${lat + pad}`,
+        geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
+        spatialRel: 'esriSpatialRelIntersects',
+        outFields: 'OBJECTID',
+        returnGeometry: 'true',
+        outSR: '4326',
+        resultRecordCount: '20',
+      },
+      fetchImpl
+    );
+    return (result.features || [])
+      .filter((f: { geometry?: { rings?: number[][][] } }) => f.geometry?.rings)
+      .map((f: { geometry: { rings: number[][][] } }) => ({ rings: f.geometry.rings }));
+  } catch {
+    return [];
+  }
 }
 
 export async function fetchRiversideParcel(input: {
@@ -357,7 +436,10 @@ export async function fetchRiversideParcel(input: {
           features.find((f: any) =>
             String(f.attributes?.SITUS_STREET || '').startsWith(String(parsed.number))
           ) || features[0];
-        if (match) return parcelFromRiv(match.attributes, match.geometry);
+        if (match) {
+          const parcel = parcelFromRiv(match.attributes, match.geometry);
+          if (parcel) return parcel;
+        }
       } catch {
         // Fall through to APN / point
       }
@@ -377,7 +459,8 @@ export async function fetchRiversideParcel(input: {
       fetchImpl
     );
     if (result.features?.[0]) {
-      return parcelFromRiv(result.features[0].attributes, result.features[0].geometry);
+      const parcel = parcelFromRiv(result.features[0].attributes, result.features[0].geometry);
+      if (parcel) return parcel;
     }
   }
   if (input.lat != null && input.lng != null) {
@@ -388,7 +471,10 @@ export async function fetchRiversideParcel(input: {
       'APN,SITUS_STREET,SITUS_CITY,MAIL_STREET,MAIL_CITY,ACREAGE,FULL_SITUS_ADDRESS,CLASS_CODE',
       fetchImpl
     );
-    if (feature) return parcelFromRiv(feature.attributes, feature.geometry);
+    if (feature) {
+      const parcel = parcelFromRiv(feature.attributes, feature.geometry);
+      if (parcel) return parcel;
+    }
   }
   return null;
 }

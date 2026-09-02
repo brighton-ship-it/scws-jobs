@@ -13,6 +13,10 @@ describe('permit county + APN helpers', () => {
       'san_diego'
     );
     assert.equal(detectCounty({ address: '57174 CA-371, Anza, CA 92539' }), 'riverside');
+    assert.equal(
+      detectCounty({ address: '57174 CA-371, Anza, CA 92539', county: 'san_diego' }),
+      'riverside'
+    );
     assert.equal(detectCounty({ lat: 33.0414, lng: -116.8698 }), 'san_diego');
     assert.equal(detectCounty({ lat: 33.5551, lng: -116.6583 }), 'riverside');
   });
@@ -81,27 +85,33 @@ describe('runPermitResearch', () => {
           },
         });
       }
-      if (href.includes('GeocoderMerged') && href.includes('ADDRNMBR')) {
-        return json({ features: [] });
+      if (href.includes('addrapn_Composite')) {
+        return json({
+          candidates: [
+            {
+              score: 97.33,
+              address: '1077 MAIN ST',
+              location: { x: -116.870236, y: 33.041512 },
+            },
+          ],
+        });
       }
       if (href.includes('ADDRAPN')) {
         return json({ features: [{ attributes: { APN: '2812632300' } }] });
       }
-      if (href.includes('GeocoderMerged') && href.includes('2812632300')) {
+      if (href.includes('parcels_all_for_public_use')) {
         return json({
           features: [
             {
               attributes: {
                 APN: '2812632300',
-                OWN_NAME1: 'BARRON ERIC Q&RENEE A',
+                APN_8: '28126323',
                 FLAG: 'secret',
                 SITUS_ADDRESS: 1075,
                 SITUS_STREET: 'MAIN',
                 SITUS_SUFFIX: 'ST',
-                SITUS_COMMUNITY: 'RAMONA',
                 SITUS_ZIP: '92065',
-                ACREAGE: 0.35,
-                NUCLEUS_ZONE_CD: '60',
+                ACREAGE: null,
               },
               geometry: {
                 rings: [[
@@ -110,6 +120,24 @@ describe('runPermitResearch', () => {
                   [-116.8696, 33.0418],
                   [-116.8702, 33.0418],
                   [-116.8702, 33.0414],
+                ]],
+              },
+            },
+          ],
+        });
+      }
+      if (href.includes('BUILDING_OUTLINES')) {
+        return json({
+          features: [
+            {
+              attributes: { OBJECTID: 1 },
+              geometry: {
+                rings: [[
+                  [-116.8701, 33.0415],
+                  [-116.8699, 33.0415],
+                  [-116.8699, 33.0416],
+                  [-116.8701, 33.0416],
+                  [-116.8701, 33.0415],
                 ]],
               },
             },
@@ -142,13 +170,59 @@ describe('runPermitResearch', () => {
 
     assert.equal(result.county, 'san_diego');
     assert.equal(result.parcel?.apn, '281-263-23-00');
-    assert.equal(result.parcel?.ownerName, 'BARRON ERIC Q&RENEE A');
+    assert.equal(result.parcel?.ownerName, undefined);
+    assert.match(result.parcel?.siteAddress || '', /1075 MAIN/);
+    assert.ok(result.notes.some((n) => /owner/i.test(n) && /unknown/i.test(n)));
+    assert.ok(result.notes.some((n) => /1075/i.test(n)));
+    assert.equal(result.structures.length, 1);
     assert.equal(JSON.stringify(result).includes('secret'), false);
     assert.equal(JSON.stringify(result).includes('FLAG'), false);
     assert.equal(result.wells[0]?.wcr_number, 'WCR2018-001234');
     assert.equal(result.septic?.status, 'missing');
     assert.match(result.septic?.message || '', /not invented/i);
     assert.ok(result.searchPoint);
+  });
+
+  it('rejects Riverside right-of-way APN RW instead of inventing a parcel', async () => {
+    const fetchImpl = async (url: string | URL | Request) => {
+      const href = String(url);
+      if (href.includes('geocoding.geo.census.gov') || href.includes('addrapn_Composite')) {
+        return json({
+          result: {
+            addressMatches: [
+              {
+                matchedAddress: 'HIGHWAY',
+                coordinates: { x: -116.66, y: 33.55 },
+                addressComponents: { city: 'ANZA' },
+              },
+            ],
+          },
+          candidates: [{ score: 80, location: { x: -116.66, y: 33.55 } }],
+        });
+      }
+      if (href.includes('mmc_mSrvc')) {
+        return json({
+          features: [
+            {
+              attributes: { APN: 'RW', MAIL_TO_NAME: 'COUNTY', HOUSE_NO: '0', STREET: 'HWY' },
+              geometry: { rings: [[[-116.66, 33.55], [-116.659, 33.55], [-116.659, 33.551], [-116.66, 33.551]]] },
+            },
+          ],
+        });
+      }
+      if (href.includes('WellCompletionReports')) {
+        return json({ error: { message: 'Error performing query operation' } });
+      }
+      return json({ features: [] });
+    };
+
+    const result = await runPermitResearch(
+      { address: '57174 CA-371, Anza, CA 92539', lat: 33.555, lng: -116.658 },
+      { fetchImpl: fetchImpl as typeof fetch }
+    );
+    assert.equal(result.county, 'riverside');
+    assert.equal(result.parcel, null);
+    assert.ok(result.notes.some((n) => /not return a parcel/i.test(n)));
   });
 
   it('does not invent wells when DWR errors', async () => {
@@ -249,6 +323,7 @@ describe('plot plan PDF', () => {
       county: 'san_diego',
       searchPoint: { lat: 33.0416, lng: -116.8699 },
       notes: [],
+      structures: [],
     };
 
     const model = buildPlotPlanModel({ result });
@@ -266,7 +341,11 @@ describe('plot plan PDF', () => {
     const asString = Buffer.from(bytes).toString('latin1');
     assert.equal(asString.includes('FLAG'), false);
     assert.equal(asString.toLowerCase().includes('gross profit'), false);
-    assert.equal(SCWS_LETTERHEAD.license.includes('1011552'), true);
+    assert.equal(SCWS_LETTERHEAD.license.includes('1086994'), true);
+    assert.equal(SCWS_LETTERHEAD.license.includes('1011552'), false);
+    assert.equal(SCWS_LETTERHEAD.license.includes('1234567'), false);
+    assert.ok(model.notes.some((n) => /10 ft/.test(n) && /property-line setback/i.test(n)));
+    assert.match(model.scaleLabel, /graphic scale/i);
   });
 });
 

@@ -43,6 +43,10 @@ export function countyFromAddress(address?: string | null): County | null {
     }
   }
   const lower = address.toLowerCase();
+  if (/\banza\b|\b92539\b|\bca-?371\b|\bhighway\s*371\b|\bstate\s*rte\s*371\b/.test(lower)) {
+    return 'riverside';
+  }
+  if (/\bramona\b|\b92065\b/.test(lower)) return 'san_diego';
   if (/\bsan\s*bernardino\b|\bsb\s*county\b/.test(lower)) return 'san_bernardino';
   if (/\briverside\b/.test(lower)) return 'riverside';
   if (/\bsan\s*diego\b/.test(lower)) return 'san_diego';

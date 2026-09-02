@@ -56,20 +56,6 @@ export interface DataSource {
   message?: string;
 }
 
-export interface ResearchResult {
-  parcel: ParcelInfo | null;
-  wells: WellInfo[];
-  septic: SepticInfo | null;
-  septicPermits: SepticPermit[];
-  zoning: { designation?: string; landUse?: string; source?: string; note?: string } | null;
-  sources: DataSource[];
-  county: County;
-  searchPoint: { lat: number; lng: number } | null;
-  formattedAddress?: string;
-  notes: string[];
-  cached?: boolean;
-}
-
 export const COUNTY_LABEL: Record<County, string> = {
   san_diego: 'San Diego County',
   riverside: 'Riverside County',
@@ -86,3 +72,24 @@ export const PROPERTY_LINE_SETBACK_FT: Record<County, number> = {
 export const SEPTIC_SETBACK_FT = 100;
 export const STRUCTURE_SETBACK_FT = 50;
 export const WELL_SEARCH_RADIUS_FT = 5280;
+/** Wells / septic / structures called out on the plot plan (feet). */
+export const INVENTORY_RADIUS_FT = 250;
+
+export interface StructureFootprint {
+  rings: number[][][];
+}
+
+export interface ResearchResult {
+  parcel: ParcelInfo | null;
+  wells: WellInfo[];
+  septic: SepticInfo | null;
+  septicPermits: SepticPermit[];
+  zoning: { designation?: string; landUse?: string; source?: string; note?: string } | null;
+  sources: DataSource[];
+  county: County;
+  searchPoint: { lat: number; lng: number } | null;
+  formattedAddress?: string;
+  notes: string[];
+  cached?: boolean;
+  structures: StructureFootprint[];
+}

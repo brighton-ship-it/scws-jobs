@@ -1,5 +1,5 @@
-import { countyFromAddress, detectCounty, isCounty } from './county.ts';
-import { centroidFromRings, fetchParcelForCounty, geocodeAddress } from './gis.ts';
+import { detectCounty, isCounty } from './county.ts';
+import { centroidFromRings, fetchNearbyStructures, fetchParcelForCounty, geocodeAddress } from './gis.ts';
 import type {
   County,
   DataSource,
@@ -104,6 +104,7 @@ export async function runPermitResearch(
     searchPoint: lat != null && lng != null ? { lat, lng } : null,
     formattedAddress,
     notes,
+    structures: [],
   };
 
   const gisName =
@@ -130,6 +131,19 @@ export async function runPermitResearch(
     });
     if (!result.parcel) {
       notes.push(`${gisName} did not return a parcel for this search. Plot plan will mark the geocoded point only.`);
+    } else {
+      if (!result.parcel.ownerName) {
+        notes.push('Owner is not published on the public county parcel layer. Shown as unknown — not invented.');
+      }
+      if (input.address && result.parcel.siteAddress) {
+        const searchedNum = input.address.match(/^\s*(\d+)/)?.[1];
+        const situsNum = result.parcel.siteAddress.match(/^\s*(\d+)/)?.[1];
+        if (searchedNum && situsNum && searchedNum !== situsNum) {
+          notes.push(
+            `Assessor situs is ${result.parcel.siteAddress}. Searched ${input.address} (unit / house number may share this tax lot).`
+          );
+        }
+      }
     }
   } catch (error) {
     sources.push({
@@ -177,6 +191,38 @@ export async function runPermitResearch(
       message: 'Need a geocoded point or parcel to search wells',
     });
   }
+
+  if (county === 'san_diego' && searchLat != null && searchLng != null) {
+    try {
+      result.structures = await fetchNearbyStructures(searchLat, searchLng, fetchImpl);
+      sources.push({
+        name: 'Building outlines',
+        status: result.structures.length ? 'success' : 'missing',
+        message: result.structures.length
+          ? `${result.structures.length} footprints from San Diego BUILDING_OUTLINES`
+          : 'No building outlines in the public envelope — footprints were not invented',
+      });
+    } catch (error) {
+      sources.push({
+        name: 'Building outlines',
+        status: 'error',
+        message:
+          error instanceof Error
+            ? error.message
+            : 'BUILDING_OUTLINES query failed — footprints were not invented',
+      });
+    }
+  } else {
+    sources.push({
+      name: 'Building outlines',
+      status: 'missing',
+      message: 'No public building-outline layer is wired for this county',
+    });
+  }
+
+  notes.push(
+    'Streets, easements, and surveyed tank/leach geometry are not in the public GIS used here. Shown as unknown.'
+  );
 
   const septicRadiusFeet = input.septicRadiusFeet || 500;
   if (deps.lookupSiteSeptic) {
@@ -256,10 +302,6 @@ export async function runPermitResearch(
     sources.push({ name: 'Zoning', status: 'success' });
   } else {
     sources.push({ name: 'Zoning', status: 'missing', message: 'Not published on this parcel layer' });
-  }
-
-  if (countyFromAddress(input.address) && input.county && isCounty(String(input.county))) {
-    // Keep the detected county; do not silently keep a wrong dropdown.
   }
 
   result.sources = sources;

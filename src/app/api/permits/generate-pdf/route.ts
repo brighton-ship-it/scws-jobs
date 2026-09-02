@@ -7,7 +7,7 @@ import path from 'path';
 const SCWS_INFO = {
   name: 'Southern California Well Service',
   contact: 'Brighton',
-  license: '1011552',
+  license: '1086994',
   address: '1077 Main Street, Unit B',
   city: 'Ramona',
   state: 'CA',

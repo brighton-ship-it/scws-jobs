@@ -166,7 +166,7 @@ export async function POST(
   
   <div style="background: #1f3b4d; color: white; padding: 15px; text-align: center; border-radius: 0 0 8px 8px; font-size: 12px;">
     <p style="margin: 0;">Southern California Well Service</p>
-    <p style="margin: 5px 0 0; opacity: 0.8;">License C-57 #1011552 | (760) 440-8520 | brighton@scwellservice.com</p>
+    <p style="margin: 5px 0 0; opacity: 0.8;">License C-57 #1086994 | (760) 440-8520 | brighton@scwellservice.com</p>
   </div>
 </body>
 </html>

@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
   COUNTY_LABEL,
+  INVENTORY_RADIUS_FT,
   PROPERTY_LINE_SETBACK_FT,
   SEPTIC_SETBACK_FT,
   type County,
@@ -9,7 +10,7 @@ import {
 
 export const SCWS_LETTERHEAD = {
   name: 'Southern California Well Service',
-  license: 'C-57 #1011552',
+  license: 'C-57 #1086994',
   phone: '(760) 440-8520',
   shop: '1077 Main Street, Unit B, Ramona, CA 92065',
 };
@@ -75,6 +76,7 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
     : sqft
       ? `${sqft.toLocaleString()} sq ft`
       : 'Not published';
+  const lineSetback = PROPERTY_LINE_SETBACK_FT[result.county];
   const notes = [
     ...result.notes,
     result.septic?.status === 'missing' ? result.septic.message || '' : '',
@@ -83,8 +85,9 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
       : '',
     !result.wells.length
       ? 'No DWR well points are drawn. If DWR was down, that is stated in Sources — locations were not invented.'
-      : '',
-    `Property-line setback shown: ${PROPERTY_LINE_SETBACK_FT[result.county]} ft (${COUNTY_LABEL[result.county]}). Septic setback ${SEPTIC_SETBACK_FT} ft only where a location is known.`,
+      : `Wells within ${INVENTORY_RADIUS_FT} ft are labeled on the plan with distance. Others are listed on page 2.`,
+    `Property-line setback shown: ${lineSetback} ft (${COUNTY_LABEL[result.county]}). Septic setback ${SEPTIC_SETBACK_FT} ft only where a location is known.`,
+    'Streets and easements: not in public GIS — unknown.',
     'Always verify current DEH setbacks before submitting.',
   ].filter(Boolean);
 
@@ -93,7 +96,7 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
     county: result.county,
     apn: result.parcel?.apn || 'Not found',
     siteAddress: result.parcel?.siteAddress || result.formattedAddress || '—',
-    ownerName: result.parcel?.ownerName || 'Not published on GIS',
+    ownerName: result.parcel?.ownerName || 'Unknown (not published)',
     lotSize,
     scaleLabel: 'See graphic scale',
     notes,
@@ -168,15 +171,15 @@ export async function renderPlotPlanPdf(input: PlotPlanInput): Promise<Uint8Arra
 
   const drawn = drawMap(page, font, bold, input);
 
-  page.drawText(`Graphic scale: 1 inch = ${drawn.scaleFeetPerInch} ft    North is up`, {
+  page.drawText(`Engineer scale: 1" = ${drawn.scaleFeetPerInch} ft    North is up (arrow)`, {
     x: 28,
     y: 136,
     size: 8,
-    font,
+    font: bold,
     color: rgb(0.25, 0.3, 0.32),
   });
 
-  drawLegend(page, font, 28, 118);
+  drawLegend(page, font, 28, 118, result.county);
   drawScaleBar(page, font, 520, 118, drawn.scaleFeetPerInch);
   drawNorth(page, bold, 740, 200);
 
@@ -235,9 +238,17 @@ function drawMap(
     world.push({ x: -80, y: -80 }, { x: 80, y: 80 });
   }
 
-  const nearbyWells = result.wells.filter((w) => (w.distance_from_parcel || 0) <= 400);
+  const nearbyWells = result.wells.filter(
+    (w) => w.latitude && w.longitude && (w.distance_from_parcel || 0) <= INVENTORY_RADIUS_FT
+  );
+  const nearbySeptic = result.septicPermits.filter(
+    (s) => s.latitude && s.longitude && (s.distance_feet == null || s.distance_feet <= INVENTORY_RADIUS_FT)
+  );
   for (const well of nearbyWells) world.push(project(well.latitude, well.longitude));
-  for (const septic of result.septicPermits) world.push(project(septic.latitude, septic.longitude));
+  for (const septic of nearbySeptic) world.push(project(septic.latitude, septic.longitude));
+  for (const structure of result.structures || []) {
+    for (const pt of structure.rings?.[0] || []) world.push(project(pt[1], pt[0]));
+  }
   if (input.proposedWell) world.push(project(input.proposedWell.lat, input.proposedWell.lng));
   if (input.manualSeptic) world.push(project(input.manualSeptic.lat, input.manualSeptic.lng));
 
@@ -268,6 +279,19 @@ function drawMap(
         color: rgb(0.06, 0.55, 0.4),
       });
     }
+    const inset = insetRing(ring, PROPERTY_LINE_SETBACK_FT[result.county]);
+    if (inset.length >= 3) {
+      const insetPath = inset.map((pt) => toPage(project(pt[1], pt[0])));
+      for (let i = 0; i < insetPath.length; i++) {
+        page.drawLine({
+          start: insetPath[i],
+          end: insetPath[(i + 1) % insetPath.length],
+          thickness: 0.8,
+          color: rgb(0.15, 0.4, 0.85),
+          dashArray: [3, 2],
+        });
+      }
+    }
   } else if (result.searchPoint) {
     const p = toPage(project(result.searchPoint.lat, result.searchPoint.lng));
     page.drawCircle({ x: p.x, y: p.y, size: 5, color: rgb(0.8, 0.2, 0.2) });
@@ -280,13 +304,48 @@ function drawMap(
     });
   }
 
-  for (const well of nearbyWells) {
-    const p = toPage(project(well.latitude, well.longitude));
-    page.drawCircle({ x: p.x, y: p.y, size: 3.2, color: rgb(0.15, 0.35, 0.85) });
-    page.drawText(clip(well.wcr_number, 16), { x: p.x + 5, y: p.y + 3, size: 6, font, color: rgb(0.1, 0.2, 0.5) });
+  for (const structure of result.structures || []) {
+    const sring = structure.rings?.[0];
+    if (!sring || sring.length < 3) continue;
+    const path = sring.map((pt) => toPage(project(pt[1], pt[0])));
+    for (let i = 0; i < path.length; i++) {
+      page.drawLine({
+        start: path[i],
+        end: path[(i + 1) % path.length],
+        thickness: 0.7,
+        color: rgb(0.45, 0.45, 0.48),
+      });
+    }
   }
 
-  for (const septic of result.septicPermits) {
+  if (result.searchPoint) {
+    const origin = toPage(project(result.searchPoint.lat, result.searchPoint.lng));
+    const invR = Math.max(INVENTORY_RADIUS_FT * scale, 8);
+    page.drawCircle({
+      x: origin.x,
+      y: origin.y,
+      size: invR,
+      borderColor: rgb(0.55, 0.55, 0.55),
+      borderWidth: 0.5,
+      color: undefined,
+      borderDashArray: [2, 2],
+    });
+  }
+
+  for (const well of nearbyWells) {
+    const p = toPage(project(well.latitude, well.longitude));
+    const dist = well.distance_from_parcel != null ? ` ${well.distance_from_parcel} ft` : '';
+    page.drawCircle({ x: p.x, y: p.y, size: 3.2, color: rgb(0.15, 0.35, 0.85) });
+    page.drawText(clip(`${well.wcr_number}${dist}`, 22), {
+      x: p.x + 5,
+      y: p.y + 3,
+      size: 6,
+      font,
+      color: rgb(0.1, 0.2, 0.5),
+    });
+  }
+
+  for (const septic of nearbySeptic) {
     const p = toPage(project(septic.latitude, septic.longitude));
     page.drawCircle({ x: p.x, y: p.y, size: 3.2, color: rgb(0.9, 0.45, 0.1) });
     const r = Math.max(SEPTIC_SETBACK_FT * scale, 6);
@@ -298,7 +357,8 @@ function drawMap(
       borderWidth: 0.7,
       color: undefined,
     });
-    page.drawText(`Septic parcel ${septic.apn} (centroid)`, {
+    const dist = septic.distance_feet != null ? ` ${septic.distance_feet} ft` : '';
+    page.drawText(clip(`Septic parcel ${septic.apn} (centroid)${dist}`, 36), {
       x: p.x + 5,
       y: p.y - 6,
       size: 6,
@@ -322,16 +382,39 @@ function drawMap(
   return { scaleFeetPerInch: feetPerInch };
 }
 
-function drawLegend(page: PDFPage, font: PDFFont, x: number, y: number) {
+function insetRing(ring: number[][], setbackFt: number): number[][] {
+  if (ring.length < 3) return [];
+  const lat0 = ring.reduce((sum, pt) => sum + pt[1], 0) / ring.length;
+  const lng0 = ring.reduce((sum, pt) => sum + pt[0], 0) / ring.length;
+  const feetPerDegLat = 364000;
+  const feetPerDegLng = 364000 * Math.cos((lat0 * Math.PI) / 180);
+  return ring.map((pt) => {
+    const dx = (lng0 - pt[0]) * feetPerDegLng;
+    const dy = (lat0 - pt[1]) * feetPerDegLat;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return [pt[0] + (dx / len) * (setbackFt / feetPerDegLng), pt[1] + (dy / len) * (setbackFt / feetPerDegLat)];
+  });
+}
+
+function drawLegend(page: PDFPage, font: PDFFont, x: number, y: number, county: County) {
+  const lineFt = PROPERTY_LINE_SETBACK_FT[county];
   page.drawText('Legend', { x, y: y + 10, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
   page.drawLine({ start: { x, y: y + 2 }, end: { x: x + 16, y: y + 2 }, thickness: 2, color: rgb(0.06, 0.55, 0.4) });
   page.drawText('Parcel line', { x: x + 20, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
-  page.drawCircle({ x: x + 90, y: y + 2, size: 3, color: rgb(0.15, 0.35, 0.85) });
-  page.drawText('DWR well', { x: x + 96, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
-  page.drawCircle({ x: x + 150, y: y + 2, size: 3, color: rgb(0.9, 0.45, 0.1) });
-  page.drawText('Septic parcel centroid', { x: x + 156, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
-  page.drawCircle({ x: x + 270, y: y + 2, size: 3, color: rgb(0.05, 0.45, 0.2) });
-  page.drawText('Proposed well', { x: x + 276, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawLine({
+    start: { x: x + 78, y: y + 2 },
+    end: { x: x + 94, y: y + 2 },
+    thickness: 0.8,
+    color: rgb(0.15, 0.4, 0.85),
+    dashArray: [2, 2],
+  });
+  page.drawText(`${lineFt} ft property setback`, { x: x + 98, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawCircle({ x: x + 230, y: y + 2, size: 3, color: rgb(0.15, 0.35, 0.85) });
+  page.drawText(`DWR well (${INVENTORY_RADIUS_FT} ft)`, { x: x + 236, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawCircle({ x: x + 350, y: y + 2, size: 3, color: rgb(0.9, 0.45, 0.1) });
+  page.drawText('Septic centroid', { x: x + 356, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
+  page.drawCircle({ x: x + 440, y: y + 2, size: 3, color: rgb(0.05, 0.45, 0.2) });
+  page.drawText('Proposed well', { x: x + 446, y, size: 7, font, color: rgb(0.2, 0.2, 0.2) });
 }
 
 function drawScaleBar(page: PDFPage, font: PDFFont, x: number, y: number, feetPerInch: number) {
