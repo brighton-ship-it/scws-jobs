@@ -90,6 +90,10 @@ export interface NeighborParcel {
   /** Proposed-well pin to nearest neighbor ring (ft). */
   distanceFt?: number;
   adjacent?: boolean;
+  rings?: number[][][];
+  geometry?: SepticGeometry[];
+  tankFt?: number | null;
+  leachFt?: number | null;
 }
 
 export interface ProposedWell {
@@ -104,6 +108,8 @@ export interface ProposedWell {
     leachFt: number | null;
     existingWellFt: number | null;
     structureFt: number | null;
+    neighborTankFt?: number | null;
+    neighborLeachFt?: number | null;
   };
   wgs84: { lat: number; lng: number };
 }

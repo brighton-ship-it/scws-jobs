@@ -12,6 +12,7 @@ import {
   PROPERTY_LINE_SETBACK_FT,
   TANK_SETBACK_FT,
   type County,
+  type NeighborParcel,
   type ProposedWell,
   type SepticGeometry,
   type StructureFootprint,
@@ -286,6 +287,55 @@ export function septicGeometryFromKnown(geometry: SepticGeometry[] | undefined):
     }
   }
   return { tanks, leaches, existingWells, easements };
+}
+
+/**
+ * Apply neighbor tank/leach setbacks after placement. Neighbor leach does not
+ * move the pin (SE orchard stays); it FLAGGED if leach < 100 or tank < 50.
+ */
+export function flagNeighborSetbacks(pin: ProposedWell, neighbors: NeighborParcel[]): ProposedWell {
+  let neighborTankFt: number | null = null;
+  let neighborLeachFt: number | null = null;
+  const flags = [...pin.flags];
+  let neighborOk = true;
+
+  for (const n of neighbors) {
+    const tank = (n.geometry || []).find((g) => g.kind === 'tank');
+    const leach = (n.geometry || []).find((g) => g.kind === 'leach');
+    const tankFt = tank ? featureDistance(pin.lat, pin.lng, tank) : null;
+    const leachFt = leach ? featureDistance(pin.lat, pin.lng, leach) : null;
+    if (tankFt != null) {
+      n.tankFt = Math.round(tankFt);
+      neighborTankFt = neighborTankFt == null ? tankFt : Math.min(neighborTankFt, tankFt);
+      if (tankFt < TANK_SETBACK_FT) {
+        neighborOk = false;
+        flags.push(
+          `FLAG: ${Math.round(tankFt)} ft to neighbor tank ${n.apn} (need >=${TANK_SETBACK_FT} ft)`
+        );
+      }
+    }
+    if (leachFt != null) {
+      n.leachFt = Math.round(leachFt);
+      neighborLeachFt = neighborLeachFt == null ? leachFt : Math.min(neighborLeachFt, leachFt);
+      if (leachFt < LEACH_SETBACK_FT) {
+        neighborOk = false;
+        flags.push(
+          `FLAG: ${Math.round(leachFt)} ft to neighbor leach ${n.apn} (need >=${LEACH_SETBACK_FT} ft)`
+        );
+      }
+    }
+  }
+
+  return {
+    ...pin,
+    meetsSetbacks: pin.meetsSetbacks && neighborOk,
+    flags,
+    distances: {
+      ...pin.distances,
+      neighborTankFt: neighborTankFt != null ? Math.round(neighborTankFt) : null,
+      neighborLeachFt: neighborLeachFt != null ? Math.round(neighborLeachFt) : null,
+    },
+  };
 }
 
 export function wellsAsPoints(wells: WellInfo[]): Array<{ lat: number; lng: number }> {

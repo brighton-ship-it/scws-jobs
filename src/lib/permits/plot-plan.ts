@@ -105,15 +105,17 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
         ? 'Septic GIS is a parcel flag only. Tank/leach are drawn only from a parsed DEH as-built.'
         : '',
     result.dehDocuments?.some((d) => d.isAsBuiltCandidate && d.geometryExtracted)
-      ? 'DEH as-built FileRecordId traced onto county GIS (LARC overlay). Neighbor as-builts stay listed until their FileRecordIds are wired.'
+      ? 'DEH as-built FileRecordId traced onto county GIS (LARC overlay).'
       : result.dehDocuments?.some((d) => d.isAsBuiltCandidate)
         ? 'DEH as-built on file, geometry not extracted — no fake tank or leach was drawn.'
         : '',
-    result.neighbors?.length
-      ? 'Neighbor septic vs sewer is the WW_SEPTIC parcel flag. DEH FileRecordIds are listed; tank/leach are not drawn until an as-built PDF is parsed.'
-      : result.septicPermits.length
-        ? 'Neighbor septic markers (if any) are parcel flags, not surveyed tank locations.'
-        : '',
+    result.neighbors?.some((n) => n.tankLeach === 'as_built_extracted')
+      ? 'Neighbor tank/leach drawn only from DEH as-builts fitted to that parcel GIS building. No building → FileRecordId only.'
+      : result.neighbors?.length
+        ? 'Neighbor septic vs sewer is the WW_SEPTIC parcel flag. DEH FileRecordIds are listed; tank/leach are not drawn until an as-built PDF is parsed.'
+        : result.septicPermits.length
+          ? 'Neighbor septic markers (if any) are parcel flags, not surveyed tank locations.'
+          : '',
     !result.wells.length
       ? 'No DWR/CNRA well points are drawn. If the source was down, that is stated in Sources — locations were not invented.'
       : `CNRA/DWR wells within ${INVENTORY_RADIUS_FT} ft of the proposed pin: ${result.wellsWithin250Ft ?? 0}.`,
@@ -133,7 +135,9 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
     notes,
     wellsOnPlan: result.wells.filter((w) => w.latitude && w.longitude).length,
     septicOnPlan:
-      (result.septic?.geometry?.length || 0) + (input.manualSeptic ? 1 : 0),
+      (result.septic?.geometry?.length || 0) +
+      (result.neighbors || []).reduce((n, nbr) => n + (nbr.geometry?.length || 0), 0) +
+      (input.manualSeptic ? 1 : 0),
     hasParcel: Boolean(result.parcel?.geometry?.rings?.[0]?.length),
     inventedLocations: false,
     cslb: SCWS_CSLB,
@@ -280,6 +284,22 @@ function drawPanel(
       y = line(page, font, x, y, 'To tank', metLabel(pw.distances.tankFt, TANK_SETBACK_FT, 'unknown (no as-built geometry)'));
       y = line(page, font, x, y, 'To leach', metLabel(pw.distances.leachFt, LEACH_SETBACK_FT, 'unknown (no as-built geometry)'));
       y = line(page, font, x, y, 'To well', metLabel(pw.distances.existingWellFt, EXISTING_WELL_SETBACK_FT));
+      y = line(
+        page,
+        font,
+        x,
+        y,
+        'NBR tank',
+        metLabel(pw.distances.neighborTankFt ?? null, TANK_SETBACK_FT, 'no extracted neighbor tank')
+      );
+      y = line(
+        page,
+        font,
+        x,
+        y,
+        'NBR leach',
+        metLabel(pw.distances.neighborLeachFt ?? null, LEACH_SETBACK_FT, 'no extracted neighbor leach')
+      );
       for (const flag of pw.flags.slice(0, 4)) {
         y = wrap(page, font, x, y, `FLAG: ${flag}`, 46, rgb(0.65, 0.15, 0.1));
       }
@@ -347,19 +367,22 @@ function drawPanel(
   } else {
     for (const n of neighbors.slice(0, 8)) {
       const ids = (n.dehDocuments || []).map((d) => d.fileRecordId).filter(Boolean).join(', ');
-      const geom =
-        n.tankLeach === 'as_built_extracted'
-          ? 'as-built traced'
-          : n.tankLeach === 'as_built_on_file'
-            ? 'as-built on file, not extracted'
-            : 'no tank/leach drawn';
+      const leachNote =
+        n.leachFt != null
+          ? `leach ${n.leachFt} ft ${n.leachFt >= 100 ? 'MET' : 'FLAG'}`
+          : n.tankLeach === 'as_built_extracted'
+            ? 'as-built traced'
+            : n.tankLeach === 'as_built_on_file'
+              ? 'as-built on file, not placed'
+              : 'no tank/leach drawn';
       y = wrap(
         page,
         font,
         x,
         y,
-        `${n.apn}  ${n.system}${n.distanceFt != null ? `  ${n.distanceFt} ft` : ''}  ${ids ? `FileRecordId ${ids}` : 'no DEH hits'}  ${geom}`,
-        48
+        `${n.apn}  ${n.system}  ${ids ? `FileRecordId ${ids}` : 'no DEH hits'}  ${leachNote}`,
+        48,
+        n.leachFt != null && n.leachFt < 100 ? rgb(0.7, 0.12, 0.1) : rgb(0.2, 0.2, 0.2)
       );
     }
   }
@@ -497,6 +520,12 @@ async function drawMap(
   for (const geom of result.septic?.geometry || []) {
     if (geom.rings) for (const pt of geom.rings[0] || []) world.push(project(pt[1], pt[0]));
     if (geom.lat != null && geom.lng != null) world.push(project(geom.lat, geom.lng));
+  }
+  for (const nbr of result.neighbors || []) {
+    for (const geom of nbr.geometry || []) {
+      if (geom.rings) for (const pt of geom.rings[0] || []) world.push(project(pt[1], pt[0]));
+      if (geom.lat != null && geom.lng != null) world.push(project(geom.lat, geom.lng));
+    }
   }
 
   const b = boundsOf(world);
@@ -687,6 +716,65 @@ async function drawMap(
     }
   }
 
+  for (const nbr of result.neighbors || []) {
+    for (const geom of nbr.geometry || []) {
+      if (geom.kind === 'leach' && geom.rings?.[0]) {
+        const flagged = nbr.leachFt != null && nbr.leachFt < 100;
+        drawFilledRing(
+          page,
+          geom.rings[0],
+          project,
+          toPage,
+          flagged ? rgb(0.75, 0.15, 0.12) : rgb(0.65, 0.4, 0.18),
+          0.35,
+          flagged ? rgb(0.7, 0.1, 0.08) : rgb(0.45, 0.25, 0.1)
+        );
+        const c = ringCentroidLatLng(geom.rings[0]);
+        const p = toPage(project(c.lat, c.lng));
+        page.drawText(
+          clip(
+            flagged
+              ? `SETBACK FLAG  leach ${nbr.leachFt} ft < 100`
+              : geom.label || 'NBR LEACH (DEH)',
+            42
+          ),
+          {
+            x: p.x - 28,
+            y: p.y,
+            size: 6,
+            font: bold,
+            color: flagged ? rgb(0.7, 0.08, 0.05) : rgb(0.4, 0.2, 0.05),
+          }
+        );
+      }
+      if (geom.kind === 'tank') {
+        const loc =
+          geom.lat != null && geom.lng != null
+            ? { lat: geom.lat, lng: geom.lng }
+            : ringCentroidLatLng(geom.rings?.[0] || []);
+        const p = toPage(project(loc.lat, loc.lng));
+        page.drawRectangle({
+          x: p.x - 3,
+          y: p.y - 2.5,
+          width: 6,
+          height: 5,
+          color: rgb(0.6, 0.2, 0.45),
+        });
+      }
+    }
+    if (!nbr.geometry?.length && nbr.rings?.[0] && nbr.dehDocuments.some((d) => d.isAsBuiltCandidate)) {
+      const c = ringCentroidLatLng(nbr.rings[0]);
+      const p = toPage(project(c.lat, c.lng));
+      page.drawText(clip(`SEPTIC (DEH archive on file - geometry not placed) ${nbr.apn}`, 48), {
+        x: p.x - 40,
+        y: p.y,
+        size: 6,
+        font,
+        color: rgb(0.35, 0.2, 0.05),
+      });
+    }
+  }
+
   if (input.manualSeptic) {
     const p = toPage(project(input.manualSeptic.lat, input.manualSeptic.lng));
     page.drawCircle({ x: p.x, y: p.y, size: 3.5, color: rgb(0.75, 0.25, 0.7) });
@@ -784,6 +872,21 @@ async function drawMap(
         toPage(project(wellGeom.lat, wellGeom.lng)),
         metLabel(pw?.distances.existingWellFt ?? null, EXISTING_WELL_SETBACK_FT)
       );
+    }
+    for (const nbr of result.neighbors || []) {
+      const nLeach = (nbr.geometry || []).find((g) => g.kind === 'leach');
+      const nTank = (nbr.geometry || []).find((g) => g.kind === 'tank');
+      if (nLeach?.rings?.[0] && (nbr.leachFt == null || nbr.leachFt <= 250 || (nbr.leachFt ?? 999) < 100)) {
+        const loc = ringCentroidLatLng(nLeach.rings[0]);
+        drawCallout(page, font, origin, toPage(project(loc.lat, loc.lng)), metLabel(nbr.leachFt ?? null, LEACH_SETBACK_FT));
+      }
+      if (nTank && nbr.tankFt != null && nbr.tankFt <= 200) {
+        const loc =
+          nTank.lat != null && nTank.lng != null
+            ? { lat: nTank.lat, lng: nTank.lng }
+            : ringCentroidLatLng(nTank.rings?.[0] || []);
+        drawCallout(page, font, origin, toPage(project(loc.lat, loc.lng)), metLabel(nbr.tankFt, TANK_SETBACK_FT));
+      }
     }
 
     if (ring) {

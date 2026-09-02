@@ -1,5 +1,6 @@
 import { cleanApn, formatApn, parseStreetAddress } from './county.ts';
 import type { County, ParcelInfo } from './types.ts';
+import { NEIGHBOR_ENVELOPE_FT } from './types.ts';
 
 export const GIS = {
   // Token-free public parcels (PARCELS_ALL on gis-public is 499 Token Required).
@@ -517,7 +518,7 @@ export async function fetchNearbyStructures(
   parcelRing?: number[][]
 ): Promise<import('./types').StructureFootprint[]> {
   const bbox = parcelRing
-    ? expandBboxFeet(ringBBox(parcelRing), 280)
+    ? expandBboxFeet(ringBBox(parcelRing), NEIGHBOR_ENVELOPE_FT)
     : {
         minX: lng - 0.0012,
         minY: lat - 0.0012,
@@ -535,7 +536,7 @@ export async function fetchNearbyStructures(
         outFields: '*',
         returnGeometry: 'true',
         outSR: '4326',
-        resultRecordCount: '40',
+        resultRecordCount: '80',
       },
       fetchImpl
     );

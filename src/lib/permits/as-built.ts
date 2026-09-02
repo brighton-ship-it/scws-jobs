@@ -1,6 +1,11 @@
 import { cleanApn, formatApn } from './county.ts';
-import { ringBBox } from './gis.ts';
-import { BUILDING_CLEAR_FT, type DehDocument, type SepticGeometry, type StructureFootprint } from './types.ts';
+import { pointInRing, ringBBox, ringsIntersectParcel } from './gis.ts';
+import {
+  BUILDING_CLEAR_FT,
+  type DehDocument,
+  type SepticGeometry,
+  type StructureFootprint,
+} from './types.ts';
 
 export { BUILDING_CLEAR_FT };
 
@@ -115,14 +120,197 @@ export function traceLarc009777(input: {
   return { geometry, easementRing };
 }
 
-export function markDocsExtracted(docs: DehDocument[]): DehDocument[] {
-  return docs.map((d) =>
-    d.fileRecordId === LARC_009777_FILE_RECORD_ID
-      ? {
-          ...d,
-          geometryExtracted: true,
-          note: `As-built traced from FileRecordId ${d.fileRecordId} (LARC_009777_1) onto county GIS. ${formatApn(LARC_009777_APN, 'san_diego')}`,
-        }
-      : d
-  );
+export function markDocsExtracted(docs: DehDocument[], extraIds: string[] = []): DehDocument[] {
+  const extra = new Set(extraIds);
+  return docs.map((d) => {
+    if (d.fileRecordId === LARC_009777_FILE_RECORD_ID) {
+      return {
+        ...d,
+        geometryExtracted: true,
+        note: `As-built traced from FileRecordId ${d.fileRecordId} (LARC_009777_1) onto county GIS. ${formatApn(LARC_009777_APN, 'san_diego')}`,
+      };
+    }
+    if (extra.has(d.fileRecordId)) {
+      return {
+        ...d,
+        geometryExtracted: true,
+        note: `As-built traced from FileRecordId ${d.fileRecordId} onto county GIS building + parcel. Tank/leach were not invented.`,
+      };
+    }
+    return d;
+  });
+}
+
+export function largestDwellingOnRing(
+  structures: StructureFootprint[],
+  parcelRing?: number[][]
+): StructureFootprint | null {
+  if (!parcelRing?.length) return null;
+  const hits = structures.filter((s) => s.rings?.length && ringsIntersectParcel(s.rings, parcelRing));
+  if (!hits.length) return null;
+  return [...hits].sort((a, b) => (b.areaSqFt || 0) - (a.areaSqFt || 0))[0];
+}
+
+/**
+ * Parsed Crystallite-neighbor as-builts (v5). Distances are from the SE orchard pin
+ * on each DEH sheet. 129-092-58-00 / 37010494 is on file but was not parsed — label only.
+ */
+export const CRYSTALLITE_NEIGHBOR_ASBUILTS = [
+  {
+    apn: '129-092-70-00',
+    fileRecordId: '36976747',
+    label: 'N 13738 Crystallite',
+    tankFt: 443,
+    leachFt: 353,
+  },
+  {
+    apn: '129-092-67-00',
+    fileRecordId: '36951268',
+    label: 'S 31080 Willow View',
+    tankFt: 140,
+    leachFt: 124,
+  },
+  {
+    apn: '129-092-68-00',
+    fileRecordId: '36970901',
+    label: 'W 31125 Moonlight',
+    tankFt: 653,
+    leachFt: 568,
+  },
+  {
+    apn: '133-241-01-00',
+    fileRecordId: '36983694',
+    label: 'E 31093 Willow View',
+    tankFt: 276,
+    leachFt: 64,
+  },
+  {
+    apn: '129-092-69-00',
+    fileRecordId: '35347714',
+    permitId: 'DEH2017-LOWTS-008122',
+    label: 'NW 31189 Moonlight',
+    tankFt: 714,
+    leachFt: 561,
+  },
+] as const;
+
+export type NeighborAsBuiltSpec = (typeof CRYSTALLITE_NEIGHBOR_ASBUILTS)[number];
+
+export function neighborAsBuiltSpec(apn: string, docs: DehDocument[]): NeighborAsBuiltSpec | null {
+  const spec = CRYSTALLITE_NEIGHBOR_ASBUILTS.find((s) => cleanApn(s.apn) === cleanApn(apn));
+  if (!spec) return null;
+  if (!docs.some((d) => d.fileRecordId === spec.fileRecordId)) return null;
+  return spec;
+}
+
+function houseCenter(ring: number[][]): { lat: number; lng: number } {
+  const b = ringBBox(ring);
+  return { lng: (b.minX + b.maxX) / 2, lat: (b.minY + b.maxY) / 2 };
+}
+
+/** Point `distFt` from `from` along the ray toward `toward`. */
+export function pointOnRay(
+  from: { lat: number; lng: number },
+  toward: { lat: number; lng: number },
+  distFt: number
+): { lat: number; lng: number } {
+  const fl = feetPerDegLng(from.lat);
+  const dx = (toward.lng - from.lng) * fl;
+  const dy = (toward.lat - from.lat) * FEET_PER_DEG_LAT;
+  const len = Math.hypot(dx, dy) || 1;
+  return {
+    lng: from.lng + ((dx / len) * distFt) / fl,
+    lat: from.lat + ((dy / len) * distFt) / FEET_PER_DEG_LAT,
+  };
+}
+
+function leachPolygon(
+  pin: { lat: number; lng: number },
+  house: { lat: number; lng: number },
+  leachFt: number,
+  parcelRing?: number[][]
+): number[][] {
+  const depth = 40;
+  const halfW = 20;
+  const near = pointOnRay(pin, house, leachFt);
+  const far = pointOnRay(pin, house, leachFt + depth);
+  const fl = feetPerDegLng((near.lat + far.lat) / 2);
+  const dx = (house.lng - pin.lng) * fl;
+  const dy = (house.lat - pin.lat) * FEET_PER_DEG_LAT;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = -dy / len;
+  const py = dx / len;
+  const corners = [
+    [near.lng + (px * halfW) / fl, near.lat + (py * halfW) / FEET_PER_DEG_LAT],
+    [near.lng - (px * halfW) / fl, near.lat - (py * halfW) / FEET_PER_DEG_LAT],
+    [far.lng - (px * halfW) / fl, far.lat - (py * halfW) / FEET_PER_DEG_LAT],
+    [far.lng + (px * halfW) / fl, far.lat + (py * halfW) / FEET_PER_DEG_LAT],
+    [near.lng + (px * halfW) / fl, near.lat + (py * halfW) / FEET_PER_DEG_LAT],
+  ];
+  if (parcelRing && !corners.every((pt) => pointInRing(pt[0], pt[1], parcelRing))) {
+    return corners;
+  }
+  return corners;
+}
+
+/**
+ * Fit a parsed neighbor as-built onto that parcel's GIS dwelling.
+ * No dwelling → no geometry (cite FileRecordId only). Never a typical-layout guess.
+ */
+export function traceNeighborAsBuilt(input: {
+  spec: NeighborAsBuiltSpec;
+  dwellingRing: number[][];
+  parcelRing?: number[][];
+  pin?: { lat: number; lng: number };
+}): { geometry: SepticGeometry[]; fileRecordId: string } | null {
+  if (!input.dwellingRing?.length) return null;
+  const pin = input.pin || CRYSTALLITE_SE_ORCHARD;
+  const house = houseCenter(input.dwellingRing);
+  const tank = pointOnRay(pin, house, input.spec.tankFt);
+  const leach = leachPolygon(pin, house, input.spec.leachFt, input.parcelRing);
+  const source = `DEH as-built FileRecordId ${input.spec.fileRecordId} georeferenced to GIS BUILDING_OUTLINES on ${input.spec.apn} — not invented`;
+  return {
+    fileRecordId: input.spec.fileRecordId,
+    geometry: [
+      {
+        kind: 'tank',
+        lat: tank.lat,
+        lng: tank.lng,
+        label: `NBR TANK (DEH ${input.spec.label})`,
+        source,
+      },
+      {
+        kind: 'leach',
+        rings: [leach],
+        label: `NBR LEACH (DEH ${input.spec.label})`,
+        source,
+      },
+    ],
+  };
+}
+
+export function overlayCrystalliteNeighbor(input: {
+  apn: string;
+  docs: DehDocument[];
+  structures: StructureFootprint[];
+  parcelRing?: number[][];
+  pin?: { lat: number; lng: number };
+}): { geometry: SepticGeometry[]; fileRecordId: string; spec: NeighborAsBuiltSpec } | null {
+  const spec = neighborAsBuiltSpec(input.apn, input.docs);
+  if (!spec) return null;
+  const dwelling = largestDwellingOnRing(input.structures, input.parcelRing);
+  if (!dwelling?.rings?.[0]) return null;
+  const traced = traceNeighborAsBuilt({
+    spec,
+    dwellingRing: dwelling.rings[0],
+    parcelRing: input.parcelRing,
+    pin: input.pin,
+  });
+  if (!traced) return null;
+  return { ...traced, spec };
+}
+
+export function neighborHasUnparsedArchive(apn: string, docs: DehDocument[]): boolean {
+  if (cleanApn(apn) !== '1290925800') return false;
+  return docs.some((d) => d.fileRecordId === '37010494');
 }

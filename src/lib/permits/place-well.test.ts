@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { CRYSTALLITE_SE_ORCHARD, largestOnParcelDwelling, traceLarc009777 } from './as-built.ts';
 import { centroidFromRings, haversineFeet } from './gis.ts';
-import { evaluatePin, placeProposedWell, septicGeometryFromKnown } from './place-well.ts';
+import { evaluatePin, flagNeighborSetbacks, placeProposedWell, septicGeometryFromKnown } from './place-well.ts';
 
 /** Parcel roughly 300 ft E-W by 200 ft N-S. House on the west; leach band through the centroid. */
 function crystalliteLikeRings() {
@@ -140,5 +140,41 @@ describe('proposed well placement', () => {
 
   it('does not treat a random APN dwelling as a Crystallite as-built', () => {
     assert.equal(largestOnParcelDwelling([]), null);
+  });
+
+  it('FLAGs a neighbor leach under 100 ft without moving the SE pin', () => {
+    const pin = placeProposedWell({
+      rings: crystalliteLikeRings(),
+      county: 'san_diego',
+    });
+    assert.ok(pin);
+    const before = { lat: pin!.lat, lng: pin!.lng };
+    const fl = 364000 * Math.cos((pin!.lat * Math.PI) / 180);
+    const lng = pin!.lng + 50 / fl;
+    const flagged = flagNeighborSetbacks(pin!, [
+      {
+        apn: '133-241-01-00',
+        system: 'SEPTIC',
+        dehDocuments: [],
+        tankLeach: 'as_built_extracted',
+        geometry: [
+          {
+            kind: 'leach',
+            rings: [[
+              [lng, pin!.lat - 0.00002],
+              [lng + 0.00004, pin!.lat - 0.00002],
+              [lng + 0.00004, pin!.lat + 0.00002],
+              [lng, pin!.lat + 0.00002],
+              [lng, pin!.lat - 0.00002],
+            ]],
+            source: 'test',
+          },
+        ],
+      },
+    ]);
+    assert.equal(flagged.lat, before.lat);
+    assert.equal(flagged.lng, before.lng);
+    assert.equal(flagged.meetsSetbacks, false);
+    assert.ok(flagged.flags.some((f) => /133-241-01-00/i.test(f) && /FLAG/i.test(f)));
   });
 });

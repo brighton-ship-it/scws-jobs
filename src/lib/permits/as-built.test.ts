@@ -6,7 +6,9 @@ import {
   LARC_009777_APN,
   LARC_009777_FILE_RECORD_ID,
   markDocsExtracted,
+  overlayCrystalliteNeighbor,
   traceLarc009777,
+  traceNeighborAsBuilt,
 } from './as-built.ts';
 import { haversineFeet } from './gis.ts';
 import { crystalliteGisRings } from './place-well.test.ts';
@@ -48,5 +50,47 @@ describe('LARC_009777_1 overlay', () => {
     const marked = markDocsExtracted(docs);
     assert.equal(marked[0].geometryExtracted, true);
     assert.match(marked[0].note, /traced/i);
+  });
+
+  it('fits a neighbor as-built onto the GIS house so gold distances hold, and skips lots with no building', () => {
+    const pin = CRYSTALLITE_SE_ORCHARD;
+    const eastHouse = [
+      [-117.03158, 33.27735],
+      [-117.03142, 33.27735],
+      [-117.03142, 33.27745],
+      [-117.03158, 33.27745],
+      [-117.03158, 33.27735],
+    ];
+    const traced = traceNeighborAsBuilt({
+      spec: {
+        apn: '133-241-01-00',
+        fileRecordId: '36983694',
+        label: 'E 31093 Willow View',
+        tankFt: 276,
+        leachFt: 64,
+      },
+      dwellingRing: eastHouse,
+      pin,
+    });
+    assert.ok(traced);
+    const tank = traced!.geometry.find((g) => g.kind === 'tank')!;
+    const tankFt = haversineFeet(pin.lat, pin.lng, tank.lat!, tank.lng!);
+    assert.ok(Math.abs(tankFt - 276) < 3, `east tank ${tankFt.toFixed(1)} (gold 276)`);
+
+    const skipped = overlayCrystalliteNeighbor({
+      apn: '129-092-58-00',
+      docs: [
+        {
+          fileRecordId: '37010494',
+          viewUrl: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010494',
+          geometryExtracted: false,
+          note: 'on file',
+          isAsBuiltCandidate: true,
+        },
+      ],
+      structures: [],
+      parcelRing: eastHouse,
+    });
+    assert.equal(skipped, null);
   });
 });

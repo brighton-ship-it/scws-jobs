@@ -4,6 +4,7 @@ import {
   LARC_009777_FILE_RECORD_ID,
   LARC_009777_SOURCE,
   markDocsExtracted,
+  overlayCrystalliteNeighbor,
   traceLarc009777,
 } from './as-built.ts';
 import { detectCounty, isCounty } from './county.ts';
@@ -22,7 +23,7 @@ import {
   minRingsDistanceFt,
   ringBBox,
 } from './gis.ts';
-import { placeProposedWell, septicGeometryFromKnown, wellsAsPoints } from './place-well.ts';
+import { flagNeighborSetbacks, placeProposedWell, septicGeometryFromKnown, wellsAsPoints } from './place-well.ts';
 import type {
   County,
   DataSource,
@@ -510,6 +511,7 @@ export async function runPermitResearch(
           tankLeach: neighborTankLeach(flag?.designation, []),
           distanceFt: fromPin,
           adjacent,
+          rings: parcel.geometry?.rings,
         });
       }
       candidates.sort((a, b) => {
@@ -561,11 +563,47 @@ export async function runPermitResearch(
         name: 'Neighbor parcels',
         status: result.neighbors.length ? 'success' : 'missing',
         message: result.neighbors.length
-          ? `${result.neighbors.length} neighbor(s) (${septicCount} septic / ${sewerCount} sewer / WW_SEPTIC flag only). FileRecordIds: ${listedIds.join(', ') || 'none'}. Tank/leach drawn only after a parsed as-built PDF — none extracted.`
+          ? `${result.neighbors.length} neighbor(s) (${septicCount} septic / ${sewerCount} sewer / WW_SEPTIC flag only). FileRecordIds: ${listedIds.join(', ') || 'none'}.`
           : `No neighbor parcels within ${NEIGHBOR_ENVELOPE_FT} ft`,
       });
+      const pin = result.proposedWell;
+      let extracted = 0;
+      let labelOnly = 0;
+      result.neighbors = result.neighbors.map((n) => {
+        const overlay = overlayCrystalliteNeighbor({
+          apn: n.apn,
+          docs: n.dehDocuments,
+          structures: result.structures || [],
+          parcelRing: n.rings?.[0],
+          pin: pin ? { lat: pin.lat, lng: pin.lng } : undefined,
+        });
+        if (overlay) {
+          extracted += 1;
+          return {
+            ...n,
+            geometry: overlay.geometry,
+            tankLeach: 'as_built_extracted' as const,
+            dehDocuments: markDocsExtracted(n.dehDocuments, [overlay.fileRecordId]),
+          };
+        }
+        if (n.dehDocuments.some((d) => d.isAsBuiltCandidate)) labelOnly += 1;
+        return n;
+      });
+      if (result.proposedWell) {
+        result.proposedWell = flagNeighborSetbacks(result.proposedWell, result.neighbors);
+        if (!result.proposedWell.meetsSetbacks && result.proposedWell.flags.some((f) => /neighbor leach/i.test(f))) {
+          notes.push(
+            `Proposed-well pin stays in the SE pocket; neighbor leach setback FLAGGED: ${result.proposedWell.flags.filter((f) => /FLAG/i.test(f)).join('; ')}`
+          );
+        }
+      }
+      sources.push({
+        name: 'Neighbor as-builts',
+        status: extracted || labelOnly ? 'success' : 'missing',
+        message: `${extracted} neighbor as-built(s) traced onto GIS buildings; ${labelOnly} on file without extracted geometry (no building or sheet not parsed). Tank/leach were not invented.`,
+      });
       notes.push(
-        'Neighbor tank/leach were not invented. WW_SEPTIC is a septic-vs-sewer flag. DEH FileRecordIds are listed; geometry waits on a parsed as-built PDF.'
+        'Neighbor tank/leach are drawn only from a parsed DEH as-built fitted to that parcel\'s GIS building. No building outline → FileRecordId only.'
       );
       try {
         result.roads = await fetchRoadLabels(bbox, fetchImpl);

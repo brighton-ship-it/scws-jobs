@@ -514,20 +514,26 @@ describe('runPermitResearch', () => {
         return json({ records: dehByApn[parcel] || [] });
       }
       if (href.includes('BUILDING_OUTLINES')) {
+        const house = (lng: number, lat: number, area: number) => ({
+          attributes: { OBJECTID: area, 'SDEP.SANGIS.BUILDING_OUTLINES.AREA': area },
+          geometry: {
+            rings: [[
+              [lng - 0.00008, lat - 0.00005],
+              [lng + 0.00008, lat - 0.00005],
+              [lng + 0.00008, lat + 0.00005],
+              [lng - 0.00008, lat + 0.00005],
+              [lng - 0.00008, lat - 0.00005],
+            ]],
+          },
+        });
         return json({
           features: [
-            {
-              attributes: { OBJECTID: 1, 'SDEP.SANGIS.BUILDING_OUTLINES.AREA': 3323 },
-              geometry: {
-                rings: [[
-                  [-117.033844, 33.277441],
-                  [-117.033542, 33.277441],
-                  [-117.033542, 33.277627],
-                  [-117.033844, 33.277627],
-                  [-117.033844, 33.277441],
-                ]],
-              },
-            },
+            house(-117.033693, 33.277534, 3323),
+            house(-117.03378, 33.27807, 3332),
+            house(-117.03295, 33.27690, 2994),
+            house(-117.03465, 33.27735, 3343),
+            house(-117.03150, 33.27740, 3108),
+            house(-117.03465, 33.27800, 2884),
           ],
         });
       }
@@ -561,10 +567,12 @@ describe('runPermitResearch', () => {
     assert.ok(distToFlagPoint > 1e-5, 'proposed pin must not be the WW_SEPTIC centroid');
     assert.ok(Math.abs(pin.lat - 33.27711717) < 0.00005, `SE orchard lat, got ${pin.lat}`);
     assert.ok(Math.abs(pin.lng - -117.03266212) < 0.00005, `SE orchard lng, got ${pin.lng}`);
-    assert.equal(pin.meetsSetbacks, true);
+    assert.equal(pin.meetsSetbacks, false);
     assert.ok((pin.distances.leachFt || 0) >= 100);
     assert.ok((pin.distances.tankFt || 0) >= 50);
     assert.ok((pin.distances.existingWellFt || 0) >= 100);
+    assert.ok((pin.distances.neighborLeachFt || 0) < 100);
+    assert.ok(pin.flags.some((f) => /133-241-01-00/i.test(f) && /FLAG/i.test(f)));
     assert.equal(result.wellsWithin250Ft, 0);
     assert.ok(result.sources.some((s) => /0 \(NONE\)/i.test(s.message || '')));
     assert.equal(JSON.stringify(result).includes('1059498'), false);
@@ -591,14 +599,20 @@ describe('runPermitResearch', () => {
       '37010494',
       '37010971',
     ]);
-    assert.equal(result.neighbors?.every((n) => n.dehDocuments.every((d) => d.geometryExtracted === false)), true);
     assert.equal(
       result.neighbors?.some((n) => (n.dehDocuments || []).some((d) => d.fileRecordId === '35347714' && d.isAsBuiltCandidate)),
       true
     );
-    const neighborGeom = (result.septic?.geometry || []).filter((g) => /129-092-7[0]|133-241|129-092-5/.test(g.source || ''));
-    assert.equal(neighborGeom.length, 0, 'neighbor tank/leach must not be invented');
-    assert.ok(result.notes.some((n) => /Neighbor tank\/leach were not invented/i.test(n)));
+    const extracted = (result.neighbors || []).filter((n) => n.tankLeach === 'as_built_extracted');
+    assert.equal(extracted.length, 5);
+    const labelOnly = (result.neighbors || []).find((n) => n.apn === '129-092-58-00');
+    assert.ok(labelOnly);
+    assert.equal((labelOnly!.geometry || []).length, 0);
+    assert.equal(labelOnly!.tankLeach, 'as_built_on_file');
+    const east = (result.neighbors || []).find((n) => n.apn === '133-241-01-00');
+    assert.ok(east?.leachFt != null && east.leachFt < 100);
+    assert.ok(east?.geometry?.length);
+    assert.ok(result.notes.some((n) => /fitted to that parcel/i.test(n) || /neighbor leach setback FLAGGED/i.test(n)));
   });
 });
 

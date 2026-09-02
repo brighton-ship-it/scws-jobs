@@ -138,7 +138,9 @@ interface ResearchResult {
     system?: string;
     tankLeach: string;
     distanceFt?: number;
-    dehDocuments?: Array<{ fileRecordId: string; subcategory?: string; permitId?: string }>;
+    tankFt?: number | null;
+    leachFt?: number | null;
+    dehDocuments?: Array<{ fileRecordId: string; subcategory?: string; permitId?: string; geometryExtracted?: boolean }>;
   }>;
   wellsWithin250Ft?: number;
 }
@@ -2283,7 +2285,9 @@ export default function PermitResearchPage() {
               <p className="text-sm text-gray-700">
                 {result.proposedWell.meetsSetbacks
                   ? 'Maximin to leach / tank / existing well on a grid. This is not the parcel centroid.'
-                  : 'FLAG: no pocket meets 100 ft leach. Best available pin — not the parcel centroid.'}
+                  : result.proposedWell.flags.some((f) => /neighbor leach/i.test(f))
+                    ? 'FLAG: neighbor leach is under 100 ft. The pin stays in the SE orchard pocket — not the centroid.'
+                    : 'FLAG: no pocket meets 100 ft leach. Best available pin — not the parcel centroid.'}
               </p>
               <p className="font-mono text-xs text-gray-600 mt-2">
                 {result.proposedWell.lat.toFixed(8)}, {result.proposedWell.lng.toFixed(8)} · {result.proposedWell.source}
