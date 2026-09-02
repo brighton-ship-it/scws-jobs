@@ -2,13 +2,15 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 import { cookies } from 'next/headers';
 import type { Database } from '@/types/database';
+import { supabasePublicEnv } from './env';
 
 export async function createClient() {
   const cookieStore = await cookies();
+  const { url, anonKey } = supabasePublicEnv();
 
   return createServerClient<Database>(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    url,
+    anonKey,
     {
       cookies: {
         get(name: string) {
