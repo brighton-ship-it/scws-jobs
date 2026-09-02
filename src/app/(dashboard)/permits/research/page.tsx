@@ -102,7 +102,11 @@ interface ResearchResult {
   septicPermits: SepticPermit[];
   zoning: any | null;
   sources: { name: string; status: 'success' | 'error' | 'missing' | 'mock'; message?: string }[];
-  county?: PermitCounty;
+  county?: PermitCounty | null;
+  countyUnsupported?: boolean;
+  unsupportedCountyName?: string;
+  setbacks?: { tankFt: number; leachFt: number; propertyLineFt: number; source: string };
+  portals?: Array<{ label: string; url: string; purpose: string }>;
   searchPoint?: { lat: number; lng: number } | null;
   formattedAddress?: string;
   notes?: string[];
@@ -146,6 +150,7 @@ interface ResearchResult {
 }
 
 type County = PermitCounty;
+type CountyPicker = County | 'auto';
 type SearchType = 'apn' | 'address' | 'gps';
 
 interface SepticLocation {
@@ -164,14 +169,15 @@ interface PermitFormData {
   customerEmail: string;
 }
 
-const COUNTY_OPTIONS: { value: County; label: string }[] = [
-  { value: 'san_diego', label: 'San Diego County' },
-  { value: 'riverside', label: 'Riverside County' },
-  { value: 'san_bernardino', label: 'San Bernardino County' },
+const COUNTY_OPTIONS: { value: CountyPicker; label: string }[] = [
+  { value: 'auto', label: 'Auto-detect from address' },
+  { value: 'san_diego', label: 'San Diego County (override)' },
+  { value: 'riverside', label: 'Riverside County (override)' },
+  { value: 'san_bernardino', label: 'San Bernardino County (override)' },
 ];
 
 // County boundaries (approximate)
-function detectCountyFromCoords(lat: number, lng: number): County {
+function detectCountyFromCoords(lat: number, lng: number): County | null {
   return detectCountyFromInput({ lat, lng });
 }
 
@@ -196,7 +202,7 @@ export default function PermitResearchPage() {
   const [address, setAddress] = useState('');
   const [gpsLat, setGpsLat] = useState('');
   const [gpsLng, setGpsLng] = useState('');
-  const [county, setCounty] = useState<County>('san_diego');
+  const [county, setCounty] = useState<CountyPicker>('auto');
   const [isSearching, setIsSearching] = useState(false);
   const [result, setResult] = useState<ResearchResult | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -882,7 +888,9 @@ export default function PermitResearchPage() {
     if (parcelCoords.length < 3) return;
     
     // County-specific setback distances (property line setbacks)
-    const setbackFeet = PROPERTY_LINE_SETBACK_FT[county];
+    const setbackFeet =
+      result?.setbacks?.propertyLineFt ??
+      (result?.county ? PROPERTY_LINE_SETBACK_FT[result.county] : 10);
     // Convert feet to degrees at ~33° latitude (~364000 ft per degree)
     const offsetDeg = setbackFeet / 364000;
     
@@ -1014,7 +1022,7 @@ export default function PermitResearchPage() {
     try {
       let lat: number | undefined, lng: number | undefined;
       let searchApn = apn;
-      let targetCounty = county;
+      const override = county !== 'auto' ? county : undefined;
       
       if (searchType === 'gps') {
         lat = parseFloat(gpsLat);
@@ -1026,9 +1034,10 @@ export default function PermitResearchPage() {
           return;
         }
         
-        // Auto-detect county
-        targetCounty = detectCountyFromCoords(lat, lng);
-        setCounty(targetCounty);
+        if (!override) {
+          const detected = detectCountyFromCoords(lat, lng);
+          if (detected) setCounty(detected);
+        }
         setCoordinates({ lat, lng });
         
         // Center map on coordinates
@@ -1037,8 +1046,6 @@ export default function PermitResearchPage() {
           mapInstanceRef.current.setZoom(17);
         }
       } else if (searchType === 'address') {
-        targetCounty = detectCountyFromInput({ address, county: targetCounty });
-        setCounty(targetCounty);
         if (isGoogleMapsConfigured()) {
           try {
             await getMapsLibrary();
@@ -1056,8 +1063,10 @@ export default function PermitResearchPage() {
             if (geocodeResult[0]) {
               lat = geocodeResult[0].geometry.location.lat();
               lng = geocodeResult[0].geometry.location.lng();
-              targetCounty = detectCountyFromInput({ lat, lng, address, county: targetCounty });
-              setCounty(targetCounty);
+              if (!override) {
+                const detected = detectCountyFromInput({ lat, lng, address });
+                if (detected) setCounty(detected);
+              }
               setCoordinates({ lat, lng });
 
               if (mapInstanceRef.current) {
@@ -1077,7 +1086,7 @@ export default function PermitResearchPage() {
         body: JSON.stringify({
           apn: searchApn || undefined,
           address: address || undefined,
-          county: targetCounty,
+          countyOverride: override,
           lat,
           lng,
         }),
@@ -1090,7 +1099,11 @@ export default function PermitResearchPage() {
       }
 
       setResult(data);
-      if (data.county) {
+      if (data.countyUnsupported) {
+        setError(data.unsupportedCountyName
+          ? `FLAG: county not supported (${data.unsupportedCountyName}). SCWS covers San Diego, Riverside, and San Bernardino only.`
+          : (data.notes || []).find((n: string) => /FLAG: county/i.test(n)) || 'County not supported');
+      } else if (data.county) {
         setCounty(data.county);
       }
       if (data.proposedWell?.lat && data.proposedWell?.lng) {
@@ -1133,7 +1146,7 @@ export default function PermitResearchPage() {
         body: JSON.stringify({
           apn: result.parcel?.apn || apn,
           address: result.parcel?.siteAddress || address,
-          county,
+          county: result.county || (county !== 'auto' ? county : undefined),
           parcel_info: result.parcel,
           wells_info: result.wells,
           septic_info: result.septic,
@@ -1155,7 +1168,7 @@ export default function PermitResearchPage() {
   };
 
   // Export a to-scale DEH plot plan (parcel / wells / septic). Does not screenshot Maps.
-  const handleExportPlotMap = async () => {
+  const handleExportPlotMap = async (format: 'pdf' | 'png' = 'pdf') => {
     if (!result) return;
     
     setIsExportingPdf(true);
@@ -1168,6 +1181,7 @@ export default function PermitResearchPage() {
           result,
           proposedWell: wellLocation || result.proposedWell || null,
           manualSeptic: septicLocation,
+          format,
         }),
       });
 
@@ -1177,7 +1191,7 @@ export default function PermitResearchPage() {
       }
 
       const blob = await response.blob();
-      const filename = `PlotPlan_${result.parcel?.apn?.replace(/-/g, '') || 'property'}_${new Date().toISOString().split('T')[0]}.pdf`;
+      const filename = `PlotPlan_${result.parcel?.apn?.replace(/-/g, '') || 'property'}_${new Date().toISOString().split('T')[0]}.${format}`;
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -1269,7 +1283,7 @@ export default function PermitResearchPage() {
       pdf.setFont('helvetica', 'bold');
       pdf.text('WELL PERMIT APPLICATION', pageWidth / 2, 15, { align: 'center' });
       pdf.setFontSize(12);
-      pdf.text(`${county === 'san_diego' ? 'San Diego' : 'Riverside'} County`, pageWidth / 2, 24, { align: 'center' });
+      pdf.text(`${county === 'auto' ? 'County auto' : COUNTY_LABEL[county]}`, pageWidth / 2, 24, { align: 'center' });
       
       let yPos = 45;
       
@@ -1320,7 +1334,7 @@ export default function PermitResearchPage() {
       pdf.setFontSize(10);
       pdf.setFont('helvetica', 'normal');
       pdf.text(`APN: ${result.parcel?.apn || '_________________________'}`, 20, yPos);
-      pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : 'Riverside'}`, 110, yPos);
+      pdf.text(`County: ${county === 'auto' ? 'auto' : COUNTY_LABEL[county]}`, 110, yPos);
       yPos += 6;
       pdf.text(`Site Address: ${result.parcel?.siteAddress || '_________________________'}`, 20, yPos);
       yPos += 6;
@@ -1549,29 +1563,21 @@ export default function PermitResearchPage() {
               </>
             )}
 
-            {searchType !== 'gps' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">County (auto from address)</label>
-                <select
-                  value={county}
-                  onChange={(e) => setCounty(e.target.value as County)}
-                  className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                >
-                  {COUNTY_OPTIONS.map(opt => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            
-            {searchType === 'gps' && (
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">County (auto-detected)</label>
-                <div className="px-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-600">
-                  {COUNTY_LABEL[county]}
-                </div>
-              </div>
-            )}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">County</label>
+              <select
+                value={county}
+                onChange={(e) => setCounty(e.target.value as CountyPicker)}
+                className="w-full px-4 py-2.5 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+              >
+                {COUNTY_OPTIONS.map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">
+                Default is auto-detect from the geocode county name. Override only for county-line edge cases (Anza / Crestline). Never assumes San Diego.
+              </p>
+            </div>
           </div>
 
           {/* Search Button */}
@@ -1607,7 +1613,7 @@ export default function PermitResearchPage() {
                 </button>
                 
                 <button
-                  onClick={handleExportPlotMap}
+                  onClick={() => handleExportPlotMap('pdf')}
                   disabled={isExportingPdf}
                   className="inline-flex items-center gap-2 px-4 py-2.5 border border-blue-300 text-blue-700 rounded-lg font-medium hover:bg-blue-50 disabled:opacity-50 transition-colors"
                 >
@@ -1616,7 +1622,15 @@ export default function PermitResearchPage() {
                   ) : (
                     <Download className="h-4 w-4" />
                   )}
-                  Export Plot Plan
+                  Export 11×17 PDF
+                </button>
+                <button
+                  onClick={() => handleExportPlotMap('png')}
+                  disabled={isExportingPdf}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 border border-sky-300 text-sky-700 rounded-lg font-medium hover:bg-sky-50 disabled:opacity-50 transition-colors"
+                >
+                  <Download className="h-4 w-4" />
+                  Export PNG
                 </button>
                 
                 <button
@@ -1668,6 +1682,28 @@ export default function PermitResearchPage() {
                   Cached Result
                 </span>
               )}
+            </div>
+          )}
+          {result?.countyUnsupported && (
+            <div className="mt-3 p-3 bg-red-50 border-2 border-red-400 rounded-lg text-sm text-red-900">
+              <strong>FLAG: county not supported</strong>
+              {result.unsupportedCountyName ? ` (${result.unsupportedCountyName})` : ''}.
+              SCWS plot-plan tool covers San Diego, Riverside, and San Bernardino only. San Diego was not assumed.
+            </div>
+          )}
+          {result?.portals && result.portals.length > 0 && (
+            <div className="mt-3 text-xs text-slate-700 bg-slate-50 border border-slate-200 rounded-lg p-3">
+              <p className="font-medium mb-1">County record portals (open these — do not invent as-builts)</p>
+              <ul className="space-y-1">
+                {result.portals.map((p) => (
+                  <li key={p.url}>
+                    <a href={p.url} target="_blank" rel="noreferrer" className="text-blue-700 underline">
+                      {p.label}
+                    </a>
+                    <span className="text-slate-500"> — {p.purpose}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
           )}
           {result?.notes && result.notes.length > 0 && (
@@ -1771,7 +1807,7 @@ export default function PermitResearchPage() {
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-0 border border-blue-500"></span>
-                    {PROPERTY_LINE_SETBACK_FT[result.county || county]}ft property setback
+                    {(result.setbacks?.propertyLineFt ?? (result.county ? PROPERTY_LINE_SETBACK_FT[result.county] : 0))}ft property setback
                   </span>
                 </div>
               </div>

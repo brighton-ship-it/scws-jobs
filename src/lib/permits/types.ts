@@ -126,13 +126,72 @@ export const COUNTY_LABEL: Record<County, string> = {
   san_bernardino: 'San Bernardino County',
 };
 
-/** Property-line setback used on DEH plot plans, in feet. */
-export const PROPERTY_LINE_SETBACK_FT: Record<County, number> = {
-  san_diego: 10,
-  riverside: 50,
-  san_bernardino: 20,
+export interface CountySetbacks {
+  tankFt: number;
+  leachFt: number;
+  propertyLineFt: number;
+  source: string;
+  sourceUrl: string;
+  notes: string[];
+}
+
+export interface CountyPortal {
+  label: string;
+  url: string;
+  purpose: string;
+}
+
+/**
+ * Typical well setbacks from each county's current published ordinance / EHS table.
+ * FLAG the source on the plot plan — do not treat blog copy as law.
+ */
+export const COUNTY_SETBACKS: Record<County, CountySetbacks> = {
+  san_diego: {
+    tankFt: 50,
+    leachFt: 100,
+    propertyLineFt: 10,
+    source: 'CA Bulletin 74-81/74-90 + typical SD DEH plot-plan practice',
+    sourceUrl: 'https://www.sandiegocounty.gov/content/dam/sdc/deh/lwqd/Chapter_4_Well_Ordinance.pdf',
+    notes: [
+      'SD Chapter 4 (Wells) does not publish a numeric well-to-property-line figure.',
+      '10 ft PL is the typical DEH plot-plan inset already used on SCWS SITE PLANs — confirm with DEH before staking.',
+      'Tank 50 ft / leach 100 ft follow Bulletin 74 and SD LAMP well-to-OWTS practice.',
+    ],
+  },
+  riverside: {
+    tankFt: 100,
+    leachFt: 100,
+    propertyLineFt: 50,
+    source: 'Riverside County Ordinance 682.6 (well location)',
+    sourceUrl: 'https://rivcocob.org/sites/g/files/aldnop311/files/migrated/wp-content-uploads-2021-08-682.6.pdf',
+    notes: [
+      'Ord. 682.6: watertight septic tank 100 ft (not the 50 ft Bulletin figure).',
+      'Ord. 682.6: subsurface leach line/field 100 ft.',
+      'Ord. 682.6: newly drilled water wells 50 ft from property line(s).',
+    ],
+  },
+  san_bernardino: {
+    tankFt: 100,
+    leachFt: 100,
+    propertyLineFt: 5,
+    source: 'SB County EHS Minimum Setbacks List / LAMP Table 3.1 (OWTS-to-well)',
+    sourceUrl: 'https://ehs.sbcounty.gov/wp-content/uploads/sites/97/Programs/WaterAndWaste/Minimum-Setbacks-List.pdf',
+    notes: [
+      'FLAG: SB well construction code (§ 33.0638) does not publish a numeric well-to-property-line setback.',
+      '5 ft is the published EHS adjoining-PL figure for OWTS — confirm well-to-PL with EHS before staking.',
+      'Non-public well to septic tank / disposal field: 100 ft (EHS Minimum Setbacks / LAMP 3.1).',
+    ],
+  },
 };
 
+/** Property-line setback used on plot plans, in feet. */
+export const PROPERTY_LINE_SETBACK_FT: Record<County, number> = {
+  san_diego: COUNTY_SETBACKS.san_diego.propertyLineFt,
+  riverside: COUNTY_SETBACKS.riverside.propertyLineFt,
+  san_bernardino: COUNTY_SETBACKS.san_bernardino.propertyLineFt,
+};
+
+/** SD / Bulletin 74 typical tank setback. Use COUNTY_SETBACKS[county].tankFt for county-specific. */
 export const TANK_SETBACK_FT = 50;
 export const LEACH_SETBACK_FT = 100;
 export const EXISTING_WELL_SETBACK_FT = 100;
@@ -164,6 +223,16 @@ export interface RoadLabel {
   lng: number;
 }
 
+export interface CountyWellPermit {
+  permitId: string;
+  apn?: string;
+  lat: number;
+  lng: number;
+  wellType?: string;
+  status?: string;
+  source: string;
+}
+
 export interface ResearchResult {
   parcel: ParcelInfo | null;
   wells: WellInfo[];
@@ -171,7 +240,13 @@ export interface ResearchResult {
   septicPermits: SepticPermit[];
   zoning: { designation?: string; landUse?: string; source?: string; note?: string } | null;
   sources: DataSource[];
-  county: County;
+  county: County | null;
+  /** True when geocode landed outside SD / Riverside / San Bernardino. */
+  countyUnsupported?: boolean;
+  unsupportedCountyName?: string;
+  countyDetection?: { source: string; label: string };
+  setbacks?: CountySetbacks;
+  portals?: CountyPortal[];
   searchPoint: { lat: number; lng: number } | null;
   formattedAddress?: string;
   notes: string[];
@@ -182,4 +257,5 @@ export interface ResearchResult {
   neighbors?: NeighborParcel[];
   roads?: RoadLabel[];
   wellsWithin250Ft?: number;
+  countyWellPermits?: CountyWellPermit[];
 }
