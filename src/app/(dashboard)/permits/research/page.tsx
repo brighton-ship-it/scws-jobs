@@ -333,13 +333,14 @@ export default function PermitResearchPage() {
   // Fetch utility data when coordinates change
   useEffect(() => {
     if (!coordinates) return;
+    const point = coordinates;
     
     async function fetchUtilities() {
       setIsLoadingUtilities(true);
       try {
         // Fetch coverage info
         const coverageRes = await fetch(
-          `/api/utilities/coverage?lat=${coordinates.lat}&lng=${coordinates.lng}`
+          `/api/utilities/coverage?lat=${point.lat}&lng=${point.lng}`
         );
         if (coverageRes.ok) {
           const coverageData = await coverageRes.json();
@@ -354,7 +355,7 @@ export default function PermitResearchPage() {
         
         if (enabledTypes) {
           const nearbyRes = await fetch(
-            `/api/utilities/nearby?lat=${coordinates.lat}&lng=${coordinates.lng}&radius=500&types=${enabledTypes}`
+            `/api/utilities/nearby?lat=${point.lat}&lng=${point.lng}&radius=500&types=${enabledTypes}`
           );
           if (nearbyRes.ok) {
             const nearbyData = await nearbyRes.json();

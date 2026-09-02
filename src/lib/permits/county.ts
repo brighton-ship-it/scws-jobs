@@ -1,5 +1,6 @@
 import { getCountyByCity } from '../tax-rates.ts';
 import type { County } from './types.ts';
+export type { County } from './types.ts';
 
 const COUNTY_FROM_LABEL: Record<string, County> = {
   'san diego': 'san_diego',

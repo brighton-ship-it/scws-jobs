@@ -314,7 +314,7 @@ export async function POST(request: NextRequest) {
     // Return as downloadable PDF
     const filename = `well-permit-${data.county}-${data.property.apn.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}.pdf`;
     
-    return new NextResponse(filledPdfBytes, {
+    return new NextResponse(Buffer.from(filledPdfBytes), {
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${filename}"`,

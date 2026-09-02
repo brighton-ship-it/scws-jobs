@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { runPermitResearch } from '@/lib/permits/research';
 import { lookupNearbySeptic, lookupSiteSeptic } from '@/lib/permits/septic';
-import { isCounty, type County } from '@/lib/permits/county';
+import { isCounty } from '@/lib/permits/county';
+import type { County } from '@/lib/permits/types';
 import { createServiceClient } from '@/lib/supabase/server';
 
 function supabaseOrNull() {

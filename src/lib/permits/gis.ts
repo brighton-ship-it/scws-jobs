@@ -218,13 +218,14 @@ function parcelFromSb(attrs: Record<string, any>, geometry: any): ParcelInfo {
   const a = publicAttrs(attrs);
   const acres = parseFloat(a.Acreage ?? a.ACREAGE) || undefined;
   const ring = geometry?.rings?.[0];
+  const sqftFromRing = ring ? Math.round(ringAreaSqFt(ring)) : undefined;
   const owner = a.OwnerName && !/protected/i.test(String(a.OwnerName)) ? a.OwnerName : undefined;
   return {
     apn: String(a.ParcelNumber || a.APN || ''),
     ownerName: owner,
     siteAddress: a.SitusAddress || a.SITEADDR || undefined,
     lotSizeAcres: acres || (sqftFromRing ? Math.round((sqftFromRing / 43560) * 100) / 100 : undefined),
-    lotSizeSqFt: acres ? Math.round(acres * 43560) : ring ? Math.round(ringAreaSqFt(ring)) : undefined,
+    lotSizeSqFt: acres ? Math.round(acres * 43560) : sqftFromRing,
     geometry: geometry?.rings ? { rings: geometry.rings, spatialReference: { wkid: 4326 } } : undefined,
     zoning: a.Zoning || undefined,
   };
