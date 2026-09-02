@@ -26,6 +26,7 @@ export interface WellInfo {
   longitude: number;
   distance_from_parcel?: number;
   apn?: string;
+  source?: string;
 }
 
 export interface SepticPermit {
@@ -36,6 +37,32 @@ export interface SepticPermit {
   longitude: number;
   full_address?: string;
   distance_feet?: number;
+  /** Parcel flag only — never treat as tank/leach GPS. */
+  locationKind?: 'parcel_flag' | 'as_built';
+}
+
+export interface DehDocument {
+  fileRecordId: string;
+  permitId?: string;
+  parcelNbr?: string;
+  category?: string;
+  subcategory?: string;
+  description?: string;
+  contentType?: string;
+  viewUrl: string;
+  /** County PDF bytes are served inside LUEG_View; server fetch is an HTML stub. */
+  geometryExtracted: false;
+  note: string;
+  isAsBuiltCandidate: boolean;
+}
+
+export interface SepticGeometry {
+  kind: 'tank' | 'leach' | 'existing_well';
+  rings?: number[][][];
+  lat?: number;
+  lng?: number;
+  label?: string;
+  source: string;
 }
 
 export interface SepticInfo {
@@ -48,6 +75,34 @@ export interface SepticInfo {
   message?: string;
   /** True when we only know the parcel is on septic, not the tank/leach location. */
   locationUnknown?: boolean;
+  dehDocuments?: DehDocument[];
+  geometry?: SepticGeometry[];
+}
+
+export interface NeighborParcel {
+  apn: string;
+  siteAddress?: string;
+  septicFlag?: string;
+  dehDocuments: DehDocument[];
+  tankLeach: 'as_built_extracted' | 'as_built_on_file' | 'septic_connected' | 'unknown';
+  distanceFt?: number;
+  adjacent?: boolean;
+}
+
+export interface ProposedWell {
+  lat: number;
+  lng: number;
+  source: 'setback_search' | 'best_pocket';
+  meetsSetbacks: boolean;
+  flags: string[];
+  distances: {
+    propertyLineFt: number | null;
+    tankFt: number | null;
+    leachFt: number | null;
+    existingWellFt: number | null;
+    structureFt: number | null;
+  };
+  wgs84: { lat: number; lng: number };
 }
 
 export interface DataSource {
@@ -69,14 +124,28 @@ export const PROPERTY_LINE_SETBACK_FT: Record<County, number> = {
   san_bernardino: 20,
 };
 
+export const TANK_SETBACK_FT = 50;
+export const LEACH_SETBACK_FT = 100;
+export const EXISTING_WELL_SETBACK_FT = 100;
 export const SEPTIC_SETBACK_FT = 100;
 export const STRUCTURE_SETBACK_FT = 50;
 export const WELL_SEARCH_RADIUS_FT = 5280;
 /** Wells / septic / structures called out on the plot plan (feet). */
 export const INVENTORY_RADIUS_FT = 250;
 
+export const SCWS_CSLB = '1086994';
+export const BLOCKED_CSLB = ['1059498', '1129498', '1013597', '1011552'] as const;
+
 export interface StructureFootprint {
   rings: number[][][];
+  areaSqFt?: number;
+  onSubjectParcel?: boolean;
+}
+
+export interface RoadLabel {
+  name: string;
+  lat: number;
+  lng: number;
 }
 
 export interface ResearchResult {
@@ -92,4 +161,9 @@ export interface ResearchResult {
   notes: string[];
   cached?: boolean;
   structures: StructureFootprint[];
+  proposedWell?: ProposedWell | null;
+  dehDocuments?: DehDocument[];
+  neighbors?: NeighborParcel[];
+  roads?: RoadLabel[];
+  wellsWithin250Ft?: number;
 }

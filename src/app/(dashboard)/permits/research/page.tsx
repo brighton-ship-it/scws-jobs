@@ -107,7 +107,38 @@ interface ResearchResult {
   formattedAddress?: string;
   notes?: string[];
   cached?: boolean;
-  structures?: { rings: number[][][] }[];
+  structures?: { rings: number[][][]; areaSqFt?: number; onSubjectParcel?: boolean }[];
+  proposedWell?: {
+    lat: number;
+    lng: number;
+    source: string;
+    meetsSetbacks: boolean;
+    flags: string[];
+    distances: {
+      propertyLineFt: number | null;
+      tankFt: number | null;
+      leachFt: number | null;
+      existingWellFt: number | null;
+      structureFt: number | null;
+    };
+  } | null;
+  dehDocuments?: Array<{
+    fileRecordId: string;
+    permitId?: string;
+    subcategory?: string;
+    viewUrl: string;
+    geometryExtracted: false;
+    note: string;
+    isAsBuiltCandidate: boolean;
+  }>;
+  neighbors?: Array<{
+    apn: string;
+    siteAddress?: string;
+    septicFlag?: string;
+    tankLeach: string;
+    distanceFt?: number;
+  }>;
+  wellsWithin250Ft?: number;
 }
 
 type County = PermitCounty;
@@ -974,6 +1005,7 @@ export default function PermitResearchPage() {
     setResult(null);
     setSaveSuccess(false);
     setSepticLocation(null);
+    setWellLocation(null);
 
     try {
       let lat: number | undefined, lng: number | undefined;
@@ -1057,7 +1089,14 @@ export default function PermitResearchPage() {
       if (data.county) {
         setCounty(data.county);
       }
-      if (data.searchPoint?.lat && data.searchPoint?.lng) {
+      if (data.proposedWell?.lat && data.proposedWell?.lng) {
+        setWellLocation({ lat: data.proposedWell.lat, lng: data.proposedWell.lng });
+        setCoordinates({ lat: data.proposedWell.lat, lng: data.proposedWell.lng });
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.setCenter({ lat: data.proposedWell.lat, lng: data.proposedWell.lng });
+          mapInstanceRef.current.setZoom(17);
+        }
+      } else if (data.searchPoint?.lat && data.searchPoint?.lng) {
         setCoordinates({ lat: data.searchPoint.lat, lng: data.searchPoint.lng });
         if (mapInstanceRef.current) {
           mapInstanceRef.current.setCenter(data.searchPoint);
@@ -1123,7 +1162,7 @@ export default function PermitResearchPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           result,
-          proposedWell: wellLocation,
+          proposedWell: wellLocation || result.proposedWell || null,
           manualSeptic: septicLocation,
         }),
       });
@@ -1404,7 +1443,7 @@ export default function PermitResearchPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Permit Research Tool</h1>
-        <p className="text-gray-500">Paste a street address to pull parcel, nearby DWR wells, septic/sewer (or an honest miss), and a to-scale DEH plot plan.</p>
+        <p className="text-gray-500">Paste a Ramona or Anza street address for a DEH office SITE PLAN: parcel, buildings, aerial, septic flag / as-built hits, and a proposed-well pin that is not dropped on the leach field.</p>
       </div>
 
       {/* Search Panel */}
@@ -2163,15 +2202,84 @@ export default function PermitResearchPage() {
                   </div>
                 )}
                 
+                {(result.dehDocuments || []).length > 0 && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">DEH Document Library</h4>
+                    <div className="space-y-2">
+                      {result.dehDocuments!.map((doc) => (
+                        <div key={doc.fileRecordId} className="p-2 bg-slate-50 rounded border border-slate-200 text-sm">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-mono text-xs">FileRecordId {doc.fileRecordId}</span>
+                            <a href={doc.viewUrl} target="_blank" rel="noreferrer" className="text-xs text-blue-600 hover:underline">
+                              Open viewer
+                            </a>
+                          </div>
+                          <p className="text-xs text-gray-600">{doc.subcategory || 'DEH-LWQD'}{doc.permitId ? ` · ${doc.permitId}` : ''}</p>
+                          <p className="text-xs text-amber-700 mt-1">{doc.note}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {(result.neighbors || []).length > 0 && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Neighbor septic (250 ft / adjacent)</h4>
+                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                      {result.neighbors!.slice(0, 12).map((n) => (
+                        <div key={n.apn} className="text-xs flex justify-between gap-2">
+                          <span className="font-mono">{n.apn}</span>
+                          <span className="text-gray-600">
+                            {n.tankLeach === 'as_built_on_file'
+                              ? 'as-built on file, geometry not extracted'
+                              : n.septicFlag || n.tankLeach}
+                            {n.distanceFt != null ? ` · ${n.distanceFt} ft` : ''}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Tip for manual placement */}
                 <div className="pt-2 border-t border-gray-200">
                   <p className="text-xs text-gray-500">
-                    <strong>Tip:</strong> Use "Place Septic Location" above to manually mark septic tank location and view setback circles.
+                    <strong>Tip:</strong> Tank/leach are never invented. Place a septic mark only when the office has an as-built or a site visit.
                   </p>
                 </div>
               </div>
             )}
           </div>
+
+          {result.proposedWell && (
+            <div className="bg-white rounded-xl border border-gray-200 p-4">
+              <h3 className="font-semibold text-gray-900 mb-2">Proposed well pin</h3>
+              <p className="text-sm text-gray-700">
+                {result.proposedWell.meetsSetbacks
+                  ? 'Setback search placed this pin inside the parcel. It is not the parcel centroid.'
+                  : 'No pocket meets every typical DEH setback — best available pin, distances flagged.'}
+              </p>
+              <p className="font-mono text-xs text-gray-600 mt-2">
+                {result.proposedWell.lat.toFixed(8)}, {result.proposedWell.lng.toFixed(8)} · {result.proposedWell.source}
+              </p>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-3 text-xs">
+                <div>PL: {result.proposedWell.distances.propertyLineFt ?? '—'} ft</div>
+                <div>Tank: {result.proposedWell.distances.tankFt ?? 'unknown'} ft</div>
+                <div>Leach: {result.proposedWell.distances.leachFt ?? 'unknown'} ft</div>
+                <div>Existing well: {result.proposedWell.distances.existingWellFt ?? '—'} ft</div>
+              </div>
+              {result.proposedWell.flags.length > 0 && (
+                <ul className="mt-2 text-xs text-amber-800 list-disc pl-4">
+                  {result.proposedWell.flags.map((flag) => (
+                    <li key={flag}>{flag}</li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-gray-500 mt-2">
+                CNRA WCR within 250 ft: {result.wellsWithin250Ft === 0 ? '0 (NONE)' : result.wellsWithin250Ft ?? '—'}
+              </p>
+            </div>
+          )}
 
           {/* Zoning */}
           <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">

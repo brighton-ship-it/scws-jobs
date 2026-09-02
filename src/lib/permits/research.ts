@@ -1,12 +1,28 @@
 import { detectCounty, isCounty } from './county.ts';
-import { centroidFromRings, fetchNearbyStructures, fetchParcelForCounty, geocodeAddress } from './gis.ts';
+import { asBuiltOnFile, searchDehDocuments } from './deh-docs.ts';
+import {
+  centroidFromRings,
+  expandBboxFeet,
+  fetchNearbyStructures,
+  fetchParcelForCounty,
+  fetchParcelsInEnvelope,
+  fetchRoadLabels,
+  fetchWwSepticFlags,
+  geocodeAddress,
+  haversineFeet,
+  ringBBox,
+} from './gis.ts';
+import { placeProposedWell, septicGeometryFromKnown, wellsAsPoints } from './place-well.ts';
 import type {
   County,
   DataSource,
+  DehDocument,
+  NeighborParcel,
   ResearchResult,
   SepticInfo,
   SepticPermit,
 } from './types.ts';
+import { INVENTORY_RADIUS_FT } from './types.ts';
 import { fetchDwrWells } from './wells.ts';
 
 export interface ResearchInput {
@@ -44,8 +60,22 @@ function missingSeptic(county: County): SepticInfo {
   return {
     status: 'missing',
     locationUnknown: true,
-    message: `No septic/sewer record in SCWS GIS for this parcel. Tank and leach-field locations were not invented. Confirm with ${phone} before drawing setbacks on a submittal.`,
+    message: `No septic/sewer record in public GIS for this parcel. Tank and leach-field locations were not invented. Confirm with ${phone} before drawing setbacks on a submittal.`,
   };
+}
+
+function designationType(text?: string | null): SepticInfo['type'] {
+  const value = (text || '').toLowerCase();
+  if (value.includes('septic')) return 'SEPTIC';
+  if (value.includes('sewer')) return 'SEWER';
+  return 'UNKNOWN';
+}
+
+function neighborTankLeach(flag: string | undefined, docs: DehDocument[]): NeighborParcel['tankLeach'] {
+  if (docs.some((d) => d.isAsBuiltCandidate && d.geometryExtracted)) return 'as_built_extracted';
+  if (docs.some((d) => d.isAsBuiltCandidate)) return 'as_built_on_file';
+  if ((flag || '').toLowerCase().includes('septic')) return 'septic_connected';
+  return 'unknown';
 }
 
 export async function runPermitResearch(
@@ -105,6 +135,11 @@ export async function runPermitResearch(
     formattedAddress,
     notes,
     structures: [],
+    proposedWell: null,
+    dehDocuments: [],
+    neighbors: [],
+    roads: [],
+    wellsWithin250Ft: 0,
   };
 
   const gisName =
@@ -154,6 +189,7 @@ export async function runPermitResearch(
     notes.push(`Parcel GIS error: ${error instanceof Error ? error.message : 'unknown'}`);
   }
 
+  // Center inventory queries on the parcel interior when we have a ring; keep the geocode if not.
   let searchLat = lat;
   let searchLng = lng;
   const centroid = centroidFromRings(result.parcel?.geometry?.rings);
@@ -167,26 +203,26 @@ export async function runPermitResearch(
     try {
       result.wells = await fetchDwrWells(searchLat, searchLng, { fetchImpl });
       sources.push({
-        name: 'CA DWR Well Completion Reports',
+        name: 'CA DWR / CNRA Well Completion Reports',
         status: 'success',
         message: `Found ${result.wells.length} wells within 1 mile`,
       });
     } catch (error) {
       sources.push({
-        name: 'CA DWR Well Completion Reports',
+        name: 'CA DWR / CNRA Well Completion Reports',
         status: 'error',
         message:
           error instanceof Error
             ? error.message
-            : 'DWR query failed — well locations were not invented',
+            : 'DWR/CNRA query failed — well locations were not invented',
       });
       notes.push(
-        'CA DWR Well Completion Reports are unavailable or returned an error. Nearby well points were not invented.'
+        'CA DWR / CNRA Well Completion Reports are unavailable or returned an error. Nearby well points were not invented.'
       );
     }
   } else {
     sources.push({
-      name: 'CA DWR Well Completion Reports',
+      name: 'CA DWR / CNRA Well Completion Reports',
       status: 'missing',
       message: 'Need a geocoded point or parcel to search wells',
     });
@@ -194,7 +230,12 @@ export async function runPermitResearch(
 
   if (county === 'san_diego' && searchLat != null && searchLng != null) {
     try {
-      result.structures = await fetchNearbyStructures(searchLat, searchLng, fetchImpl);
+      result.structures = await fetchNearbyStructures(
+        searchLat,
+        searchLng,
+        fetchImpl,
+        result.parcel?.geometry?.rings?.[0]
+      );
       sources.push({
         name: 'Building outlines',
         status: result.structures.length ? 'success' : 'missing',
@@ -220,12 +261,74 @@ export async function runPermitResearch(
     });
   }
 
-  notes.push(
-    'Streets, easements, and surveyed tank/leach geometry are not in the public GIS used here. Shown as unknown.'
-  );
+  let dehDocs: DehDocument[] = [];
+  if (county === 'san_diego' && (result.parcel?.apn || input.apn)) {
+    try {
+      dehDocs = await searchDehDocuments(result.parcel?.apn || input.apn || '', fetchImpl);
+      result.dehDocuments = dehDocs;
+      const asBuilts = asBuiltOnFile(dehDocs);
+      sources.push({
+        name: 'DEH Document Library',
+        status: dehDocs.length ? 'success' : 'missing',
+        message: dehDocs.length
+          ? `${dehDocs.length} DEH-LWQD hit(s)` +
+            (asBuilts.length
+              ? `; ${asBuilts.map((d) => `FileRecordId ${d.fileRecordId} (${d.subcategory})`).join('; ')} — as-built on file, geometry not extracted`
+              : '')
+          : 'No DEH-LWQD documents for this APN',
+      });
+      if (asBuilts.length) {
+        notes.push(
+          `DEH as-built on file (${asBuilts.map((d) => `FileRecordId ${d.fileRecordId}`).join(', ')}); tank/leach geometry was not extracted. LUEG_View PDF is client-side only.`
+        );
+      }
+    } catch (error) {
+      sources.push({
+        name: 'DEH Document Library',
+        status: 'error',
+        message: error instanceof Error ? error.message : 'DEH search failed',
+      });
+    }
+  }
 
-  const septicRadiusFeet = input.septicRadiusFeet || 500;
-  if (deps.lookupSiteSeptic) {
+  let wwFlags: Awaited<ReturnType<typeof fetchWwSepticFlags>> = [];
+  if (county === 'san_diego' && result.parcel?.geometry?.rings?.[0]) {
+    try {
+      const bbox = expandBboxFeet(ringBBox(result.parcel.geometry.rings[0]), INVENTORY_RADIUS_FT);
+      wwFlags = await fetchWwSepticFlags({ bbox }, fetchImpl);
+      const site = wwFlags.find((f) => f.apn === result.parcel?.apn);
+      sources.push({
+        name: 'WW_SEPTIC_SEWER_PUBLIC',
+        status: site ? 'success' : wwFlags.length ? 'success' : 'missing',
+        message: site
+          ? `${site.designation} (parcel flag only — not tank/leach polygons)`
+          : wwFlags.length
+            ? `${wwFlags.length} nearby parcel flags (not tank GPS)`
+            : 'No septic/sewer parcel flag in the public layer',
+      });
+    } catch (error) {
+      sources.push({
+        name: 'WW_SEPTIC_SEWER_PUBLIC',
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Septic flag query failed',
+      });
+    }
+  }
+
+  const siteFlag = wwFlags.find((f) => f.apn === result.parcel?.apn);
+  if (siteFlag) {
+    result.septic = {
+      status: 'found',
+      type: designationType(siteFlag.designation),
+      designation: siteFlag.designation,
+      source: 'WW_SEPTIC_SEWER_PUBLIC (parcel flag, not tank/leach geometry)',
+      locationUnknown: true,
+      dehDocuments: dehDocs,
+      message: asBuiltOnFile(dehDocs).length
+        ? `${siteFlag.designation}. DEH as-built on file; geometry not extracted — tank/leach were not drawn.`
+        : `${siteFlag.designation}. No tank/leach polygons in public GIS.`,
+    };
+  } else if (deps.lookupSiteSeptic) {
     try {
       const site = await deps.lookupSiteSeptic(
         result.parcel?.apn || input.apn || '',
@@ -237,6 +340,7 @@ export async function runPermitResearch(
         result.septic = {
           ...site,
           locationUnknown: site.type === 'SEPTIC' && (site.latitude == null || site.longitude == null),
+          dehDocuments: dehDocs,
         };
         sources.push({
           name: 'Septic / sewer record',
@@ -244,7 +348,7 @@ export async function runPermitResearch(
           message: `Property is on ${site.type}${site.locationUnknown ? ' (tank location not in GIS)' : ''}`,
         });
       } else {
-        result.septic = missingSeptic(county);
+        result.septic = { ...missingSeptic(county), dehDocuments: dehDocs };
         sources.push({
           name: 'Septic / sewer record',
           status: 'missing',
@@ -252,7 +356,7 @@ export async function runPermitResearch(
         });
       }
     } catch {
-      result.septic = missingSeptic(county);
+      result.septic = { ...missingSeptic(county), dehDocuments: dehDocs };
       sources.push({
         name: 'Septic / sewer record',
         status: 'missing',
@@ -260,15 +364,149 @@ export async function runPermitResearch(
       });
     }
   } else {
-    result.septic = missingSeptic(county);
-    sources.push({
-      name: 'Septic / sewer record',
-      status: 'missing',
-      message: result.septic.message,
-    });
+    result.septic = { ...missingSeptic(county), dehDocuments: dehDocs };
+    if (county !== 'san_diego' || !siteFlag) {
+      sources.push({
+        name: 'Septic / sewer record',
+        status: dehDocs.length ? 'success' : 'missing',
+        message: dehDocs.length
+          ? 'DEH documents listed; tank/leach geometry not extracted'
+          : result.septic.message,
+      });
+    }
   }
 
-  if (deps.lookupNearbySeptic && searchLat != null && searchLng != null) {
+  notes.push(
+    'Streets and easements come from public road labels when present. Surveyed tank/leach geometry is drawn only from a parsed DEH as-built — never invented.'
+  );
+
+  const known = septicGeometryFromKnown(result.septic?.geometry);
+  const onParcelWells = result.wells.filter((w) => (w.distance_from_parcel || 9999) <= 400);
+  result.proposedWell = placeProposedWell({
+    rings: result.parcel?.geometry?.rings,
+    county,
+    tanks: known.tanks,
+    leaches: known.leaches,
+    existingWells: [...(known.existingWells || []), ...wellsAsPoints(onParcelWells)],
+    structures: (result.structures || []).filter((s) => s.onSubjectParcel !== false),
+  });
+
+  if (result.proposedWell) {
+    if (!known.tanks?.length && !known.leaches?.length) {
+      result.proposedWell.flags.push(
+        'Septic tank/leach setbacks not applied — no extracted as-built geometry. Confirm DEH archive before staking.'
+      );
+    }
+    if (!result.proposedWell.meetsSetbacks) {
+      notes.push(`Proposed-well pin is a best pocket with flagged setbacks: ${result.proposedWell.flags.join('; ')}`);
+    } else {
+      notes.push(
+        `Proposed-well pin placed by setback search at ${result.proposedWell.lat.toFixed(8)}, ${result.proposedWell.lng.toFixed(8)} — not the parcel centroid.`
+      );
+    }
+  } else if (centroid) {
+    notes.push('Could not place a proposed-well pin inside the parcel. Centroid was not used as a silent fallback.');
+  }
+
+  const pin = result.proposedWell || (searchLat != null && searchLng != null ? { lat: searchLat, lng: searchLng } : null);
+  result.wellsWithin250Ft = pin
+    ? result.wells.filter(
+        (w) => haversineFeet(pin.lat, pin.lng, w.latitude, w.longitude) <= INVENTORY_RADIUS_FT
+      ).length
+    : 0;
+  sources.push({
+    name: `CNRA WCR within ${INVENTORY_RADIUS_FT} ft`,
+    status: 'success',
+    message:
+      result.wellsWithin250Ft === 0
+        ? `0 (NONE) within ${INVENTORY_RADIUS_FT} ft of the proposed pin`
+        : `${result.wellsWithin250Ft} well(s) within ${INVENTORY_RADIUS_FT} ft`,
+  });
+
+  if (county === 'san_diego' && result.parcel?.geometry?.rings?.[0]) {
+    try {
+      const subjectRing = result.parcel.geometry.rings[0];
+      const bbox = expandBboxFeet(ringBBox(subjectRing), INVENTORY_RADIUS_FT);
+      const nearbyParcels = await fetchParcelsInEnvelope(bbox, fetchImpl);
+      const pinPt = result.proposedWell;
+      const neighbors: NeighborParcel[] = [];
+      for (const parcel of nearbyParcels) {
+        if (parcel.apn === result.parcel.apn) continue;
+        const nCentroid = centroidFromRings(parcel.geometry?.rings);
+        const fromPin =
+          pinPt && nCentroid ? Math.round(haversineFeet(pinPt.lat, pinPt.lng, nCentroid.lat, nCentroid.lng)) : undefined;
+        const fromSubject =
+          centroid && nCentroid ? Math.round(haversineFeet(centroid.lat, centroid.lng, nCentroid.lat, nCentroid.lng)) : 9999;
+        const adjacent = fromSubject <= 220;
+        const within250 = fromPin != null && fromPin <= INVENTORY_RADIUS_FT;
+        if (!adjacent && !within250) continue;
+        const flag = wwFlags.find((f) => f.apn === parcel.apn);
+        neighbors.push({
+          apn: parcel.apn,
+          siteAddress: parcel.siteAddress,
+          septicFlag: flag?.designation,
+          dehDocuments: [],
+          tankLeach: neighborTankLeach(flag?.designation, []),
+          distanceFt: fromPin,
+          adjacent,
+        });
+      }
+      neighbors.sort((a, b) => (a.distanceFt || 9e9) - (b.distanceFt || 9e9));
+      const toSearch = neighbors.slice(0, 8);
+      const docsByApn = await Promise.all(
+        toSearch.map(async (n) => {
+          try {
+            return { apn: n.apn, docs: await searchDehDocuments(n.apn, fetchImpl) };
+          } catch {
+            return { apn: n.apn, docs: [] as DehDocument[] };
+          }
+        })
+      );
+      const docMap = new Map(docsByApn.map((row) => [row.apn, row.docs]));
+      result.neighbors = neighbors.map((n) => {
+        const docs = docMap.get(n.apn) || [];
+        return {
+          ...n,
+          dehDocuments: docs,
+          tankLeach: neighborTankLeach(n.septicFlag, docs),
+        };
+      });
+      result.septicPermits = result.neighbors.map((n) => {
+        const flag = wwFlags.find((f) => f.apn === n.apn);
+        return {
+          apn: n.apn,
+          designation: n.septicFlag || 'Unknown',
+          type: designationType(n.septicFlag) || 'UNKNOWN',
+          latitude: flag?.lat || 0,
+          longitude: flag?.lng || 0,
+          full_address: n.siteAddress,
+          distance_feet: n.distanceFt,
+          locationKind: 'parcel_flag' as const,
+        };
+      }).filter((p) => p.latitude && p.longitude);
+      sources.push({
+        name: 'Neighbor parcels',
+        status: result.neighbors.length ? 'success' : 'missing',
+        message: result.neighbors.length
+          ? `${result.neighbors.length} adjacent / within ${INVENTORY_RADIUS_FT} ft — tank/leach drawn only from as-builts (none extracted)`
+          : `No neighbor parcels within ${INVENTORY_RADIUS_FT} ft`,
+      });
+      try {
+        result.roads = await fetchRoadLabels(bbox, fetchImpl);
+      } catch {
+        result.roads = [];
+      }
+    } catch (error) {
+      sources.push({
+        name: 'Neighbor parcels',
+        status: 'error',
+        message: error instanceof Error ? error.message : 'Neighbor parcel query failed',
+      });
+    }
+  }
+
+  const septicRadiusFeet = input.septicRadiusFeet || 500;
+  if (deps.lookupNearbySeptic && searchLat != null && searchLng != null && !result.septicPermits.length) {
     try {
       result.septicPermits = await deps.lookupNearbySeptic(
         searchLat,
