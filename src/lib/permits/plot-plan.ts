@@ -109,9 +109,11 @@ export function buildPlotPlanModel(input: PlotPlanInput): PlotPlanModel {
       : result.dehDocuments?.some((d) => d.isAsBuiltCandidate)
         ? 'DEH as-built on file, geometry not extracted — no fake tank or leach was drawn.'
         : '',
-    result.septicPermits.length
-      ? 'Neighbor septic markers (if any) are parcel flags, not surveyed tank locations.'
-      : '',
+    result.neighbors?.length
+      ? 'Neighbor septic vs sewer is the WW_SEPTIC parcel flag. DEH FileRecordIds are listed; tank/leach are not drawn until an as-built PDF is parsed.'
+      : result.septicPermits.length
+        ? 'Neighbor septic markers (if any) are parcel flags, not surveyed tank locations.'
+        : '',
     !result.wells.length
       ? 'No DWR/CNRA well points are drawn. If the source was down, that is stated in Sources — locations were not invented.'
       : `CNRA/DWR wells within ${INVENTORY_RADIUS_FT} ft of the proposed pin: ${result.wellsWithin250Ft ?? 0}.`,
@@ -337,22 +339,28 @@ function drawPanel(
   );
   y -= 6;
 
-  page.drawText('NEIGHBORS (250 ft)', { x, y, size: 8, font: bold, color: rgb(0.15, 0.2, 0.28) });
+  page.drawText('NEIGHBORS (flag + FileRecordId)', { x, y, size: 8, font: bold, color: rgb(0.15, 0.2, 0.28) });
   y -= 12;
   const neighbors = result.neighbors || [];
   if (!neighbors.length) {
     y = line(page, font, x, y, 'Parcels', 'None returned (or not San Diego)');
   } else {
-    for (const n of neighbors.slice(0, 5)) {
-      const label =
+    for (const n of neighbors.slice(0, 8)) {
+      const ids = (n.dehDocuments || []).map((d) => d.fileRecordId).filter(Boolean).join(', ');
+      const geom =
         n.tankLeach === 'as_built_extracted'
-          ? 'as-built traced onto GIS'
+          ? 'as-built traced'
           : n.tankLeach === 'as_built_on_file'
-          ? 'as-built on file, geometry not extracted'
-          : n.tankLeach === 'septic_connected'
-            ? n.septicFlag || 'septic-connected'
-            : n.septicFlag || 'unknown';
-      y = wrap(page, font, x, y, `${n.apn}  ${label}${n.distanceFt != null ? `  ${n.distanceFt} ft` : ''}`, 48);
+            ? 'as-built on file, not extracted'
+            : 'no tank/leach drawn';
+      y = wrap(
+        page,
+        font,
+        x,
+        y,
+        `${n.apn}  ${n.system}${n.distanceFt != null ? `  ${n.distanceFt} ft` : ''}  ${ids ? `FileRecordId ${ids}` : 'no DEH hits'}  ${geom}`,
+        48
+      );
     }
   }
   y -= 8;

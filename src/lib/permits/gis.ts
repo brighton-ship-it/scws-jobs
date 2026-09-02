@@ -210,6 +210,21 @@ export function minDistanceToPolygonsFt(lat: number, lng: number, rings: number[
   return best;
 }
 
+/** Minimum distance between two parcel rings (0 if they touch or overlap). */
+export function minRingsDistanceFt(a?: number[][], b?: number[][]): number {
+  if (!a?.length || !b?.length) return Number.POSITIVE_INFINITY;
+  let best = Number.POSITIVE_INFINITY;
+  for (const pt of a) {
+    if (pointInRing(pt[0], pt[1], b)) return 0;
+    best = Math.min(best, distanceToRingFt(pt[1], pt[0], b));
+  }
+  for (const pt of b) {
+    if (pointInRing(pt[0], pt[1], a)) return 0;
+    best = Math.min(best, distanceToRingFt(pt[1], pt[0], a));
+  }
+  return best;
+}
+
 export function ringsIntersectParcel(structureRings: number[][][], parcelRing: number[][]): boolean {
   for (const ring of structureRings) {
     for (const pt of ring) {

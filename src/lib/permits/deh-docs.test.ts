@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  dashedDehApn,
   fileRecordIdFromUrl,
   isAsBuiltCandidate,
   mapDehRecord,
@@ -27,10 +28,12 @@ describe('DEH document library mapping', () => {
     assert.equal(isAsBuiltCandidate('DEH-LWQD-Water Well Permit'), false);
   });
 
-  it('searches the sanctioned API with a dashed APN and maps hits', async () => {
+  it('POSTs a dashed APN to SearchDocuments and does not claim geometry was extracted', async () => {
+    assert.equal(dashedDehApn('1290927100'), '129-092-71-00');
     const seen: string[] = [];
-    const docs = await searchDehDocuments('1290927100', async (url) => {
-      seen.push(String(url));
+    const docs = await searchDehDocuments('1290927100', async (url, init) => {
+      const body = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body || '');
+      seen.push(`${init?.method || 'GET'} ${url} ${body}`);
       return new Response(
         JSON.stringify({
           records: [
@@ -53,8 +56,9 @@ describe('DEH document library mapping', () => {
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     });
+    assert.ok(seen[0].includes('POST'));
     assert.ok(seen[0].includes('SearchDocuments'));
-    assert.ok(seen[0].includes('parcel_number=129-092-71-00') || seen[0].includes('129-092-71'));
+    assert.ok(seen[0].includes('parcel_number=129-092-71-00'));
     assert.equal(docs.length, 2);
     assert.equal(docs[0].fileRecordId, '36954960');
     assert.equal(docs.every((d) => d.geometryExtracted === false), true);

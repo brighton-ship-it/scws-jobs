@@ -83,8 +83,11 @@ export interface NeighborParcel {
   apn: string;
   siteAddress?: string;
   septicFlag?: string;
+  /** WW_SEPTIC flag only — never guessed from a typical layout. */
+  system: 'SEPTIC' | 'SEWER' | 'UNKNOWN';
   dehDocuments: DehDocument[];
   tankLeach: 'as_built_extracted' | 'as_built_on_file' | 'septic_connected' | 'unknown';
+  /** Proposed-well pin to nearest neighbor ring (ft). */
   distanceFt?: number;
   adjacent?: boolean;
 }
@@ -135,6 +138,10 @@ export const BUILDING_CLEAR_FT = 8;
 export const WELL_SEARCH_RADIUS_FT = 5280;
 /** Wells / septic / structures called out on the plot plan (feet). */
 export const INVENTORY_RADIUS_FT = 250;
+/** Envelope used to find abutters on ~400 ft-wide lots (centroid-to-centroid 220 ft misses the west lot). */
+export const NEIGHBOR_ENVELOPE_FT = 600;
+/** Rings this close are treated as sharing a property line. */
+export const ADJACENT_GAP_FT = 40;
 
 export const SCWS_CSLB = '1086994';
 export const BLOCKED_CSLB = ['1059498', '1129498', '1013597', '1011552'] as const;

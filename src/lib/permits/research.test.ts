@@ -286,7 +286,156 @@ describe('runPermitResearch', () => {
   });
 
   it('traces the Crystallite as-built and places the proposed well in the SE orchard pocket', async () => {
-    const fetchImpl = async (url: string | URL | Request) => {
+    const subjectRing = [
+      [-117.03262375, 33.27770525],
+      [-117.03262813, 33.27708844],
+      [-117.03396767, 33.27708376],
+      [-117.03396631, 33.27767752],
+      [-117.0326243, 33.27768204],
+      [-117.03262375, 33.27770525],
+    ];
+    const neighborParcels = [
+      {
+        apn: '1290927000',
+        addr: [13738, 'CRYSTALLITE', 'LN'],
+        ring: [
+          [-117.03397, 33.27771],
+          [-117.03262, 33.27771],
+          [-117.03262, 33.27835],
+          [-117.03397, 33.27835],
+          [-117.03397, 33.27771],
+        ],
+      },
+      {
+        apn: '1290926700',
+        addr: [31080, 'WILLOW VIEW', 'RD'],
+        ring: [
+          [-117.03397, 33.27645],
+          [-117.03262, 33.27645],
+          [-117.03262, 33.27708],
+          [-117.03397, 33.27708],
+          [-117.03397, 33.27645],
+        ],
+      },
+      {
+        apn: '1290926800',
+        addr: [31125, 'MOONLIGHT', 'GLN'],
+        ring: [
+          [-117.03530, 33.27708],
+          [-117.03397, 33.27708],
+          [-117.03397, 33.27771],
+          [-117.03530, 33.27771],
+          [-117.03530, 33.27708],
+        ],
+      },
+      {
+        apn: '1332410100',
+        addr: [31093, 'WILLOW VIEW', 'RD'],
+        ring: [
+          [-117.03262, 33.27708],
+          [-117.03128, 33.27708],
+          [-117.03128, 33.27771],
+          [-117.03262, 33.27771],
+          [-117.03262, 33.27708],
+        ],
+      },
+      {
+        apn: '1290926900',
+        addr: [31189, 'MOONLIGHT', 'GLN'],
+        ring: [
+          [-117.03530, 33.27771],
+          [-117.03397, 33.27771],
+          [-117.03397, 33.27835],
+          [-117.03530, 33.27835],
+          [-117.03530, 33.27771],
+        ],
+      },
+      {
+        apn: '1290925800',
+        addr: [13745, 'CRYSTALLITE', 'LN'],
+        ring: [
+          [-117.03397, 33.27835],
+          [-117.03262, 33.27835],
+          [-117.03262, 33.27895],
+          [-117.03397, 33.27895],
+          [-117.03397, 33.27835],
+        ],
+      },
+    ];
+    const dehByApn: Record<string, Array<Record<string, string>>> = {
+      '129-092-71-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36954960',
+          parcel_nbr: '129-092-71-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-70-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36976747',
+          parcel_nbr: '129-092-70-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=35306610',
+          permit_id: 'DEH2008-LWELL-19107',
+          parcel_nbr: '129-092-70-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Water Well Permit',
+        },
+      ],
+      '129-092-67-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36951268',
+          parcel_nbr: '129-092-67-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-68-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36970901',
+          parcel_nbr: '129-092-68-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '133-241-01-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36983694',
+          parcel_nbr: '133-241-01-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-69-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=35347714',
+          permit_id: 'DEH2017-LOWTS-008122',
+          parcel_nbr: '129-092-69-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-OWTS Layout',
+        },
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010971',
+          parcel_nbr: '129-092-69-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-58-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010494',
+          parcel_nbr: '129-092-58-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+    };
+
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
       const href = String(url);
       if (href.includes('addrapn_Composite') || href.includes('geocoding.geo.census.gov')) {
         return json({
@@ -308,32 +457,39 @@ describe('runPermitResearch', () => {
         return json({ features: [{ attributes: { APN: '1290927100' } }] });
       }
       if (href.includes('parcels_all_for_public_use')) {
-        return json({
-          features: [
-            {
-              attributes: {
-                APN: '1290927100',
-                APN_8: '12909271',
-                SITUS_ADDRESS: 13736,
-                SITUS_STREET: 'CRYSTALLITE',
-                SITUS_SUFFIX: 'LN',
-                SITUS_ZIP: '92082',
-                SITUS_JURIS: 'CN',
-                ACREAGE: 2.03,
-              },
-              geometry: {
-                rings: [[
-                  [-117.03262375, 33.27770525],
-                  [-117.03262813, 33.27708844],
-                  [-117.03396767, 33.27708376],
-                  [-117.03396631, 33.27767752],
-                  [-117.0326243, 33.27768204],
-                  [-117.03262375, 33.27770525],
-                ]],
-              },
-            },
-          ],
-        });
+        const subject = {
+          attributes: {
+            APN: '1290927100',
+            APN_8: '12909271',
+            SITUS_ADDRESS: 13736,
+            SITUS_STREET: 'CRYSTALLITE',
+            SITUS_SUFFIX: 'LN',
+            SITUS_ZIP: '92082',
+            SITUS_JURIS: 'CN',
+            ACREAGE: 2.03,
+          },
+          geometry: { rings: [subjectRing] },
+        };
+        if (href.includes('geometry')) {
+          return json({
+            features: [
+              subject,
+              ...neighborParcels.map((n) => ({
+                attributes: {
+                  APN: n.apn,
+                  APN_8: n.apn.slice(0, 8),
+                  SITUS_ADDRESS: n.addr[0],
+                  SITUS_STREET: n.addr[1],
+                  SITUS_SUFFIX: n.addr[2],
+                  SITUS_ZIP: '92082',
+                  SITUS_JURIS: 'CN',
+                },
+                geometry: { rings: [n.ring] },
+              })),
+            ],
+          });
+        }
+        return json({ features: [subject] });
       }
       if (href.includes('WW_SEPTIC')) {
         return json({
@@ -342,20 +498,20 @@ describe('runPermitResearch', () => {
               attributes: { APN: '1290927100', Sewer_Septic_Parcel_Designation: 'Known Septic Connected' },
               geometry: { x: -117.03329653, y: 33.27738305 },
             },
+            ...neighborParcels.map((n, i) => ({
+              attributes: {
+                APN: n.apn,
+                Sewer_Septic_Parcel_Designation: i === 5 ? 'Likely Septic Connected' : 'Known Septic Connected',
+              },
+              geometry: { x: n.ring[0][0] + 0.0004, y: n.ring[0][1] + 0.0002 },
+            })),
           ],
         });
       }
       if (href.includes('SearchDocuments')) {
-        return json({
-          records: [
-            {
-              url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36954960',
-              parcel_nbr: '129-092-71-00',
-              lueg_type: 'DEH-LWQD',
-              lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
-            },
-          ],
-        });
+        const body = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body || href);
+        const parcel = decodeURIComponent(body.match(/parcel_number=([^&]+)/)?.[1] || '');
+        return json({ records: dehByApn[parcel] || [] });
       }
       if (href.includes('BUILDING_OUTLINES')) {
         return json({
@@ -412,6 +568,37 @@ describe('runPermitResearch', () => {
     assert.equal(result.wellsWithin250Ft, 0);
     assert.ok(result.sources.some((s) => /0 \(NONE\)/i.test(s.message || '')));
     assert.equal(JSON.stringify(result).includes('1059498'), false);
+
+    const neighborApns = (result.neighbors || []).map((n) => n.apn).sort();
+    assert.deepEqual(neighborApns, [
+      '129-092-58-00',
+      '129-092-67-00',
+      '129-092-68-00',
+      '129-092-69-00',
+      '129-092-70-00',
+      '133-241-01-00',
+    ]);
+    assert.equal(result.neighbors?.every((n) => n.system === 'SEPTIC'), true);
+    assert.equal(result.neighbors?.some((n) => n.system === 'SEWER'), false);
+    const ids = (result.neighbors || []).flatMap((n) => n.dehDocuments.map((d) => d.fileRecordId)).sort();
+    assert.deepEqual(ids, [
+      '35306610',
+      '35347714',
+      '36951268',
+      '36970901',
+      '36976747',
+      '36983694',
+      '37010494',
+      '37010971',
+    ]);
+    assert.equal(result.neighbors?.every((n) => n.dehDocuments.every((d) => d.geometryExtracted === false)), true);
+    assert.equal(
+      result.neighbors?.some((n) => (n.dehDocuments || []).some((d) => d.fileRecordId === '35347714' && d.isAsBuiltCandidate)),
+      true
+    );
+    const neighborGeom = (result.septic?.geometry || []).filter((g) => /129-092-7[0]|133-241|129-092-5/.test(g.source || ''));
+    assert.equal(neighborGeom.length, 0, 'neighbor tank/leach must not be invented');
+    assert.ok(result.notes.some((n) => /Neighbor tank\/leach were not invented/i.test(n)));
   });
 });
 

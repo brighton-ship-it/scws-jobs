@@ -11,7 +11,7 @@ export const AS_BUILT_SUBTYPE =
   /land use archive|owts layout|leach|septic layout|as-?built/i;
 
 const GEOMETRY_NOTE =
-  'As-built on file, geometry not extracted. LUEG_View is a viewer stub; the PDF is not available to the server.';
+  'As-built on file, geometry not extracted. LUEG_View is a viewer stub; overlay only after a real as-built PDF is parsed.';
 
 export function fileRecordIdFromUrl(url?: string | null): string {
   if (!url) return '';
@@ -44,13 +44,37 @@ export function mapDehRecord(raw: Record<string, unknown>): DehDocument | null {
   };
 }
 
-function apnCandidates(apn: string): string[] {
+/** County library expects a dashed APN (`129-092-71-00`), not the 10-digit string. */
+export function dashedDehApn(apn: string): string {
   const digits = apn.replace(/\D/g, '');
-  const dashed = digits.length === 10 ? formatApn(digits, 'san_diego') : '';
-  const short = digits.length >= 8 ? `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6, 8)}` : '';
-  return Array.from(new Set([apn, dashed, short].filter((v) => v && v.includes('-'))));
+  if (digits.length === 10) return formatApn(digits, 'san_diego');
+  if (digits.length >= 8) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6, 8)}`;
+  return apn.includes('-') ? apn : '';
 }
 
+function apnCandidates(apn: string): string[] {
+  const dashed = dashedDehApn(apn);
+  const digits = apn.replace(/\D/g, '');
+  const short = digits.length >= 8 ? `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6, 8)}` : '';
+  return Array.from(new Set([dashed, short, apn.includes('-') ? apn : ''].filter(Boolean)));
+}
+
+async function parseSearchRecords(response: Response): Promise<Record<string, unknown>[]> {
+  if (!response.ok) return [];
+  const data = (await response.json()) as { records?: Record<string, unknown>[] };
+  return data.records || [];
+}
+
+const DEH_HEADERS = {
+  Accept: 'application/json',
+  'User-Agent': 'SCWS-PermitResearch/1.0',
+  Referer: 'https://www.sandiegocounty.gov/content/sdc/deh/doclibrary/',
+};
+
+/**
+ * Search the sanctioned DEH library. POST with a dashed parcel_number first
+ * (Document Library), then GET. Never invent FileRecordIds.
+ */
 export async function searchDehDocuments(
   apn: string,
   fetchImpl: typeof fetch = fetch
@@ -58,33 +82,42 @@ export async function searchDehDocuments(
   if (!apn) return [];
   const seen = new Set<string>();
   const out: DehDocument[] = [];
+
+  const pushRecords = (records: Record<string, unknown>[]) => {
+    for (const raw of records) {
+      const doc = mapDehRecord(raw);
+      if (!doc) continue;
+      const key = doc.fileRecordId || `${doc.permitId}-${doc.subcategory}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(doc);
+    }
+  };
+
   for (const parcelNumber of apnCandidates(apn)) {
-    const url =
-      DEH_SEARCH_URL +
-      '?' +
-      new URLSearchParams({
-        parcel_number: parcelNumber,
-        doc_category: 'DEH-LWQD',
-        maxrecord_count: '50',
-      });
+    const fields = {
+      parcel_number: parcelNumber,
+      doc_category: 'DEH-LWQD',
+      maxrecord_count: '50',
+    };
     try {
-      const response = await fetchImpl(url, {
+      const posted = await fetchImpl(DEH_SEARCH_URL, {
+        method: 'POST',
         headers: {
-          Accept: 'application/json',
-          'User-Agent': 'SCWS-PermitResearch/1.0',
-          Referer: 'https://www.sandiegocounty.gov/content/sdc/deh/doclibrary/',
+          ...DEH_HEADERS,
+          'Content-Type': 'application/x-www-form-urlencoded',
         },
+        body: new URLSearchParams(fields),
       });
-      if (!response.ok) continue;
-      const data = (await response.json()) as { records?: Record<string, unknown>[] };
-      for (const raw of data.records || []) {
-        const doc = mapDehRecord(raw);
-        if (!doc) continue;
-        const key = doc.fileRecordId || `${doc.permitId}-${doc.subcategory}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        out.push(doc);
-      }
+      pushRecords(await parseSearchRecords(posted));
+      if (out.length) break;
+    } catch {
+      // Fall through to GET.
+    }
+    try {
+      const getUrl = DEH_SEARCH_URL + '?' + new URLSearchParams(fields);
+      const got = await fetchImpl(getUrl, { headers: DEH_HEADERS });
+      pushRecords(await parseSearchRecords(got));
       if (out.length) break;
     } catch {
       // Honest miss — do not invent documents.
@@ -95,4 +128,8 @@ export async function searchDehDocuments(
 
 export function asBuiltOnFile(docs: DehDocument[]): DehDocument[] {
   return docs.filter((d) => d.isAsBuiltCandidate);
+}
+
+export function fileRecordIds(docs: DehDocument[]): string[] {
+  return docs.map((d) => d.fileRecordId).filter((id) => id && id !== 'unknown');
 }

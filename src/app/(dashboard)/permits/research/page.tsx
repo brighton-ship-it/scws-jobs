@@ -135,8 +135,10 @@ interface ResearchResult {
     apn: string;
     siteAddress?: string;
     septicFlag?: string;
+    system?: string;
     tankLeach: string;
     distanceFt?: number;
+    dehDocuments?: Array<{ fileRecordId: string; subcategory?: string; permitId?: string }>;
   }>;
   wellsWithin250Ft?: number;
 }
@@ -2224,19 +2226,41 @@ export default function PermitResearchPage() {
 
                 {(result.neighbors || []).length > 0 && (
                   <div className="pt-2 border-t border-gray-200">
-                    <h4 className="text-sm font-medium text-gray-700 mb-2">Neighbor septic (250 ft / adjacent)</h4>
-                    <div className="space-y-1 max-h-40 overflow-y-auto">
+                    <h4 className="text-sm font-medium text-gray-700 mb-2">Neighbor septic vs sewer</h4>
+                    <p className="text-xs text-gray-500 mb-2">
+                      WW_SEPTIC parcel flag only. Tank/leach are listed by FileRecordId — not drawn unless an as-built PDF was parsed.
+                    </p>
+                    <div className="space-y-2 max-h-56 overflow-y-auto">
                       {result.neighbors!.slice(0, 12).map((n) => (
-                        <div key={n.apn} className="text-xs flex justify-between gap-2">
-                          <span className="font-mono">{n.apn}</span>
-                          <span className="text-gray-600">
+                        <div key={n.apn} className="text-xs p-2 bg-slate-50 rounded border border-slate-200">
+                          <div className="flex justify-between gap-2">
+                            <span className="font-mono">{n.apn}</span>
+                            <span className={n.system === 'SEWER' ? 'text-blue-700' : 'text-amber-800'}>
+                              {n.system || n.septicFlag || 'UNKNOWN'}
+                              {n.distanceFt != null ? ` · ${n.distanceFt} ft` : ''}
+                            </span>
+                          </div>
+                          {n.siteAddress && <p className="text-gray-500 truncate">{n.siteAddress}</p>}
+                          {(n.dehDocuments || []).length > 0 ? (
+                            <ul className="mt-1 text-gray-600">
+                              {n.dehDocuments!.map((d) => (
+                                <li key={d.fileRecordId}>
+                                  FileRecordId {d.fileRecordId}
+                                  {d.permitId ? ` · ${d.permitId}` : ''}
+                                  {d.subcategory ? ` · ${d.subcategory}` : ''}
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="text-gray-500 mt-1">No DEH-LWQD hits</p>
+                          )}
+                          <p className="text-amber-700 mt-1">
                             {n.tankLeach === 'as_built_extracted'
                               ? 'as-built traced onto GIS'
                               : n.tankLeach === 'as_built_on_file'
-                              ? 'as-built on file, geometry not extracted'
-                              : n.septicFlag || n.tankLeach}
-                            {n.distanceFt != null ? ` · ${n.distanceFt} ft` : ''}
-                          </span>
+                                ? 'as-built on file, geometry not extracted'
+                                : 'no tank/leach drawn'}
+                          </p>
                         </div>
                       ))}
                     </div>

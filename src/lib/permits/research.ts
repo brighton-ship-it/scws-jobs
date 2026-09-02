@@ -7,7 +7,7 @@ import {
   traceLarc009777,
 } from './as-built.ts';
 import { detectCounty, isCounty } from './county.ts';
-import { asBuiltOnFile, searchDehDocuments } from './deh-docs.ts';
+import { asBuiltOnFile, fileRecordIds, searchDehDocuments } from './deh-docs.ts';
 import {
   centroidFromRings,
   expandBboxFeet,
@@ -18,6 +18,8 @@ import {
   fetchWwSepticFlags,
   geocodeAddress,
   haversineFeet,
+  minDistanceToPolygonsFt,
+  minRingsDistanceFt,
   ringBBox,
 } from './gis.ts';
 import { placeProposedWell, septicGeometryFromKnown, wellsAsPoints } from './place-well.ts';
@@ -30,7 +32,7 @@ import type {
   SepticInfo,
   SepticPermit,
 } from './types.ts';
-import { INVENTORY_RADIUS_FT } from './types.ts';
+import { ADJACENT_GAP_FT, INVENTORY_RADIUS_FT, NEIGHBOR_ENVELOPE_FT } from './types.ts';
 import { fetchDwrWells } from './wells.ts';
 
 export interface ResearchInput {
@@ -346,7 +348,7 @@ export async function runPermitResearch(
   let wwFlags: Awaited<ReturnType<typeof fetchWwSepticFlags>> = [];
   if (county === 'san_diego' && result.parcel?.geometry?.rings?.[0]) {
     try {
-      const bbox = expandBboxFeet(ringBBox(result.parcel.geometry.rings[0]), INVENTORY_RADIUS_FT);
+      const bbox = expandBboxFeet(ringBBox(result.parcel.geometry.rings[0]), NEIGHBOR_ENVELOPE_FT);
       wwFlags = await fetchWwSepticFlags({ bbox }, fetchImpl);
       const site = wwFlags.find((f) => f.apn === result.parcel?.apn);
       sources.push({
@@ -482,33 +484,40 @@ export async function runPermitResearch(
   if (county === 'san_diego' && result.parcel?.geometry?.rings?.[0]) {
     try {
       const subjectRing = result.parcel.geometry.rings[0];
-      const bbox = expandBboxFeet(ringBBox(subjectRing), INVENTORY_RADIUS_FT);
+      const bbox = expandBboxFeet(ringBBox(subjectRing), NEIGHBOR_ENVELOPE_FT);
       const nearbyParcels = await fetchParcelsInEnvelope(bbox, fetchImpl);
       const pinPt = result.proposedWell;
-      const neighbors: NeighborParcel[] = [];
+      const candidates: NeighborParcel[] = [];
       for (const parcel of nearbyParcels) {
         if (parcel.apn === result.parcel.apn) continue;
-        const nCentroid = centroidFromRings(parcel.geometry?.rings);
+        const nRing = parcel.geometry?.rings?.[0];
+        const ringDist = minRingsDistanceFt(subjectRing, nRing);
         const fromPin =
-          pinPt && nCentroid ? Math.round(haversineFeet(pinPt.lat, pinPt.lng, nCentroid.lat, nCentroid.lng)) : undefined;
-        const fromSubject =
-          centroid && nCentroid ? Math.round(haversineFeet(centroid.lat, centroid.lng, nCentroid.lat, nCentroid.lng)) : 9999;
-        const adjacent = fromSubject <= 220;
+          pinPt && nRing
+            ? Math.round(minDistanceToPolygonsFt(pinPt.lat, pinPt.lng, parcel.geometry!.rings))
+            : undefined;
+        const adjacent = ringDist <= ADJACENT_GAP_FT;
         const within250 = fromPin != null && fromPin <= INVENTORY_RADIUS_FT;
-        if (!adjacent && !within250) continue;
+        const inNeighborhood = ringDist <= NEIGHBOR_ENVELOPE_FT;
+        if (!adjacent && !within250 && !inNeighborhood) continue;
         const flag = wwFlags.find((f) => f.apn === parcel.apn);
-        neighbors.push({
+        candidates.push({
           apn: parcel.apn,
           siteAddress: parcel.siteAddress,
           septicFlag: flag?.designation,
+          system: designationType(flag?.designation),
           dehDocuments: [],
           tankLeach: neighborTankLeach(flag?.designation, []),
           distanceFt: fromPin,
           adjacent,
         });
       }
-      neighbors.sort((a, b) => (a.distanceFt || 9e9) - (b.distanceFt || 9e9));
-      const toSearch = neighbors.slice(0, 8);
+      candidates.sort((a, b) => {
+        const da = a.distanceFt ?? (a.adjacent ? 0 : 9e9);
+        const db = b.distanceFt ?? (b.adjacent ? 0 : 9e9);
+        return da - db;
+      });
+      const toSearch = candidates.slice(0, 12);
       const docsByApn = await Promise.all(
         toSearch.map(async (n) => {
           try {
@@ -519,20 +528,25 @@ export async function runPermitResearch(
         })
       );
       const docMap = new Map(docsByApn.map((row) => [row.apn, row.docs]));
-      result.neighbors = neighbors.map((n) => {
-        const docs = docMap.get(n.apn) || [];
-        return {
-          ...n,
-          dehDocuments: docs,
-          tankLeach: neighborTankLeach(n.septicFlag, docs),
-        };
-      });
+      result.neighbors = toSearch
+        .map((n) => {
+          const docs = docMap.get(n.apn) || [];
+          return {
+            ...n,
+            dehDocuments: docs,
+            tankLeach: neighborTankLeach(n.septicFlag, docs),
+            system: n.system === 'UNKNOWN' && (n.septicFlag || '').toLowerCase().includes('septic')
+              ? 'SEPTIC'
+              : n.system,
+          };
+        })
+        .filter((n) => n.adjacent || (n.distanceFt != null && n.distanceFt <= INVENTORY_RADIUS_FT) || n.dehDocuments.length > 0);
       result.septicPermits = result.neighbors.map((n) => {
         const flag = wwFlags.find((f) => f.apn === n.apn);
         return {
           apn: n.apn,
-          designation: n.septicFlag || 'Unknown',
-          type: designationType(n.septicFlag) || 'UNKNOWN',
+          designation: n.septicFlag || n.system,
+          type: n.system,
           latitude: flag?.lat || 0,
           longitude: flag?.lng || 0,
           full_address: n.siteAddress,
@@ -540,13 +554,19 @@ export async function runPermitResearch(
           locationKind: 'parcel_flag' as const,
         };
       }).filter((p) => p.latitude && p.longitude);
+      const listedIds = result.neighbors.flatMap((n) => fileRecordIds(n.dehDocuments));
+      const septicCount = result.neighbors.filter((n) => n.system === 'SEPTIC').length;
+      const sewerCount = result.neighbors.filter((n) => n.system === 'SEWER').length;
       sources.push({
         name: 'Neighbor parcels',
         status: result.neighbors.length ? 'success' : 'missing',
         message: result.neighbors.length
-          ? `${result.neighbors.length} adjacent / within ${INVENTORY_RADIUS_FT} ft — tank/leach drawn only from as-builts (none extracted)`
-          : `No neighbor parcels within ${INVENTORY_RADIUS_FT} ft`,
+          ? `${result.neighbors.length} neighbor(s) (${septicCount} septic / ${sewerCount} sewer / WW_SEPTIC flag only). FileRecordIds: ${listedIds.join(', ') || 'none'}. Tank/leach drawn only after a parsed as-built PDF — none extracted.`
+          : `No neighbor parcels within ${NEIGHBOR_ENVELOPE_FT} ft`,
       });
+      notes.push(
+        'Neighbor tank/leach were not invented. WW_SEPTIC is a septic-vs-sewer flag. DEH FileRecordIds are listed; geometry waits on a parsed as-built PDF.'
+      );
       try {
         result.roads = await fetchRoadLabels(bbox, fetchImpl);
       } catch {
