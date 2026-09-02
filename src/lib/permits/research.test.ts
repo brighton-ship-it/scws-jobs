@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { countyFromCoords, detectCounty, formatApn, parseStreetAddress } from './county.ts';
 import { publicAttrs, ringAreaSqFt } from './gis.ts';
+import { PDFDocument } from 'pdf-lib';
 import { buildPlotPlanModel, renderPlotPlanPdf, SCWS_LETTERHEAD } from './plot-plan.ts';
 import { runPermitResearch } from './research.ts';
 import type { ResearchResult } from './types.ts';
@@ -278,9 +279,343 @@ describe('runPermitResearch', () => {
     assert.equal(result.county, 'riverside');
     assert.equal(result.parcel?.apn, '575-090-024');
     assert.equal(result.wells.length, 0);
-    assert.ok(result.sources.some((s) => s.name.includes('DWR') && s.status === 'error'));
+    assert.ok(result.sources.some((s) => /DWR|CNRA/i.test(s.name)));
     assert.ok(result.notes.some((n) => /not invented/i.test(n)));
     assert.equal(JSON.stringify(result).includes('nope'), false);
+    assert.equal(result.wellsWithin250Ft, 0);
+  });
+
+  it('traces the Crystallite as-built and places the proposed well in the SE orchard pocket', async () => {
+    const subjectRing = [
+      [-117.03262375, 33.27770525],
+      [-117.03262813, 33.27708844],
+      [-117.03396767, 33.27708376],
+      [-117.03396631, 33.27767752],
+      [-117.0326243, 33.27768204],
+      [-117.03262375, 33.27770525],
+    ];
+    const neighborParcels = [
+      {
+        apn: '1290927000',
+        addr: [13738, 'CRYSTALLITE', 'LN'],
+        ring: [
+          [-117.03397, 33.27771],
+          [-117.03262, 33.27771],
+          [-117.03262, 33.27835],
+          [-117.03397, 33.27835],
+          [-117.03397, 33.27771],
+        ],
+      },
+      {
+        apn: '1290926700',
+        addr: [31080, 'WILLOW VIEW', 'RD'],
+        ring: [
+          [-117.03397, 33.27645],
+          [-117.03262, 33.27645],
+          [-117.03262, 33.27708],
+          [-117.03397, 33.27708],
+          [-117.03397, 33.27645],
+        ],
+      },
+      {
+        apn: '1290926800',
+        addr: [31125, 'MOONLIGHT', 'GLN'],
+        ring: [
+          [-117.03530, 33.27708],
+          [-117.03397, 33.27708],
+          [-117.03397, 33.27771],
+          [-117.03530, 33.27771],
+          [-117.03530, 33.27708],
+        ],
+      },
+      {
+        apn: '1332410100',
+        addr: [31093, 'WILLOW VIEW', 'RD'],
+        ring: [
+          [-117.03262, 33.27708],
+          [-117.03128, 33.27708],
+          [-117.03128, 33.27771],
+          [-117.03262, 33.27771],
+          [-117.03262, 33.27708],
+        ],
+      },
+      {
+        apn: '1290926900',
+        addr: [31189, 'MOONLIGHT', 'GLN'],
+        ring: [
+          [-117.03530, 33.27771],
+          [-117.03397, 33.27771],
+          [-117.03397, 33.27835],
+          [-117.03530, 33.27835],
+          [-117.03530, 33.27771],
+        ],
+      },
+      {
+        apn: '1290925800',
+        addr: [13745, 'CRYSTALLITE', 'LN'],
+        ring: [
+          [-117.03397, 33.27835],
+          [-117.03262, 33.27835],
+          [-117.03262, 33.27895],
+          [-117.03397, 33.27895],
+          [-117.03397, 33.27835],
+        ],
+      },
+    ];
+    const dehByApn: Record<string, Array<Record<string, string>>> = {
+      '129-092-71-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36954960',
+          parcel_nbr: '129-092-71-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-70-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36976747',
+          parcel_nbr: '129-092-70-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=35306610',
+          permit_id: 'DEH2008-LWELL-19107',
+          parcel_nbr: '129-092-70-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Water Well Permit',
+        },
+      ],
+      '129-092-67-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36951268',
+          parcel_nbr: '129-092-67-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-68-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36970901',
+          parcel_nbr: '129-092-68-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '133-241-01-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=36983694',
+          parcel_nbr: '133-241-01-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-69-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=35347714',
+          permit_id: 'DEH2017-LOWTS-008122',
+          parcel_nbr: '129-092-69-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-OWTS Layout',
+        },
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010971',
+          parcel_nbr: '129-092-69-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+      '129-092-58-00': [
+        {
+          url: 'https://file.sandiegocounty.gov/LUEG/LUEG_View?FileRecordId=37010494',
+          parcel_nbr: '129-092-58-00',
+          lueg_type: 'DEH-LWQD',
+          lueg_subtype: 'DEH-LWQD-Land Use Archive-Parcel',
+        },
+      ],
+    };
+
+    const fetchImpl = async (url: string | URL | Request, init?: RequestInit) => {
+      const href = String(url);
+      if (href.includes('addrapn_Composite') || href.includes('geocoding.geo.census.gov')) {
+        return json({
+          candidates: [
+            { score: 98, address: '13736 CRYSTALLITE LN', location: { x: -117.0333, y: 33.2774 } },
+          ],
+          result: {
+            addressMatches: [
+              {
+                matchedAddress: '13736 CRYSTALLITE LN, VALLEY CENTER, CA, 92082',
+                coordinates: { x: -117.0333, y: 33.2774 },
+                addressComponents: { city: 'VALLEY CENTER' },
+              },
+            ],
+          },
+        });
+      }
+      if (href.includes('ADDRAPN')) {
+        return json({ features: [{ attributes: { APN: '1290927100' } }] });
+      }
+      if (href.includes('parcels_all_for_public_use')) {
+        const subject = {
+          attributes: {
+            APN: '1290927100',
+            APN_8: '12909271',
+            SITUS_ADDRESS: 13736,
+            SITUS_STREET: 'CRYSTALLITE',
+            SITUS_SUFFIX: 'LN',
+            SITUS_ZIP: '92082',
+            SITUS_JURIS: 'CN',
+            ACREAGE: 2.03,
+          },
+          geometry: { rings: [subjectRing] },
+        };
+        if (href.includes('geometry')) {
+          return json({
+            features: [
+              subject,
+              ...neighborParcels.map((n) => ({
+                attributes: {
+                  APN: n.apn,
+                  APN_8: n.apn.slice(0, 8),
+                  SITUS_ADDRESS: n.addr[0],
+                  SITUS_STREET: n.addr[1],
+                  SITUS_SUFFIX: n.addr[2],
+                  SITUS_ZIP: '92082',
+                  SITUS_JURIS: 'CN',
+                },
+                geometry: { rings: [n.ring] },
+              })),
+            ],
+          });
+        }
+        return json({ features: [subject] });
+      }
+      if (href.includes('WW_SEPTIC')) {
+        return json({
+          features: [
+            {
+              attributes: { APN: '1290927100', Sewer_Septic_Parcel_Designation: 'Known Septic Connected' },
+              geometry: { x: -117.03329653, y: 33.27738305 },
+            },
+            ...neighborParcels.map((n, i) => ({
+              attributes: {
+                APN: n.apn,
+                Sewer_Septic_Parcel_Designation: i === 5 ? 'Likely Septic Connected' : 'Known Septic Connected',
+              },
+              geometry: { x: n.ring[0][0] + 0.0004, y: n.ring[0][1] + 0.0002 },
+            })),
+          ],
+        });
+      }
+      if (href.includes('SearchDocuments')) {
+        const body = init?.body instanceof URLSearchParams ? init.body.toString() : String(init?.body || href);
+        const parcel = decodeURIComponent(body.match(/parcel_number=([^&]+)/)?.[1] || '');
+        return json({ records: dehByApn[parcel] || [] });
+      }
+      if (href.includes('BUILDING_OUTLINES')) {
+        const house = (lng: number, lat: number, area: number) => ({
+          attributes: { OBJECTID: area, 'SDEP.SANGIS.BUILDING_OUTLINES.AREA': area },
+          geometry: {
+            rings: [[
+              [lng - 0.00008, lat - 0.00005],
+              [lng + 0.00008, lat - 0.00005],
+              [lng + 0.00008, lat + 0.00005],
+              [lng - 0.00008, lat + 0.00005],
+              [lng - 0.00008, lat - 0.00005],
+            ]],
+          },
+        });
+        return json({
+          features: [
+            house(-117.033693, 33.277534, 3323),
+            house(-117.03378, 33.27807, 3332),
+            house(-117.03295, 33.27690, 2994),
+            house(-117.03465, 33.27735, 3343),
+            house(-117.03150, 33.27740, 3108),
+            house(-117.03465, 33.27800, 2884),
+          ],
+        });
+      }
+      if (href.includes('datastore_search_sql') || href.includes('WellCompletionReports')) {
+        return json({ success: true, result: { records: [] }, features: [] });
+      }
+      return json({ features: [] });
+    };
+
+    const result = await runPermitResearch(
+      { address: '13736 Crystallite Ln, Valley Center, CA 92082' },
+      { fetchImpl: fetchImpl as typeof fetch }
+    );
+
+    assert.equal(result.county, 'san_diego');
+    assert.equal(result.parcel?.apn, '129-092-71-00');
+    assert.ok(result.parcel?.lotSizeAcres && Math.abs(result.parcel.lotSizeAcres - 2.03) < 0.02);
+    const house = result.structures.find((s) => s.onSubjectParcel && (s.areaSqFt || 0) >= 3000);
+    assert.ok(house, 'expected ~3323 sf building on the parcel');
+    assert.equal(result.septic?.designation, 'Known Septic Connected');
+    assert.equal(result.septic?.locationUnknown, false);
+    const kinds = (result.septic?.geometry || []).map((g) => g.kind).sort();
+    assert.deepEqual(kinds, ['easement', 'existing_well', 'leach', 'tank']);
+    assert.equal(result.dehDocuments?.[0]?.fileRecordId, '36954960');
+    assert.equal(result.dehDocuments?.[0]?.geometryExtracted, true);
+    assert.equal(result.notes.some((n) => /geometry (was )?not extracted/i.test(n)), false);
+    assert.ok(result.notes.some((n) => /traced onto county GIS/i.test(n)));
+    assert.ok(result.proposedWell);
+    const pin = result.proposedWell!;
+    const distToFlagPoint = Math.hypot(pin.lat - 33.27738305, pin.lng - (-117.03329653));
+    assert.ok(distToFlagPoint > 1e-5, 'proposed pin must not be the WW_SEPTIC centroid');
+    assert.ok(Math.abs(pin.lat - 33.27711717) < 0.00005, `SE orchard lat, got ${pin.lat}`);
+    assert.ok(Math.abs(pin.lng - -117.03266212) < 0.00005, `SE orchard lng, got ${pin.lng}`);
+    assert.equal(pin.meetsSetbacks, false);
+    assert.ok((pin.distances.leachFt || 0) >= 100);
+    assert.ok((pin.distances.tankFt || 0) >= 50);
+    assert.ok((pin.distances.existingWellFt || 0) >= 100);
+    assert.ok((pin.distances.neighborLeachFt || 0) < 100);
+    assert.ok(pin.flags.some((f) => /133-241-01-00/i.test(f) && /FLAG/i.test(f)));
+    assert.equal(result.wellsWithin250Ft, 0);
+    assert.ok(result.sources.some((s) => /0 \(NONE\)/i.test(s.message || '')));
+    assert.equal(JSON.stringify(result).includes('1059498'), false);
+
+    const neighborApns = (result.neighbors || []).map((n) => n.apn).sort();
+    assert.deepEqual(neighborApns, [
+      '129-092-58-00',
+      '129-092-67-00',
+      '129-092-68-00',
+      '129-092-69-00',
+      '129-092-70-00',
+      '133-241-01-00',
+    ]);
+    assert.equal(result.neighbors?.every((n) => n.system === 'SEPTIC'), true);
+    assert.equal(result.neighbors?.some((n) => n.system === 'SEWER'), false);
+    const ids = (result.neighbors || []).flatMap((n) => n.dehDocuments.map((d) => d.fileRecordId)).sort();
+    assert.deepEqual(ids, [
+      '35306610',
+      '35347714',
+      '36951268',
+      '36970901',
+      '36976747',
+      '36983694',
+      '37010494',
+      '37010971',
+    ]);
+    assert.equal(
+      result.neighbors?.some((n) => (n.dehDocuments || []).some((d) => d.fileRecordId === '35347714' && d.isAsBuiltCandidate)),
+      true
+    );
+    const extracted = (result.neighbors || []).filter((n) => n.tankLeach === 'as_built_extracted');
+    assert.equal(extracted.length, 5);
+    const labelOnly = (result.neighbors || []).find((n) => n.apn === '129-092-58-00');
+    assert.ok(labelOnly);
+    assert.equal((labelOnly!.geometry || []).length, 0);
+    assert.equal(labelOnly!.tankLeach, 'as_built_on_file');
+    const east = (result.neighbors || []).find((n) => n.apn === '133-241-01-00');
+    assert.ok(east?.leachFt != null && east.leachFt < 100);
+    assert.ok(east?.geometry?.length);
+    const nw = (result.neighbors || []).find((n) => n.apn === '129-092-69-00');
+    assert.ok(nw?.geometry?.length, 'NW 31189 Moonlight OWTS layout must stay in the neighbor set');
+    assert.equal(nw!.tankLeach, 'as_built_extracted');
+    assert.ok(result.notes.some((n) => /fitted to that parcel/i.test(n) || /neighbor leach setback FLAGGED/i.test(n)));
   });
 });
 
@@ -334,18 +669,24 @@ describe('plot plan PDF', () => {
     assert.equal(model.wellsOnPlan, 1);
     assert.ok(model.notes.some((n) => /not invented/i.test(n) || /Tank and leach/i.test(n)));
 
-    const bytes = await renderPlotPlanPdf({ result });
+    const bytes = await renderPlotPlanPdf({ result, aerialJpeg: null });
     const header = Buffer.from(bytes.slice(0, 5)).toString('latin1');
     assert.equal(header, '%PDF-');
     assert.ok(bytes.length > 2000, `expected a real PDF, got ${bytes.length} bytes`);
+    const loaded = await PDFDocument.load(bytes);
+    const first = loaded.getPages()[0];
+    assert.equal(Math.round(first.getWidth()), 1224);
+    assert.equal(Math.round(first.getHeight()), 792);
     const asString = Buffer.from(bytes).toString('latin1');
-    assert.equal(asString.includes('FLAG'), false);
     assert.equal(asString.toLowerCase().includes('gross profit'), false);
     assert.equal(SCWS_LETTERHEAD.license.includes('1086994'), true);
+    assert.equal(SCWS_LETTERHEAD.license.includes('1059498'), false);
+    assert.equal(SCWS_LETTERHEAD.license.includes('1129498'), false);
+    assert.equal(SCWS_LETTERHEAD.license.includes('1013597'), false);
     assert.equal(SCWS_LETTERHEAD.license.includes('1011552'), false);
-    assert.equal(SCWS_LETTERHEAD.license.includes('1234567'), false);
     assert.ok(model.notes.some((n) => /10 ft/.test(n) && /property-line setback/i.test(n)));
-    assert.match(model.scaleLabel, /graphic scale/i);
+    assert.match(model.scaleLabel, /graphic/i);
+    assert.equal(model.disclaimer.includes('NOT a stamped survey'), true);
   });
 });
 

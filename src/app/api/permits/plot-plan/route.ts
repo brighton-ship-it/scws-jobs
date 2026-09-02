@@ -12,7 +12,7 @@ export async function POST(request: NextRequest) {
 
     const pdfBytes = await renderPlotPlanPdf({
       result,
-      proposedWell: body.proposedWell || null,
+      proposedWell: body.proposedWell || result.proposedWell || null,
       manualSeptic: body.manualSeptic || null,
     });
 

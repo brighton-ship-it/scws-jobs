@@ -26,6 +26,7 @@ export interface WellInfo {
   longitude: number;
   distance_from_parcel?: number;
   apn?: string;
+  source?: string;
 }
 
 export interface SepticPermit {
@@ -36,6 +37,32 @@ export interface SepticPermit {
   longitude: number;
   full_address?: string;
   distance_feet?: number;
+  /** Parcel flag only — never treat as tank/leach GPS. */
+  locationKind?: 'parcel_flag' | 'as_built';
+}
+
+export interface DehDocument {
+  fileRecordId: string;
+  permitId?: string;
+  parcelNbr?: string;
+  category?: string;
+  subcategory?: string;
+  description?: string;
+  contentType?: string;
+  viewUrl: string;
+  /** True only after a known DEH as-built is traced onto county GIS — never guessed. */
+  geometryExtracted: boolean;
+  note: string;
+  isAsBuiltCandidate: boolean;
+}
+
+export interface SepticGeometry {
+  kind: 'tank' | 'leach' | 'existing_well' | 'easement';
+  rings?: number[][][];
+  lat?: number;
+  lng?: number;
+  label?: string;
+  source: string;
 }
 
 export interface SepticInfo {
@@ -48,6 +75,43 @@ export interface SepticInfo {
   message?: string;
   /** True when we only know the parcel is on septic, not the tank/leach location. */
   locationUnknown?: boolean;
+  dehDocuments?: DehDocument[];
+  geometry?: SepticGeometry[];
+}
+
+export interface NeighborParcel {
+  apn: string;
+  siteAddress?: string;
+  septicFlag?: string;
+  /** WW_SEPTIC flag only — never guessed from a typical layout. */
+  system: 'SEPTIC' | 'SEWER' | 'UNKNOWN';
+  dehDocuments: DehDocument[];
+  tankLeach: 'as_built_extracted' | 'as_built_on_file' | 'septic_connected' | 'unknown';
+  /** Proposed-well pin to nearest neighbor ring (ft). */
+  distanceFt?: number;
+  adjacent?: boolean;
+  rings?: number[][][];
+  geometry?: SepticGeometry[];
+  tankFt?: number | null;
+  leachFt?: number | null;
+}
+
+export interface ProposedWell {
+  lat: number;
+  lng: number;
+  source: 'setback_search' | 'best_pocket';
+  meetsSetbacks: boolean;
+  flags: string[];
+  distances: {
+    propertyLineFt: number | null;
+    tankFt: number | null;
+    leachFt: number | null;
+    existingWellFt: number | null;
+    structureFt: number | null;
+    neighborTankFt?: number | null;
+    neighborLeachFt?: number | null;
+  };
+  wgs84: { lat: number; lng: number };
 }
 
 export interface DataSource {
@@ -69,14 +133,35 @@ export const PROPERTY_LINE_SETBACK_FT: Record<County, number> = {
   san_bernardino: 20,
 };
 
+export const TANK_SETBACK_FT = 50;
+export const LEACH_SETBACK_FT = 100;
+export const EXISTING_WELL_SETBACK_FT = 100;
 export const SEPTIC_SETBACK_FT = 100;
+/** Typical DEH well-to-structure setback (shown on plans). Placement uses BUILDING_CLEAR_FT. */
 export const STRUCTURE_SETBACK_FT = 50;
+/** Grid placement: stay this far off BUILDING_OUTLINES (NW house-to-PL strips are tighter than 100 ft). */
+export const BUILDING_CLEAR_FT = 8;
 export const WELL_SEARCH_RADIUS_FT = 5280;
 /** Wells / septic / structures called out on the plot plan (feet). */
 export const INVENTORY_RADIUS_FT = 250;
+/** Envelope used to find abutters on ~400 ft-wide lots (centroid-to-centroid 220 ft misses the west lot). */
+export const NEIGHBOR_ENVELOPE_FT = 600;
+/** Rings this close are treated as sharing a property line. */
+export const ADJACENT_GAP_FT = 40;
+
+export const SCWS_CSLB = '1086994';
+export const BLOCKED_CSLB = ['1059498', '1129498', '1013597', '1011552'] as const;
 
 export interface StructureFootprint {
   rings: number[][][];
+  areaSqFt?: number;
+  onSubjectParcel?: boolean;
+}
+
+export interface RoadLabel {
+  name: string;
+  lat: number;
+  lng: number;
 }
 
 export interface ResearchResult {
@@ -92,4 +177,9 @@ export interface ResearchResult {
   notes: string[];
   cached?: boolean;
   structures: StructureFootprint[];
+  proposedWell?: ProposedWell | null;
+  dehDocuments?: DehDocument[];
+  neighbors?: NeighborParcel[];
+  roads?: RoadLabel[];
+  wellsWithin250Ft?: number;
 }

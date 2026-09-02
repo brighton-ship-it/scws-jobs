@@ -1,5 +1,6 @@
 import { cleanApn, formatApn, parseStreetAddress } from './county.ts';
 import type { County, ParcelInfo } from './types.ts';
+import { NEIGHBOR_ENVELOPE_FT } from './types.ts';
 
 export const GIS = {
   // Token-free public parcels (PARCELS_ALL on gis-public is 499 Token Required).
@@ -11,13 +12,23 @@ export const GIS = {
     'https://gis-public.sandiegocounty.gov/arcgis/rest/services/addrapn_Composite/GeocodeServer/findAddressCandidates',
   sdBuildings:
     'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/BUILDING_OUTLINES/FeatureServer/0',
+  // Parcel FLAG only (Known Septic Connected) — not tank/leach polygons. Use FeatureServer (MapServer attribute query is 400).
+  sdSeptic:
+    'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/WW_SEPTIC_SEWER_PUBLIC/FeatureServer/0',
+  sdRoads:
+    'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/ROADS_ALL/MapServer/0',
   rivParcels:
     'https://gis.countyofriverside.us/arcgis/rest/services/mmc/mmc_mSrvc/MapServer/8',
   sbParcels:
     'https://services.arcgis.com/aA3snZwJfFkVyDuP/arcgis/rest/services/Parcels_for_San_Bernardino_County/FeatureServer/0',
   dwrWells:
     'https://gis.water.ca.gov/arcgis/rest/services/Environment/i07_WellCompletionReports/FeatureServer/0',
+  worldImagery:
+    'https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/export',
 };
+
+export const RIV_PARCEL_FIELDS =
+  'APN,SITUS_STREET,SITUS_CITY,MAIL_STREET,MAIL_CITY,MAIL_TO_NAME,HOUSE_NO,STREET,ACREAGE,ACRE,FULL_SITUS_ADDRESS,CLASS_CODE,REALUSE,PRIMARY_OWNER,OWNERNAME,OWNER_NAME';
 
 const SD_PARCEL_FIELDS =
   'APN,APN_8,SITUS_ADDRESS,SITUS_STREET,SITUS_SUFFIX,SITUS_ZIP,SITUS_JURIS,ACREAGE,SITUS_BUILDING,SITUS_SUITE';
@@ -104,6 +115,132 @@ export function haversineFeet(
     Math.sin(dLat / 2) ** 2 +
     Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+const FEET_PER_DEG_LAT = 364000;
+
+export function lonLatTo3857(lng: number, lat: number): { x: number; y: number } {
+  const x = (lng * 20037508.34) / 180;
+  const y =
+    (Math.log(Math.tan(((90 + lat) * Math.PI) / 360)) / (Math.PI / 180)) * (20037508.34 / 180);
+  return { x, y };
+}
+
+export function ringBBox(ring: number[][]): { minX: number; minY: number; maxX: number; maxY: number } {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const pt of ring) {
+    minX = Math.min(minX, pt[0]);
+    minY = Math.min(minY, pt[1]);
+    maxX = Math.max(maxX, pt[0]);
+    maxY = Math.max(maxY, pt[1]);
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+export function expandBboxFeet(
+  bbox: { minX: number; minY: number; maxX: number; maxY: number },
+  feet: number
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const midLat = (bbox.minY + bbox.maxY) / 2;
+  const dLat = feet / FEET_PER_DEG_LAT;
+  const dLng = feet / (FEET_PER_DEG_LAT * Math.cos((midLat * Math.PI) / 180));
+  return {
+    minX: bbox.minX - dLng,
+    minY: bbox.minY - dLat,
+    maxX: bbox.maxX + dLng,
+    maxY: bbox.maxY + dLat,
+  };
+}
+
+/** Ring vertices are [lng, lat]. */
+export function pointInRing(lng: number, lat: number, ring: number[][]): boolean {
+  if (!ring || ring.length < 3) return false;
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersect = yi > lat !== yj > lat && lng < ((xj - xi) * (lat - yi)) / (yj - yi + 1e-16) + xi;
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function distPointToSegmentFt(
+  lat: number,
+  lng: number,
+  a: number[],
+  b: number[]
+): number {
+  const midLat = (a[1] + b[1]) / 2;
+  const feetLng = FEET_PER_DEG_LAT * Math.cos((midLat * Math.PI) / 180);
+  const ax = 0;
+  const ay = 0;
+  const bx = (b[0] - a[0]) * feetLng;
+  const by = (b[1] - a[1]) * FEET_PER_DEG_LAT;
+  const px = (lng - a[0]) * feetLng;
+  const py = (lat - a[1]) * FEET_PER_DEG_LAT;
+  const len2 = bx * bx + by * by;
+  const t = len2 === 0 ? 0 : Math.max(0, Math.min(1, (px * bx + py * by) / len2));
+  const dx = px - t * bx;
+  const dy = py - t * by;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+/** Minimum distance from a point to the ring boundary (0 if on an edge). */
+export function distanceToRingFt(lat: number, lng: number, ring: number[][]): number {
+  if (!ring || ring.length < 2) return Number.POSITIVE_INFINITY;
+  let best = Number.POSITIVE_INFINITY;
+  for (let i = 0; i < ring.length - 1; i++) {
+    best = Math.min(best, distPointToSegmentFt(lat, lng, ring[i], ring[i + 1]));
+  }
+  best = Math.min(best, distPointToSegmentFt(lat, lng, ring[ring.length - 1], ring[0]));
+  return best;
+}
+
+export function minDistanceToPolygonsFt(lat: number, lng: number, rings: number[][][]): number {
+  let best = Number.POSITIVE_INFINITY;
+  for (const ring of rings) {
+    if (pointInRing(lng, lat, ring)) return 0;
+    best = Math.min(best, distanceToRingFt(lat, lng, ring));
+  }
+  return best;
+}
+
+/** Minimum distance between two parcel rings (0 if they touch or overlap). */
+export function minRingsDistanceFt(a?: number[][], b?: number[][]): number {
+  if (!a?.length || !b?.length) return Number.POSITIVE_INFINITY;
+  let best = Number.POSITIVE_INFINITY;
+  for (const pt of a) {
+    if (pointInRing(pt[0], pt[1], b)) return 0;
+    best = Math.min(best, distanceToRingFt(pt[1], pt[0], b));
+  }
+  for (const pt of b) {
+    if (pointInRing(pt[0], pt[1], a)) return 0;
+    best = Math.min(best, distanceToRingFt(pt[1], pt[0], a));
+  }
+  return best;
+}
+
+export function ringsIntersectParcel(structureRings: number[][][], parcelRing: number[][]): boolean {
+  for (const ring of structureRings) {
+    for (const pt of ring) {
+      if (pointInRing(pt[0], pt[1], parcelRing)) return true;
+    }
+    const c = centroidFromRings([ring]);
+    if (c && pointInRing(c.lng, c.lat, parcelRing)) return true;
+  }
+  const pc = centroidFromRings([parcelRing]);
+  if (pc) {
+    for (const ring of structureRings) {
+      if (pointInRing(pc.lng, pc.lat, ring)) return true;
+    }
+  }
+  return false;
 }
 
 export interface GeoResult {
@@ -377,29 +514,188 @@ export async function fetchSanDiegoParcel(input: {
 export async function fetchNearbyStructures(
   lat: number,
   lng: number,
-  fetchImpl: typeof fetch = fetch
+  fetchImpl: typeof fetch = fetch,
+  parcelRing?: number[][]
 ): Promise<import('./types').StructureFootprint[]> {
-  const pad = 0.002;
+  const bbox = parcelRing
+    ? expandBboxFeet(ringBBox(parcelRing), NEIGHBOR_ENVELOPE_FT)
+    : {
+        minX: lng - 0.0012,
+        minY: lat - 0.0012,
+        maxX: lng + 0.0012,
+        maxY: lat + 0.0012,
+      };
   try {
     const result = await queryArcGis(
       GIS.sdBuildings,
       {
-        geometry: `${lng - pad},${lat - pad},${lng + pad},${lat + pad}`,
+        geometry: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
         geometryType: 'esriGeometryEnvelope',
         inSR: '4326',
         spatialRel: 'esriSpatialRelIntersects',
-        outFields: 'OBJECTID',
+        outFields: '*',
+        returnGeometry: 'true',
+        outSR: '4326',
+        resultRecordCount: '80',
+      },
+      fetchImpl
+    );
+    return (result.features || [])
+      .filter((f: { geometry?: { rings?: number[][][] } }) => f.geometry?.rings)
+      .map((f: { geometry: { rings: number[][][] }; attributes?: Record<string, any> }) => {
+        const rings = f.geometry.rings;
+        const published =
+          Number(f.attributes?.['SDEP.SANGIS.BUILDING_OUTLINES.AREA']) ||
+          Number(f.attributes?.AREA) ||
+          0;
+        const areaSqFt = Math.round(published || ringAreaSqFt(rings[0] || []));
+        return {
+          rings,
+          areaSqFt,
+          onSubjectParcel: parcelRing ? ringsIntersectParcel(rings, parcelRing) : undefined,
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
+export interface WwSepticFlag {
+  apn: string;
+  designation: string;
+  /** Representative parcel point — NOT a tank or leach location. */
+  lat?: number;
+  lng?: number;
+}
+
+export async function fetchWwSepticFlags(
+  input: { apn?: string; bbox?: { minX: number; minY: number; maxX: number; maxY: number } },
+  fetchImpl: typeof fetch = fetch
+): Promise<WwSepticFlag[]> {
+  const params: Record<string, string> = {
+    outFields: 'APN,Sewer_Septic_Parcel_Designation',
+    returnGeometry: 'true',
+    outSR: '4326',
+    resultRecordCount: '80',
+  };
+  if (input.apn) {
+    const clean = cleanApn(input.apn);
+    params.where = `APN='${clean}' OR APN='${formatApn(clean, 'san_diego')}'`;
+  } else if (input.bbox) {
+    const { minX, minY, maxX, maxY } = input.bbox;
+    params.geometry = `${minX},${minY},${maxX},${maxY}`;
+    params.geometryType = 'esriGeometryEnvelope';
+    params.inSR = '4326';
+    params.spatialRel = 'esriSpatialRelIntersects';
+    params.where = '1=1';
+  } else {
+    return [];
+  }
+  try {
+    const result = await queryArcGis(GIS.sdSeptic, params, fetchImpl);
+    return (result.features || []).map((f: any) => ({
+      apn: formatApn(f.attributes?.APN, 'san_diego'),
+      designation: String(f.attributes?.Sewer_Septic_Parcel_Designation || 'Not Known'),
+      lat: f.geometry?.y,
+      lng: f.geometry?.x,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchParcelsInEnvelope(
+  bbox: { minX: number; minY: number; maxX: number; maxY: number },
+  fetchImpl: typeof fetch = fetch
+): Promise<import('./types').ParcelInfo[]> {
+  try {
+    const result = await queryArcGis(
+      GIS.sdParcels,
+      {
+        geometry: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
+        geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
+        spatialRel: 'esriSpatialRelIntersects',
+        outFields: SD_PARCEL_FIELDS,
+        returnGeometry: 'true',
+        outSR: '4326',
+        resultRecordCount: '40',
+      },
+      fetchImpl
+    );
+    return (result.features || [])
+      .map((f: any) => parcelFromSd(f.attributes, f.geometry, 'san_diego'))
+      .filter(Boolean) as import('./types').ParcelInfo[];
+  } catch {
+    return [];
+  }
+}
+
+export async function fetchRoadLabels(
+  bbox: { minX: number; minY: number; maxX: number; maxY: number },
+  fetchImpl: typeof fetch = fetch
+): Promise<import('./types').RoadLabel[]> {
+  try {
+    const result = await queryArcGis(
+      GIS.sdRoads,
+      {
+        geometry: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
+        geometryType: 'esriGeometryEnvelope',
+        inSR: '4326',
+        spatialRel: 'esriSpatialRelIntersects',
+        outFields: 'RD20FULL,RD30FULL,ROAD_NAME,FENAME,NAME',
         returnGeometry: 'true',
         outSR: '4326',
         resultRecordCount: '20',
       },
       fetchImpl
     );
-    return (result.features || [])
-      .filter((f: { geometry?: { rings?: number[][][] } }) => f.geometry?.rings)
-      .map((f: { geometry: { rings: number[][][] } }) => ({ rings: f.geometry.rings }));
+    const labels: import('./types').RoadLabel[] = [];
+    for (const f of result.features || []) {
+      const name =
+        f.attributes?.RD20FULL ||
+        f.attributes?.RD30FULL ||
+        f.attributes?.ROAD_NAME ||
+        f.attributes?.FENAME ||
+        f.attributes?.NAME;
+      if (!name) continue;
+      const paths = f.geometry?.paths?.[0] || f.geometry?.rings?.[0];
+      if (!paths?.length) continue;
+      const mid = paths[Math.floor(paths.length / 2)];
+      labels.push({ name: String(name), lng: mid[0], lat: mid[1] });
+    }
+    return labels;
   } catch {
     return [];
+  }
+}
+
+export async function fetchAerialJpeg(
+  bbox: { minX: number; minY: number; maxX: number; maxY: number },
+  size = { width: 1600, height: 1200 },
+  fetchImpl: typeof fetch = fetch
+): Promise<Uint8Array | null> {
+  const url =
+    GIS.worldImagery +
+    '?' +
+    new URLSearchParams({
+      bbox: `${bbox.minX},${bbox.minY},${bbox.maxX},${bbox.maxY}`,
+      bboxSR: '4326',
+      imageSR: '4326',
+      size: `${size.width},${size.height}`,
+      format: 'jpg',
+      f: 'image',
+    });
+  try {
+    const response = await fetchImpl(url, {
+      headers: { Accept: 'image/jpeg', 'User-Agent': 'SCWS-PermitResearch/1.0' },
+    });
+    if (!response.ok) return null;
+    const buf = new Uint8Array(await response.arrayBuffer());
+    if (buf.length < 800 || buf[0] !== 0xff || buf[1] !== 0xd8) return null;
+    return buf;
+  } catch {
+    return null;
   }
 }
 
@@ -423,8 +719,7 @@ export async function fetchRiversideParcel(input: {
           GIS.rivParcels,
           {
             where,
-            outFields:
-              'APN,SITUS_STREET,SITUS_CITY,MAIL_STREET,MAIL_CITY,ACREAGE,FULL_SITUS_ADDRESS,CLASS_CODE',
+            outFields: RIV_PARCEL_FIELDS,
             returnGeometry: 'true',
             outSR: '4326',
             resultRecordCount: '8',
@@ -451,8 +746,7 @@ export async function fetchRiversideParcel(input: {
       GIS.rivParcels,
       {
         where: `APN = '${clean}' OR APN = '${formatApn(clean, 'riverside')}'`,
-        outFields:
-          'APN,SITUS_STREET,SITUS_CITY,MAIL_STREET,MAIL_CITY,ACREAGE,FULL_SITUS_ADDRESS,CLASS_CODE',
+        outFields: RIV_PARCEL_FIELDS,
         returnGeometry: 'true',
         outSR: '4326',
       },
@@ -468,7 +762,7 @@ export async function fetchRiversideParcel(input: {
       GIS.rivParcels,
       input.lat,
       input.lng,
-      'APN,SITUS_STREET,SITUS_CITY,MAIL_STREET,MAIL_CITY,ACREAGE,FULL_SITUS_ADDRESS,CLASS_CODE',
+      RIV_PARCEL_FIELDS,
       fetchImpl
     );
     if (feature) {
