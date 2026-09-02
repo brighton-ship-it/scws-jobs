@@ -1,4 +1,5 @@
 import {
+  CRYSTALLITE_NEIGHBOR_ASBUILTS,
   hasLarc009777,
   largestOnParcelDwelling,
   LARC_009777_FILE_RECORD_ID,
@@ -7,7 +8,7 @@ import {
   overlayCrystalliteNeighbor,
   traceLarc009777,
 } from './as-built.ts';
-import { detectCounty, isCounty } from './county.ts';
+import { cleanApn, detectCounty, isCounty } from './county.ts';
 import { asBuiltOnFile, fileRecordIds, searchDehDocuments } from './deh-docs.ts';
 import {
   centroidFromRings,
@@ -514,12 +515,17 @@ export async function runPermitResearch(
           rings: parcel.geometry?.rings,
         });
       }
+      const catalogApns = new Set(
+        [...CRYSTALLITE_NEIGHBOR_ASBUILTS.map((s) => cleanApn(s.apn)), '1290925800']
+      );
       candidates.sort((a, b) => {
-        const da = a.distanceFt ?? (a.adjacent ? 0 : 9e9);
-        const db = b.distanceFt ?? (b.adjacent ? 0 : 9e9);
-        return da - db;
+        const pri = (n: NeighborParcel) =>
+          (n.adjacent ? 0 : 1) + (catalogApns.has(cleanApn(n.apn)) ? 0 : 2);
+        const dp = pri(a) - pri(b);
+        if (dp) return dp;
+        return (a.distanceFt ?? 9e9) - (b.distanceFt ?? 9e9);
       });
-      const toSearch = candidates.slice(0, 12);
+      const toSearch = candidates.slice(0, 16);
       const docsByApn = await Promise.all(
         toSearch.map(async (n) => {
           try {
