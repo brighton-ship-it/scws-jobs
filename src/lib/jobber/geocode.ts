@@ -11,9 +11,9 @@ export type GeoPoint = {
 };
 
 const SD_PARCELS =
-  'https://gis-public.sandiegocounty.gov/arcgis/rest/services/sdep_warehouse/PARCELS_ALL/MapServer/0/query';
+  'https://webmaps.sandiego.gov/arcgis/rest/services/GeocoderMerged/MapServer/1/query';
 const RIV_PARCELS =
-  'https://content.rcflood.org/arcgis/rest/services/FacilitiesAndProperties/DynamicLayerEP/MapServer/5/query';
+  'https://gis.countyofriverside.us/arcgis/rest/services/mmc/mmc_mSrvc/MapServer/8/query';
 
 function centroidFromGeometry(geometry: any): { lat: number; lng: number } | null {
   if (!geometry) return null;
@@ -98,9 +98,9 @@ export async function lookupParcel(
     return {
       lat: point?.lat ?? 0,
       lng: point?.lng ?? 0,
-      city: attrs.SITUSCITY || attrs.CITY || null,
-      street: attrs.SITEADDR || attrs.SITE_ADDRESS || null,
-      ownerName: attrs.OWNERNAME || attrs.OWNER_NAME || null,
+      city: attrs.SITUS_CITY || attrs.SITUSCITY || attrs.CITY || null,
+      street: attrs.FULL_SITUS_ADDRESS || attrs.SITUS_STREET || attrs.SITEADDR || attrs.SITE_ADDRESS || null,
+      ownerName: attrs.PRIMARY_OWNER || attrs.OWNERNAME || attrs.OWNER_NAME || null,
       apn: attrs.APN || apn,
       county: 'Riverside',
       formatted: attrs.SITEADDR || attrs.SITE_ADDRESS || null,

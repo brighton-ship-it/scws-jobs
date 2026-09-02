@@ -7,12 +7,12 @@ import path from 'path';
 const SCWS_INFO = {
   name: 'Southern California Well Service',
   contact: 'Brighton',
-  license: '1234567', // C-57 License Number - UPDATE THIS
-  address: '123 Well Service Dr',
-  city: 'Escondido',
+  license: '1011552',
+  address: '1077 Main Street, Unit B',
+  city: 'Ramona',
   state: 'CA',
-  zip: '92025',
-  phone: '(760) 555-1234',
+  zip: '92065',
+  phone: '(760) 440-8520',
   email: 'permits@scws.com',
 };
 
