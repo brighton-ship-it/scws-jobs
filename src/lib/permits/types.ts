@@ -50,14 +50,14 @@ export interface DehDocument {
   description?: string;
   contentType?: string;
   viewUrl: string;
-  /** County PDF bytes are served inside LUEG_View; server fetch is an HTML stub. */
-  geometryExtracted: false;
+  /** True only after a known DEH as-built is traced onto county GIS — never guessed. */
+  geometryExtracted: boolean;
   note: string;
   isAsBuiltCandidate: boolean;
 }
 
 export interface SepticGeometry {
-  kind: 'tank' | 'leach' | 'existing_well';
+  kind: 'tank' | 'leach' | 'existing_well' | 'easement';
   rings?: number[][][];
   lat?: number;
   lng?: number;
@@ -128,7 +128,10 @@ export const TANK_SETBACK_FT = 50;
 export const LEACH_SETBACK_FT = 100;
 export const EXISTING_WELL_SETBACK_FT = 100;
 export const SEPTIC_SETBACK_FT = 100;
+/** Typical DEH well-to-structure setback (shown on plans). Placement uses BUILDING_CLEAR_FT. */
 export const STRUCTURE_SETBACK_FT = 50;
+/** Grid placement: stay this far off BUILDING_OUTLINES (NW house-to-PL strips are tighter than 100 ft). */
+export const BUILDING_CLEAR_FT = 8;
 export const WELL_SEARCH_RADIUS_FT = 5280;
 /** Wells / septic / structures called out on the plot plan (feet). */
 export const INVENTORY_RADIUS_FT = 250;

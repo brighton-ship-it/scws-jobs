@@ -127,7 +127,7 @@ interface ResearchResult {
     permitId?: string;
     subcategory?: string;
     viewUrl: string;
-    geometryExtracted: false;
+    geometryExtracted: boolean;
     note: string;
     isAsBuiltCandidate: boolean;
   }>;
@@ -1443,7 +1443,7 @@ export default function PermitResearchPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Permit Research Tool</h1>
-        <p className="text-gray-500">Paste a Ramona or Anza street address for a DEH office SITE PLAN: parcel, buildings, aerial, septic flag / as-built hits, and a proposed-well pin that is not dropped on the leach field.</p>
+        <p className="text-gray-500">Paste a Ramona or Anza street address for a DEH office SITE PLAN: parcel, buildings, aerial, DEH as-built when traced, and a proposed-well pin that is never the parcel centroid.</p>
       </div>
 
       {/* Search Panel */}
@@ -2230,7 +2230,9 @@ export default function PermitResearchPage() {
                         <div key={n.apn} className="text-xs flex justify-between gap-2">
                           <span className="font-mono">{n.apn}</span>
                           <span className="text-gray-600">
-                            {n.tankLeach === 'as_built_on_file'
+                            {n.tankLeach === 'as_built_extracted'
+                              ? 'as-built traced onto GIS'
+                              : n.tankLeach === 'as_built_on_file'
                               ? 'as-built on file, geometry not extracted'
                               : n.septicFlag || n.tankLeach}
                             {n.distanceFt != null ? ` · ${n.distanceFt} ft` : ''}
@@ -2256,8 +2258,8 @@ export default function PermitResearchPage() {
               <h3 className="font-semibold text-gray-900 mb-2">Proposed well pin</h3>
               <p className="text-sm text-gray-700">
                 {result.proposedWell.meetsSetbacks
-                  ? 'Setback search placed this pin inside the parcel. It is not the parcel centroid.'
-                  : 'No pocket meets every typical DEH setback — best available pin, distances flagged.'}
+                  ? 'Maximin to leach / tank / existing well on a grid. This is not the parcel centroid.'
+                  : 'FLAG: no pocket meets 100 ft leach. Best available pin — not the parcel centroid.'}
               </p>
               <p className="font-mono text-xs text-gray-600 mt-2">
                 {result.proposedWell.lat.toFixed(8)}, {result.proposedWell.lng.toFixed(8)} · {result.proposedWell.source}

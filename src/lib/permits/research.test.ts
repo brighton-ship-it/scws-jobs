@@ -285,7 +285,7 @@ describe('runPermitResearch', () => {
     assert.equal(result.wellsWithin250Ft, 0);
   });
 
-  it('places a proposed well off a centroid leach and lists DEH as-built without inventing tank geometry', async () => {
+  it('traces the Crystallite as-built and places the proposed well in the SE orchard pocket', async () => {
     const fetchImpl = async (url: string | URL | Request) => {
       const href = String(url);
       if (href.includes('addrapn_Composite') || href.includes('geocoding.geo.census.gov')) {
@@ -323,11 +323,12 @@ describe('runPermitResearch', () => {
               },
               geometry: {
                 rings: [[
-                  [-117.03397, 33.27708],
-                  [-117.03262, 33.27708],
-                  [-117.03262, 33.27771],
-                  [-117.03397, 33.27771],
-                  [-117.03397, 33.27708],
+                  [-117.03262375, 33.27770525],
+                  [-117.03262813, 33.27708844],
+                  [-117.03396767, 33.27708376],
+                  [-117.03396631, 33.27767752],
+                  [-117.0326243, 33.27768204],
+                  [-117.03262375, 33.27770525],
                 ]],
               },
             },
@@ -363,11 +364,11 @@ describe('runPermitResearch', () => {
               attributes: { OBJECTID: 1, 'SDEP.SANGIS.BUILDING_OUTLINES.AREA': 3323 },
               geometry: {
                 rings: [[
-                  [-117.03385, 33.27725],
-                  [-117.03355, 33.27725],
-                  [-117.03355, 33.27745],
-                  [-117.03385, 33.27745],
-                  [-117.03385, 33.27725],
+                  [-117.033844, 33.277441],
+                  [-117.033542, 33.277441],
+                  [-117.033542, 33.277627],
+                  [-117.033844, 33.277627],
+                  [-117.033844, 33.277441],
                 ]],
               },
             },
@@ -391,15 +392,23 @@ describe('runPermitResearch', () => {
     const house = result.structures.find((s) => s.onSubjectParcel && (s.areaSqFt || 0) >= 3000);
     assert.ok(house, 'expected ~3323 sf building on the parcel');
     assert.equal(result.septic?.designation, 'Known Septic Connected');
-    assert.equal(result.septic?.locationUnknown, true);
-    assert.equal((result.septic?.geometry || []).length, 0);
+    assert.equal(result.septic?.locationUnknown, false);
+    const kinds = (result.septic?.geometry || []).map((g) => g.kind).sort();
+    assert.deepEqual(kinds, ['easement', 'existing_well', 'leach', 'tank']);
     assert.equal(result.dehDocuments?.[0]?.fileRecordId, '36954960');
-    assert.equal(result.dehDocuments?.[0]?.geometryExtracted, false);
-    assert.ok(result.notes.some((n) => /geometry (was )?not extracted/i.test(n)));
+    assert.equal(result.dehDocuments?.[0]?.geometryExtracted, true);
+    assert.equal(result.notes.some((n) => /geometry (was )?not extracted/i.test(n)), false);
+    assert.ok(result.notes.some((n) => /traced onto county GIS/i.test(n)));
     assert.ok(result.proposedWell);
     const pin = result.proposedWell!;
     const distToFlagPoint = Math.hypot(pin.lat - 33.27738305, pin.lng - (-117.03329653));
     assert.ok(distToFlagPoint > 1e-5, 'proposed pin must not be the WW_SEPTIC centroid');
+    assert.ok(Math.abs(pin.lat - 33.27711717) < 0.00005, `SE orchard lat, got ${pin.lat}`);
+    assert.ok(Math.abs(pin.lng - -117.03266212) < 0.00005, `SE orchard lng, got ${pin.lng}`);
+    assert.equal(pin.meetsSetbacks, true);
+    assert.ok((pin.distances.leachFt || 0) >= 100);
+    assert.ok((pin.distances.tankFt || 0) >= 50);
+    assert.ok((pin.distances.existingWellFt || 0) >= 100);
     assert.equal(result.wellsWithin250Ft, 0);
     assert.ok(result.sources.some((s) => /0 \(NONE\)/i.test(s.message || '')));
     assert.equal(JSON.stringify(result).includes('1059498'), false);

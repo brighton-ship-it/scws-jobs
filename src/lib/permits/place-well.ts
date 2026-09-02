@@ -1,5 +1,4 @@
 import {
-  centroidFromRings,
   distanceToRingFt,
   haversineFeet,
   minDistanceToPolygonsFt,
@@ -7,6 +6,7 @@ import {
   ringBBox,
 } from './gis.ts';
 import {
+  BUILDING_CLEAR_FT,
   EXISTING_WELL_SETBACK_FT,
   LEACH_SETBACK_FT,
   PROPERTY_LINE_SETBACK_FT,
@@ -18,7 +18,9 @@ import {
   type WellInfo,
 } from './types.ts';
 
-const GRID_STEP_FT = 18;
+const GRID_STEP_FT = 8;
+const REFINE_STEP_FT = 2;
+const REFINE_RADIUS_FT = 16;
 const FEET_PER_DEG_LAT = 364000;
 
 export interface PlaceWellInput {
@@ -28,6 +30,18 @@ export interface PlaceWellInput {
   leaches?: Array<{ lat: number; lng: number } | { rings: number[][][] }>;
   existingWells?: Array<{ lat: number; lng: number }>;
   structures?: StructureFootprint[];
+  easements?: number[][][];
+}
+
+export interface PinEvaluation {
+  ok: boolean;
+  feasible: boolean;
+  flags: string[];
+  distances: ProposedWell['distances'];
+  /** min-distance to tank / leach / existing well. Null when none of those exist. */
+  hazardMin: number | null;
+  score: number;
+  insideParcel: boolean;
 }
 
 function degPerFoot(lat: number): { dLat: number; dLng: number } {
@@ -66,26 +80,35 @@ function minFeatureDistance(
   return best;
 }
 
-function insideAnyStructure(lat: number, lng: number, structures: StructureFootprint[]): boolean {
-  for (const structure of structures) {
-    for (const ring of structure.rings || []) {
-      if (pointInRing(lng, lat, ring)) return true;
-    }
+function insideAnyRing(lat: number, lng: number, rings: number[][][] | undefined): boolean {
+  for (const ring of rings || []) {
+    if (pointInRing(lng, lat, ring)) return true;
   }
   return false;
 }
 
-export function evaluatePin(
-  lat: number,
-  lng: number,
-  input: PlaceWellInput
-): {
-  ok: boolean;
-  flags: string[];
-  distances: ProposedWell['distances'];
-  score: number;
-  insideParcel: boolean;
-} {
+function insideAnyStructure(lat: number, lng: number, structures: StructureFootprint[]): boolean {
+  for (const structure of structures) {
+    if (insideAnyRing(lat, lng, structure.rings)) return true;
+  }
+  return false;
+}
+
+/** More south-east wins (lower lat, then higher lng). */
+function seRank(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  if (Math.abs(a.lat - b.lat) > 1e-9) return a.lat - b.lat;
+  return b.lng - a.lng;
+}
+
+function betterCandidate(
+  a: { lat: number; lng: number; eval: PinEvaluation },
+  b: { lat: number; lng: number; eval: PinEvaluation }
+): number {
+  if (Math.abs(a.eval.score - b.eval.score) > 0.5) return b.eval.score - a.eval.score;
+  return seRank(a, b);
+}
+
+export function evaluatePin(lat: number, lng: number, input: PlaceWellInput): PinEvaluation {
   const ring = input.rings?.[0];
   const plNeeded = PROPERTY_LINE_SETBACK_FT[input.county];
   const insideParcel = ring ? pointInRing(lng, lat, ring) : false;
@@ -98,39 +121,56 @@ export function evaluatePin(
     lng,
     (input.structures || []).map((s) => ({ rings: s.rings }))
   );
+  const inBuilding = insideAnyStructure(lat, lng, input.structures || []);
+  const inEasement = insideAnyRing(lat, lng, input.easements);
 
   const flags: string[] = [];
   if (!insideParcel) flags.push('Pin is outside the subject parcel');
+  if (inEasement) flags.push('Pin sits in the recorded west easement');
   if (propertyLineFt != null && propertyLineFt < plNeeded) {
-    flags.push(`${Math.round(propertyLineFt)} ft to property line (need ≥${plNeeded} ft)`);
+    flags.push(`${Math.round(propertyLineFt)} ft to property line (need >=${plNeeded} ft)`);
+  }
+  if (inBuilding) flags.push('Pin sits on a building footprint');
+  if (!inBuilding && structureFt != null && structureFt < BUILDING_CLEAR_FT) {
+    flags.push(`${Math.round(structureFt)} ft to building (need >=${BUILDING_CLEAR_FT} ft)`);
   }
   if (tankFt != null && tankFt < TANK_SETBACK_FT) {
-    flags.push(`${Math.round(tankFt)} ft to septic tank (need ≥${TANK_SETBACK_FT} ft)`);
+    flags.push(`${Math.round(tankFt)} ft to septic tank (need >=${TANK_SETBACK_FT} ft)`);
   }
   if (leachFt != null && leachFt < LEACH_SETBACK_FT) {
-    flags.push(`${Math.round(leachFt)} ft to leach field (need ≥${LEACH_SETBACK_FT} ft)`);
+    flags.push(`${Math.round(leachFt)} ft to leach field (need >=${LEACH_SETBACK_FT} ft)`);
   }
   if (existingWellFt != null && existingWellFt < EXISTING_WELL_SETBACK_FT) {
     flags.push(
-      `${Math.round(existingWellFt)} ft to existing well (need ≥${EXISTING_WELL_SETBACK_FT} ft)`
+      `${Math.round(existingWellFt)} ft to existing well (need >=${EXISTING_WELL_SETBACK_FT} ft)`
     );
   }
-  if (insideAnyStructure(lat, lng, input.structures || [])) {
-    flags.push('Pin sits on a building footprint');
-  }
 
-  const ok = flags.length === 0 && insideParcel;
-  let score = 0;
-  if (ok) score += 20000;
-  else score += Math.max(0, 8000 - flags.length * 1500);
-  if (propertyLineFt != null) score += Math.min(propertyLineFt, 180);
-  if (tankFt != null) score += Math.min(tankFt, 200);
-  if (leachFt != null) score += Math.min(leachFt, 250);
-  if (existingWellFt != null) score += Math.min(existingWellFt, 200);
-  if (structureFt != null) score += Math.min(structureFt, 120) * 0.6;
+  const plOk = propertyLineFt == null || propertyLineFt >= plNeeded;
+  const buildingClear = !inBuilding && (structureFt == null || structureFt >= BUILDING_CLEAR_FT);
+  const feasible = Boolean(insideParcel && !inEasement && plOk && buildingClear);
+  const setbacksMet =
+    (tankFt == null || tankFt >= TANK_SETBACK_FT) &&
+    (leachFt == null || leachFt >= LEACH_SETBACK_FT) &&
+    (existingWellFt == null || existingWellFt >= EXISTING_WELL_SETBACK_FT);
+  const ok = feasible && setbacksMet;
+
+  const hazards = [tankFt, leachFt, existingWellFt].filter((d): d is number => d != null);
+  const hazardMin = hazards.length ? Math.min(...hazards) : null;
+
+  // Maximin to leach + tank + existing well. Constraints are hard gates, not score terms.
+  // When no as-built hazards exist, score ties and the SE rank picks the orchard pocket.
+  const slack =
+    (insideParcel ? 1000 : -10000) +
+    (inEasement ? -4000 : 0) +
+    (inBuilding ? -4000 : 0) +
+    (propertyLineFt != null ? Math.min(propertyLineFt - plNeeded, 0) * 40 : 0) +
+    (structureFt != null ? Math.min(structureFt - BUILDING_CLEAR_FT, 0) * 20 : 0);
+  const score = feasible ? (hazardMin ?? 0) : slack + (hazardMin ?? 0);
 
   return {
     ok,
+    feasible,
     flags,
     distances: {
       propertyLineFt: propertyLineFt != null ? Math.round(propertyLineFt) : null,
@@ -139,57 +179,82 @@ export function evaluatePin(
       existingWellFt: existingWellFt != null ? Math.round(existingWellFt) : null,
       structureFt: structureFt != null ? Math.round(structureFt) : null,
     },
+    hazardMin,
     score,
     insideParcel,
   };
 }
 
+function scanGrid(
+  ring: number[][],
+  input: PlaceWellInput,
+  bbox: { minX: number; minY: number; maxX: number; maxY: number },
+  stepFt: number
+): Array<{ lat: number; lng: number; eval: PinEvaluation }> {
+  const midLat = (bbox.minY + bbox.maxY) / 2;
+  const { dLat, dLng } = degPerFoot(midLat);
+  const out: Array<{ lat: number; lng: number; eval: PinEvaluation }> = [];
+  for (let lat = bbox.minY; lat <= bbox.maxY + 1e-12; lat += stepFt * dLat) {
+    for (let lng = bbox.minX; lng <= bbox.maxX + 1e-12; lng += stepFt * dLng) {
+      if (!pointInRing(lng, lat, ring)) continue;
+      out.push({ lat, lng, eval: evaluatePin(lat, lng, input) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Place a proposed well by maximizing the minimum distance to leach, tank, and
+ * existing well. Never uses the parcel centroid as a candidate. If no grid
+ * point meets 100 ft to leach, the best pocket is returned and FLAGGED.
+ */
 export function placeProposedWell(input: PlaceWellInput): ProposedWell | null {
   const ring = input.rings?.[0];
   if (!ring || ring.length < 3) return null;
 
   const bbox = ringBBox(ring);
-  const midLat = (bbox.minY + bbox.maxY) / 2;
-  const { dLat, dLng } = degPerFoot(midLat);
-  const candidates: Array<{ lat: number; lng: number; eval: ReturnType<typeof evaluatePin> }> = [];
-
-  for (let lat = bbox.minY; lat <= bbox.maxY; lat += GRID_STEP_FT * dLat) {
-    for (let lng = bbox.minX; lng <= bbox.maxX; lng += GRID_STEP_FT * dLng) {
-      if (!pointInRing(lng, lat, ring)) continue;
-      const ev = evaluatePin(lat, lng, input);
-      candidates.push({ lat, lng, eval: ev });
-    }
-  }
-
-  const centroid = centroidFromRings(input.rings);
-  if (centroid && pointInRing(centroid.lng, centroid.lat, ring)) {
-    candidates.push({ lat: centroid.lat, lng: centroid.lng, eval: evaluatePin(centroid.lat, centroid.lng, input) });
-  }
-
+  let candidates = scanGrid(ring, input, bbox, GRID_STEP_FT);
   if (!candidates.length) return null;
 
-  const passing = candidates.filter((c) => c.eval.ok);
-  const pool = passing.length ? passing : candidates;
-  pool.sort((a, b) => b.eval.score - a.eval.score);
+  candidates.sort(betterCandidate);
+  const coarse = candidates[0];
+
+  const { dLat, dLng } = degPerFoot(coarse.lat);
+  const refineBox = {
+    minX: coarse.lng - REFINE_RADIUS_FT * dLng,
+    maxX: coarse.lng + REFINE_RADIUS_FT * dLng,
+    minY: coarse.lat - REFINE_RADIUS_FT * dLat,
+    maxY: coarse.lat + REFINE_RADIUS_FT * dLat,
+  };
+  const refined = scanGrid(ring, input, refineBox, REFINE_STEP_FT);
+  if (refined.length) {
+    candidates = candidates.concat(refined);
+    candidates.sort(betterCandidate);
+  }
+
+  const feasible = candidates.filter((c) => c.eval.feasible);
+  const pool = feasible.length ? feasible : candidates;
+  pool.sort(betterCandidate);
   const best = pool[0];
 
-  const usedCentroid =
-    centroid &&
-    Math.abs(best.lat - centroid.lat) < 1e-7 &&
-    Math.abs(best.lng - centroid.lng) < 1e-7;
-  const source: ProposedWell['source'] = best.eval.ok && !usedCentroid ? 'setback_search' : 'best_pocket';
   const flags = [...best.eval.flags];
   if (!best.eval.ok) {
-    flags.unshift('No pocket meets every typical DEH setback — best available pin, distances flagged.');
+    flags.unshift(
+      'FLAG: no pocket meets every typical DEH setback (100 ft leach). Best available pin — not the parcel centroid.'
+    );
   }
-  if (usedCentroid && !best.eval.ok) {
-    flags.push('Best pocket collapsed to the parcel centroid; confirm in the field.');
+  if (best.eval.distances.leachFt != null && best.eval.distances.leachFt < LEACH_SETBACK_FT) {
+    if (!flags.some((f) => /100 ft leach/i.test(f))) {
+      flags.unshift(
+        `FLAG: ${best.eval.distances.leachFt} ft to leach (need >=${LEACH_SETBACK_FT} ft). Centroid was not used.`
+      );
+    }
   }
 
   return {
     lat: best.lat,
     lng: best.lng,
-    source,
+    source: best.eval.ok ? 'setback_search' : 'best_pocket',
     meetsSetbacks: best.eval.ok,
     flags,
     distances: best.eval.distances,
@@ -201,10 +266,12 @@ export function septicGeometryFromKnown(geometry: SepticGeometry[] | undefined):
   tanks: PlaceWellInput['tanks'];
   leaches: PlaceWellInput['leaches'];
   existingWells: PlaceWellInput['existingWells'];
+  easements: number[][][];
 } {
   const tanks: NonNullable<PlaceWellInput['tanks']> = [];
   const leaches: NonNullable<PlaceWellInput['leaches']> = [];
   const existingWells: NonNullable<PlaceWellInput['existingWells']> = [];
+  const easements: number[][][] = [];
   for (const item of geometry || []) {
     if (item.kind === 'tank') {
       if (item.rings) tanks.push({ rings: item.rings });
@@ -214,9 +281,11 @@ export function septicGeometryFromKnown(geometry: SepticGeometry[] | undefined):
       else if (item.lat != null && item.lng != null) leaches.push({ lat: item.lat, lng: item.lng });
     } else if (item.kind === 'existing_well' && item.lat != null && item.lng != null) {
       existingWells.push({ lat: item.lat, lng: item.lng });
+    } else if (item.kind === 'easement' && item.rings) {
+      easements.push(...item.rings);
     }
   }
-  return { tanks, leaches, existingWells };
+  return { tanks, leaches, existingWells, easements };
 }
 
 export function wellsAsPoints(wells: WellInfo[]): Array<{ lat: number; lng: number }> {

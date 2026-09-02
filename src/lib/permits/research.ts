@@ -1,3 +1,11 @@
+import {
+  hasLarc009777,
+  largestOnParcelDwelling,
+  LARC_009777_FILE_RECORD_ID,
+  LARC_009777_SOURCE,
+  markDocsExtracted,
+  traceLarc009777,
+} from './as-built.ts';
 import { detectCounty, isCounty } from './county.ts';
 import { asBuiltOnFile, searchDehDocuments } from './deh-docs.ts';
 import {
@@ -76,6 +84,50 @@ function neighborTankLeach(flag: string | undefined, docs: DehDocument[]): Neigh
   if (docs.some((d) => d.isAsBuiltCandidate)) return 'as_built_on_file';
   if ((flag || '').toLowerCase().includes('septic')) return 'septic_connected';
   return 'unknown';
+}
+
+/**
+ * Trace FileRecordId 36954960 (LARC_009777_1) onto county GIS for APN 129-092-71-00 only.
+ * Neighbor as-builts stay listed as on-file until their FileRecordIds are wired.
+ */
+function applyKnownAsBuiltOverlay(
+  result: ResearchResult,
+  dehDocs: DehDocument[],
+  notes: string[],
+  sources: DataSource[]
+): boolean {
+  const apn = result.parcel?.apn;
+  if (!hasLarc009777(apn, dehDocs)) return false;
+  const dwelling = largestOnParcelDwelling(result.structures);
+  const parcelRing = result.parcel?.geometry?.rings?.[0];
+  if (!dwelling?.rings?.[0] || !parcelRing) return false;
+  const overlay = traceLarc009777({ parcelRing, dwellingRing: dwelling.rings[0] });
+  if (!overlay) return false;
+
+  const docs = markDocsExtracted(dehDocs);
+  result.dehDocuments = docs;
+  result.septic = {
+    ...(result.septic || { status: 'found', type: 'SEPTIC' }),
+    status: 'found',
+    type: result.septic?.type || 'SEPTIC',
+    designation: result.septic?.designation || 'Known Septic Connected',
+    locationUnknown: false,
+    geometry: overlay.geometry,
+    dehDocuments: docs,
+    source: LARC_009777_SOURCE,
+    message:
+      `DEH as-built FileRecordId ${LARC_009777_FILE_RECORD_ID} (LARC_009777_1) traced onto county GIS parcel + dwelling. Tank/leach were not invented.`,
+  };
+
+  notes.push(
+    `DEH as-built FileRecordId ${LARC_009777_FILE_RECORD_ID} (LARC_009777_1) traced onto county GIS — tank, leach, existing well W61895, and the 40 ft west easement are from that sheet, not a typical-layout guess.`
+  );
+
+  const dehSrc = sources.find((s) => s.name === 'DEH Document Library');
+  if (dehSrc) {
+    dehSrc.message = `${dehDocs.length} DEH-LWQD hit(s); FileRecordId ${LARC_009777_FILE_RECORD_ID} (LARC_009777_1) traced onto GIS`;
+  }
+  return true;
 }
 
 export async function runPermitResearch(
@@ -277,7 +329,7 @@ export async function runPermitResearch(
               : '')
           : 'No DEH-LWQD documents for this APN',
       });
-      if (asBuilts.length) {
+      if (asBuilts.length && !hasLarc009777(result.parcel?.apn || input.apn, dehDocs)) {
         notes.push(
           `DEH as-built on file (${asBuilts.map((d) => `FileRecordId ${d.fileRecordId}`).join(', ')}); tank/leach geometry was not extracted. LUEG_View PDF is client-side only.`
         );
@@ -380,8 +432,11 @@ export async function runPermitResearch(
     'Streets and easements come from public road labels when present. Surveyed tank/leach geometry is drawn only from a parsed DEH as-built — never invented.'
   );
 
+  const overlayApplied = applyKnownAsBuiltOverlay(result, dehDocs, notes, sources);
+
   const known = septicGeometryFromKnown(result.septic?.geometry);
-  const onParcelWells = result.wells.filter((w) => (w.distance_from_parcel || 9999) <= 400);
+  // As-built existing well (W61895) drives maximin. CNRA wells far off-parcel do not.
+  const onParcelWells = result.wells.filter((w) => (w.distance_from_parcel || 9999) <= 80);
   result.proposedWell = placeProposedWell({
     rings: result.parcel?.geometry?.rings,
     county,
@@ -389,10 +444,11 @@ export async function runPermitResearch(
     leaches: known.leaches,
     existingWells: [...(known.existingWells || []), ...wellsAsPoints(onParcelWells)],
     structures: (result.structures || []).filter((s) => s.onSubjectParcel !== false),
+    easements: known.easements,
   });
 
   if (result.proposedWell) {
-    if (!known.tanks?.length && !known.leaches?.length) {
+    if (!known.tanks?.length && !known.leaches?.length && !overlayApplied) {
       result.proposedWell.flags.push(
         'Septic tank/leach setbacks not applied — no extracted as-built geometry. Confirm DEH archive before staking.'
       );

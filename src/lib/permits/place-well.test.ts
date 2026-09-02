@@ -1,7 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { centroidFromRings } from './gis.ts';
-import { evaluatePin, placeProposedWell } from './place-well.ts';
+import { CRYSTALLITE_SE_ORCHARD, largestOnParcelDwelling, traceLarc009777 } from './as-built.ts';
+import { centroidFromRings, haversineFeet } from './gis.ts';
+import { evaluatePin, placeProposedWell, septicGeometryFromKnown } from './place-well.ts';
 
 /** Parcel roughly 300 ft E-W by 200 ft N-S. House on the west; leach band through the centroid. */
 function crystalliteLikeRings() {
@@ -18,6 +19,26 @@ function crystalliteLikeRings() {
       [lng0, lat0],
     ],
   ];
+}
+
+/** Live-ish Crystallite GIS rings used by the v4 gold-standard sheet. */
+export function crystalliteGisRings() {
+  const parcelRing = [
+    [-117.03262375, 33.27770525],
+    [-117.03262813, 33.27708844],
+    [-117.03396767, 33.27708376],
+    [-117.03396631, 33.27767752],
+    [-117.0326243, 33.27768204],
+    [-117.03262375, 33.27770525],
+  ];
+  const dwellingRing = [
+    [-117.033844, 33.277441],
+    [-117.033542, 33.277441],
+    [-117.033542, 33.277627],
+    [-117.033844, 33.277627],
+    [-117.033844, 33.277441],
+  ];
+  return { parcelRing, dwellingRing };
 }
 
 describe('proposed well placement', () => {
@@ -60,8 +81,9 @@ describe('proposed well placement', () => {
     assert.equal(pin!.source, 'setback_search');
   });
 
-  it('flags the best pocket when no pin meets every setback', () => {
+  it('flags the best pocket when no pin meets 100 ft leach — and does not fall back to the centroid', () => {
     const rings = crystalliteLikeRings();
+    const centroid = centroidFromRings(rings);
     const box = rings[0];
     const leach = { rings: [box] };
     const pin = placeProposedWell({
@@ -71,7 +93,52 @@ describe('proposed well placement', () => {
     });
     assert.ok(pin);
     assert.equal(pin!.meetsSetbacks, false);
-    assert.ok(pin!.flags.some((f) => /FLAGGED|leach|best pocket/i.test(f)));
+    assert.ok(pin!.flags.some((f) => /FLAG/i.test(f)));
     assert.equal(pin!.source, 'best_pocket');
+    assert.notEqual(pin!.lat.toFixed(6), centroid!.lat.toFixed(6));
+    assert.notEqual(pin!.lng.toFixed(6), centroid!.lng.toFixed(6));
+  });
+
+  it('places the Crystallite as-built overlay in the SE orchard pocket, not the centroid or NW strip', () => {
+    const { parcelRing, dwellingRing } = crystalliteGisRings();
+    const overlay = traceLarc009777({ parcelRing, dwellingRing });
+    assert.ok(overlay);
+    const known = septicGeometryFromKnown(overlay!.geometry);
+    const pin = placeProposedWell({
+      rings: [parcelRing],
+      county: 'san_diego',
+      tanks: known.tanks,
+      leaches: known.leaches,
+      existingWells: known.existingWells,
+      easements: known.easements,
+      structures: [{ rings: [dwellingRing], areaSqFt: 3323, onSubjectParcel: true }],
+    });
+    assert.ok(pin);
+    const feet = haversineFeet(pin!.lat, pin!.lng, CRYSTALLITE_SE_ORCHARD.lat, CRYSTALLITE_SE_ORCHARD.lng);
+    assert.ok(feet < 12, `expected SE orchard pocket, got ${pin!.lat}, ${pin!.lng} (${feet.toFixed(1)} ft from v4)`);
+    assert.equal(pin!.meetsSetbacks, true);
+    assert.ok((pin!.distances.tankFt || 0) >= 50);
+    assert.ok((pin!.distances.leachFt || 0) >= 100);
+    assert.ok((pin!.distances.existingWellFt || 0) >= 100);
+    assert.ok((pin!.distances.propertyLineFt || 0) >= 10);
+
+    const centroid = centroidFromRings([parcelRing]);
+    const centroidFt = haversineFeet(pin!.lat, pin!.lng, centroid!.lat, centroid!.lng);
+    assert.ok(centroidFt > 80, 'retired centroid is not the proposed well');
+
+    const nw = evaluatePin(33.27768, -117.0337, {
+      rings: [parcelRing],
+      county: 'san_diego',
+      tanks: known.tanks,
+      leaches: known.leaches,
+      existingWells: known.existingWells,
+      easements: known.easements,
+      structures: [{ rings: [dwellingRing], areaSqFt: 3323, onSubjectParcel: true }],
+    });
+    assert.equal(nw.ok, false, 'NW/north-of-house is not the 100 ft leach pocket');
+  });
+
+  it('does not treat a random APN dwelling as a Crystallite as-built', () => {
+    assert.equal(largestOnParcelDwelling([]), null);
   });
 });
