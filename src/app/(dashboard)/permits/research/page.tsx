@@ -26,8 +26,9 @@ import {
   CircleDot,
 } from 'lucide-react';
 import { getMapsLibrary, isGoogleMapsConfigured, SOCAL_CENTER } from '@/components/maps/GoogleMapsLoader';
-import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
+import { detectCounty as detectCountyFromInput } from '@/lib/permits/county';
+import { COUNTY_LABEL, PROPERTY_LINE_SETBACK_FT, type County as PermitCounty } from '@/lib/permits/types';
 
 interface ParcelInfo {
   apn: string;
@@ -100,11 +101,16 @@ interface ResearchResult {
   septic: any | null;
   septicPermits: SepticPermit[];
   zoning: any | null;
-  sources: { name: string; status: 'success' | 'error' | 'mock'; message?: string }[];
+  sources: { name: string; status: 'success' | 'error' | 'missing' | 'mock'; message?: string }[];
+  county?: PermitCounty;
+  searchPoint?: { lat: number; lng: number } | null;
+  formattedAddress?: string;
+  notes?: string[];
   cached?: boolean;
+  structures?: { rings: number[][][] }[];
 }
 
-type County = 'san_diego' | 'riverside' | 'san_bernardino';
+type County = PermitCounty;
 type SearchType = 'apn' | 'address' | 'gps';
 
 interface SepticLocation {
@@ -130,27 +136,8 @@ const COUNTY_OPTIONS: { value: County; label: string }[] = [
 ];
 
 // County boundaries (approximate)
-const COUNTY_BOUNDARIES = {
-  san_diego: { minLat: 32.5, maxLat: 33.5, minLng: -117.6, maxLng: -116.0 },
-  riverside: { minLat: 33.4, maxLat: 34.1, minLng: -117.7, maxLng: -114.4 },
-  san_bernardino: { minLat: 34.0, maxLat: 35.8, minLng: -117.7, maxLng: -114.1 },
-};
-
 function detectCountyFromCoords(lat: number, lng: number): County {
-  const { san_diego, riverside, san_bernardino } = COUNTY_BOUNDARIES;
-  if (lat >= san_diego.minLat && lat <= san_diego.maxLat && 
-      lng >= san_diego.minLng && lng <= san_diego.maxLng) {
-    return 'san_diego';
-  }
-  if (lat >= riverside.minLat && lat <= riverside.maxLat && 
-      lng >= riverside.minLng && lng <= riverside.maxLng) {
-    return 'riverside';
-  }
-  if (lat >= san_bernardino.minLat && lat <= san_bernardino.maxLat && 
-      lng >= san_bernardino.minLng && lng <= san_bernardino.maxLng) {
-    return 'san_bernardino';
-  }
-  return 'san_diego'; // Default
+  return detectCountyFromInput({ lat, lng });
 }
 
 // Convert feet to meters
@@ -229,6 +216,7 @@ export default function PermitResearchPage() {
   const propertyLineSetbackRef = useRef<google.maps.Polygon | null>(null);
   const septicMarkerRef = useRef<google.maps.Marker | null>(null);
   const proposedWellSetbackRef = useRef<google.maps.Circle | null>(null); // Separate ref for proposed well setback
+  const structurePolygonsRef = useRef<google.maps.Polygon[]>([]);
   
   // Coordinates for search
   const [coordinates, setCoordinates] = useState<{ lat: number; lng: number } | null>(null);
@@ -347,13 +335,14 @@ export default function PermitResearchPage() {
   // Fetch utility data when coordinates change
   useEffect(() => {
     if (!coordinates) return;
+    const point = coordinates;
     
     async function fetchUtilities() {
       setIsLoadingUtilities(true);
       try {
         // Fetch coverage info
         const coverageRes = await fetch(
-          `/api/utilities/coverage?lat=${coordinates.lat}&lng=${coordinates.lng}`
+          `/api/utilities/coverage?lat=${point.lat}&lng=${point.lng}`
         );
         if (coverageRes.ok) {
           const coverageData = await coverageRes.json();
@@ -368,7 +357,7 @@ export default function PermitResearchPage() {
         
         if (enabledTypes) {
           const nearbyRes = await fetch(
-            `/api/utilities/nearby?lat=${coordinates.lat}&lng=${coordinates.lng}&radius=500&types=${enabledTypes}`
+            `/api/utilities/nearby?lat=${point.lat}&lng=${point.lng}&radius=500&types=${enabledTypes}`
           );
           if (nearbyRes.ok) {
             const nearbyData = await nearbyRes.json();
@@ -471,6 +460,8 @@ export default function PermitResearchPage() {
         propertyLineSetbackRef.current.setMap(null);
         propertyLineSetbackRef.current = null;
       }
+      structurePolygonsRef.current.forEach((p) => p.setMap(null));
+      structurePolygonsRef.current = [];
     }
     
     // Now check if we should draw new results
@@ -500,11 +491,26 @@ export default function PermitResearchPage() {
       parcelCoords.forEach((coord: { lat: number; lng: number }) => bounds.extend(coord));
       map.fitBounds(bounds, 100);
       
-      // Draw property line setback (50ft inward) if showSetbacks
       if (showSetbacks) {
         drawPropertyLineSetback(parcelCoords, map);
       }
     }
+
+    (result.structures || []).forEach((structure) => {
+      const sring = structure.rings?.[0];
+      if (!sring || sring.length < 3) return;
+      const path = sring.map((pt: number[]) => ({ lat: pt[1], lng: pt[0] }));
+      const poly = new google.maps.Polygon({
+        paths: path,
+        strokeColor: '#6B7280',
+        strokeOpacity: 0.9,
+        strokeWeight: 1.5,
+        fillColor: '#9CA3AF',
+        fillOpacity: 0.25,
+        map,
+      });
+      structurePolygonsRef.current.push(poly);
+    });
     
     // Add well markers with depth labels (using regular Marker, not AdvancedMarker)
     // Declutter overlapping wells by spreading them in a spiral pattern
@@ -634,7 +640,7 @@ export default function PermitResearchPage() {
               <strong style="font-size: 14px; color: #F97316;">🚽 Septic Parcel</strong><br/>
               <b>APN:</b> ${permit.apn}<br/>
               <b>Status:</b> ${permit.designation}<br/>
-              <b>Setback:</b> 50ft radius shown<br/>
+              <b>Note:</b> Parcel centroid, not tank/leach location<br/>
               ${permit.distance_feet ? `<b>Distance:</b> ${permit.distance_feet.toLocaleString()}ft from subject` : ''}
             </div>
           `,
@@ -841,7 +847,7 @@ export default function PermitResearchPage() {
     if (parcelCoords.length < 3) return;
     
     // County-specific setback distances (property line setbacks)
-    const setbackFeet = county === 'san_diego' ? 10 : county === 'san_bernardino' ? 20 : 50;
+    const setbackFeet = PROPERTY_LINE_SETBACK_FT[county];
     // Convert feet to degrees at ~33° latitude (~364000 ft per degree)
     const offsetDeg = setbackFeet / 364000;
     
@@ -994,29 +1000,37 @@ export default function PermitResearchPage() {
           mapInstanceRef.current.setCenter({ lat, lng });
           mapInstanceRef.current.setZoom(17);
         }
-      } else if (searchType === 'address' && isGoogleMapsConfigured()) {
-        // Wait for Maps library to load first
-        await getMapsLibrary();
-        const geocoder = new google.maps.Geocoder();
-        const geocodeResult = await new Promise<google.maps.GeocoderResult[]>((resolve, reject) => {
-          geocoder.geocode({ address: address + ', California' }, (results, status) => {
-            if (status === 'OK' && results) {
-              resolve(results);
-            } else {
-              reject(new Error('Geocoding failed'));
+      } else if (searchType === 'address') {
+        targetCounty = detectCountyFromInput({ address, county: targetCounty });
+        setCounty(targetCounty);
+        if (isGoogleMapsConfigured()) {
+          try {
+            await getMapsLibrary();
+            const geocoder = new google.maps.Geocoder();
+            const geocodeResult = await new Promise<google.maps.GeocoderResult[]>((resolve, reject) => {
+              geocoder.geocode({ address: address + ', California' }, (results, status) => {
+                if (status === 'OK' && results) {
+                  resolve(results);
+                } else {
+                  reject(new Error('Geocoding failed'));
+                }
+              });
+            });
+
+            if (geocodeResult[0]) {
+              lat = geocodeResult[0].geometry.location.lat();
+              lng = geocodeResult[0].geometry.location.lng();
+              targetCounty = detectCountyFromInput({ lat, lng, address, county: targetCounty });
+              setCounty(targetCounty);
+              setCoordinates({ lat, lng });
+
+              if (mapInstanceRef.current) {
+                mapInstanceRef.current.setCenter({ lat, lng });
+                mapInstanceRef.current.setZoom(17);
+              }
             }
-          });
-        });
-        
-        if (geocodeResult[0]) {
-          lat = geocodeResult[0].geometry.location.lat();
-          lng = geocodeResult[0].geometry.location.lng();
-          setCoordinates({ lat, lng });
-          
-          // Center map on address
-          if (mapInstanceRef.current) {
-            mapInstanceRef.current.setCenter({ lat, lng });
-            mapInstanceRef.current.setZoom(17);
+          } catch {
+            // Server geocodes the address if Maps is missing or fails.
           }
         }
       }
@@ -1040,6 +1054,16 @@ export default function PermitResearchPage() {
       }
 
       setResult(data);
+      if (data.county) {
+        setCounty(data.county);
+      }
+      if (data.searchPoint?.lat && data.searchPoint?.lng) {
+        setCoordinates({ lat: data.searchPoint.lat, lng: data.searchPoint.lng });
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.setCenter(data.searchPoint);
+          mapInstanceRef.current.setZoom(17);
+        }
+      }
       
       // Pre-fill permit form with parcel address
       if (data.parcel?.siteAddress) {
@@ -1087,226 +1111,40 @@ export default function PermitResearchPage() {
     }
   };
 
-  // Export Plot Map as PDF
+  // Export a to-scale DEH plot plan (parcel / wells / septic). Does not screenshot Maps.
   const handleExportPlotMap = async () => {
-    if (!mapContainerRef.current || !result) return;
+    if (!result) return;
     
     setIsExportingPdf(true);
     
     try {
-      // Wait for map tiles to fully load (important for mobile)
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      // Force the container to a minimum width for consistent PDF output
-      const container = mapContainerRef.current;
-      const originalStyle = container.style.cssText;
-      const originalWidth = container.offsetWidth;
-      
-      // On mobile, temporarily expand container for better capture
-      if (originalWidth < 800) {
-        container.style.minWidth = '900px';
-        container.style.width = '900px';
-        container.style.overflow = 'visible';
-        
-        // Trigger Google Maps resize so it redraws at new size
-        if (mapInstanceRef.current) {
-          google.maps.event.trigger(mapInstanceRef.current, 'resize');
-          // Re-center on parcel after resize
-          if (result?.parcel?.geometry) {
-            const bounds = new google.maps.LatLngBounds();
-            const coords = result.parcel.geometry.coordinates[0];
-            coords.forEach((coord: number[]) => {
-              bounds.extend({ lat: coord[1], lng: coord[0] });
-            });
-            mapInstanceRef.current.fitBounds(bounds, 50);
-          }
-        }
-        
-        // Let the browser reflow and map redraw
-        await new Promise(resolve => setTimeout(resolve, 800));
-      }
-      
-      // Capture the map with mobile-friendly options
-      const canvas = await html2canvas(mapContainerRef.current, {
-        useCORS: true,
-        allowTaint: true,
-        scale: window.devicePixelRatio > 1 ? 1.5 : 2, // Lower scale on high-DPI mobile
-        logging: false,
-        imageTimeout: 5000,
-        windowWidth: Math.max(container.scrollWidth, 900),
-        windowHeight: container.scrollHeight,
+      const response = await fetch('/api/permits/plot-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          result,
+          proposedWell: wellLocation,
+          manualSeptic: septicLocation,
+        }),
       });
-      
-      // Restore original styling
-      container.style.cssText = originalStyle;
-      
-      const pdf = new jsPDF('landscape', 'mm', 'letter');
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
-      
-      // SCWS Letterhead
-      pdf.setFillColor(16, 185, 129); // Green
-      pdf.rect(0, 0, pageWidth, 25, 'F');
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(18);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Southern California Well Service', 15, 12);
-      pdf.setFontSize(10);
-      pdf.setFont('helvetica', 'normal');
-      pdf.text('License C-57 #1011552 | (760) 440-8520', 15, 19);
-      
-      pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(14);
-      pdf.text('PLOT MAP', pageWidth - 50, 15);
-      
-      // Map Image
-      const mapImgData = canvas.toDataURL('image/png');
-      const mapWidth = pageWidth - 30;
-      const mapHeight = (canvas.height / canvas.width) * mapWidth;
-      const maxMapHeight = pageHeight - 90;
-      const finalMapHeight = Math.min(mapHeight, maxMapHeight);
-      
-      pdf.addImage(mapImgData, 'PNG', 15, 30, mapWidth, finalMapHeight);
-      
-      // Property Info Box
-      const infoY = 30 + finalMapHeight + 5;
-      pdf.setFillColor(249, 250, 251);
-      const infoBoxHeight = wellLocation ? 42 : 35;
-      pdf.rect(15, infoY, pageWidth - 30, infoBoxHeight, 'F');
-      pdf.setDrawColor(229, 231, 235);
-      pdf.rect(15, infoY, pageWidth - 30, infoBoxHeight);
-      
-      pdf.setTextColor(31, 41, 55);
-      pdf.setFontSize(12);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Property Information', 20, infoY + 8);
-      
-      pdf.setFontSize(10);
-      pdf.setFont('helvetica', 'normal');
-      const col1X = 20;
-      const col2X = 100;
-      const col3X = 180;
-      
-      pdf.text(`APN: ${result.parcel?.apn || 'N/A'}`, col1X, infoY + 16);
-      pdf.text(`Lot Size: ${result.parcel?.lotSizeAcres ? result.parcel.lotSizeAcres.toFixed(2) + ' acres' : 'N/A'}`, col2X, infoY + 16);
-      pdf.text(`Zoning: ${result.parcel?.zoning || result.zoning?.designation || 'N/A'}`, col3X, infoY + 16);
-      
-      pdf.text(`County: ${county === 'san_diego' ? 'San Diego' : county === 'san_bernardino' ? 'San Bernardino' : 'Riverside'}`, col3X + 20, infoY + 16);
-      
-      // Owner name on its own line to avoid overlap
-      const ownerName = result.parcel?.ownerName || '';
-      if (ownerName) {
-        const truncatedOwner = ownerName.length > 60 ? ownerName.substring(0, 57) + '...' : ownerName;
-        pdf.text(`Owner: ${truncatedOwner}`, col1X, infoY + 23);
+
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || 'Plot plan export failed');
       }
-      const totalWells = result.wells.length + manualWells.length;
-      pdf.text(`Wells Found: ${totalWells}${manualWells.length > 0 ? ` (${manualWells.length} manual)` : ''}`, col3X + 20, infoY + 23);
-      
-      // Proposed Well GPS Coordinates (if placed)
-      if (wellLocation) {
-        pdf.setFont('helvetica', 'bold');
-        pdf.text('Proposed Well Location:', col1X, infoY + 30);
-        pdf.setFont('helvetica', 'normal');
-        pdf.text(`GPS: ${wellLocation.lat.toFixed(6)}, ${wellLocation.lng.toFixed(6)}`, col1X + 45, infoY + 30);
-      }
-      
-      // Legend
-      const legendY = infoY + (wellLocation ? 35 : 28);
-      pdf.setFontSize(8);
-      pdf.setFont('helvetica', 'bold');
-      pdf.text('Legend:', 20, legendY);
-      pdf.setFont('helvetica', 'normal');
-      
-      // Green square - Parcel
-      pdf.setFillColor(16, 185, 129);
-      pdf.rect(45, legendY - 3, 4, 4, 'F');
-      pdf.text('Parcel Boundary', 51, legendY);
-      
-      // Blue circle - Well
-      pdf.setFillColor(59, 130, 246);
-      pdf.circle(92, legendY - 1.5, 2, 'F');
-      pdf.text('Well Location', 96, legendY);
-      
-      // Purple circle - Existing/Manual Well (if any)
-      if (manualWells.length > 0) {
-        pdf.setFillColor(139, 92, 246);
-        pdf.circle(145, legendY - 1.5, 2, 'F');
-        pdf.text('Existing (Manual)', 149, legendY);
-      }
-      
-      // Orange - Septic
-      pdf.setFillColor(249, 115, 22);
-      pdf.rect(130, legendY - 3, 4, 4, 'F');
-      pdf.text('Septic', 136, legendY);
-      
-      // Red circle - 50ft setback
-      pdf.setDrawColor(239, 68, 68);
-      pdf.circle(160, legendY - 1.5, 2);
-      pdf.text('50ft Setback', 164, legendY);
-      
-      // Blue line - Property setback
-      pdf.setDrawColor(59, 130, 246);
-      pdf.line(200, legendY - 1.5, 208, legendY - 1.5);
-      pdf.text('50ft Property Setback', 210, legendY);
-      
-      // Well Data Table (if wells exist)
-      if (result.wells.length > 0) {
-        pdf.addPage();
-        
-        // Header
-        pdf.setFillColor(16, 185, 129);
-        pdf.rect(0, 0, pageWidth, 20, 'F');
-        pdf.setTextColor(255, 255, 255);
-        pdf.setFontSize(14);
-        pdf.setFont('helvetica', 'bold');
-        pdf.text('Well Data - Nearby Wells Within 1 Mile', 15, 13);
-        
-        // Table headers
-        pdf.setTextColor(107, 114, 128);
-        pdf.setFontSize(9);
-        pdf.setFont('helvetica', 'bold');
-        const headers = ['#', 'WCR Number', 'Date', 'Depth (ft)', 'Static Level (ft)', 'Use'];
-        const colWidths = [15, 50, 40, 40, 50, 60];
-        let xPos = 15;
-        headers.forEach((header, i) => {
-          pdf.text(header, xPos, 30);
-          xPos += colWidths[i];
-        });
-        
-        // Table data
-        pdf.setTextColor(31, 41, 55);
-        pdf.setFont('helvetica', 'normal');
-        let yPos = 38;
-        result.wells.slice(0, 15).forEach((well, i) => {
-          xPos = 15;
-          pdf.text(String(i + 1), xPos, yPos);
-          xPos += colWidths[0];
-          pdf.text(well.wcr_number || 'N/A', xPos, yPos);
-          xPos += colWidths[1];
-          pdf.text(well.date_work_ended || 'N/A', xPos, yPos);
-          xPos += colWidths[2];
-          pdf.text(well.total_completed_depth?.toString() || 'N/A', xPos, yPos);
-          xPos += colWidths[3];
-          pdf.text(well.static_water_level?.toString() || 'N/A', xPos, yPos);
-          xPos += colWidths[4];
-          pdf.text(well.well_use || 'N/A', xPos, yPos);
-          
-          yPos += 8;
-        });
-      }
-      
-      // Footer on last page
-      pdf.setTextColor(156, 163, 175);
-      pdf.setFontSize(8);
-      pdf.text(`Generated ${new Date().toLocaleString()} | Data from CA DWR & County GIS`, 15, pageHeight - 10);
-      
-      // Download
-      const filename = `PlotMap_${result.parcel?.apn?.replace(/-/g, '') || 'property'}_${new Date().toISOString().split('T')[0]}.pdf`;
-      pdf.save(filename);
+
+      const blob = await response.blob();
+      const filename = `PlotPlan_${result.parcel?.apn?.replace(/-/g, '') || 'property'}_${new Date().toISOString().split('T')[0]}.pdf`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
       
     } catch (err) {
       console.error('PDF export error:', err);
-      setError('Failed to export PDF. Please try again.');
+      setError(err instanceof Error ? err.message : 'Failed to export plot plan. Please try again.');
     } finally {
       setIsExportingPdf(false);
     }
@@ -1405,7 +1243,7 @@ export default function PermitResearchPage() {
       pdf.setFont('helvetica', 'normal');
       pdf.text('Company: Southern California Well Service', 20, yPos);
       yPos += 6;
-      pdf.text('License: C-57 #1011552', 20, yPos);
+      pdf.text('License: C-57 #1086994', 20, yPos);
       yPos += 6;
       pdf.text('Phone: (760) 440-8520', 20, yPos);
       yPos += 15;
@@ -1566,7 +1404,7 @@ export default function PermitResearchPage() {
       {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-gray-900">Permit Research Tool</h1>
-        <p className="text-gray-500">Look up parcel information, wells, septic systems, and zoning for any property</p>
+        <p className="text-gray-500">Paste a street address to pull parcel, nearby DWR wells, septic/sewer (or an honest miss), and a to-scale DEH plot plan.</p>
       </div>
 
       {/* Search Panel */}
@@ -1670,7 +1508,7 @@ export default function PermitResearchPage() {
 
             {searchType !== 'gps' && (
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">County</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">County (auto from address)</label>
                 <select
                   value={county}
                   onChange={(e) => setCounty(e.target.value as County)}
@@ -1687,7 +1525,7 @@ export default function PermitResearchPage() {
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">County (auto-detected)</label>
                 <div className="px-4 py-2.5 border border-gray-200 rounded-lg bg-gray-50 text-gray-600">
-                  {county === 'san_diego' ? 'San Diego County' : 'Riverside County'}
+                  {COUNTY_LABEL[county]}
                 </div>
               </div>
             )}
@@ -1735,7 +1573,7 @@ export default function PermitResearchPage() {
                   ) : (
                     <Download className="h-4 w-4" />
                   )}
-                  Export Plot Map
+                  Export Plot Plan
                 </button>
                 
                 <button
@@ -1763,17 +1601,18 @@ export default function PermitResearchPage() {
               {result.sources.map((source, i) => (
                 <span
                   key={i}
+                  title={source.message || source.status}
                   className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${
                     source.status === 'success'
                       ? 'bg-green-100 text-green-700'
-                      : source.status === 'mock'
+                      : source.status === 'missing' || source.status === 'mock'
                       ? 'bg-yellow-100 text-yellow-700'
                       : 'bg-red-100 text-red-700'
                   }`}
                 >
                   {source.status === 'success' ? (
                     <CheckCircle2 className="h-3 w-3" />
-                  ) : source.status === 'mock' ? (
+                  ) : source.status === 'missing' || source.status === 'mock' ? (
                     <Info className="h-3 w-3" />
                   ) : (
                     <AlertCircle className="h-3 w-3" />
@@ -1787,6 +1626,13 @@ export default function PermitResearchPage() {
                 </span>
               )}
             </div>
+          )}
+          {result?.notes && result.notes.length > 0 && (
+            <ul className="mt-3 space-y-1 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              {result.notes.map((note, i) => (
+                <li key={i}>{note}</li>
+              ))}
+            </ul>
           )}
         </div>
       </div>
@@ -1874,15 +1720,15 @@ export default function PermitResearchPage() {
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-3 border-2 border-red-500 rounded-full"></span>
-                    50ft Setback
+                    50ft well setback
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-3 border-2 border-orange-500 rounded-full"></span>
-                    100ft Setback
+                    100ft septic setback
                   </span>
                   <span className="flex items-center gap-1.5">
                     <span className="w-3 h-0 border border-blue-500"></span>
-                    Property Setback
+                    {PROPERTY_LINE_SETBACK_FT[result.county || county]}ft property setback
                   </span>
                 </div>
               </div>
@@ -2129,8 +1975,12 @@ export default function PermitResearchPage() {
                       <label className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
                         <User className="h-3 w-3" /> Owner
                       </label>
-                      <p className="font-medium text-gray-900">{result.parcel.ownerName || '—'}</p>
-                      <p className="text-sm text-gray-500">{result.parcel.ownerAddress || '—'}</p>
+                      <p className="font-medium text-gray-900">
+                        {result.parcel.ownerName || 'Unknown (not published on public GIS)'}
+                      </p>
+                      <p className="text-sm text-gray-500">
+                        {result.parcel.ownerAddress || 'Unknown'}
+                      </p>
                     </div>
                     <div>
                       <label className="text-xs text-gray-500 uppercase tracking-wider flex items-center gap-1">
@@ -2210,7 +2060,9 @@ export default function PermitResearchPage() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-gray-500 text-center py-4">No wells found within 1 mile</p>
+                  <p className="text-gray-500 text-center py-4">
+                    No DWR wells returned. If the source is down, that is an honest GIS miss — locations were not invented.
+                  </p>
                 )}
                 <p className="text-xs text-gray-400 mt-3">
                   Data from CA DWR Well Completion Reports. Wells shown within 1 mile radius.
@@ -2262,17 +2114,16 @@ export default function PermitResearchPage() {
                     <p className="text-sm text-gray-600">{result.septic.designation}</p>
                     <p className="text-xs text-gray-500 mt-1">Source: {result.septic.source}</p>
                   </div>
-                ) : result.septic?.status === 'mock' ? (
+                ) : result.septic?.status === 'missing' || result.septic?.status === 'mock' ? (
                   <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
                     <div className="flex items-start gap-3">
                       <Info className="h-5 w-5 text-yellow-600 flex-shrink-0 mt-0.5" />
                       <div>
-                        <p className="font-medium text-yellow-800">Property Designation Unknown</p>
+                        <p className="font-medium text-yellow-800">Septic / sewer not in SCWS GIS</p>
                         <p className="text-sm text-yellow-700 mt-1">{result.septic.message}</p>
-                        <div className="mt-2 text-sm text-yellow-700">
-                          <p><strong>San Diego County DEH:</strong> (858) 505-6700</p>
-                          <p><strong>Riverside County DEH:</strong> (951) 358-5172</p>
-                        </div>
+                        <p className="text-xs text-yellow-700 mt-2">
+                          Tank and leach-field points are not invented. Place one on the map only if the office has a record or a site visit.
+                        </p>
                       </div>
                     </div>
                   </div>
@@ -2282,7 +2133,7 @@ export default function PermitResearchPage() {
                 {result.septicPermits && result.septicPermits.length > 0 && (
                   <div>
                     <h4 className="text-sm font-medium text-gray-700 mb-2">
-                      Nearby Septic Parcels (within 1 mile)
+                      Nearby septic parcels (centroids, not tank/leach geometry)
                     </h4>
                     <div className="space-y-2 max-h-48 overflow-y-auto">
                       {result.septicPermits.slice(0, 10).map((permit, i) => (
@@ -2307,7 +2158,7 @@ export default function PermitResearchPage() {
                       )}
                     </div>
                     <p className="text-xs text-orange-600 mt-2">
-                      🔶 Orange markers on map show nearby septic parcels
+                      🔶 Orange markers are parcel centroids — tank and leach locations are unknown unless placed by the office
                     </p>
                   </div>
                 )}
@@ -2511,7 +2362,7 @@ export default function PermitResearchPage() {
                 <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider mb-3">Contractor (SCWS)</h3>
                 <div className="bg-green-50 rounded-lg p-4 space-y-1 text-sm">
                   <p><strong>Company:</strong> Southern California Well Service</p>
-                  <p><strong>License:</strong> C-57 #1011552</p>
+                  <p><strong>License:</strong> C-57 #1086994</p>
                   <p><strong>Phone:</strong> (760) 440-8520</p>
                 </div>
               </div>

@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { optionalServiceClient } from '@/lib/supabase/service';
 import { sendSMS, sendEmail, textToHtml, isTwilioConfigured, isResendConfigured } from '@/lib/messaging';
 import type { Automation, AutomationTrigger, TriggerEntityType } from '@/types/automations';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const supabase = optionalServiceClient();
 
 // Verify cron secret in production
 const CRON_SECRET = process.env.CRON_SECRET;
@@ -442,6 +439,9 @@ export async function POST(request: NextRequest) {
   const authHeader = request.headers.get('authorization');
   if (!CRON_SECRET || authHeader !== `Bearer ${CRON_SECRET}`) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+  if (!supabase) {
+    return NextResponse.json({ error: 'Database not configured' }, { status: 503 });
   }
 
   const startTime = Date.now();

@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --test --experimental-strip-types src/lib/*.test.ts src/lib/**/*.test.ts src/lib/jobber/*.test.ts"
+    "test": "node --test --experimental-strip-types src/lib/*.test.ts src/lib/**/*.test.ts src/lib/jobber/*.test.ts src/lib/permits/*.test.ts"
   },
   "dependencies": {
     "@capacitor/android": "^8.0.2",

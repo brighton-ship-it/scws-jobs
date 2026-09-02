@@ -1,15 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { optionalServiceClient } from '@/lib/supabase/service';
 import type { Automation, UpdateAutomationInput } from '@/types/automations';
 
-// Check if we're in demo/mock mode
-const useMockData = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
-                    process.env.NEXT_PUBLIC_SUPABASE_URL === 'your-supabase-url';
-
-const supabase = useMockData ? null : createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const supabase = optionalServiceClient();
+const useMockData = !supabase;
 
 // Mock automations store (shared with main route via module state)
 // Note: In a real app, this would be shared state or imported from a common module

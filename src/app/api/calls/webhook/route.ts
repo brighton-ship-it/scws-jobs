@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
+import { optionalServiceClient } from '@/lib/supabase/service';
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_KEY!
-);
+const supabase = optionalServiceClient();
 
 // Tracking number to source mapping
 const TRACKING_NUMBERS: Record<string, string> = {
@@ -34,7 +31,7 @@ export async function POST(request: NextRequest) {
     
     // Upsert call record (don't await - fire and forget to avoid blocking)
     supabase
-      .from('calls')
+      ?.from('calls')
       .upsert({
         call_sid: callSid,
         source,

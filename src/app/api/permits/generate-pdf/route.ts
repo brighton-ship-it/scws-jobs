@@ -7,12 +7,12 @@ import path from 'path';
 const SCWS_INFO = {
   name: 'Southern California Well Service',
   contact: 'Brighton',
-  license: '1234567', // C-57 License Number - UPDATE THIS
-  address: '123 Well Service Dr',
-  city: 'Escondido',
+  license: '1086994',
+  address: '1077 Main Street, Unit B',
+  city: 'Ramona',
   state: 'CA',
-  zip: '92025',
-  phone: '(760) 555-1234',
+  zip: '92065',
+  phone: '(760) 440-8520',
   email: 'permits@scws.com',
 };
 
@@ -314,7 +314,7 @@ export async function POST(request: NextRequest) {
     // Return as downloadable PDF
     const filename = `well-permit-${data.county}-${data.property.apn.replace(/[^a-zA-Z0-9]/g, '')}-${Date.now()}.pdf`;
     
-    return new NextResponse(filledPdfBytes, {
+    return new NextResponse(Buffer.from(filledPdfBytes), {
       headers: {
         'Content-Type': 'application/pdf',
         'Content-Disposition': `attachment; filename="${filename}"`,
