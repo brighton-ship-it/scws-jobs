@@ -7,7 +7,7 @@ import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
 
-const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com'];
+const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com', 'shanicey@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
 
 interface VapiMessage {
@@ -389,7 +389,7 @@ View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}
 View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/requests
     `.trim();
 
-    // Send to all office emails (Brighton + Brian)
+    // Send to all office emails as separate messages (no CC)
     let emailResult: { success?: boolean; error?: string } = {};
     for (const email of OFFICE_EMAILS) {
       emailResult = await sendEmail({
