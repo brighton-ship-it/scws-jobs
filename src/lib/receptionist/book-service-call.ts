@@ -44,7 +44,7 @@ export function isSarahServiceCallTitle(title: string | null | undefined): boole
 
 export const SERVICE_CALL_TITLE = 'Service Call';
 export const SERVICE_CALL_PRICE_USD = 200;
-export const OFFICE_FLAG_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com'];
+export const OFFICE_FLAG_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com', 'shanicey@scwellservice.com'];
 
 export type BookServiceCallInput = WeekendNeedInput & {
   phone?: string | null;
