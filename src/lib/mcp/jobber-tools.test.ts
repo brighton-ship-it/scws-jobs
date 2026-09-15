@@ -110,6 +110,7 @@ describe('callJobberMcpTool', () => {
       'create_quote_draft',
       {
         clientId: 'client-1',
+        propertyId: 'prop-1',
         title: 'Pull well pump and evaluate',
         message: 'Proposal to pull the well pump and evaluate the pumping system.',
         lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
@@ -134,6 +135,88 @@ describe('callJobberMcpTool', () => {
     assert.ok(bodies.some((body) => body.includes('quoteCreate')));
     assert.ok(bodies.every((body) => !/transitionQuoteTo/.test(body)));
     assert.ok(bodies.every((body) => !/"sentAt"\s*:/.test(body)));
+  });
+
+  it('defaults propertyId when the client has exactly one property', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpClientById')
+          ? jsonResponse({ data: { client: CLIENT } })
+          : null,
+      (query) =>
+        query.includes('JobberUsers')
+          ? jsonResponse({ data: { users: { nodes: [{ id: 'brighton-1', name: 'Brighton' }] } } })
+          : null,
+      (query) =>
+        query.includes('QuoteCreate') && query.includes('mutation')
+          ? jsonResponse({
+              data: {
+                quoteCreate: {
+                  quote: {
+                    id: 'quote-1',
+                    quoteNumber: 4401,
+                    title: 'Pull well pump and evaluate',
+                    sentAt: null,
+                    quoteStatus: 'draft',
+                  },
+                  userErrors: [],
+                },
+              },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_draft',
+      {
+        clientId: 'client-1',
+        title: 'Pull well pump and evaluate',
+        message: 'Proposal to pull the well pump and evaluate the pumping system.',
+        lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const createBody = bodies.find((body) => {
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      return query.includes('mutation') && query.includes('quoteCreate') && !query.includes('quoteCreateLineItems');
+    });
+    const vars = JSON.parse(createBody || '{}') as {
+      variables?: { attributes?: { propertyId?: string } };
+    };
+    assert.equal(vars.variables?.attributes?.propertyId, 'prop-1');
+  });
+
+  it('errors when propertyId is missing and the client has multiple properties', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('McpClientById')
+          ? jsonResponse({
+              data: {
+                client: {
+                  ...CLIENT,
+                  properties: [
+                    { id: 'prop-1', address: { street1: '100 Oak Rd' } },
+                    { id: 'prop-2', address: { street1: '200 Pine Rd' } },
+                  ],
+                },
+              },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_draft',
+      {
+        clientId: 'client-1',
+        title: 'Pull well pump and evaluate',
+        message: 'Proposal to pull the well pump and evaluate the pumping system.',
+        lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /propertyId is required: this client has 2 properties/);
   });
 
   it('refuses forbidden send/approve tools', async () => {

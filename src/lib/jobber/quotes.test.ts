@@ -11,6 +11,7 @@ import {
   jobberClientProperties,
   loadJobByIdOrNumber,
   quoteCreateUsedForbiddenFields,
+  resolveQuoteCreatePropertyId,
   searchClients,
 } from './quotes.ts';
 
@@ -41,10 +42,33 @@ describe('unsent quote attributes', () => {
       taxRateId: 'sd-tax',
     });
     assert.equal(attributes.clientId, 'client-1');
+    assert.equal(attributes.propertyId, 'prop-1');
     assert.equal(attributes.taxRateId, 'sd-tax');
     assert.ok(!('transitionQuoteTo' in attributes));
     assert.ok(!('sentAt' in attributes));
     assertUnsentQuoteAttributes(attributes);
+  });
+
+  it('requires propertyId unless a single client property can be defaulted', () => {
+    assert.equal(resolveQuoteCreatePropertyId('prop-given', [{ id: 'prop-a' }, { id: 'prop-b' }]), 'prop-given');
+    assert.equal(resolveQuoteCreatePropertyId(undefined, [PROPERTY]), 'prop-1');
+    assert.throws(
+      () => resolveQuoteCreatePropertyId(undefined, []),
+      /propertyId is required: this client has no properties/
+    );
+    assert.throws(
+      () => resolveQuoteCreatePropertyId(undefined, [{ id: 'prop-a' }, { id: 'prop-b' }]),
+      /propertyId is required: this client has 2 properties/
+    );
+    assert.throws(
+      () =>
+        buildUnsentQuoteAttributes({
+          clientId: 'client-1',
+          title: 'Pull well pump and evaluate',
+          message: 'Proposal to pull the well pump and evaluate the pumping system.',
+        }),
+      /propertyId is required/
+    );
   });
 
   it('throws if someone tries to send the quote', () => {
@@ -203,6 +227,7 @@ describe('Jobber quote create (mocked)', () => {
     const quote = await createUnsentQuote(
       {
         clientId: 'client-1',
+        propertyId: 'prop-1',
         title: 'Pull well pump and evaluate',
         message: 'Proposal to pull the well pump and evaluate the pumping system.',
         lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
@@ -211,71 +236,77 @@ describe('Jobber quote create (mocked)', () => {
     );
     assert.equal(quote.sentAt, null);
     assert.equal(quote.quoteNumber, 4301);
-    const createQuery =
-      (
-        JSON.parse(
-          bodies.find((body) => {
-            const query = (JSON.parse(body) as { query?: string }).query || '';
-            return query.includes('mutation') && query.includes('quoteCreate') && !query.includes('LineItems');
-          }) || '{}'
-        ) as { query?: string }
-      ).query || '';
-    assert.match(createQuery, /quoteCreate\s*\(\s*attributes:/);
-    assert.equal(/quoteCreate\s*\(\s*input:/.test(createQuery), false);
+    const createBody = bodies.find((body) => {
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      return query.includes('mutation') && query.includes('quoteCreate') && !query.includes('quoteCreateLineItems');
+    });
+    assert.ok(createBody);
+    const parsed = JSON.parse(createBody) as {
+      query?: string;
+      variables?: {
+        attributes?: {
+          propertyId?: string;
+          lineItems?: Array<{ name?: string; saveToProductsAndServices?: boolean }>;
+        };
+      };
+    };
+    assert.match(parsed.query || '', /quoteCreate\s*\(\s*attributes:/);
+    assert.equal(/quoteCreate\s*\(\s*input:/.test(parsed.query || ''), false);
+    assert.equal(parsed.variables?.attributes?.propertyId, 'prop-1');
+    assert.deepEqual(parsed.variables?.attributes?.lineItems, [
+      {
+        name: 'BT2',
+        quantity: 1,
+        unitPrice: 600,
+        taxable: false,
+        saveToProductsAndServices: false,
+      },
+    ]);
+    assert.equal(
+      bodies.some((body) => {
+        const query = (JSON.parse(body) as { query?: string }).query || '';
+        return query.includes('quoteCreateLineItems');
+      }),
+      false
+    );
     assert.ok(bodies.some((body) => body.includes('quoteCreate')));
     assert.ok(bodies.every((body) => !quoteCreateUsedForbiddenFields(body)));
   });
 
-  it('falls back to quoteCreate(input: { attributes }) when the 2025-04-16 shape is rejected', async () => {
+  it('does not retry quoteCreate(input) on a lineItems-required validation error', async () => {
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       const body = String(init?.body || '');
       bodies.push(body);
-      const parsed = JSON.parse(body || '{}') as { query?: string };
-      const query = parsed.query || '';
-      if (query.includes('quoteCreate(attributes:')) {
-        return jsonResponse({
-          errors: [{ message: "Field 'quoteCreate' is missing required arguments: input" }],
-        });
-      }
-      if (query.includes('quoteCreate(input: { attributes: $attributes })')) {
-        return jsonResponse({
-          data: {
-            quoteCreate: {
-              quote: {
-                id: 'quote-legacy',
-                quoteNumber: 4302,
-                title: 'Pull well pump and evaluate',
-                sentAt: null,
-                quoteStatus: 'draft',
-              },
-              userErrors: [],
-            },
+      return jsonResponse({
+        errors: [
+          {
+            message:
+              'Variable $attributes of type QuoteCreateAttributes! was provided invalid value for lineItems (Expected value to not be null)',
           },
-        });
-      }
-      if (query.includes('QuoteCreateLineItems') || query.includes('quoteCreateLineItems')) {
-        return jsonResponse({
-          data: { quoteCreateLineItems: { createdLineItems: [{ id: 'li-1' }], userErrors: [] } },
-        });
-      }
-      return jsonResponse({ data: {} });
+        ],
+      });
     };
 
-    const quote = await createUnsentQuote(
-      {
-        clientId: 'client-1',
-        title: 'Pull well pump and evaluate',
-        message: 'Proposal to pull the well pump and evaluate the pumping system.',
-        lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
-      },
-      { fetchImpl, token: 'test' }
+    await assert.rejects(
+      () =>
+        createUnsentQuote(
+          {
+            clientId: 'client-1',
+            propertyId: 'prop-1',
+            title: 'Pull well pump and evaluate',
+            message: 'Proposal to pull the well pump and evaluate the pumping system.',
+            lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
+          },
+          { fetchImpl, token: 'test' }
+        ),
+      /invalid value for lineItems/
     );
-    assert.equal(quote.id, 'quote-legacy');
     const createQueries = bodies
       .map((body) => (JSON.parse(body) as { query?: string }).query || '')
-      .filter((query) => query.includes('mutation') && query.includes('quoteCreate') && !query.includes('LineItems'));
+      .filter((query) => query.includes('mutation') && query.includes('quoteCreate'));
+    assert.equal(createQueries.length, 1);
     assert.match(createQueries[0] || '', /quoteCreate\s*\(\s*attributes:/);
-    assert.match(createQueries[1] || '', /quoteCreate\s*\(\s*input:\s*\{\s*attributes:/);
+    assert.equal(createQueries.some((query) => /quoteCreate\s*\(\s*input:/.test(query)), false);
   });
 });

@@ -10,6 +10,7 @@ import {
   createUnsentQuote,
   findBrightonSalespersonId,
   jobberClientProperties,
+  resolveQuoteCreatePropertyId,
   searchClients,
   type JobberClient,
   type JobberDeps,
@@ -113,14 +114,18 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'create_quote_draft',
     description:
-      'Create an UNSENT Jobber quote draft. Never sends to the customer. Requires an existing clientId.',
+      'Create an UNSENT Jobber quote draft. Never sends to the customer. Requires an existing clientId and a propertyId (or a client with exactly one property).',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       required: ['clientId', 'title', 'message', 'lineItems'],
       properties: {
         clientId: { type: 'string' },
-        propertyId: { type: 'string' },
+        propertyId: {
+          type: 'string',
+          description:
+            'Required unless the client has exactly one property, which is then used as the default.',
+        },
         title: { type: 'string' },
         message: { type: 'string', description: 'Customer-facing body. No GP FLAG math.' },
         internalNote: { type: 'string', description: 'Private Jobber note. FLAG math is allowed here only.' },
@@ -329,12 +334,18 @@ export async function callJobberMcpTool(
         if (mentionsGpFlag(title)) {
           throw new Error('Quote title must not contain GP FLAG math');
         }
+        const clientId = requiredString(args, 'clientId');
+        let propertyId = optionalString(args, 'propertyId');
+        if (!propertyId) {
+          const client = await getClientById(clientId, deps);
+          propertyId = resolveQuoteCreatePropertyId(undefined, client.properties);
+        }
         const salespersonId =
           optionalString(args, 'salespersonId') || (await findBrightonSalespersonId(deps));
         const quote = await createUnsentQuote(
           {
-            clientId: requiredString(args, 'clientId'),
-            propertyId: optionalString(args, 'propertyId'),
+            clientId,
+            propertyId,
             title,
             message,
             salespersonId,
