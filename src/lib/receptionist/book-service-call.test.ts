@@ -153,9 +153,7 @@ describe('pickExistingClient — no duplicates', () => {
     lastName: 'Wells',
     phones: [{ number: '760-555-0100' }],
     emails: [{ address: 'pat@example.com' }],
-    properties: {
-      nodes: [{ id: 'prop-1', address: { street1: '100 Well Rd', city: 'Ramona', postalCode: '92065' } }],
-    },
+    properties: [{ id: 'prop-1', address: { street1: '100 Well Rd', city: 'Ramona', postalCode: '92065' } }],
   };
 
   it('matches phone, then email, then address, then name', () => {
@@ -167,6 +165,20 @@ describe('pickExistingClient — no duplicates', () => {
     );
     assert.equal(pickExistingClient([existing], { name: 'Pat Wells' })?.matchedBy, 'name');
     assert.equal(pickExistingClient([existing], { phone: '7605550199', name: 'Nobody Else' }), null);
+    assert.equal(
+      pickExistingClient(
+        [
+          {
+            ...existing,
+            properties: {
+              nodes: [{ id: 'prop-1', address: { street1: '100 Well Rd', city: 'Ramona' } }],
+            },
+          },
+        ],
+        { address: '100 Well Road', city: 'Ramona' }
+      )?.matchedBy,
+      'address'
+    );
   });
 });
 
@@ -304,6 +316,23 @@ describe('handleBookServiceCall', () => {
 
   it('creates a Ramona Service Call visit assigned to Brian Eads', async () => {
     const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
+    const bodies: string[] = [];
+    const inner = mockJobber({
+      createdJob: {
+        id: 'job-ramona',
+        title: SERVICE_CALL_TITLE,
+        visits: {
+          nodes: [
+            {
+              id: 'visit-ramona',
+              startAt: slot.startAt,
+              endAt: slot.endAt,
+              assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+            },
+          ],
+        },
+      },
+    });
     const { result } = await handleBookServiceCall(
       {
         phone: '7605550100',
@@ -316,22 +345,10 @@ describe('handleBookServiceCall', () => {
       {
         now: THU_530PM,
         accessToken: 'test-token',
-        fetchFn: mockJobber({
-          createdJob: {
-            id: 'job-ramona',
-            title: SERVICE_CALL_TITLE,
-            visits: {
-              nodes: [
-                {
-                  id: 'visit-ramona',
-                  startAt: slot.startAt,
-                  endAt: slot.endAt,
-                  assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
-                },
-              ],
-            },
-          },
-        }),
+        fetchFn: async (url, init) => {
+          bodies.push(String(init?.body || ''));
+          return inner(url, init);
+        },
       }
     );
 
@@ -342,6 +359,13 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.visit?.startAt, slot.startAt);
     assert.equal(result.assignedTechName, 'Brian Eads');
     assert.equal(SERVICE_CALL_PRICE_USD, 200);
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('SearchClients')) || '{}') as { query?: string })
+        .query || '';
+    assert.match(query, /SearchClients/);
+    assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
+    assert.equal(/properties\s*\{\s*nodes/.test(query), false);
+    assert.match(query, /properties\s*\{\s*id/);
   });
 
   it('creates an Anza Service Call visit assigned to Doug Pollack when both have a slot', async () => {
@@ -494,9 +518,7 @@ describe('handleBookServiceCall', () => {
       id: 'client-existing',
       name: 'Pat Wells',
       phones: [{ number: '7605550100' }],
-      properties: {
-        nodes: [{ id: 'prop-existing', address: { street1: '100 Well Rd', city: 'Ramona' } }],
-      },
+      properties: [{ id: 'prop-existing', address: { street1: '100 Well Rd', city: 'Ramona' } }],
     };
 
     const fetchFn = async (_url: string | URL | Request, init?: RequestInit) => {

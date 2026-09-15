@@ -10,9 +10,7 @@ const CLIENT = {
   lastName: 'Example',
   emails: [{ address: 'pat@example.com' }],
   phones: [{ number: '7605550100' }],
-  properties: {
-    nodes: [{ id: 'prop-1', address: { street1: '100 Oak Rd', city: 'Ramona' } }],
-  },
+  properties: [{ id: 'prop-1', address: { street1: '100 Oak Rd', city: 'Ramona' } }],
   quotes: { nodes: [] },
 };
 
@@ -68,11 +66,13 @@ describe('callJobberMcpTool', () => {
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /client-1/);
     assert.match(result.content[0].text, /Pat Example/);
+    assert.match(result.content[0].text, /prop-1/);
     const query =
       (JSON.parse(bodies.find((body) => body.includes('ClientSearch')) || '{}') as { query?: string })
         .query || '';
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
-    assert.match(query, /properties\s*\{\s*nodes/);
+    assert.equal(/properties\s*\{\s*nodes/.test(query), false);
+    assert.match(query, /properties\s*\{\s*id/);
   });
 
   it('creates an unsent draft and never asks Jobber to send it', async () => {

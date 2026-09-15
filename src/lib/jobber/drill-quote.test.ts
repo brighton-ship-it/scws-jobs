@@ -84,9 +84,7 @@ describe('createDrillQuote', () => {
                 {
                   id: 'client-1',
                   name: 'Pat Example',
-                  properties: {
-                    nodes: [{ id: 'prop-1', address: { street1: '1077 Main St', city: 'Ramona' } }],
-                  },
+                  properties: [{ id: 'prop-1', address: { street1: '1077 Main St', city: 'Ramona' } }],
                   quotes: { nodes: [] },
                 },
               ],

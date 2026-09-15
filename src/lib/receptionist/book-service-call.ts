@@ -33,6 +33,7 @@ import {
   isAllowlistedTechId,
   isBlockedAssignee,
 } from './tech-assignment.ts';
+import { jobberClientProperties, type JobberProperties } from '../jobber/quotes.ts';
 
 const FORBIDDEN_SARAH_JOB = /\b(drill|drilling|pump|quote|estimate|rehab|rehabilitation|crew)\b/i;
 
@@ -115,10 +116,8 @@ const SEARCH_CLIENTS_QUERY = `
         phones { number }
         emails { address }
         properties {
-          nodes {
-            id
-            address { street1 city postalCode }
-          }
+          id
+          address { street1 city postalCode }
         }
       }
     }
@@ -198,12 +197,7 @@ export type JobberClientNode = {
   companyName?: string | null;
   phones?: Array<{ number?: string | null } | null> | null;
   emails?: Array<{ address?: string | null } | null> | null;
-  properties?: {
-    nodes?: Array<{
-      id: string;
-      address?: { street1?: string | null; city?: string | null; postalCode?: string | null } | null;
-    } | null> | null;
-  } | null;
+  properties?: JobberProperties;
 };
 
 function jobberHeaders(token: string, version: string): HeadersInit {
@@ -310,9 +304,9 @@ function clientMatches(
 
   const street = input.street;
   if (street) {
-    for (const property of client.properties?.nodes || []) {
-      const propStreet = normalizeStreet(property?.address?.street1 || '');
-      const propCity = String(property?.address?.city || '').toLowerCase().trim();
+    for (const property of jobberClientProperties(client.properties)) {
+      const propStreet = normalizeStreet(property.address?.street1 || '');
+      const propCity = String(property.address?.city || '').toLowerCase().trim();
       if (propStreet && (propStreet === street || propStreet.includes(street) || street.includes(propStreet))) {
         if (!input.city || !propCity || propCity === input.city.toLowerCase()) return 'address';
       }
@@ -355,14 +349,15 @@ export function pickExistingClient(
 }
 
 export function matchingPropertyId(client: JobberClientNode, address?: string | null, city?: string | null): string | null {
+  const properties = jobberClientProperties(client.properties);
   const street = normalizeStreet(address);
-  if (!street) return client.properties?.nodes?.[0]?.id || null;
+  if (!street) return properties[0]?.id || null;
 
-  for (const property of client.properties?.nodes || []) {
-    const propStreet = normalizeStreet(property?.address?.street1 || '');
+  for (const property of properties) {
+    const propStreet = normalizeStreet(property.address?.street1 || '');
     if (propStreet && (propStreet === street || propStreet.includes(street) || street.includes(propStreet))) {
-      const propCity = String(property?.address?.city || '').toLowerCase().trim();
-      if (!city || !propCity || propCity === city.toLowerCase()) return property!.id;
+      const propCity = String(property.address?.city || '').toLowerCase().trim();
+      if (!city || !propCity || propCity === city.toLowerCase()) return property.id;
     }
   }
 
