@@ -68,7 +68,9 @@ describe('callJobberMcpTool', () => {
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /client-1/);
     assert.match(result.content[0].text, /Pat Example/);
-    const query = bodies.find((body) => body.includes('ClientSearch')) || '';
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('ClientSearch')) || '{}') as { query?: string })
+        .query || '';
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
     assert.match(query, /properties\s*\{\s*nodes/);
   });

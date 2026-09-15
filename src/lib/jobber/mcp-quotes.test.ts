@@ -69,7 +69,9 @@ describe('MCP client GraphQL (2025-04-16)', () => {
     const client = await getClientById('client-1', { fetchImpl, token: 'test' });
     assert.equal(client.id, 'client-1');
 
-    const query = bodies.find((body) => body.includes('McpClientById')) || '';
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('McpClientById')) || '{}') as { query?: string })
+        .query || '';
     assert.match(query, /McpClientById/);
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
     assert.match(query, /properties\s*\{\s*nodes/);

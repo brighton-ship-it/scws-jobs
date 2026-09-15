@@ -95,7 +95,9 @@ describe('Jobber client search GraphQL (2025-04-16)', () => {
 
     await searchClients('Pat Example', { fetchImpl, token: 'test' });
 
-    const query = bodies.find((body) => body.includes('ClientSearch')) || '';
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('ClientSearch')) || '{}') as { query?: string })
+        .query || '';
     assert.match(query, /ClientSearch/);
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
     assert.match(query, /properties\s*\{\s*nodes/);
@@ -169,7 +171,9 @@ describe('Jobber quote create (mocked)', () => {
     const job = await loadJobByIdOrNumber({ jobNumber: 8801 }, { fetchImpl, token: 'test' });
     assert.equal(job.jobNumber, 8801);
     assert.equal(job.client?.id, 'client-1');
-    const jobQuery = bodies.find((body) => body.includes('JobsSearch')) || '';
+    const jobQuery =
+      (JSON.parse(bodies.find((body) => body.includes('JobsSearch')) || '{}') as { query?: string })
+        .query || '';
     assert.equal(/properties\s*\(\s*first\s*:/.test(jobQuery), false);
     assert.match(jobQuery, /properties\s*\{\s*nodes/);
 
