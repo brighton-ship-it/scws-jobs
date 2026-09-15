@@ -3,6 +3,12 @@
  * Receptionist / book_job call sites are not rewritten; recent-jobs imports this.
  */
 
+import {
+  getJobberOAuthCredentials,
+  getValidJobberAccessToken,
+  refreshJobberTokens,
+} from './auth.ts';
+
 export const JOBBER_GRAPHQL_URL = 'https://api.getjobber.com/api/graphql';
 export const DEFAULT_JOBBER_GRAPHQL_VERSION = '2025-04-16';
 
@@ -34,29 +40,58 @@ export type JobberGraphqlResult<T = any> = {
   errors?: Array<{ message?: string }>;
 };
 
+export type JobberGraphqlOptions = {
+  token?: string | null;
+  fetchImpl?: typeof fetch;
+  env?: NodeJS.ProcessEnv;
+};
+
+async function readGraphqlJson<T>(response: Response): Promise<JobberGraphqlResult<T>> {
+  try {
+    return (await response.json()) as JobberGraphqlResult<T>;
+  } catch {
+    return {};
+  }
+}
+
 export async function jobberGraphql<T = any>(
   query: string,
   variables: Record<string, unknown> = {},
-  options?: {
-    token?: string | null;
-    fetchImpl?: typeof fetch;
-    env?: NodeJS.ProcessEnv;
-  }
+  options?: JobberGraphqlOptions
 ): Promise<JobberGraphqlResult<T>> {
   const env = options?.env ?? process.env;
-  const token = options?.token ?? getJobberAccessToken(env);
-  if (!token) {
-    throw new Error('JOBBER_ACCESS_TOKEN is not set');
-  }
-
   const fetchImpl = options?.fetchImpl ?? fetch;
-  const response = await fetchImpl(JOBBER_GRAPHQL_URL, {
-    method: 'POST',
-    headers: jobberHeaders(token, env),
-    body: JSON.stringify({ query, variables }),
+  const authDeps = { env, fetchImpl };
+
+  let token = await getValidJobberAccessToken({
+    ...authDeps,
+    token: options?.token,
   });
 
-  const json = (await response.json()) as JobberGraphqlResult<T>;
+  const requestOnce = async (accessToken: string) => {
+    const response = await fetchImpl(JOBBER_GRAPHQL_URL, {
+      method: 'POST',
+      headers: jobberHeaders(accessToken, env),
+      body: JSON.stringify({ query, variables }),
+    });
+    const json = await readGraphqlJson<T>(response);
+    return { response, json };
+  };
+
+  let { response, json } = await requestOnce(token);
+
+  if (response.status === 401 && getJobberOAuthCredentials(env)) {
+    token = (await refreshJobberTokens(authDeps)).accessToken;
+    ({ response, json } = await requestOnce(token));
+    if (!response.ok) {
+      throw new Error(
+        response.status === 401
+          ? 'Jobber GraphQL HTTP 401 after token refresh'
+          : `Jobber GraphQL HTTP ${response.status}`
+      );
+    }
+    return json;
+  }
 
   if (!response.ok) {
     throw new Error(`Jobber GraphQL HTTP ${response.status}`);
