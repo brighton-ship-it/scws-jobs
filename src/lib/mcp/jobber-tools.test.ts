@@ -120,6 +120,17 @@ describe('callJobberMcpTool', () => {
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /quote-1/);
     assert.match(result.content[0].text, /"draft": true/);
+    const createQuery =
+      (
+        JSON.parse(
+          bodies.find((body) => {
+            const query = (JSON.parse(body) as { query?: string }).query || '';
+            return query.includes('mutation') && query.includes('quoteCreate') && !query.includes('LineItems');
+          }) || '{}'
+        ) as { query?: string }
+      ).query || '';
+    assert.match(createQuery, /quoteCreate\s*\(\s*attributes:/);
+    assert.equal(/quoteCreate\s*\(\s*input:/.test(createQuery), false);
     assert.ok(bodies.some((body) => body.includes('quoteCreate')));
     assert.ok(bodies.every((body) => !/transitionQuoteTo/.test(body)));
     assert.ok(bodies.every((body) => !/"sentAt"\s*:/.test(body)));
