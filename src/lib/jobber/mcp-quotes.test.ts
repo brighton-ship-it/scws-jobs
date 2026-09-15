@@ -50,7 +50,7 @@ function jsonResponse(data: unknown, status = 200): Response {
 }
 
 describe('MCP client GraphQL (2025-04-16)', () => {
-  it('does not pass first to properties on getClientById', async () => {
+  it('selects properties as a Property list, not a connection', async () => {
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       bodies.push(String(init?.body || ''));
@@ -59,7 +59,7 @@ describe('MCP client GraphQL (2025-04-16)', () => {
           client: {
             id: 'client-1',
             name: 'Pat Example',
-            properties: { nodes: [] },
+            properties: [],
             quotes: { nodes: [] },
           },
         },
@@ -74,7 +74,8 @@ describe('MCP client GraphQL (2025-04-16)', () => {
         .query || '';
     assert.match(query, /McpClientById/);
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
-    assert.match(query, /properties\s*\{\s*nodes/);
+    assert.equal(/properties\s*\{\s*nodes/.test(query), false);
+    assert.match(query, /properties\s*\{\s*id/);
     assert.match(query, /quotes\s*\(\s*first:\s*25\s*\)/);
   });
 });

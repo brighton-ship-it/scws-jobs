@@ -5,22 +5,30 @@ import {
   buildUnsentQuoteAttributes,
   createUnsentQuote,
   findExistingClient,
+  findExistingPropertyId,
   findLiveQuoteForJob,
   isLiveQuote,
+  jobberClientProperties,
   loadJobByIdOrNumber,
   quoteCreateUsedForbiddenFields,
   searchClients,
 } from './quotes.ts';
+
+const PROPERTY = { id: 'prop-1', address: { street1: '100 Oak Rd', city: 'Ramona' } };
 
 const CLIENT = {
   id: 'client-1',
   name: 'Pat Example',
   emails: [{ address: 'pat@example.com' }],
   phones: [{ number: '7605550100' }],
-  properties: {
-    nodes: [{ id: 'prop-1', address: { street1: '100 Oak Rd', city: 'Ramona' } }],
-  },
+  properties: [PROPERTY],
 };
+
+function assertPropertiesIsPropertyList(query: string) {
+  assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
+  assert.equal(/properties\s*\{\s*nodes/.test(query), false);
+  assert.match(query, /properties\s*\{\s*id/);
+}
 
 describe('unsent quote attributes', () => {
   it('builds attributes without transitionQuoteTo or sentAt', () => {
@@ -86,7 +94,7 @@ describe('live quote reuse', () => {
 });
 
 describe('Jobber client search GraphQL (2025-04-16)', () => {
-  it('does not pass first to properties; quotes still paginate', async () => {
+  it('selects properties as a Property list, not a connection', async () => {
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       bodies.push(String(init?.body || ''));
@@ -99,9 +107,19 @@ describe('Jobber client search GraphQL (2025-04-16)', () => {
       (JSON.parse(bodies.find((body) => body.includes('ClientSearch')) || '{}') as { query?: string })
         .query || '';
     assert.match(query, /ClientSearch/);
-    assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
-    assert.match(query, /properties\s*\{\s*nodes/);
+    assertPropertiesIsPropertyList(query);
     assert.match(query, /quotes\s*\(\s*first:\s*25\s*\)/);
+  });
+});
+
+describe('jobberClientProperties', () => {
+  it('reads the live array shape and leftover connection shape', () => {
+    assert.deepEqual(jobberClientProperties([PROPERTY]).map((property) => property.id), ['prop-1']);
+    assert.deepEqual(
+      jobberClientProperties({ nodes: [PROPERTY] }).map((property) => property.id),
+      ['prop-1']
+    );
+    assert.deepEqual(jobberClientProperties(null), []);
   });
 });
 
@@ -110,6 +128,12 @@ describe('client search never invents a duplicate', () => {
     assert.equal(findExistingClient([CLIENT], { phone: '(760) 555-0100' })?.id, 'client-1');
     assert.equal(findExistingClient([CLIENT], { street: '100 Oak Road' })?.id, 'client-1');
     assert.equal(findExistingClient([CLIENT], { street: '999 Other St' }), null);
+    assert.equal(
+      findExistingClient([{ ...CLIENT, properties: { nodes: [PROPERTY] } }], { street: '100 Oak Road' })
+        ?.id,
+      'client-1'
+    );
+    assert.equal(findExistingPropertyId(CLIENT, '100 Oak Road'), 'prop-1');
   });
 });
 
@@ -174,8 +198,7 @@ describe('Jobber quote create (mocked)', () => {
     const jobQuery =
       (JSON.parse(bodies.find((body) => body.includes('JobsSearch')) || '{}') as { query?: string })
         .query || '';
-    assert.equal(/properties\s*\(\s*first\s*:/.test(jobQuery), false);
-    assert.match(jobQuery, /properties\s*\{\s*nodes/);
+    assertPropertiesIsPropertyList(jobQuery);
 
     const quote = await createUnsentQuote(
       {

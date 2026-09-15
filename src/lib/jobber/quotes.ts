@@ -36,6 +36,22 @@ export type JobberQuoteSummary = {
   property?: { id?: string | null } | null;
 };
 
+export type JobberProperty = {
+  id: string;
+  address?: JobberAddress | null;
+};
+
+/** Jobber 2025-04-16 Client.properties is [Property!], not a Connection. */
+export type JobberPropertiesConnection = {
+  nodes?: Array<JobberProperty | null> | null;
+};
+
+export type JobberProperties =
+  | Array<JobberProperty | null>
+  | JobberPropertiesConnection
+  | null
+  | undefined;
+
 export type JobberClient = {
   id: string;
   name?: string | null;
@@ -44,14 +60,15 @@ export type JobberClient = {
   companyName?: string | null;
   emails?: Array<{ address?: string | null } | null> | null;
   phones?: Array<{ number?: string | null } | null> | null;
-  properties?: {
-    nodes?: Array<{
-      id: string;
-      address?: JobberAddress | null;
-    } | null> | null;
-  } | null;
+  properties?: JobberProperties;
   quotes?: { nodes?: Array<JobberQuoteSummary | null> | null } | null;
 };
+
+export function jobberClientProperties(properties: JobberProperties): JobberProperty[] {
+  if (!properties) return [];
+  const list = Array.isArray(properties) ? properties : properties.nodes || [];
+  return list.filter((property): property is JobberProperty => Boolean(property?.id));
+}
 
 export type JobberJob = {
   id: string;
@@ -77,10 +94,8 @@ const JOB_FIELDS = `
     emails { address }
     phones { number }
     properties {
-      nodes {
-        id
-        address { street1 street2 city province postalCode }
-      }
+      id
+      address { street1 street2 city province postalCode }
     }
   }
   property {
@@ -125,10 +140,8 @@ const CLIENT_SEARCH = `
         emails { address }
         phones { number }
         properties {
-          nodes {
-            id
-            address { street1 street2 city province postalCode }
-          }
+          id
+          address { street1 street2 city province postalCode }
         }
         quotes(first: 25) {
           nodes {
@@ -427,8 +440,8 @@ export function findExistingClient(
       }
     }
     if (street) {
-      for (const property of client.properties?.nodes || []) {
-        if (normalizeStreet(property?.address?.street1) === street) return client;
+      for (const property of jobberClientProperties(client.properties)) {
+        if (normalizeStreet(property.address?.street1) === street) return client;
       }
     }
     if (name && (client.name || '').trim().toLowerCase() === name) return client;
@@ -440,10 +453,11 @@ export function findExistingPropertyId(
   client: JobberClient,
   street: string | null | undefined
 ): string | null {
+  const properties = jobberClientProperties(client.properties);
   const needle = normalizeStreet(street);
-  if (!needle) return client.properties?.nodes?.[0]?.id ?? null;
-  for (const property of client.properties?.nodes || []) {
-    if (property && normalizeStreet(property.address?.street1) === needle) {
+  if (!needle) return properties[0]?.id ?? null;
+  for (const property of properties) {
+    if (normalizeStreet(property.address?.street1) === needle) {
       return property.id;
     }
   }

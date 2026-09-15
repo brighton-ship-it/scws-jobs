@@ -9,6 +9,7 @@ import { mentionsGpFlag } from '../jobber/gross-profit.ts';
 import {
   createUnsentQuote,
   findBrightonSalespersonId,
+  jobberClientProperties,
   searchClients,
   type JobberClient,
   type JobberDeps,
@@ -232,12 +233,10 @@ function summarizeClient(client: JobberClient) {
     companyName: client.companyName || null,
     emails: (client.emails || []).map((entry) => entry?.address).filter(Boolean),
     phones: (client.phones || []).map((entry) => entry?.number).filter(Boolean),
-    properties: (client.properties?.nodes || [])
-      .filter((property): property is NonNullable<typeof property> => Boolean(property?.id))
-      .map((property) => ({
-        id: property.id,
-        address: property.address || null,
-      })),
+    properties: jobberClientProperties(client.properties).map((property) => ({
+      id: property.id,
+      address: property.address || null,
+    })),
     quotes: (client.quotes?.nodes || [])
       .filter((quote): quote is NonNullable<typeof quote> => Boolean(quote?.id))
       .map((quote) => ({

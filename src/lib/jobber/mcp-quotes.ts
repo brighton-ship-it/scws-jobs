@@ -34,10 +34,8 @@ const CLIENT_FIELDS = `
   emails { address }
   phones { number }
   properties {
-    nodes {
-      id
-      address { street1 street2 city province postalCode }
-    }
+    id
+    address { street1 street2 city province postalCode }
   }
   quotes(first: 25) {
     nodes {
