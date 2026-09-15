@@ -15,6 +15,7 @@ import {
   findExistingClient,
   findExistingPropertyId,
   isLiveQuote,
+  resolveQuoteCreatePropertyId,
   searchClients,
   type JobberDeps,
   type JobberQuoteSummary,
@@ -180,7 +181,10 @@ export async function createDrillQuote(
   const tax = resolveJobberTax({ city, rates, env: deps?.env });
   const message = customerMessageForAirRotary(estimate.footageFt);
   assertCustomerMessageHasNoGp(message);
-  const propertyId = findExistingPropertyId(client, street);
+  const propertyId = resolveQuoteCreatePropertyId(
+    findExistingPropertyId(client, street),
+    client.properties
+  );
   const title = officeTitleWithGpFlags(
     method === 'mud' ? MUD_ROTARY_TITLE : AIR_ROTARY_TITLE,
     gp.flags

@@ -175,7 +175,7 @@ const USERS = `
   }
 `;
 
-/** Jobber 2025-04-16: quoteCreate requires a top-level `attributes` argument. */
+/** Jobber 2025-04-16: quoteCreate takes top-level attributes only. Do not wrap in input. */
 const QUOTE_CREATE = `
   mutation QuoteCreate($attributes: QuoteCreateAttributes!) {
     quoteCreate(attributes: $attributes) {
@@ -187,32 +187,6 @@ const QUOTE_CREATE = `
         quoteStatus
         jobberWebUri
       }
-      userErrors { message path }
-    }
-  }
-`;
-
-/** Older schemas wrapped attributes in input. */
-const QUOTE_CREATE_ALT = `
-  mutation QuoteCreateAlt($attributes: QuoteCreateAttributes!) {
-    quoteCreate(input: { attributes: $attributes }) {
-      quote {
-        id
-        quoteNumber
-        title
-        sentAt
-        quoteStatus
-        jobberWebUri
-      }
-      userErrors { message path }
-    }
-  }
-`;
-
-const QUOTE_LINE_ITEMS = `
-  mutation QuoteCreateLineItems($quoteId: EncodedId!, $lineItems: [QuoteCreateLineItemAttributes!]!) {
-    quoteCreateLineItems(quoteId: $quoteId, lineItems: $lineItems) {
-      createdLineItems { id name quantity }
       userErrors { message path }
     }
   }
@@ -274,6 +248,25 @@ export function findLiveQuoteForJob(
   );
 }
 
+export function resolveQuoteCreatePropertyId(
+  propertyId: string | null | undefined,
+  properties?: JobberProperties
+): string {
+  const provided = propertyId?.trim();
+  if (provided) return provided;
+
+  const list = jobberClientProperties(properties);
+  if (list.length === 1) return list[0].id;
+  if (list.length === 0) {
+    throw new Error(
+      'propertyId is required: this client has no properties. Pass propertyId or add a property in Jobber first.'
+    );
+  }
+  throw new Error(
+    `propertyId is required: this client has ${list.length} properties. Pass propertyId to choose one.`
+  );
+}
+
 export function buildUnsentQuoteAttributes(input: {
   clientId: string;
   propertyId?: string | null;
@@ -281,15 +274,18 @@ export function buildUnsentQuoteAttributes(input: {
   message: string;
   salespersonId?: string | null;
   taxRateId?: string | null;
+  lineItems?: QuoteLineDraft[];
 }): Record<string, unknown> {
+  const propertyId = resolveQuoteCreatePropertyId(input.propertyId);
   const attributes: Record<string, unknown> = {
     clientId: input.clientId,
+    propertyId,
     title: input.title,
     message: input.message,
   };
-  if (input.propertyId) attributes.propertyId = input.propertyId;
   if (input.salespersonId) attributes.salespersonId = input.salespersonId;
   if (input.taxRateId) attributes.taxRateId = input.taxRateId;
+  if (input.lineItems) attributes.lineItems = toJobberLineItems(input.lineItems);
   // Drafts stay unsent. Never set transitionQuoteTo or sentAt.
   // Never put GP FLAG math on message — that is the client-facing email body.
   return attributes;
@@ -506,13 +502,21 @@ export async function createUnsentQuote(
   if (mentionsGpFlag(input.message)) {
     throw new Error('Customer-facing quote message must not contain GP FLAG math');
   }
-  const attributes = buildUnsentQuoteAttributes(input);
+  if (!input.lineItems?.length) {
+    throw new Error(
+      'lineItems is required to create a Jobber quote (QuoteCreateAttributes.lineItems is NON_NULL)'
+    );
+  }
+  const attributes = buildUnsentQuoteAttributes({
+    ...input,
+    lineItems: input.lineItems,
+  });
   assertUnsentQuoteAttributes(attributes);
 
-  let created = await graphql(QUOTE_CREATE, { attributes }, deps);
-  if (created.errors?.length && /argument|QuoteCreate/i.test(created.errors[0]?.message || '')) {
-    created = await graphql(QUOTE_CREATE_ALT, { attributes }, deps);
-  }
+  // 2025-04-16 rejects quoteCreate(input:). Do not retry that shape on field validation
+  // errors such as missing lineItems — those mention QuoteCreateAttributes and used to
+  // trip a false /argument|QuoteCreate/ fallback.
+  const created = await graphql(QUOTE_CREATE, { attributes }, deps);
   assertNoJobberErrors(created, 'quoteCreate');
   const payload = created.data?.quoteCreate;
   const createErrors = jobberUserErrors(payload);
@@ -525,18 +529,6 @@ export async function createUnsentQuote(
   }
   if (quote.sentAt) {
     throw new Error('Jobber returned sentAt on a draft create — aborting');
-  }
-
-  const lineItems = toJobberLineItems(input.lineItems);
-  const linesResult = await graphql(
-    QUOTE_LINE_ITEMS,
-    { quoteId: quote.id, lineItems },
-    deps
-  );
-  assertNoJobberErrors(linesResult, 'quoteCreateLineItems');
-  const lineErrors = jobberUserErrors(linesResult.data?.quoteCreateLineItems);
-  if (lineErrors.length) {
-    throw new Error(lineErrors.join('; '));
   }
 
   if (input.internalNote) {
