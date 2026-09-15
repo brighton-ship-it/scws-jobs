@@ -1,15 +1,15 @@
 import { type NextRequest, NextResponse } from 'next/server';
 import { updateSession } from '@/lib/supabase/middleware';
 import { checkRateLimit, rateLimitedResponse, getRateLimitHeaders } from '@/lib/rate-limit';
-import { isCronApiPath, isOpsApiPath, isOpsPagePath } from '@/lib/public-api';
+import { isCronApiPath, isMcpApiPath, isOpsApiPath, isOpsPagePath } from '@/lib/public-api';
 
 export async function middleware(request: NextRequest) {
   const path = request.nextUrl.pathname;
 
-  // Vercel Cron is cookie-less. Session auth here 401s it at edge-middleware
-  // and can drop Authorization before the route sees Bearer CRON_SECRET.
-  // Rate-limit only; the handler still requires CRON_SECRET.
-  if (isCronApiPath(path) || isOpsApiPath(path)) {
+  // Vercel Cron / MCP bots are cookie-less. Session auth here 401s them at
+  // edge-middleware and can drop Authorization before the route sees Bearer.
+  // Rate-limit only; handlers still require their own secrets.
+  if (isCronApiPath(path) || isOpsApiPath(path) || isMcpApiPath(path)) {
     const rateLimitResult = checkRateLimit(request);
     if (!rateLimitResult.success) {
       return rateLimitedResponse(rateLimitResult);

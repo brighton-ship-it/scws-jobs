@@ -3,7 +3,7 @@
  *
  * Middleware treats every /api route as callable without a session unless
  * it matches one of these rules. Keep this list tight: marketing-site
- * intake, customer portal/pay, inbound webhooks, OAuth callback, and cron.
+ * intake, customer portal/pay, inbound webhooks, OAuth callback, cron, and MCP.
  */
 
 type PublicApiRule = {
@@ -45,6 +45,10 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   { method: 'POST', path: '/api/jobber/tech-note-quote', match: 'exact' },
   { method: 'POST', path: '/api/jobber/drill-quote', match: 'exact' },
 
+  // Shared Jobber MCP gateway — route still requires Bearer JOBBER_MCP_API_KEYS.
+  { method: '*', path: '/api/mcp/', match: 'prefix' },
+  { method: '*', path: '/api/mcp', match: 'exact' },
+
   // Browser push setup (public key only)
   { method: 'GET', path: '/api/push/vapid-key', match: 'exact' },
 ];
@@ -52,6 +56,14 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
 /** Cookie-less Vercel Cron — never 401 in Next.js middleware. Route checks CRON_SECRET. */
 export function isCronApiPath(pathname: string): boolean {
   return pathname === '/api/cron' || pathname.startsWith('/api/cron/');
+}
+
+/**
+ * Cookie-less Jobber MCP (Grok Bot / Cursor). Middleware must not 401 or
+ * rewrite Authorization. Route checks JOBBER_MCP_API_KEYS.
+ */
+export function isMcpApiPath(pathname: string): boolean {
+  return pathname === '/api/mcp' || pathname.startsWith('/api/mcp/');
 }
 
 /**
@@ -72,6 +84,10 @@ export function isPublicApiRoute(method: string, pathname: string): boolean {
   }
 
   if (isCronApiPath(pathname)) {
+    return true;
+  }
+
+  if (isMcpApiPath(pathname)) {
     return true;
   }
 
