@@ -9,6 +9,7 @@ import {
   isLiveQuote,
   loadJobByIdOrNumber,
   quoteCreateUsedForbiddenFields,
+  searchClients,
 } from './quotes.ts';
 
 const CLIENT = {
@@ -84,6 +85,26 @@ describe('live quote reuse', () => {
   });
 });
 
+describe('Jobber client search GraphQL (2025-04-16)', () => {
+  it('does not pass first to properties; quotes still paginate', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body || ''));
+      return jsonResponse({ data: { clients: { nodes: [] } } });
+    };
+
+    await searchClients('Pat Example', { fetchImpl, token: 'test' });
+
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('ClientSearch')) || '{}') as { query?: string })
+        .query || '';
+    assert.match(query, /ClientSearch/);
+    assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
+    assert.match(query, /properties\s*\{\s*nodes/);
+    assert.match(query, /quotes\s*\(\s*first:\s*25\s*\)/);
+  });
+});
+
 describe('client search never invents a duplicate', () => {
   it('matches existing phone / street', () => {
     assert.equal(findExistingClient([CLIENT], { phone: '(760) 555-0100' })?.id, 'client-1');
@@ -150,6 +171,11 @@ describe('Jobber quote create (mocked)', () => {
     const job = await loadJobByIdOrNumber({ jobNumber: 8801 }, { fetchImpl, token: 'test' });
     assert.equal(job.jobNumber, 8801);
     assert.equal(job.client?.id, 'client-1');
+    const jobQuery =
+      (JSON.parse(bodies.find((body) => body.includes('JobsSearch')) || '{}') as { query?: string })
+        .query || '';
+    assert.equal(/properties\s*\(\s*first\s*:/.test(jobQuery), false);
+    assert.match(jobQuery, /properties\s*\{\s*nodes/);
 
     const quote = await createUnsentQuote(
       {

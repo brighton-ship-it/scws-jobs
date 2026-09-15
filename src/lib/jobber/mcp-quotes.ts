@@ -33,7 +33,7 @@ const CLIENT_FIELDS = `
   companyName
   emails { address }
   phones { number }
-  properties(first: 20) {
+  properties {
     nodes {
       id
       address { street1 street2 city province postalCode }

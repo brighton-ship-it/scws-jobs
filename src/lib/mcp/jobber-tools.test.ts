@@ -53,7 +53,7 @@ describe('JOBBER_MCP_TOOLS', () => {
 
 describe('callJobberMcpTool', () => {
   it('searches clients through the shared Jobber helper', async () => {
-    const { fetchImpl } = mockJobberFetch([
+    const { fetchImpl, bodies } = mockJobberFetch([
       (query) =>
         query.includes('ClientSearch')
           ? jsonResponse({ data: { clients: { nodes: [CLIENT] } } })
@@ -68,6 +68,11 @@ describe('callJobberMcpTool', () => {
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /client-1/);
     assert.match(result.content[0].text, /Pat Example/);
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('ClientSearch')) || '{}') as { query?: string })
+        .query || '';
+    assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
+    assert.match(query, /properties\s*\{\s*nodes/);
   });
 
   it('creates an unsent draft and never asks Jobber to send it', async () => {

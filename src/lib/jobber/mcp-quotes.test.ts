@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   assertQuoteIsDraftUnsent,
   buildDraftQuoteEditAttributes,
+  getClientById,
   quoteEditUsedForbiddenFields,
   updateUnsentQuoteDraft,
 } from './mcp-quotes.ts';
@@ -47,6 +48,36 @@ function jsonResponse(data: unknown, status = 200): Response {
     headers: { 'Content-Type': 'application/json' },
   });
 }
+
+describe('MCP client GraphQL (2025-04-16)', () => {
+  it('does not pass first to properties on getClientById', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body || ''));
+      return jsonResponse({
+        data: {
+          client: {
+            id: 'client-1',
+            name: 'Pat Example',
+            properties: { nodes: [] },
+            quotes: { nodes: [] },
+          },
+        },
+      });
+    };
+
+    const client = await getClientById('client-1', { fetchImpl, token: 'test' });
+    assert.equal(client.id, 'client-1');
+
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('McpClientById')) || '{}') as { query?: string })
+        .query || '';
+    assert.match(query, /McpClientById/);
+    assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
+    assert.match(query, /properties\s*\{\s*nodes/);
+    assert.match(query, /quotes\s*\(\s*first:\s*25\s*\)/);
+  });
+});
 
 describe('updateUnsentQuoteDraft', () => {
   it('loads a draft, edits title, and never sets transitionQuoteTo', async () => {
