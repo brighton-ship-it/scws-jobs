@@ -127,6 +127,17 @@ describe('updateUnsentQuoteDraft', () => {
       { fetchImpl, token: 'test' }
     );
     assert.equal(quote.title, 'New title');
+    const editQuery =
+      (
+        JSON.parse(
+          bodies.find((body) => {
+            const query = (JSON.parse(body) as { query?: string }).query || '';
+            return query.includes('mutation') && query.includes('quoteEdit');
+          }) || '{}'
+        ) as { query?: string }
+      ).query || '';
+    assert.match(editQuery, /quoteEdit\s*\(\s*quoteId:\s*\$quoteId,\s*attributes:/);
+    assert.equal(/quoteEdit\s*\(\s*input:/.test(editQuery), false);
     assert.ok(bodies.some((body) => body.includes('quoteEdit')));
     assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
   });

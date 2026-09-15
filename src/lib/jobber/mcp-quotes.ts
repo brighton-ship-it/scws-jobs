@@ -126,9 +126,10 @@ const PRODUCTS_SEARCH = `
   }
 `;
 
+/** Prefer top-level quoteId + attributes (same 2025-04-16 shape as quoteCreate). */
 const QUOTE_EDIT = `
   mutation McpQuoteEdit($quoteId: EncodedId!, $attributes: QuoteEditAttributes!) {
-    quoteEdit(input: { quoteId: $quoteId, attributes: $attributes }) {
+    quoteEdit(quoteId: $quoteId, attributes: $attributes) {
       quote { id quoteNumber title quoteStatus sentAt jobberWebUri }
       userErrors { message path }
     }
@@ -137,7 +138,7 @@ const QUOTE_EDIT = `
 
 const QUOTE_EDIT_ALT = `
   mutation McpQuoteEditAlt($quoteId: EncodedId!, $attributes: QuoteEditAttributes!) {
-    quoteEdit(quoteId: $quoteId, attributes: $attributes) {
+    quoteEdit(input: { quoteId: $quoteId, attributes: $attributes }) {
       quote { id quoteNumber title quoteStatus sentAt jobberWebUri }
       userErrors { message path }
     }

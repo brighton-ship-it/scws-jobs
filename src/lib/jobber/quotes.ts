@@ -175,9 +175,10 @@ const USERS = `
   }
 `;
 
+/** Jobber 2025-04-16: quoteCreate requires a top-level `attributes` argument. */
 const QUOTE_CREATE = `
   mutation QuoteCreate($attributes: QuoteCreateAttributes!) {
-    quoteCreate(input: { attributes: $attributes }) {
+    quoteCreate(attributes: $attributes) {
       quote {
         id
         quoteNumber
@@ -191,9 +192,10 @@ const QUOTE_CREATE = `
   }
 `;
 
+/** Older schemas wrapped attributes in input. */
 const QUOTE_CREATE_ALT = `
-  mutation QuoteCreateAlt($quote: QuoteCreateAttributes!) {
-    quoteCreate(quote: $quote) {
+  mutation QuoteCreateAlt($attributes: QuoteCreateAttributes!) {
+    quoteCreate(input: { attributes: $attributes }) {
       quote {
         id
         quoteNumber
@@ -509,7 +511,7 @@ export async function createUnsentQuote(
 
   let created = await graphql(QUOTE_CREATE, { attributes }, deps);
   if (created.errors?.length && /argument|QuoteCreate/i.test(created.errors[0]?.message || '')) {
-    created = await graphql(QUOTE_CREATE_ALT, { quote: attributes }, deps);
+    created = await graphql(QUOTE_CREATE_ALT, { attributes }, deps);
   }
   assertNoJobberErrors(created, 'quoteCreate');
   const payload = created.data?.quoteCreate;
