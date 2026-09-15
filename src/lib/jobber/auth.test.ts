@@ -8,7 +8,9 @@ import {
   persistJobberTokens,
   refreshJobberTokens,
   resetJobberAuthCache,
+  type JobberTokenSet,
 } from './auth.ts';
+import type { JobberDurableTokenStore } from './token-store.ts';
 import { fetchRecentlyUpdatedJobs } from './recent-jobs.ts';
 import { JOBBER_GRAPHQL_URL, jobberGraphql } from './client.ts';
 
@@ -29,6 +31,21 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
+}
+
+function memoryDurableStore(
+  initial: JobberTokenSet | null = null
+): JobberDurableTokenStore & { current: JobberTokenSet | null } {
+  const store = {
+    current: initial,
+    async load() {
+      return store.current;
+    },
+    async save(tokens: JobberTokenSet) {
+      store.current = tokens;
+    },
+  };
+  return store;
 }
 
 afterEach(() => {
@@ -106,13 +123,70 @@ describe('refreshJobberTokens', () => {
       });
     }) as typeof fetch;
 
-    const tokens = await refreshJobberTokens({ env, fetchImpl, nowMs: NOW_MS });
+    const durableStore = memoryDurableStore();
+    const tokens = await refreshJobberTokens({ env, fetchImpl, nowMs: NOW_MS, durableStore });
     assert.equal(tokenCalls, 1);
     assert.equal(tokens.accessToken, 'access-2');
     assert.equal(tokens.refreshToken, 'refresh-2');
     assert.equal(env.JOBBER_ACCESS_TOKEN, 'access-2');
     assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-2');
     assert.equal(getJobberOAuthCredentials(env)?.refreshToken, 'refresh-2');
+    assert.deepEqual(durableStore.current, tokens);
+  });
+
+  it('still returns tokens when durable persist throws — no secret in the error', async () => {
+    const env = oauthEnv();
+    const fetchImpl = (async () =>
+      jsonResponse({
+        access_token: 'access-2',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      })) as typeof fetch;
+
+    const tokens = await refreshJobberTokens({
+      env,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore: {
+        async load() {
+          return null;
+        },
+        async save() {
+          throw new Error('upsert failed refresh-2');
+        },
+      },
+    });
+    assert.equal(tokens.accessToken, 'access-2');
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-2');
+  });
+
+  it('retries once with the durable refresh token after a stale-env 401', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore({
+      accessToken: 'durable-access',
+      refreshToken: 'refresh-durable',
+      expiresAtMs: NOW_MS + 60_000,
+    });
+    const refreshTokens: string[] = [];
+
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = String(init?.body || '');
+      const match = /refresh_token=([^&]+)/.exec(body);
+      refreshTokens.push(decodeURIComponent(match?.[1] || ''));
+      if (match?.[1] === 'refresh-1') {
+        return jsonResponse({ error: 'invalid_grant' }, 401);
+      }
+      return jsonResponse({
+        access_token: 'access-2',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      });
+    }) as typeof fetch;
+
+    const tokens = await refreshJobberTokens({ env, fetchImpl, nowMs: NOW_MS, durableStore });
+    assert.deepEqual(refreshTokens, ['refresh-1', 'refresh-durable']);
+    assert.equal(tokens.refreshToken, 'refresh-2');
+    assert.equal(durableStore.current?.refreshToken, 'refresh-2');
   });
 
   it('throws HTTP status only when refresh fails — no token values', async () => {
@@ -142,20 +216,74 @@ describe('refreshJobberTokens', () => {
 });
 
 describe('getValidJobberAccessToken', () => {
-  it('refreshes when token age is unknown instead of trusting the env access token', async () => {
+  it('uses a cold-start env access token without refreshing when expiry is unknown', async () => {
     const env = oauthEnv();
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth should not run while the env access token is still usable');
+    }) as typeof fetch;
+
+    const token = await getValidJobberAccessToken({
+      env,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore: null,
+    });
+    assert.equal(token, 'stale-access');
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
+  });
+
+  it('uses a fresh durable access token on cold start without calling OAuth', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore({
+      accessToken: 'durable-access',
+      refreshToken: 'refresh-durable',
+      expiresAtMs: NOW_MS + 50 * 60 * 1000,
+    });
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth should not run while the durable access token is fresh');
+    }) as typeof fetch;
+
+    const token = await getValidJobberAccessToken({
+      env,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore,
+    });
+    assert.equal(token, 'durable-access');
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_ACCESS_TOKEN, 'durable-access');
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-durable');
+  });
+
+  it('refreshes when the durable access token is near expiry and persists the rotation', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore({
+      accessToken: 'almost-expired',
+      refreshToken: 'refresh-1',
+      expiresAtMs: NOW_MS + 30_000,
+    });
     const fetchImpl = (async () =>
       jsonResponse({
-        access_token: 'access-fresh',
+        access_token: 'access-2',
         refresh_token: 'refresh-2',
         expires_in: 3600,
       })) as typeof fetch;
 
-    const stale = env.JOBBER_ACCESS_TOKEN;
-    const token = await getValidJobberAccessToken({ env, fetchImpl, nowMs: NOW_MS });
-    assert.equal(token, 'access-fresh');
-    assert.equal(stale, 'stale-access');
-    assert.notEqual(token, stale);
+    const token = await getValidJobberAccessToken({
+      env,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore,
+    });
+    assert.equal(token, 'access-2');
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-2');
+    assert.equal(durableStore.current?.accessToken, 'access-2');
+    assert.equal(durableStore.current?.refreshToken, 'refresh-2');
   });
 
   it('reuses a warm-lambda cache without calling OAuth again', async () => {
