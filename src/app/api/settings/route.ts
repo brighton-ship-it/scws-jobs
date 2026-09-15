@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { isJobberSecretSettingsKey } from '@/lib/jobber/token-store';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,10 @@ export async function GET(request: NextRequest) {
   try {
     const supabase = await createClient();
     const key = request.nextUrl.searchParams.get('key');
+
+    if (isJobberSecretSettingsKey(key)) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
+    }
 
     if (key) {
       const { data, error } = await supabase
@@ -54,6 +59,7 @@ export async function GET(request: NextRequest) {
 
     const settings: Record<string, any> = {};
     (data || []).forEach((row) => {
+      if (isJobberSecretSettingsKey(row.key)) return;
       settings[row.key] = row.value;
     });
 
@@ -79,6 +85,10 @@ export async function PUT(request: NextRequest) {
         { error: 'key and value are required' },
         { status: 400 }
       );
+    }
+
+    if (isJobberSecretSettingsKey(key)) {
+      return NextResponse.json({ error: 'Not found' }, { status: 404 });
     }
 
     // Get current user

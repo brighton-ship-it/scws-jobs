@@ -1,12 +1,23 @@
 /**
  * Jobber OAuth access-token refresh.
  *
- * Access tokens expire in ~3600s. Hourly cron therefore 401s unless we
- * refresh with JOBBER_REFRESH_TOKEN + client id/secret and keep the new
- * tokens in process memory (and process.env) for a warm lambda.
+ * Access tokens expire in ~3600s. Jobber rotates refresh tokens, so a
+ * successful refresh must persist both tokens somewhere that survives a
+ * cold lambda (Supabase settings key `jobber_oauth`). Memory + process.env
+ * alone still help a warm isolate.
+ *
+ * Refresh only when a known access token is near expiry, or after GraphQL
+ * HTTP 401. Do not refresh on every cold start — that burns the rotated
+ * refresh token and leaves the next isolate with a stale Vercel env value.
  *
  * Never log token or secret values.
  */
+
+import {
+  loadDurableJobberTokens,
+  persistJobberTokensDurable,
+  type JobberDurableTokenStore,
+} from './token-store.ts';
 
 export const JOBBER_OAUTH_TOKEN_URL = 'https://api.getjobber.com/api/oauth/token';
 export const JOBBER_TOKEN_EXPIRY_SKEW_MS = 60_000;
@@ -28,6 +39,7 @@ export type JobberAuthDeps = {
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   nowMs?: number;
+  durableStore?: JobberDurableTokenStore | null;
 };
 
 type MemoryState = {
@@ -118,6 +130,45 @@ export function parseJobberTokenResponse(
   };
 }
 
+async function exchangeRefreshToken(
+  credentials: JobberOAuthCredentials,
+  fetchImpl: typeof fetch,
+  nowMs: number
+): Promise<{ ok: true; tokens: JobberTokenSet } | { ok: false; status: number }> {
+  const response = await fetchImpl(JOBBER_OAUTH_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Accept: 'application/json',
+    },
+    body: new URLSearchParams({
+      client_id: credentials.clientId,
+      client_secret: credentials.clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: credentials.refreshToken,
+    }),
+  });
+
+  let json: unknown = null;
+  try {
+    json = await response.json();
+  } catch {
+    json = null;
+  }
+
+  if (!response.ok) {
+    return { ok: false, status: response.status };
+  }
+
+  return {
+    ok: true,
+    tokens: parseJobberTokenResponse(json, {
+      nowMs,
+      previousRefreshToken: credentials.refreshToken,
+    }),
+  };
+}
+
 export async function refreshJobberTokens(
   deps: JobberAuthDeps = {}
 ): Promise<JobberTokenSet> {
@@ -136,37 +187,26 @@ export async function refreshJobberTokens(
   }
 
   const run = (async () => {
-    const response = await fetchImpl(JOBBER_OAUTH_TOKEN_URL, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: 'application/json',
-      },
-      body: new URLSearchParams({
-        client_id: credentials.clientId,
-        client_secret: credentials.clientSecret,
-        grant_type: 'refresh_token',
-        refresh_token: credentials.refreshToken,
-      }),
-    });
+    let result = await exchangeRefreshToken(credentials, fetchImpl, nowMs);
 
-    let json: unknown = null;
-    try {
-      json = await response.json();
-    } catch {
-      json = null;
+    if (!result.ok) {
+      const durable = await loadDurableJobberTokens(deps);
+      if (durable?.refreshToken && durable.refreshToken !== credentials.refreshToken) {
+        persistJobberTokens(durable, env);
+        const retryCredentials = getJobberOAuthCredentials(env);
+        if (retryCredentials) {
+          result = await exchangeRefreshToken(retryCredentials, fetchImpl, nowMs);
+        }
+      }
     }
 
-    if (!response.ok) {
-      throw new Error(`Jobber OAuth token refresh failed (HTTP ${response.status})`);
+    if (!result.ok) {
+      throw new Error(`Jobber OAuth token refresh failed (HTTP ${result.status})`);
     }
 
-    const tokens = parseJobberTokenResponse(json, {
-      nowMs,
-      previousRefreshToken: credentials.refreshToken,
-    });
-    persistJobberTokens(tokens, env);
-    return tokens;
+    persistJobberTokens(result.tokens, env);
+    await persistJobberTokensDurable(result.tokens, deps);
+    return result.tokens;
   })();
 
   memory.refreshInFlight = run;
@@ -194,14 +234,24 @@ export async function getValidJobberAccessToken(
     return memory.tokens!.accessToken;
   }
 
-  // Token age is unknown on a cold lambda (env token only). Refresh when
-  // we can rather than waiting for GraphQL HTTP 401.
-  if (getJobberOAuthCredentials(env)) {
+  if (!memory.tokens) {
+    const durable = await loadDurableJobberTokens(deps);
+    if (durable) {
+      persistJobberTokens(durable, env);
+      if (!deps.forceRefresh && isJobberAccessTokenFresh(durable, nowMs)) {
+        return durable.accessToken;
+      }
+    }
+  }
+
+  const envToken = memory.tokens?.accessToken || trimEnv(env, 'JOBBER_ACCESS_TOKEN');
+  const knownExpired = Boolean(memory.tokens && !isJobberAccessTokenFresh(memory.tokens, nowMs));
+
+  if ((deps.forceRefresh || knownExpired || !envToken) && getJobberOAuthCredentials(env)) {
     const tokens = await refreshJobberTokens(deps);
     return tokens.accessToken;
   }
 
-  const envToken = trimEnv(env, 'JOBBER_ACCESS_TOKEN');
   if (envToken) return envToken;
 
   throw new Error('JOBBER_ACCESS_TOKEN is not set');

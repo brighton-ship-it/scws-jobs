@@ -5,7 +5,7 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
 **Auth:** `Authorization: Bearer <named MCP key>` from `JOBBER_MCP_API_KEYS`.  
-**Jobber OAuth:** stays in Vercel Production (`JOBBER_ACCESS_TOKEN`, `JOBBER_REFRESH_TOKEN`, `JOBBER_CLIENT_ID`, `JOBBER_CLIENT_SECRET`). The existing refresh path in `src/lib/jobber/auth.ts` is reused.
+**Jobber OAuth:** stays on this app (`JOBBER_ACCESS_TOKEN`, `JOBBER_REFRESH_TOKEN`, `JOBBER_CLIENT_ID`, `JOBBER_CLIENT_SECRET`). The refresh path in `src/lib/jobber/auth.ts` persists rotated tokens to Supabase `settings.jobber_oauth` so a cold lambda does not replay a stale Vercel `JOBBER_REFRESH_TOKEN`.
 
 ## Safety (v1)
 
@@ -31,7 +31,8 @@ Set these on the Vercel project **scws-jobs** (Production). Do not commit values
 | --- | --- |
 | `JOBBER_MCP_API_KEYS` | Named bearer keys for bots. JSON map or CSV. |
 | `JOBBER_ACCESS_TOKEN` | Shop Jobber GraphQL (already used by cron / Sarah / quote drafts) |
-| `JOBBER_REFRESH_TOKEN` | OAuth refresh |
+| `JOBBER_REFRESH_TOKEN` | OAuth refresh (bootstrap / fallback). Rotated values are also written to Supabase `settings.jobber_oauth`. |
+| `JOBBER_TOKEN_ENCRYPTION_KEY` | Optional. AES key material for `jobber_oauth`. Defaults to `JOBBER_CLIENT_SECRET`. |
 | `JOBBER_CLIENT_ID` | OAuth client |
 | `JOBBER_CLIENT_SECRET` | OAuth client secret |
 | `JOBBER_GRAPHQL_VERSION` | Optional. Defaults to `2025-04-16` |
@@ -153,4 +154,4 @@ curl -sS \
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
-| `src/lib/jobber/auth.ts` / `client.ts` | OAuth refresh + GraphQL |
+| `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |
