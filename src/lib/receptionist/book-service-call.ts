@@ -114,7 +114,7 @@ const SEARCH_CLIENTS_QUERY = `
         companyName
         phones { number }
         emails { address }
-        properties(first: 10) {
+        properties {
           nodes {
             id
             address { street1 city postalCode }
