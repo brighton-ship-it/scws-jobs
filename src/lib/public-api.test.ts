@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isCronApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from './public-api.ts';
+import { isCronApiPath, isMcpApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from './public-api.ts';
 
 describe('isPublicApiRoute', () => {
   it('allows GET /api/gbp-ratings for the marketing-site widget', () => {
@@ -34,6 +34,15 @@ describe('isPublicApiRoute', () => {
     assert.equal(isPublicApiRoute('POST', '/api/jobber/drill-quote'), true);
     assert.equal(isPublicApiRoute('GET', '/api/jobber/tech-note-quote'), false);
     assert.equal(isPublicApiRoute('POST', '/api/jobber/tech-note-quote/extra'), false);
+  });
+
+  it('allows the Jobber MCP gateway (self-authenticates with JOBBER_MCP_API_KEYS)', () => {
+    assert.equal(isPublicApiRoute('POST', '/api/mcp/jobber'), true);
+    assert.equal(isPublicApiRoute('GET', '/api/mcp/jobber'), true);
+    assert.equal(isPublicApiRoute('OPTIONS', '/api/mcp/jobber'), true);
+    assert.equal(isMcpApiPath('/api/mcp/jobber'), true);
+    assert.equal(isMcpApiPath('/api/mcp'), true);
+    assert.equal(isMcpApiPath('/api/jobber/tech-note-quote'), false);
   });
 
   it('lets the quote GP tracker past middleware (route still requires session or QUOTES_GP_KEY)', () => {
