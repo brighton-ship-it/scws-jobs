@@ -184,6 +184,8 @@ npm test         # Unit tests (node:test)
 
 **Shared Jobber MCP (shop bots):** `POST/GET /api/mcp/jobber` — Streamable HTTP MCP so Travis / Damien / Grok Bot can draft Jobber quotes without holding Jobber OAuth. Auth is `Authorization: Bearer` from `JOBBER_MCP_API_KEYS`. Draft-only: no send, approve, convert, delete, or payroll. See `docs/jobber-mcp.md`.
 
+**Jobber OAuth durable store:** Production must set `JOBBER_TOKEN_ENCRYPTION_KEY` (`openssl rand -hex 32`) on Vercel scws-jobs. Rotated refresh tokens are encrypted in Supabase `settings.jobber_oauth`. Env `JOBBER_*_TOKEN` is bootstrap only. Check `GET /api/jobber/oauth-health`. Missing key is a loud Production error, not a silent env-only refresh.
+
 ### Other Platforms
 
 Build the production bundle:

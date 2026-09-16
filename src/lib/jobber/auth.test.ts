@@ -134,33 +134,7 @@ describe('refreshJobberTokens', () => {
     assert.deepEqual(durableStore.current, tokens);
   });
 
-  it('still returns tokens when durable persist throws — no secret in the error', async () => {
-    const env = oauthEnv();
-    const fetchImpl = (async () =>
-      jsonResponse({
-        access_token: 'access-2',
-        refresh_token: 'refresh-2',
-        expires_in: 3600,
-      })) as typeof fetch;
-
-    const tokens = await refreshJobberTokens({
-      env,
-      fetchImpl,
-      nowMs: NOW_MS,
-      durableStore: {
-        async load() {
-          return null;
-        },
-        async save() {
-          throw new Error('upsert failed refresh-2');
-        },
-      },
-    });
-    assert.equal(tokens.accessToken, 'access-2');
-    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-2');
-  });
-
-  it('retries once with the durable refresh token after a stale-env 401', async () => {
+  it('reads the durable refresh token first and persists both tokens before return', async () => {
     const env = oauthEnv();
     const durableStore = memoryDurableStore({
       accessToken: 'durable-access',
@@ -174,6 +148,59 @@ describe('refreshJobberTokens', () => {
       const match = /refresh_token=([^&]+)/.exec(body);
       refreshTokens.push(decodeURIComponent(match?.[1] || ''));
       if (match?.[1] === 'refresh-1') {
+        throw new Error('stale env refresh must not be used when Supabase has a newer token');
+      }
+      return jsonResponse({
+        access_token: 'access-2',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      });
+    }) as typeof fetch;
+
+    const tokens = await refreshJobberTokens({ env, fetchImpl, nowMs: NOW_MS, durableStore });
+    assert.deepEqual(refreshTokens, ['refresh-durable']);
+    assert.equal(tokens.accessToken, 'access-2');
+    assert.equal(tokens.refreshToken, 'refresh-2');
+    assert.equal(durableStore.current?.accessToken, 'access-2');
+    assert.equal(durableStore.current?.refreshToken, 'refresh-2');
+  });
+
+  it('uses env refresh only as bootstrap when the durable row is empty', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore(null);
+    const refreshTokens: string[] = [];
+
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = String(init?.body || '');
+      const match = /refresh_token=([^&]+)/.exec(body);
+      refreshTokens.push(decodeURIComponent(match?.[1] || ''));
+      return jsonResponse({
+        access_token: 'access-2',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      });
+    }) as typeof fetch;
+
+    const tokens = await refreshJobberTokens({ env, fetchImpl, nowMs: NOW_MS, durableStore });
+    assert.deepEqual(refreshTokens, ['refresh-1']);
+    assert.deepEqual(durableStore.current, tokens);
+  });
+
+  it('retries once with a newer durable refresh after a raced 401', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore(null);
+    const refreshTokens: string[] = [];
+
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = String(init?.body || '');
+      const match = /refresh_token=([^&]+)/.exec(body);
+      refreshTokens.push(decodeURIComponent(match?.[1] || ''));
+      if (match?.[1] === 'refresh-1') {
+        durableStore.current = {
+          accessToken: 'durable-access',
+          refreshToken: 'refresh-durable',
+          expiresAtMs: NOW_MS + 60_000,
+        };
         return jsonResponse({ error: 'invalid_grant' }, 401);
       }
       return jsonResponse({
@@ -187,6 +214,55 @@ describe('refreshJobberTokens', () => {
     assert.deepEqual(refreshTokens, ['refresh-1', 'refresh-durable']);
     assert.equal(tokens.refreshToken, 'refresh-2');
     assert.equal(durableStore.current?.refreshToken, 'refresh-2');
+  });
+
+  it('throws a generic persist error and does not treat the rotation as stored', async () => {
+    const env = oauthEnv();
+    const fetchImpl = (async () =>
+      jsonResponse({
+        access_token: 'access-2',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      })) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        refreshJobberTokens({
+          env,
+          fetchImpl,
+          nowMs: NOW_MS,
+          durableStore: {
+            async load() {
+              return null;
+            },
+            async save() {
+              throw new Error('upsert failed refresh-2');
+            },
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /durable token persist failed/);
+        assert.equal(error.message.includes('refresh-2'), false);
+        assert.equal(error.message.includes('upsert failed'), false);
+        return true;
+      }
+    );
+  });
+
+  it('refuses Production refresh when JOBBER_TOKEN_ENCRYPTION_KEY is missing', async () => {
+    const env = oauthEnv({ VERCEL_ENV: 'production' });
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth must not run when the durable store is unconfigured');
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => refreshJobberTokens({ env, fetchImpl, nowMs: NOW_MS }),
+      /JOBBER_TOKEN_ENCRYPTION_KEY is not set in Production/
+    );
+    assert.equal(calls, 0);
   });
 
   it('throws HTTP status only when refresh fails — no token values', async () => {

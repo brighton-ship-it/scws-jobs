@@ -100,7 +100,7 @@ export async function handleJobberMcpRequest(
         },
       });
     }
-    return jsonResponse(jobberMcpHealthBody(auth.name), 200, cors);
+    return jsonResponse(await jobberMcpHealthBody(auth.name, env), 200, cors);
   }
 
   if (request.method !== 'POST') {

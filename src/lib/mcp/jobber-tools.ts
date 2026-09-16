@@ -25,6 +25,7 @@ import {
 } from '../jobber/mcp-quotes.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
+import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
 export const JOBBER_MCP_SERVER_VERSION = '1.0.0';
@@ -415,7 +416,11 @@ export function createJobberMcpDispatcher(deps?: JobberDeps): McpDispatcher {
   };
 }
 
-export function jobberMcpHealthBody(authenticatedAs: string) {
+export async function jobberMcpHealthBody(
+  authenticatedAs: string,
+  env: NodeJS.ProcessEnv = process.env
+) {
+  const durableTokenStore = await diagnoseJobberDurableStore({ env });
   return {
     ok: true,
     server: JOBBER_MCP_SERVER_NAME,
@@ -429,5 +434,6 @@ export function jobberMcpHealthBody(authenticatedAs: string) {
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
     },
+    durableTokenStore,
   };
 }

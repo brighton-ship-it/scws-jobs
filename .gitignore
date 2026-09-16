@@ -9,6 +9,9 @@ out/
 build/
 dist/
 
+# Local OAuth token dumps — never commit
+jobber_tokens.json
+
 # Environment files (keep secrets out of git!)
 .env
 .env.local

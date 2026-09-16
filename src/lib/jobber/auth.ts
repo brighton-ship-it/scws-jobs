@@ -6,6 +6,11 @@
  * cold lambda (Supabase settings key `jobber_oauth`). Memory + process.env
  * alone still help a warm isolate.
  *
+ * Every refresh reads the latest tokens from Supabase first (env is only
+ * bootstrap when that row is empty), exchanges, then writes BOTH access
+ * and refresh back to Supabase before returning. Production refuses to
+ * refresh if JOBBER_TOKEN_ENCRYPTION_KEY or Supabase is missing.
+ *
  * Refresh only when a known access token is near expiry, or after GraphQL
  * HTTP 401. Do not refresh on every cold start — that burns the rotated
  * refresh token and leaves the next isolate with a stale Vercel env value.
@@ -14,6 +19,7 @@
  */
 
 import {
+  assertJobberDurableStoreConfigured,
   loadDurableJobberTokens,
   persistJobberTokensDurable,
   type JobberDurableTokenStore,
@@ -176,23 +182,31 @@ export async function refreshJobberTokens(
     return memory.refreshInFlight;
   }
 
+  assertJobberDurableStoreConfigured(deps);
+
   const env = deps.env ?? process.env;
   const fetchImpl = deps.fetchImpl ?? fetch;
   const nowMs = deps.nowMs ?? Date.now();
-  const credentials = getJobberOAuthCredentials(env);
-  if (!credentials) {
-    throw new Error(
-      'Jobber OAuth refresh is not configured (need JOBBER_REFRESH_TOKEN, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET)'
-    );
-  }
 
   const run = (async () => {
+    const durable = await loadDurableJobberTokens(deps);
+    if (durable) {
+      persistJobberTokens(durable, env);
+    }
+
+    const credentials = getJobberOAuthCredentials(env);
+    if (!credentials) {
+      throw new Error(
+        'Jobber OAuth refresh is not configured (need JOBBER_REFRESH_TOKEN, JOBBER_CLIENT_ID, JOBBER_CLIENT_SECRET)'
+      );
+    }
+
     let result = await exchangeRefreshToken(credentials, fetchImpl, nowMs);
 
     if (!result.ok) {
-      const durable = await loadDurableJobberTokens(deps);
-      if (durable?.refreshToken && durable.refreshToken !== credentials.refreshToken) {
-        persistJobberTokens(durable, env);
+      const retryDurable = await loadDurableJobberTokens(deps);
+      if (retryDurable?.refreshToken && retryDurable.refreshToken !== credentials.refreshToken) {
+        persistJobberTokens(retryDurable, env);
         const retryCredentials = getJobberOAuthCredentials(env);
         if (retryCredentials) {
           result = await exchangeRefreshToken(retryCredentials, fetchImpl, nowMs);

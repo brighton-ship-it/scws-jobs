@@ -2,9 +2,17 @@ import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { persistJobberTokens, resetJobberAuthCache, type JobberTokenSet } from './auth.ts';
 import {
+  JOBBER_DURABLE_STORE_NOT_CONFIGURED,
+  JOBBER_DURABLE_TOKEN_PERSIST_FAILED,
+  JOBBER_ENCRYPTION_KEY_REQUIRED,
   JOBBER_OAUTH_SETTINGS_KEY,
+  JOBBER_TOKEN_ENCRYPTION_KEY_ENV,
+  assertJobberDurableStoreConfigured,
+  createSupabaseJobberTokenStore,
   decryptJobberTokenEnvelope,
+  diagnoseJobberDurableStore,
   encryptJobberTokenEnvelope,
+  getJobberDurableStoreConfig,
   isJobberSecretSettingsKey,
   persistJobberTokensDurable,
 } from './token-store.ts';
@@ -45,6 +53,28 @@ describe('encryptJobberTokenEnvelope', () => {
     assert.deepEqual(decoded, SAMPLE_TOKENS);
   });
 
+  it('prefers JOBBER_TOKEN_ENCRYPTION_KEY and can still read a client-secret envelope', () => {
+    const legacy = encryptJobberTokenEnvelope(SAMPLE_TOKENS, ENCRYPT_ENV);
+    const decoded = decryptJobberTokenEnvelope(legacy, {
+      JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key',
+      JOBBER_CLIENT_SECRET: 'client-secret',
+    });
+    assert.deepEqual(decoded, SAMPLE_TOKENS);
+
+    const next = encryptJobberTokenEnvelope(SAMPLE_TOKENS, {
+      JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key',
+      JOBBER_CLIENT_SECRET: 'client-secret',
+    });
+    assert.deepEqual(
+      decryptJobberTokenEnvelope(next, { JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key' }),
+      SAMPLE_TOKENS
+    );
+    assert.equal(
+      decryptJobberTokenEnvelope(next, { JOBBER_CLIENT_SECRET: 'client-secret' }),
+      null
+    );
+  });
+
   it('returns null for a different encryption key and never throws the ciphertext', () => {
     const envelope = encryptJobberTokenEnvelope(SAMPLE_TOKENS, ENCRYPT_ENV);
     const decoded = decryptJobberTokenEnvelope(envelope, {
@@ -81,16 +111,121 @@ describe('persistJobberTokens + durable store', () => {
     assert.deepEqual(saved, SAMPLE_TOKENS);
   });
 
-  it('does not throw or echo secrets when durable persist fails', async () => {
-    await persistJobberTokensDurable(SAMPLE_TOKENS, {
-      durableStore: {
-        async load() {
-          return null;
-        },
-        async save() {
-          throw new Error('db down: refresh-2-should-not-leak');
-        },
+  it('throws a generic persist error and never echoes secrets', async () => {
+    await assert.rejects(
+      () =>
+        persistJobberTokensDurable(SAMPLE_TOKENS, {
+          durableStore: {
+            async load() {
+              return null;
+            },
+            async save() {
+              throw new Error('db down: refresh-2-should-not-leak');
+            },
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, JOBBER_DURABLE_TOKEN_PERSIST_FAILED);
+        assert.equal(error.message.includes('refresh-2'), false);
+        assert.equal(error.message.includes('should-not-leak'), false);
+        return true;
+      }
+    );
+  });
+});
+
+describe('Production durable store config', () => {
+  it('is not ready without JOBBER_TOKEN_ENCRYPTION_KEY even if client secret exists', () => {
+    const env = {
+      VERCEL_ENV: 'production',
+      JOBBER_CLIENT_SECRET: 'client-secret',
+      NEXT_PUBLIC_SUPABASE_URL: 'https://example.supabase.co',
+      SUPABASE_SERVICE_KEY: 'service-key',
+    } as NodeJS.ProcessEnv;
+
+    const config = getJobberDurableStoreConfig(env);
+    assert.equal(config.encryptionKeyConfigured, false);
+    assert.equal(config.encryptionKeySource, 'JOBBER_CLIENT_SECRET');
+    assert.equal(config.supabaseConfigured, true);
+    assert.equal(config.ready, false);
+    assert.equal(createSupabaseJobberTokenStore(env), null);
+    assert.throws(() => assertJobberDurableStoreConfigured({ env }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, JOBBER_ENCRYPTION_KEY_REQUIRED);
+      return true;
+    });
+  });
+
+  it('is ready when the dedicated key and Supabase service env are present', () => {
+    const env = {
+      VERCEL_ENV: 'production',
+      JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key',
+      JOBBER_CLIENT_SECRET: 'client-secret',
+      NEXT_PUBLIC_SUPABASE_URL: 'https://example.supabase.co',
+      SUPABASE_SERVICE_KEY: 'service-key',
+    } as NodeJS.ProcessEnv;
+
+    const config = getJobberDurableStoreConfig(env);
+    assert.equal(config.ready, true);
+    assert.equal(config.encryptionKeyConfigured, true);
+    assert.equal(config.encryptionKeySource, JOBBER_TOKEN_ENCRYPTION_KEY_ENV);
+    assert.doesNotThrow(() => assertJobberDurableStoreConfigured({ env }));
+  });
+
+  it('throws a generic store error when Production has a key but no Supabase', () => {
+    const env = {
+      VERCEL_ENV: 'production',
+      JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key',
+    } as NodeJS.ProcessEnv;
+
+    assert.throws(() => assertJobberDurableStoreConfigured({ env }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.equal(error.message, JOBBER_DURABLE_STORE_NOT_CONFIGURED);
+      return true;
+    });
+  });
+});
+
+describe('diagnoseJobberDurableStore', () => {
+  it('reports missing key + supabase without leaking secrets', async () => {
+    const diagnosis = await diagnoseJobberDurableStore({
+      env: {
+        JOBBER_CLIENT_SECRET: 'client-secret-must-not-leak',
+        JOBBER_REFRESH_TOKEN: 'refresh-1-must-not-leak',
       },
     });
+
+    assert.equal(diagnosis.ready, false);
+    assert.equal(diagnosis.encryptionKeyConfigured, false);
+    assert.equal(diagnosis.supabaseConfigured, false);
+    assert.equal(diagnosis.reachable, null);
+    assert.equal(diagnosis.hasStoredTokens, null);
+    assert.equal(diagnosis.source, 'env_bootstrap');
+    assert.equal(JSON.stringify(diagnosis).includes('must-not-leak'), false);
+  });
+
+  it('reports a decryptable injected store as supabase-backed', async () => {
+    const diagnosis = await diagnoseJobberDurableStore({
+      env: {
+        JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key',
+        NEXT_PUBLIC_SUPABASE_URL: 'https://example.supabase.co',
+        SUPABASE_SERVICE_KEY: 'service-key',
+      },
+      durableStore: {
+        async load() {
+          return SAMPLE_TOKENS;
+        },
+        async save() {},
+      },
+    });
+
+    assert.equal(diagnosis.ready, true);
+    assert.equal(diagnosis.encryptionKeyConfigured, true);
+    assert.equal(diagnosis.source, 'supabase');
+    assert.equal(JSON.stringify(diagnosis).includes('access-2'), false);
+    assert.equal(JSON.stringify(diagnosis).includes('refresh-2'), false);
+    assert.equal(JSON.stringify(diagnosis).includes('dedicated-key'), false);
+    assert.equal(JSON.stringify(diagnosis).includes('service-key'), false);
   });
 });

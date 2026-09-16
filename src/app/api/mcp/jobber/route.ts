@@ -10,10 +10,10 @@ export const maxDuration = 60;
 
 /**
  * POST /api/mcp/jobber — Streamable HTTP MCP (JSON-RPC).
- * GET  /api/mcp/jobber — auth + health (tools list). Requires Bearer API key.
+ * GET  /api/mcp/jobber — auth + health (tools list + durableTokenStore).
  *
  * Auth: Authorization: Bearer <JOBBER_MCP_API_KEYS entry>
- * Jobber OAuth stays on this app. Draft quotes only — no send/approve/convert/delete.
+ * Jobber OAuth stays on this app (durable Supabase store). Draft quotes only.
  */
 export async function GET(request: NextRequest) {
   return handleJobberMcpRequest(request);

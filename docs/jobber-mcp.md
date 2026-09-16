@@ -5,7 +5,7 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
 **Auth:** `Authorization: Bearer <named MCP key>` from `JOBBER_MCP_API_KEYS`.  
-**Jobber OAuth:** stays on this app (`JOBBER_ACCESS_TOKEN`, `JOBBER_REFRESH_TOKEN`, `JOBBER_CLIENT_ID`, `JOBBER_CLIENT_SECRET`). The refresh path in `src/lib/jobber/auth.ts` persists rotated tokens to Supabase `settings.jobber_oauth` so a cold lambda does not replay a stale Vercel `JOBBER_REFRESH_TOKEN`.
+**Jobber OAuth:** stays on this app. `JOBBER_ACCESS_TOKEN` / `JOBBER_REFRESH_TOKEN` are bootstrap only. After the first successful refresh, Supabase `settings.jobber_oauth` (AES-256-GCM via `JOBBER_TOKEN_ENCRYPTION_KEY`) is the source of truth so a cold lambda does not replay a stale Vercel refresh token.
 
 ## Safety (v1)
 
@@ -30,11 +30,11 @@ Set these on the Vercel project **scws-jobs** (Production). Do not commit values
 | Name | Role |
 | --- | --- |
 | `JOBBER_MCP_API_KEYS` | Named bearer keys for bots. JSON map or CSV. |
-| `JOBBER_ACCESS_TOKEN` | Shop Jobber GraphQL (already used by cron / Sarah / quote drafts) |
-| `JOBBER_REFRESH_TOKEN` | OAuth refresh (bootstrap / fallback). Rotated values are also written to Supabase `settings.jobber_oauth`. |
-| `JOBBER_TOKEN_ENCRYPTION_KEY` | Optional. AES key material for `jobber_oauth`. Defaults to `JOBBER_CLIENT_SECRET`. |
+| `JOBBER_ACCESS_TOKEN` | Bootstrap GraphQL token. After the first durable read/refresh, Supabase wins. |
+| `JOBBER_REFRESH_TOKEN` | Bootstrap OAuth refresh. Used only when `settings.jobber_oauth` is empty. |
+| `JOBBER_TOKEN_ENCRYPTION_KEY` | **Required in Production.** AES-256-GCM key material for `jobber_oauth`. Generate with `openssl rand -hex 32`. Do not commit. Do not rotate after tokens are stored (or re-OAuth). |
 | `JOBBER_CLIENT_ID` | OAuth client |
-| `JOBBER_CLIENT_SECRET` | OAuth client secret |
+| `JOBBER_CLIENT_SECRET` | OAuth client secret. Local/dev may fall back to this for encryption; Production will not. |
 | `JOBBER_GRAPHQL_VERSION` | Optional. Defaults to `2025-04-16` |
 | `JOBBER_SALESPERSON_ID` | Optional. Drafts default to a Jobber user named Brighton |
 
@@ -109,15 +109,43 @@ grok mcp add --transport http scws-jobber \
 
 Rotate a person's key by editing the JSON map and redeploying. Do not reuse Jobber OAuth tokens as MCP keys.
 
+## Durable token store (required in Production)
+
+Jobber invalidates the previous refresh token on every successful refresh. Vercel env vars are a snapshot from the last deploy — they do not update when a lambda rotates tokens. Without a durable write, the next cold start replays the stale `JOBBER_REFRESH_TOKEN` and Jobber returns 401 until a human re-OAuths.
+
+**Brighton / Jarvis — set this once on Vercel project scws-jobs → Production, then redeploy:**
+
+```bash
+openssl rand -hex 32
+```
+
+Name: `JOBBER_TOKEN_ENCRYPTION_KEY`. Paste the hex. Do not commit it. Do not reuse `JOBBER_CLIENT_SECRET`.
+
+Also confirm Production already has `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, and that `supabase/migrations/20260915_jobber_oauth_settings.sql` has been run in the Supabase SQL Editor (hides `jobber_oauth` from CRM settings reads).
+
+After deploy:
+
+1. `GET /api/jobber/oauth-health` with `Authorization: Bearer $JOBBER_MCP_KEY` (or `CRON_SECRET`) must be **200** with `encryptionKeyConfigured: true`, `supabaseConfigured: true`, `reachable: true`.
+2. First MCP / quote / refresh uses env tokens as seed, writes both access + refresh to `settings.jobber_oauth`, then later cold starts load that row.
+3. If health is **503** with `encryptionKeyConfigured: false`, the key is not on that deployment — set it and redeploy. Do not expect env-only refresh to survive a cold start.
+
+`GET /api/mcp/jobber` includes the same `durableTokenStore` object (no secrets).
+
 ## curl health / auth check
 
 Replace the host if Production uses another URL (`NEXT_PUBLIC_APP_URL`).
 
 ```bash
 # Health — must be 200 and list tools. authenticatedAs is the key name, not the secret.
+# durableTokenStore reports encryption key + Supabase reachability (no secrets).
 curl -sS -D - \
   -H "Authorization: Bearer $JOBBER_MCP_KEY" \
   https://scws-jobs.vercel.app/api/mcp/jobber
+
+# Durable store diagnostic — 200 when key is set and Supabase is reachable.
+curl -sS -D - \
+  -H "Authorization: Bearer $JOBBER_MCP_KEY" \
+  https://scws-jobs.vercel.app/api/jobber/oauth-health
 
 # Missing key — must be 401
 curl -sS -o /dev/null -w "%{http_code}\n" \
@@ -155,3 +183,4 @@ curl -sS \
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
 | `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |
+| `src/app/api/jobber/oauth-health/route.ts` | Secret-free durable-store diagnostic |
