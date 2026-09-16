@@ -257,9 +257,16 @@ describe('handleJobberMcpRequest auth gate', () => {
       { env }
     );
     assert.equal(health.status, 200);
-    const healthBody = (await health.json()) as { authenticatedAs: string; tools: string[] };
+    const healthBody = (await health.json()) as {
+      authenticatedAs: string;
+      tools: string[];
+      durableTokenStore: { encryptionKeyConfigured: boolean; ready: boolean };
+    };
     assert.equal(healthBody.authenticatedAs, 'travis');
     assert.ok(healthBody.tools.includes('create_quote_draft'));
+    assert.equal(healthBody.durableTokenStore.encryptionKeyConfigured, false);
+    assert.equal(healthBody.durableTokenStore.ready, false);
+    assert.equal(JSON.stringify(healthBody).includes('trav-secret'), false);
 
     const listed = await handleJobberMcpRequest(
       new Request('https://scws-jobs.vercel.app/api/mcp/jobber', {

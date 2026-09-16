@@ -10,7 +10,7 @@ Office-only page for Brighton to scan Jobber quotes against a **60% GP** target 
 
 `ADMIN_SECRET` is accepted if `QUOTES_GP_KEY` is unset.
 
-Also needs `JOBBER_ACCESS_TOKEN` (same token as the quote draft APIs).
+Uses the shared Jobber GraphQL client (`src/lib/jobber/client.ts`), so Production reads/refreshes tokens from the durable Supabase store. `JOBBER_ACCESS_TOKEN` is bootstrap only; see `docs/jobber-mcp.md`.
 
 ## Rules
 
