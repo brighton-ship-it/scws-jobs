@@ -15,3 +15,7 @@ Until this is applied, website booking still saves the lead (without those colum
 Hides `settings.key = 'jobber_oauth'` from authenticated / admin CRM reads. The service role used by `src/lib/jobber/token-store.ts` still reads and upserts that encrypted Jobber OAuth row.
 
 Until this is applied, the durable store can still write the row (service role bypasses RLS), but a signed-in admin `GET /api/settings` might see the ciphertext. Apply it in the SQL Editor. Production also needs `JOBBER_TOKEN_ENCRYPTION_KEY` on Vercel — see `docs/jobber-mcp.md`.
+
+## `20260918_ensure_settings_jobber_oauth.sql`
+
+Idempotent recreate of `public.settings` plus the `jobber_oauth` RLS hide, for projects that never applied `20260222_settings.sql`. Durable *load* treats a missing table, 401, or network error as empty (env bootstrap still works) but **persist after refresh still fails** until the table exists and `SUPABASE_SERVICE_KEY` is a valid service-role key. Apply this SQL in the SQL Editor. Do not paste tokens or keys into SQL.
