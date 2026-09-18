@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { persistJobberTokens, resetJobberAuthCache, type JobberTokenSet } from './auth.ts';
 import {
   JOBBER_DURABLE_STORE_NOT_CONFIGURED,
+  JOBBER_DURABLE_TOKEN_LOAD_FAILED,
   JOBBER_DURABLE_TOKEN_PERSIST_FAILED,
   JOBBER_ENCRYPTION_KEY_REQUIRED,
   JOBBER_OAUTH_SETTINGS_KEY,
@@ -14,7 +15,10 @@ import {
   encryptJobberTokenEnvelope,
   getJobberDurableStoreConfig,
   isJobberSecretSettingsKey,
+  isMissingSettingsRelationError,
+  loadDurableJobberTokens,
   persistJobberTokensDurable,
+  tokensFromSettingsLoadResult,
 } from './token-store.ts';
 
 const NOW_MS = Date.parse('2026-09-15T16:00:00.000Z');
@@ -184,6 +188,169 @@ describe('Production durable store config', () => {
       assert.equal(error.message, JOBBER_DURABLE_STORE_NOT_CONFIGURED);
       return true;
     });
+  });
+});
+
+describe('isMissingSettingsRelationError', () => {
+  it('detects PostgREST missing-table / schema-not-found codes and messages', () => {
+    assert.equal(
+      isMissingSettingsRelationError({
+        code: 'PGRST205',
+        message: "Could not find the table 'public.settings' in the schema cache",
+      }),
+      true
+    );
+    assert.equal(
+      isMissingSettingsRelationError({
+        code: '42P01',
+        message: 'relation "public.settings" does not exist',
+      }),
+      true
+    );
+    assert.equal(isMissingSettingsRelationError({ code: 'PGRST106' }), true);
+    assert.equal(
+      isMissingSettingsRelationError({
+        message: "Could not find the table 'public.settings' in the schema cache",
+      }),
+      true
+    );
+  });
+
+  it('does not treat auth, permission, or unrelated schema errors as missing', () => {
+    assert.equal(isMissingSettingsRelationError(null), false);
+    assert.equal(
+      isMissingSettingsRelationError({ code: 'PGRST301', message: 'JWT expired' }),
+      false
+    );
+    assert.equal(
+      isMissingSettingsRelationError({ code: '42501', message: 'permission denied for table settings' }),
+      false
+    );
+    assert.equal(
+      isMissingSettingsRelationError({
+        code: 'PGRST204',
+        message: "Could not find the 'value' column of 'settings' in the schema cache",
+      }),
+      false
+    );
+    assert.equal(
+      isMissingSettingsRelationError({ code: '57014', message: 'canceling statement due to statement timeout' }),
+      false
+    );
+  });
+});
+
+describe('tokensFromSettingsLoadResult', () => {
+  it('returns null when the settings relation is missing', () => {
+    assert.equal(
+      tokensFromSettingsLoadResult({
+        error: {
+          code: 'PGRST205',
+          message: "Could not find the table 'public.settings' in the schema cache",
+        },
+      }),
+      null
+    );
+  });
+
+  it('returns null for an empty row and decrypts a valid envelope', () => {
+    assert.equal(tokensFromSettingsLoadResult({ data: null }), null);
+    assert.equal(tokensFromSettingsLoadResult({ data: { value: null } }), null);
+
+    const envelope = encryptJobberTokenEnvelope(SAMPLE_TOKENS, ENCRYPT_ENV);
+    assert.deepEqual(tokensFromSettingsLoadResult({ data: { value: envelope } }, ENCRYPT_ENV), SAMPLE_TOKENS);
+  });
+
+  it('throws a generic load error for real fetch failures and undecryptable rows', () => {
+    assert.throws(
+      () =>
+        tokensFromSettingsLoadResult({
+          error: { code: 'PGRST301', message: 'JWT expired secret-must-not-leak' },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+        assert.equal(error.message.includes('secret-must-not-leak'), false);
+        return true;
+      }
+    );
+
+    const envelope = encryptJobberTokenEnvelope(SAMPLE_TOKENS, ENCRYPT_ENV);
+    assert.throws(
+      () =>
+        tokensFromSettingsLoadResult(
+          { data: { value: envelope } },
+          { JOBBER_CLIENT_SECRET: 'other-secret' }
+        ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+        assert.equal(error.message.includes('access-2'), false);
+        return true;
+      }
+    );
+  });
+});
+
+describe('loadDurableJobberTokens', () => {
+  const productionEnv = {
+    VERCEL_ENV: 'production',
+    JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key',
+    JOBBER_ACCESS_TOKEN: 'stale-access',
+    JOBBER_REFRESH_TOKEN: 'refresh-1',
+  } as NodeJS.ProcessEnv;
+
+  it('returns null in Production when the settings table is missing', async () => {
+    const tokens = await loadDurableJobberTokens({
+      env: productionEnv,
+      durableStore: {
+        async load() {
+          throw Object.assign(
+            new Error("Could not find the table 'public.settings' in the schema cache"),
+            { code: 'PGRST205' }
+          );
+        },
+        async save() {
+          throw new Error('save should not run during load');
+        },
+      },
+    });
+    assert.equal(tokens, null);
+  });
+
+  it('still throws a generic load error in Production for real store failures', async () => {
+    await assert.rejects(
+      () =>
+        loadDurableJobberTokens({
+          env: productionEnv,
+          durableStore: {
+            async load() {
+              throw new Error('permission denied for table settings refresh-1-must-not-leak');
+            },
+            async save() {},
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+        assert.equal(error.message.includes('refresh-1'), false);
+        assert.equal(error.message.includes('must-not-leak'), false);
+        return true;
+      }
+    );
+  });
+
+  it('returns stored tokens when load succeeds', async () => {
+    const tokens = await loadDurableJobberTokens({
+      env: productionEnv,
+      durableStore: {
+        async load() {
+          return SAMPLE_TOKENS;
+        },
+        async save() {},
+      },
+    });
+    assert.deepEqual(tokens, SAMPLE_TOKENS);
   });
 });
 
