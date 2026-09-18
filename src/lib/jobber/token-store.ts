@@ -8,9 +8,10 @@
  * Tokens are stored in the existing Supabase `settings` row keyed
  * `jobber_oauth`, encrypted with AES-256-GCM. Production requires
  * JOBBER_TOKEN_ENCRYPTION_KEY — missing key is a loud config error,
- * not a silent env-only fallback. A missing `settings` relation
- * (PGRST205 / 42P01) is empty storage, not a config error, so env
- * bootstrap can still run. Never log token values.
+ * not a silent env-only fallback. Durable *load* is best-effort:
+ * missing table, 401, or network errors return null so env bootstrap
+ * (JOBBER_ACCESS_TOKEN / JOBBER_REFRESH_TOKEN) can still run. Persist
+ * after a successful refresh stays loud. Never log token values.
  */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
@@ -201,8 +202,9 @@ export function isMissingSettingsRelationError(
 }
 
 /**
- * Interpret a settings row fetch. Missing table / empty row → null.
- * Other PostgREST errors and an undecryptable existing row throw.
+ * Interpret a settings row fetch. Any fetch error or empty row → null
+ * so callers can fall back to env bootstrap. An existing row that
+ * cannot be decrypted still throws (corrupt / wrong key).
  */
 export function tokensFromSettingsLoadResult(
   result: {
@@ -212,10 +214,7 @@ export function tokensFromSettingsLoadResult(
   env: NodeJS.ProcessEnv = process.env
 ): JobberTokenSet | null {
   if (result.error) {
-    if (isMissingSettingsRelationError(result.error)) {
-      return null;
-    }
-    throw new Error(JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+    return null;
   }
   if (!result.data?.value) return null;
   const decoded = decryptJobberTokenEnvelope(result.data.value, env);
@@ -280,10 +279,14 @@ export function createSupabaseJobberTokenStore(
         .select('value')
         .eq('key', JOBBER_OAUTH_SETTINGS_KEY)
         .maybeSingle();
-      if (result.error && isMissingSettingsRelationError(result.error)) {
-        console.warn(
-          '[jobber-auth] settings relation missing; treating as no stored tokens'
-        );
+      if (result.error) {
+        if (isMissingSettingsRelationError(result.error)) {
+          console.warn(
+            '[jobber-auth] settings relation missing; treating as no stored tokens'
+          );
+        } else {
+          console.error('[jobber-auth] durable token load failed');
+        }
       }
       return tokensFromSettingsLoadResult(result, env);
     },
@@ -327,28 +330,26 @@ export function assertJobberDurableStoreConfigured(deps: JobberTokenStoreDeps = 
   }
 }
 
+/**
+ * Best-effort durable read. Production must not block env bootstrap
+ * when Supabase is unreachable (missing table, 401 Invalid API key,
+ * network). Persist after refresh is the loud path.
+ */
 export async function loadDurableJobberTokens(
   deps: JobberTokenStoreDeps = {}
 ): Promise<JobberTokenSet | null> {
-  const env = deps.env ?? process.env;
   const store = resolveJobberDurableStore(deps);
   if (!store) return null;
   try {
     return await store.load();
   } catch (error) {
-    if (
-      error instanceof Error &&
-      isMissingSettingsRelationError(error)
-    ) {
+    if (error instanceof Error && isMissingSettingsRelationError(error)) {
       console.warn(
         '[jobber-auth] settings relation missing; treating as no stored tokens'
       );
       return null;
     }
     console.error('[jobber-auth] durable token load failed');
-    if (isJobberProductionRuntime(env) && deps.durableStore !== null) {
-      throw new Error(JOBBER_DURABLE_TOKEN_LOAD_FAILED);
-    }
     return null;
   }
 }

@@ -261,20 +261,22 @@ describe('tokensFromSettingsLoadResult', () => {
     assert.deepEqual(tokensFromSettingsLoadResult({ data: { value: envelope } }, ENCRYPT_ENV), SAMPLE_TOKENS);
   });
 
-  it('throws a generic load error for real fetch failures and undecryptable rows', () => {
-    assert.throws(
-      () =>
-        tokensFromSettingsLoadResult({
-          error: { code: 'PGRST301', message: 'JWT expired secret-must-not-leak' },
-        }),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.equal(error.message, JOBBER_DURABLE_TOKEN_LOAD_FAILED);
-        assert.equal(error.message.includes('secret-must-not-leak'), false);
-        return true;
-      }
+  it('returns null for auth/network fetch errors without echoing secrets', () => {
+    assert.equal(
+      tokensFromSettingsLoadResult({
+        error: { code: 'PGRST301', message: 'JWT expired secret-must-not-leak' },
+      }),
+      null
     );
+    assert.equal(
+      tokensFromSettingsLoadResult({
+        error: { code: '401', message: 'Invalid API key secret-must-not-leak' },
+      }),
+      null
+    );
+  });
 
+  it('throws a generic load error for an undecryptable existing row', () => {
     const envelope = encryptJobberTokenEnvelope(SAMPLE_TOKENS, ENCRYPT_ENV);
     assert.throws(
       () =>
@@ -318,22 +320,50 @@ describe('loadDurableJobberTokens', () => {
     assert.equal(tokens, null);
   });
 
-  it('still throws a generic load error in Production for real store failures', async () => {
+  it('returns null in Production on 401 / network load failures so env bootstrap can run', async () => {
+    const tokens = await loadDurableJobberTokens({
+      env: productionEnv,
+      durableStore: {
+        async load() {
+          throw new Error('Invalid API key refresh-1-must-not-leak');
+        },
+        async save() {
+          throw new Error('save should not run during load');
+        },
+      },
+    });
+    assert.equal(tokens, null);
+
+    const network = await loadDurableJobberTokens({
+      env: productionEnv,
+      durableStore: {
+        async load() {
+          throw new Error('fetch failed');
+        },
+        async save() {},
+      },
+    });
+    assert.equal(network, null);
+  });
+
+  it('still throws a generic persist error after a successful refresh rotation', async () => {
     await assert.rejects(
       () =>
-        loadDurableJobberTokens({
+        persistJobberTokensDurable(SAMPLE_TOKENS, {
           env: productionEnv,
           durableStore: {
             async load() {
-              throw new Error('permission denied for table settings refresh-1-must-not-leak');
+              return null;
             },
-            async save() {},
+            async save() {
+              throw new Error('Invalid API key refresh-2-must-not-leak');
+            },
           },
         }),
       (error: unknown) => {
         assert.ok(error instanceof Error);
-        assert.equal(error.message, JOBBER_DURABLE_TOKEN_LOAD_FAILED);
-        assert.equal(error.message.includes('refresh-1'), false);
+        assert.equal(error.message, JOBBER_DURABLE_TOKEN_PERSIST_FAILED);
+        assert.equal(error.message.includes('refresh-2'), false);
         assert.equal(error.message.includes('must-not-leak'), false);
         return true;
       }

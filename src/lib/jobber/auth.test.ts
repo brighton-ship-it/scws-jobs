@@ -423,29 +423,30 @@ describe('getValidJobberAccessToken', () => {
     assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
   });
 
-  it('fails Production token load on a real durable-store error instead of falling back', async () => {
+  it('uses Production env bootstrap when durable load fails with 401 Invalid API key', async () => {
     const env = oauthEnv({ VERCEL_ENV: 'production', JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key' });
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth should not run while the env access token is still usable');
+    }) as typeof fetch;
 
-    await assert.rejects(
-      () =>
-        getValidJobberAccessToken({
-          env,
-          nowMs: NOW_MS,
-          durableStore: {
-            async load() {
-              throw new Error('JWT expired do-not-log-refresh-1');
-            },
-            async save() {},
-          },
-        }),
-      (error: unknown) => {
-        assert.ok(error instanceof Error);
-        assert.match(error.message, /durable token load failed/);
-        assert.equal(error.message.includes('do-not-log-refresh-1'), false);
-        assert.equal(error.message.includes('refresh-1'), false);
-        return true;
-      }
-    );
+    const token = await getValidJobberAccessToken({
+      env,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore: {
+        async load() {
+          throw new Error('Invalid API key do-not-log-refresh-1');
+        },
+        async save() {
+          throw new Error('persist should not run when using env bootstrap');
+        },
+      },
+    });
+    assert.equal(token, 'stale-access');
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
   });
 });
 
