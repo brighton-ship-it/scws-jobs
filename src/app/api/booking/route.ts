@@ -4,7 +4,12 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyBooking } from '@/lib/notifications';
 import { notifyNewBooking } from '@/lib/messaging/discord';
 import { requireUser } from '@/lib/require-auth';
-import { appendSourceToNotes, normalizeBookingSource } from '@/lib/booking-source';
+import {
+  appendAttributionToNotes,
+  inboundBookingSource,
+  extractBookingUtms,
+  normalizeBookingSource,
+} from '@/lib/booking-source';
 import {
   extractAdsClickIds,
   isMissingClickIdColumnError,
@@ -78,14 +83,18 @@ export async function POST(request: NextRequest) {
       preferred_date,
       preferred_time,
       notes,
-      source: rawSource = 'website',
     } = body;
 
-    // Known sources insert as-is. Unknown UTMs / landing pages become `other`
-    // so a new channel never 500s and silently drops the lead.
-    const { source, original: originalSource } = normalizeBookingSource(rawSource);
+    // Intake channel only (website/embed/manual/phone). Ads labels such as
+    // lead_source=google_ads from scwellservice.com map to website so the
+    // live booking_requests_source_check cannot 500. Click IDs stay on the
+    // row; remapped source + UTMs go on notes.
+    const { source, original: originalSource } = normalizeBookingSource(
+      inboundBookingSource(body)
+    );
+    const utms = extractBookingUtms(body);
     if (originalSource) {
-      console.warn('[Booking] Unknown source remapped to other:', originalSource);
+      console.warn('[Booking] Source remapped to website:', originalSource);
     }
 
     // Validate required fields
@@ -147,9 +156,7 @@ export async function POST(request: NextRequest) {
       city: city.trim(),
       preferred_date: preferred_date || null,
       preferred_time: preferred_time || null,
-      notes: originalSource
-        ? appendSourceToNotes(notes, originalSource)
-        : notes?.trim() || null,
+      notes: appendAttributionToNotes(notes, originalSource, utms),
       status: 'pending',
       customer_id,
       source,
@@ -177,6 +184,28 @@ export async function POST(request: NextRequest) {
         .single();
       booking = retry.data;
       bookingError = retry.error;
+    }
+
+    // Last resort if a CHECK we have not seen yet still rejects source.
+    if (bookingError && isSourceCheckError(bookingError) && bookingRow.source !== 'website') {
+      console.warn('[Booking] source CHECK rejected', bookingRow.source, bookingError.message);
+      const fallbackRow = { ...bookingRow, source: 'website' as const };
+      const retry = await supabase
+        .from('booking_requests')
+        .insert(fallbackRow)
+        .select()
+        .single();
+      booking = retry.data;
+      bookingError = retry.error;
+      if (bookingError && isMissingClickIdColumnError(bookingError)) {
+        const retryNoIds = await supabase
+          .from('booking_requests')
+          .insert(omitClickIdColumns(fallbackRow))
+          .select()
+          .single();
+        booking = retryNoIds.data;
+        bookingError = retryNoIds.error;
+      }
     }
 
     if (bookingError) {
@@ -314,6 +343,12 @@ function getServiceTypeLabel(serviceType: string): string {
     other: 'Other Service',
   };
   return labels[serviceType] || serviceType;
+}
+
+function isSourceCheckError(
+  error: { message?: string | null } | null | undefined
+): boolean {
+  return /booking_requests_source_check/i.test(error?.message ?? '');
 }
 
 function formatPhone(phone: string): string {

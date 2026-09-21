@@ -764,6 +764,7 @@ export interface BookingRequest {
   status: BookingStatus;
   customer_id: string | null;  // Linked customer if matched/created
   job_id: string | null;  // Created job if scheduled
+  /** Intake channel. Ads labels are remapped to website before insert. */
   source: 'website' | 'embed' | 'manual' | 'phone' | 'google_ads' | 'cost-calculator' | 'other';
   ip_address: string | null;
   gclid?: string | null;
