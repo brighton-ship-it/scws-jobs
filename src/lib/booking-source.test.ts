@@ -3,10 +3,15 @@ import assert from 'node:assert/strict';
 import {
   appendAttributionToNotes,
   appendSourceToNotes,
+  BOOKING_SOURCES,
   extractBookingUtms,
   inboundBookingSource,
   normalizeBookingSource,
 } from './booking-source.ts';
+import { extractAdsClickIds } from './ads/click-ids.ts';
+
+/** Live Production CHECK from 20260205_receptionist_calls.sql */
+const LIVE_SOURCE_CHECK = ['website', 'embed', 'manual', 'phone'] as const;
 
 describe('normalizeBookingSource', () => {
   it('defaults empty values to website', () => {
@@ -111,6 +116,55 @@ describe('appendSourceToNotes', () => {
     assert.equal(
       appendSourceToNotes('boost pump notes', 'paid_search'),
       '[source: paid_search] boost pump notes'
+    );
+  });
+});
+
+describe('Production booking insert shape', () => {
+  it('accepts google_ads lead_source without violating the live CHECK', () => {
+    const body = {
+      lead_source: 'google_ads',
+      notes: 'no water',
+      utm_source: 'google',
+      utm_medium: 'cpc',
+      utm_campaign: 'pump-repair',
+      gclid: 'TeSt-gclid.1',
+      gbraid: 'TeSt-gbraid.1',
+      wbraid: 'TeSt-wbraid.1',
+      ga_client_id: '123.456',
+      ga_session_id: '789',
+    };
+    const { source, original } = normalizeBookingSource(inboundBookingSource(body));
+    const utms = extractBookingUtms(body);
+    const clickIds = extractAdsClickIds(body);
+    const notes = appendAttributionToNotes(body.notes, original, utms);
+
+    assert.equal(source, 'website');
+    assert.ok((LIVE_SOURCE_CHECK as readonly string[]).includes(source));
+    assert.deepEqual([...BOOKING_SOURCES], [...LIVE_SOURCE_CHECK]);
+    assert.equal(clickIds.gclid, 'TeSt-gclid.1');
+    assert.equal(clickIds.gbraid, 'TeSt-gbraid.1');
+    assert.equal(clickIds.wbraid, 'TeSt-wbraid.1');
+    assert.equal(clickIds.ga_client_id, '123.456');
+    assert.equal(clickIds.ga_session_id, '789');
+    assert.match(notes ?? '', /\[source: google_ads\]/);
+    assert.match(notes ?? '', /utm_source=google/);
+    assert.match(notes ?? '', /utm_medium=cpc/);
+    assert.match(notes ?? '', /no water$/);
+  });
+
+  it('leaves existing website and phone inserts unchanged', () => {
+    assert.deepEqual(normalizeBookingSource(inboundBookingSource({ source: 'website' })), {
+      source: 'website',
+      original: null,
+    });
+    assert.deepEqual(normalizeBookingSource(inboundBookingSource({ source: 'phone' })), {
+      source: 'phone',
+      original: null,
+    });
+    assert.equal(
+      appendAttributionToNotes('callback after 5', null, extractBookingUtms({})),
+      'callback after 5'
     );
   });
 });
