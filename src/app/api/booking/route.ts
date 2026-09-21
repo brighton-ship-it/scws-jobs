@@ -7,6 +7,7 @@ import { requireUser } from '@/lib/require-auth';
 import {
   appendAttributionToNotes,
   inboundBookingSource,
+  inboundLeadSourceLabel,
   extractBookingUtms,
   normalizeBookingSource,
 } from '@/lib/booking-source';
@@ -89,12 +90,16 @@ export async function POST(request: NextRequest) {
     // lead_source=google_ads from scwellservice.com map to website so the
     // live booking_requests_source_check cannot 500. Click IDs stay on the
     // row; remapped source + UTMs go on notes.
-    const { source, original: originalSource } = normalizeBookingSource(
+    const { source, original: remappedSource } = normalizeBookingSource(
       inboundBookingSource(body)
     );
+    const leadSourceLabel = inboundLeadSourceLabel(body);
+    const originalSource =
+      remappedSource ||
+      (leadSourceLabel && leadSourceLabel !== source ? leadSourceLabel : null);
     const utms = extractBookingUtms(body);
-    if (originalSource) {
-      console.warn('[Booking] Source remapped to website:', originalSource);
+    if (remappedSource) {
+      console.warn('[Booking] Source remapped to website:', remappedSource);
     }
 
     // Validate required fields

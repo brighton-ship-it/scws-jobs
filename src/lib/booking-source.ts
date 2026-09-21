@@ -83,6 +83,16 @@ export function inboundBookingSource(body: unknown): unknown {
   return undefined;
 }
 
+/** Marketing-site Ads label to keep on notes when `source` is already a channel. */
+export function inboundLeadSourceLabel(body: unknown): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return null;
+  }
+  const value = (body as Record<string, unknown>).lead_source;
+  if (!hasText(value)) return null;
+  return String(value).trim();
+}
+
 function hasText(value: unknown): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }

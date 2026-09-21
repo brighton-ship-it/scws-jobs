@@ -6,6 +6,7 @@ import {
   BOOKING_SOURCES,
   extractBookingUtms,
   inboundBookingSource,
+  inboundLeadSourceLabel,
   normalizeBookingSource,
 } from './booking-source.ts';
 import { extractAdsClickIds } from './ads/click-ids.ts';
@@ -87,6 +88,14 @@ describe('inboundBookingSource', () => {
     assert.equal(inboundBookingSource({ source: '  ', lead_source: 'google_ads' }), 'google_ads');
     assert.equal(inboundBookingSource({}), undefined);
   });
+
+  it('exposes lead_source for notes when source is already a channel', () => {
+    assert.equal(
+      inboundLeadSourceLabel({ source: 'website', lead_source: 'google_ads' }),
+      'google_ads'
+    );
+    assert.equal(inboundLeadSourceLabel({ source: 'website' }), null);
+  });
 });
 
 describe('extractBookingUtms', () => {
@@ -151,6 +160,19 @@ describe('Production booking insert shape', () => {
     assert.match(notes ?? '', /utm_source=google/);
     assert.match(notes ?? '', /utm_medium=cpc/);
     assert.match(notes ?? '', /no water$/);
+  });
+
+  it('keeps lead_source=google_ads on notes when source is already website', () => {
+    const body = { source: 'website', lead_source: 'google_ads', notes: 'pump down' };
+    const { source, original } = normalizeBookingSource(inboundBookingSource(body));
+    const label = inboundLeadSourceLabel(body);
+    const noteSource = original || (label && label !== source ? label : null);
+    assert.equal(source, 'website');
+    assert.equal(noteSource, 'google_ads');
+    assert.equal(
+      appendAttributionToNotes(body.notes, noteSource, extractBookingUtms(body)),
+      '[source: google_ads] pump down'
+    );
   });
 
   it('leaves existing website and phone inserts unchanged', () => {
