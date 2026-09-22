@@ -5,6 +5,8 @@
  * Matching an existing customer by phone is not proof of a visit.
  */
 
+import { getValidJobberAccessToken } from '../jobber/auth.ts';
+
 export const JOBBER_GRAPHQL_URL = 'https://api.getjobber.com/api/graphql';
 export const DEFAULT_JOBBER_GRAPHQL_VERSION = '2026-02-17';
 export const PACIFIC_TZ = 'America/Los_Angeles';
@@ -376,14 +378,29 @@ function visitsFoundResult(customerName: string | null, visits: ScheduleVisit[])
   };
 }
 
+export async function resolveReceptionistJobberToken(
+  explicit?: string | null
+): Promise<{ ok: true; token: string } | { ok: false; error: string }> {
+  const provided = explicit?.trim();
+  if (provided) return { ok: true, token: provided };
+  try {
+    const token = await getValidJobberAccessToken();
+    return { ok: true, token };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'JOBBER_ACCESS_TOKEN is not set';
+    return { ok: false, error: message };
+  }
+}
+
 export async function lookupUpcomingVisits(
   phone: string,
   deps: CheckScheduleDeps = {}
 ): Promise<ScheduleLookupResult> {
-  const token = deps.accessToken ?? process.env.JOBBER_ACCESS_TOKEN ?? null;
-  if (!token) {
-    return scheduleLookupError('JOBBER_ACCESS_TOKEN is not set');
+  const resolvedToken = await resolveReceptionistJobberToken(deps.accessToken);
+  if (!resolvedToken.ok) {
+    return scheduleLookupError(resolvedToken.error);
   }
+  const token = resolvedToken.token;
 
   const normalized = normalizePhone10(phone);
   if (normalized.length < 10) {

@@ -29,6 +29,8 @@ export function authorizeJobberOauthHealthRequest(
 
 export function jobberOauthHealthHttpStatus(diagnosis: JobberDurableStoreDiagnosis): number {
   if (!diagnosis.ready) return 503;
+  if (diagnosis.settingsTable === 'missing') return 503;
+  if (diagnosis.loadError) return 503;
   if (diagnosis.reachable === false) return 503;
   return 200;
 }

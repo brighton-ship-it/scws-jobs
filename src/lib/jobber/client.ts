@@ -4,7 +4,7 @@
  */
 
 import {
-  getJobberOAuthCredentials,
+  canAttemptJobberRefresh,
   getValidJobberAccessToken,
   refreshJobberTokens,
 } from './auth.ts';
@@ -80,8 +80,8 @@ export async function jobberGraphql<T = any>(
 
   let { response, json } = await requestOnce(token);
 
-  if (response.status === 401 && getJobberOAuthCredentials(env)) {
-    token = (await refreshJobberTokens(authDeps)).accessToken;
+  if (response.status === 401 && canAttemptJobberRefresh(authDeps)) {
+    token = (await refreshJobberTokens({ ...authDeps, rejectedAccessToken: token })).accessToken;
     ({ response, json } = await requestOnce(token));
     if (!response.ok) {
       throw new Error(

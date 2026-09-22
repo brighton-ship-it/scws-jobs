@@ -56,6 +56,11 @@ describe('jobber oauth-health', () => {
         storedRow: false,
         hasStoredTokens: false,
         source: 'env_bootstrap',
+        authMode: 'env_bootstrap',
+        expiresAt: null,
+        settingsTable: 'present',
+        lockReady: true,
+        loadError: null,
       }),
       200
     );
@@ -69,6 +74,29 @@ describe('jobber oauth-health', () => {
         storedRow: null,
         hasStoredTokens: null,
         source: 'unconfigured',
+        authMode: 'unconfigured',
+        expiresAt: null,
+        settingsTable: 'unknown',
+        lockReady: null,
+        loadError: null,
+      }),
+      503
+    );
+    assert.equal(
+      jobberOauthHealthHttpStatus({
+        ready: true,
+        encryptionKeyConfigured: true,
+        encryptionKeySource: 'JOBBER_TOKEN_ENCRYPTION_KEY',
+        supabaseConfigured: true,
+        reachable: true,
+        storedRow: null,
+        hasStoredTokens: null,
+        source: 'unconfigured',
+        authMode: 'unconfigured',
+        expiresAt: null,
+        settingsTable: 'missing',
+        lockReady: false,
+        loadError: 'Jobber durable token load failed: public.settings is missing',
       }),
       503
     );

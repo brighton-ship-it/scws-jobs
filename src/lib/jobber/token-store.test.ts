@@ -7,7 +7,9 @@ import {
   JOBBER_DURABLE_TOKEN_PERSIST_FAILED,
   JOBBER_ENCRYPTION_KEY_REQUIRED,
   JOBBER_OAUTH_SETTINGS_KEY,
+  JOBBER_SETTINGS_TABLE_MISSING,
   JOBBER_TOKEN_ENCRYPTION_KEY_ENV,
+  JobberDurableLoadError,
   assertJobberDurableStoreConfigured,
   createSupabaseJobberTokenStore,
   decryptJobberTokenEnvelope,
@@ -241,15 +243,21 @@ describe('isMissingSettingsRelationError', () => {
 });
 
 describe('tokensFromSettingsLoadResult', () => {
-  it('returns null when the settings relation is missing', () => {
-    assert.equal(
-      tokensFromSettingsLoadResult({
-        error: {
-          code: 'PGRST205',
-          message: "Could not find the table 'public.settings' in the schema cache",
-        },
-      }),
-      null
+  it('throws a missing-table error instead of looking empty', () => {
+    assert.throws(
+      () =>
+        tokensFromSettingsLoadResult({
+          error: {
+            code: 'PGRST205',
+            message: "Could not find the table 'public.settings' in the schema cache",
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof JobberDurableLoadError);
+        assert.equal(error.reason, 'missing_table');
+        assert.equal(error.message, JOBBER_SETTINGS_TABLE_MISSING);
+        return true;
+      }
     );
   });
 
@@ -261,18 +269,30 @@ describe('tokensFromSettingsLoadResult', () => {
     assert.deepEqual(tokensFromSettingsLoadResult({ data: { value: envelope } }, ENCRYPT_ENV), SAMPLE_TOKENS);
   });
 
-  it('returns null for auth/network fetch errors without echoing secrets', () => {
-    assert.equal(
-      tokensFromSettingsLoadResult({
-        error: { code: 'PGRST301', message: 'JWT expired secret-must-not-leak' },
-      }),
-      null
+  it('throws a generic load error for auth/network failures without echoing secrets', () => {
+    assert.throws(
+      () =>
+        tokensFromSettingsLoadResult({
+          error: { code: 'PGRST301', message: 'JWT expired secret-must-not-leak' },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof JobberDurableLoadError);
+        assert.equal(error.reason, 'unreachable');
+        assert.equal(error.message, JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+        assert.equal(error.message.includes('secret-must-not-leak'), false);
+        return true;
+      }
     );
-    assert.equal(
-      tokensFromSettingsLoadResult({
-        error: { code: '401', message: 'Invalid API key secret-must-not-leak' },
-      }),
-      null
+    assert.throws(
+      () =>
+        tokensFromSettingsLoadResult({
+          error: { code: '401', message: 'Invalid API key secret-must-not-leak' },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message.includes('secret-must-not-leak'), false);
+        return true;
+      }
     );
   });
 
@@ -302,48 +322,72 @@ describe('loadDurableJobberTokens', () => {
     JOBBER_REFRESH_TOKEN: 'refresh-1',
   } as NodeJS.ProcessEnv;
 
-  it('returns null in Production when the settings table is missing', async () => {
-    const tokens = await loadDurableJobberTokens({
-      env: productionEnv,
-      durableStore: {
-        async load() {
-          throw Object.assign(
-            new Error("Could not find the table 'public.settings' in the schema cache"),
-            { code: 'PGRST205' }
-          );
-        },
-        async save() {
-          throw new Error('save should not run during load');
-        },
-      },
-    });
-    assert.equal(tokens, null);
+  it('throws in Production when the settings table is missing', async () => {
+    await assert.rejects(
+      () =>
+        loadDurableJobberTokens({
+          env: productionEnv,
+          durableStore: {
+            async load() {
+              throw Object.assign(
+                new Error("Could not find the table 'public.settings' in the schema cache"),
+                { code: 'PGRST205' }
+              );
+            },
+            async save() {
+              throw new Error('save should not run during load');
+            },
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof JobberDurableLoadError);
+        assert.equal(error.reason, 'missing_table');
+        assert.equal(error.message, JOBBER_SETTINGS_TABLE_MISSING);
+        return true;
+      }
+    );
   });
 
-  it('returns null in Production on 401 / network load failures so env bootstrap can run', async () => {
-    const tokens = await loadDurableJobberTokens({
-      env: productionEnv,
-      durableStore: {
-        async load() {
-          throw new Error('Invalid API key refresh-1-must-not-leak');
-        },
-        async save() {
-          throw new Error('save should not run during load');
-        },
-      },
-    });
-    assert.equal(tokens, null);
+  it('throws in Production on 401 / network load failures instead of env bootstrap', async () => {
+    await assert.rejects(
+      () =>
+        loadDurableJobberTokens({
+          env: productionEnv,
+          durableStore: {
+            async load() {
+              throw new Error('Invalid API key refresh-1-must-not-leak');
+            },
+            async save() {
+              throw new Error('save should not run during load');
+            },
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof JobberDurableLoadError);
+        assert.equal(error.reason, 'unreachable');
+        assert.equal(error.message.includes('refresh-1'), false);
+        assert.equal(error.message.includes('must-not-leak'), false);
+        return true;
+      }
+    );
 
-    const network = await loadDurableJobberTokens({
-      env: productionEnv,
-      durableStore: {
-        async load() {
-          throw new Error('fetch failed');
-        },
-        async save() {},
-      },
-    });
-    assert.equal(network, null);
+    await assert.rejects(
+      () =>
+        loadDurableJobberTokens({
+          env: productionEnv,
+          durableStore: {
+            async load() {
+              throw new Error('fetch failed');
+            },
+            async save() {},
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof JobberDurableLoadError);
+        assert.equal(error.reason, 'unreachable');
+        return true;
+      }
+    );
   });
 
   it('still throws a generic persist error after a successful refresh rotation', async () => {
@@ -399,6 +443,10 @@ describe('diagnoseJobberDurableStore', () => {
     assert.equal(diagnosis.reachable, null);
     assert.equal(diagnosis.hasStoredTokens, null);
     assert.equal(diagnosis.source, 'env_bootstrap');
+    assert.equal(diagnosis.authMode, 'env_bootstrap');
+    assert.equal(diagnosis.expiresAt, null);
+    assert.equal(diagnosis.settingsTable, 'unknown');
+    assert.equal(diagnosis.loadError, null);
     assert.equal(JSON.stringify(diagnosis).includes('must-not-leak'), false);
   });
 
@@ -420,6 +468,10 @@ describe('diagnoseJobberDurableStore', () => {
     assert.equal(diagnosis.ready, true);
     assert.equal(diagnosis.encryptionKeyConfigured, true);
     assert.equal(diagnosis.source, 'supabase');
+    assert.equal(diagnosis.authMode, 'durable');
+    assert.equal(diagnosis.expiresAt, new Date(SAMPLE_TOKENS.expiresAtMs).toISOString());
+    assert.equal(diagnosis.settingsTable, 'present');
+    assert.equal(diagnosis.lockReady, true);
     assert.equal(JSON.stringify(diagnosis).includes('access-2'), false);
     assert.equal(JSON.stringify(diagnosis).includes('refresh-2'), false);
     assert.equal(JSON.stringify(diagnosis).includes('dedicated-key'), false);

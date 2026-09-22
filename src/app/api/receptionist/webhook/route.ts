@@ -6,6 +6,7 @@ import { notifyCall } from '@/lib/notifications';
 import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/receptionist/pay-link';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
+import { getValidJobberAccessToken } from '@/lib/jobber/auth';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com', 'shanicey@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -580,10 +581,11 @@ async function handleLookupCustomer(phone: string) {
   const normalized = phone.replace(/\D/g, '').slice(-10);
   const searchTerm = normalized.slice(-7);
   
+  const accessToken = await getValidJobberAccessToken();
   const response = await fetch('https://api.getjobber.com/api/graphql', {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${process.env.JOBBER_ACCESS_TOKEN}`,
+      'Authorization': `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
       'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
     },

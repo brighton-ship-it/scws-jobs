@@ -19,6 +19,7 @@ import {
   formatPtDate,
   formatVisitTime,
   normalizePhone10,
+  resolveReceptionistJobberToken,
 } from './check-schedule.ts';
 import {
   isWeekdayVisitStart,
@@ -597,10 +598,11 @@ export async function bookServiceCall(
     });
   }
 
-  const token = deps.accessToken ?? process.env.JOBBER_ACCESS_TOKEN ?? null;
-  if (!token) {
-    return errorResult('JOBBER_ACCESS_TOKEN is not set');
+  const resolvedToken = await resolveReceptionistJobberToken(deps.accessToken);
+  if (!resolvedToken.ok) {
+    return errorResult(resolvedToken.error);
   }
+  const token = resolvedToken.token;
 
   const requestedTitle = input.title || input.serviceType;
   if (requestedTitle && !isSarahServiceCallTitle(requestedTitle)) {

@@ -265,6 +265,41 @@ describe('refreshJobberTokens', () => {
     assert.equal(calls, 0);
   });
 
+  it('does not send the env refresh token when the durable refresh token is rejected', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore({
+      accessToken: 'durable-access',
+      refreshToken: 'refresh-durable',
+      expiresAtMs: NOW_MS + 50 * 60 * 1000,
+    });
+    const refreshTokens: string[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = String(init?.body || '');
+      const match = /refresh_token=([^&]+)/.exec(body);
+      refreshTokens.push(decodeURIComponent(match?.[1] || ''));
+      return jsonResponse({ error: 'invalid_grant' }, 401);
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        refreshJobberTokens({
+          env,
+          fetchImpl,
+          nowMs: NOW_MS,
+          durableStore,
+          rejectedAccessToken: 'durable-access',
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, 'Jobber OAuth token refresh failed (HTTP 401)');
+        assert.equal(error.message.includes('refresh-durable'), false);
+        assert.equal(error.message.includes('refresh-1'), false);
+        return true;
+      }
+    );
+    assert.deepEqual(refreshTokens, ['refresh-durable']);
+  });
+
   it('throws HTTP status only when refresh fails — no token values', async () => {
     const env = oauthEnv();
     const fetchImpl = (async () =>
@@ -394,59 +429,107 @@ describe('getValidJobberAccessToken', () => {
     );
   });
 
-  it('uses Production env bootstrap when durable load reports a missing settings table', async () => {
+  it('refuses Production env bootstrap when durable load reports a missing settings table', async () => {
     const env = oauthEnv({ VERCEL_ENV: 'production', JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key' });
     let calls = 0;
     const fetchImpl = (async () => {
       calls += 1;
-      throw new Error('OAuth should not run while the env access token is still usable');
+      throw new Error('OAuth must not run when settings cannot be read');
     }) as typeof fetch;
 
-    const token = await getValidJobberAccessToken({
-      env,
-      fetchImpl,
-      nowMs: NOW_MS,
-      durableStore: {
-        async load() {
-          throw Object.assign(
-            new Error("Could not find the table 'public.settings' in the schema cache"),
-            { code: 'PGRST205' }
-          );
-        },
-        async save() {
-          throw new Error('persist should not run when using env bootstrap');
-        },
-      },
-    });
-    assert.equal(token, 'stale-access');
+    await assert.rejects(
+      () =>
+        getValidJobberAccessToken({
+          env,
+          fetchImpl,
+          nowMs: NOW_MS,
+          durableStore: {
+            async load() {
+              throw Object.assign(
+                new Error("Could not find the table 'public.settings' in the schema cache"),
+                { code: 'PGRST205' }
+              );
+            },
+            async save() {
+              throw new Error('persist should not run');
+            },
+          },
+        }),
+      /public\.settings is missing/
+    );
     assert.equal(calls, 0);
     assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
   });
 
-  it('uses Production env bootstrap when durable load fails with 401 Invalid API key', async () => {
+  it('refuses to refresh env tokens when durable load fails with 401 Invalid API key', async () => {
     const env = oauthEnv({ VERCEL_ENV: 'production', JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key' });
     let calls = 0;
     const fetchImpl = (async () => {
       calls += 1;
-      throw new Error('OAuth should not run while the env access token is still usable');
+      throw new Error('OAuth must not run when the durable load failed');
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () =>
+        getValidJobberAccessToken({
+          env,
+          fetchImpl,
+          nowMs: NOW_MS,
+          durableStore: {
+            async load() {
+              throw new Error('Invalid API key do-not-log-refresh-1');
+            },
+            async save() {
+              throw new Error('persist should not run');
+            },
+          },
+        }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.match(error.message, /durable token load failed/);
+        assert.equal(error.message.includes('do-not-log-refresh-1'), false);
+        assert.equal(error.message.includes('refresh-1'), false);
+        return true;
+      }
+    );
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
+  });
+
+  it('seeds an empty durable row once and then ignores the stale env refresh token', async () => {
+    const env = oauthEnv();
+    const durableStore = memoryDurableStore(null);
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      return jsonResponse({
+        access_token: 'access-2',
+        refresh_token: 'refresh-2',
+        expires_in: 3600,
+      });
     }) as typeof fetch;
 
     const token = await getValidJobberAccessToken({
       env,
       fetchImpl,
       nowMs: NOW_MS,
-      durableStore: {
-        async load() {
-          throw new Error('Invalid API key do-not-log-refresh-1');
-        },
-        async save() {
-          throw new Error('persist should not run when using env bootstrap');
-        },
-      },
+      durableStore,
     });
-    assert.equal(token, 'stale-access');
-    assert.equal(calls, 0);
-    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
+    assert.equal(token, 'access-2');
+    assert.equal(calls, 1);
+    assert.equal(durableStore.current?.refreshToken, 'refresh-2');
+
+    resetJobberAuthCache();
+    const staleEnv = oauthEnv();
+    const again = await getValidJobberAccessToken({
+      env: staleEnv,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore,
+    });
+    assert.equal(again, 'access-2');
+    assert.equal(calls, 1);
+    assert.equal(staleEnv.JOBBER_REFRESH_TOKEN, 'refresh-2');
   });
 });
 

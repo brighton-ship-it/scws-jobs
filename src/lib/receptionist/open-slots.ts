@@ -17,6 +17,7 @@ import {
   formatPtDate,
   formatVisitTime,
   ptCalendarDate,
+  resolveReceptionistJobberToken,
 } from './check-schedule.ts';
 import {
   allowedTechSpokenName,
@@ -324,13 +325,14 @@ export async function lookupOpenSlots(
   deps: OpenSlotsDeps = {}
 ): Promise<OpenSlotsResult> {
   const spokenAllowed = allowedTechSpokenName(location);
-  const token = deps.accessToken ?? process.env.JOBBER_ACCESS_TOKEN ?? null;
-  if (!token) {
+  const resolvedToken = await resolveReceptionistJobberToken(deps.accessToken);
+  if (!resolvedToken.ok) {
     return emptyOpenSlots(spokenAllowed, {
       lookupStatus: 'error',
-      error: 'JOBBER_ACCESS_TOKEN is not set',
+      error: resolvedToken.error,
     });
   }
+  const token = resolvedToken.token;
 
   const fetchFn = deps.fetchFn ?? fetch;
   const now = deps.now ?? new Date();
