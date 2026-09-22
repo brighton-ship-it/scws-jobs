@@ -5,17 +5,30 @@
  * cold lambda, so the next isolate would replay the stale Vercel
  * JOBBER_REFRESH_TOKEN and get HTTP 401.
  *
- * Tokens are stored in the existing Supabase `settings` row keyed
- * `jobber_oauth`, encrypted with AES-256-GCM. Production requires
- * JOBBER_TOKEN_ENCRYPTION_KEY — missing key is a loud config error,
- * not a silent env-only fallback. Durable *load* is best-effort:
- * missing table, 401, or network errors return null so env bootstrap
- * (JOBBER_ACCESS_TOKEN / JOBBER_REFRESH_TOKEN) can still run. Persist
- * after a successful refresh stays loud. Never log token values.
+ * Tokens are stored in Supabase `settings.key = jobber_oauth`, encrypted
+ * with AES-256-GCM. That row is the only place a refresh may write.
+ * Production requires JOBBER_TOKEN_ENCRYPTION_KEY. A failed durable load
+ * (missing table, bad service key, network, decrypt) throws. It must not
+ * fall through to an env refresh — that is the race that keeps killing
+ * the shared refresh token. Env tokens seed the row only when a successful
+ * read proves the row is empty. Never log token values.
  */
 
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import type { JobberTokenSet } from './auth.ts';
+import {
+  applyJobberRefreshCommit,
+  canClaimJobberRefresh,
+  newJobberRefreshOwner,
+  padLeaseMillis,
+  parseLeaseMillis,
+  type JobberAuthSource,
+  type JobberCommitResult,
+  type JobberLockedTokenStore,
+  type JobberOAuthRecord,
+  type JobberRefreshClaim,
+  type JobberRefreshCommit,
+} from './token-lock.ts';
 
 export const JOBBER_OAUTH_SETTINGS_KEY = 'jobber_oauth';
 export const JOBBER_TOKEN_ENCRYPTION_KEY_ENV = 'JOBBER_TOKEN_ENCRYPTION_KEY';
@@ -28,6 +41,22 @@ export const JOBBER_DURABLE_STORE_NOT_CONFIGURED =
 
 export const JOBBER_DURABLE_TOKEN_LOAD_FAILED = 'Jobber durable token load failed';
 export const JOBBER_DURABLE_TOKEN_PERSIST_FAILED = 'Jobber durable token persist failed';
+export const JOBBER_SETTINGS_TABLE_MISSING =
+  'Jobber durable token load failed: public.settings is missing. Apply supabase/migrations/20260922_jobber_oauth_single_writer.sql in the Supabase SQL Editor. Env tokens were not refreshed.';
+export const JOBBER_OAUTH_LOCK_SQL =
+  'supabase/migrations/20260922_jobber_oauth_single_writer.sql';
+
+export type JobberDurableLoadReason = 'missing_table' | 'unreachable' | 'decrypt_failed';
+
+export class JobberDurableLoadError extends Error {
+  readonly reason: JobberDurableLoadReason;
+
+  constructor(reason: JobberDurableLoadReason, message: string) {
+    super(message);
+    this.name = 'JobberDurableLoadError';
+    this.reason = reason;
+  }
+}
 
 const MISSING_SETTINGS_TABLE_MESSAGE =
   /Could not find the table ['"]?(?:public\.)?settings['"]?/i;
@@ -38,6 +67,8 @@ export type JobberDurableTokenStore = {
   load(): Promise<JobberTokenSet | null>;
   save(tokens: JobberTokenSet): Promise<void>;
 };
+
+export type { JobberLockedTokenStore, JobberOAuthRecord, JobberAuthSource };
 
 export type JobberTokenEnvelope = {
   v: 1;
@@ -57,6 +88,8 @@ export type JobberEncryptionKeySource =
   | 'JOBBER_CLIENT_SECRET'
   | null;
 
+export type JobberSettingsTableState = 'present' | 'missing' | 'unknown';
+
 export type JobberDurableStoreDiagnosis = {
   ready: boolean;
   encryptionKeyConfigured: boolean;
@@ -66,6 +99,11 @@ export type JobberDurableStoreDiagnosis = {
   storedRow: boolean | null;
   hasStoredTokens: boolean | null;
   source: 'supabase' | 'env_bootstrap' | 'unconfigured';
+  authMode: 'durable' | 'env_bootstrap' | 'unconfigured';
+  expiresAt: string | null;
+  settingsTable: JobberSettingsTableState;
+  lockReady: boolean | null;
+  loadError: string | null;
 };
 
 function trimEnv(env: NodeJS.ProcessEnv, key: string): string | null {
@@ -201,10 +239,33 @@ export function isMissingSettingsRelationError(
   );
 }
 
+export function asDurableLoadError(error: unknown): JobberDurableLoadError {
+  if (error instanceof JobberDurableLoadError) return error;
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code?: unknown }).code ?? '')
+      : '';
+  const message = error instanceof Error ? error.message : '';
+  if (isMissingSettingsRelationError({ code, message })) {
+    return new JobberDurableLoadError('missing_table', JOBBER_SETTINGS_TABLE_MISSING);
+  }
+  return new JobberDurableLoadError('unreachable', JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+}
+
+export function isMissingJobberLockRpc(
+  error: { code?: string | null; message?: string | null } | null | undefined
+): boolean {
+  if (!error) return false;
+  const code = (error.code ?? '').toString();
+  if (code === 'PGRST202' || code === '42883') return true;
+  const message = error.message ?? '';
+  return /Could not find the function/i.test(message) && /jobber_oauth_(claim|commit|release|lock_status)/i.test(message);
+}
+
 /**
- * Interpret a settings row fetch. Any fetch error or empty row → null
- * so callers can fall back to env bootstrap. An existing row that
- * cannot be decrypted still throws (corrupt / wrong key).
+ * A settings read error is a durable-load failure. Only a successful
+ * response with no row means "empty, env may seed once".
+ * An existing row that cannot be decrypted still throws.
  */
 export function tokensFromSettingsLoadResult(
   result: {
@@ -214,14 +275,87 @@ export function tokensFromSettingsLoadResult(
   env: NodeJS.ProcessEnv = process.env
 ): JobberTokenSet | null {
   if (result.error) {
-    return null;
+    throw asDurableLoadError(result.error);
   }
   if (!result.data?.value) return null;
-  const decoded = decryptJobberTokenEnvelope(result.data.value, env);
-  if (!decoded) {
-    throw new Error(JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+  return recordFromStoredJobberValue(result.data.value, env).tokens;
+}
+
+export function recordFromStoredJobberValue(
+  value: unknown,
+  env: NodeJS.ProcessEnv = process.env
+): JobberOAuthRecord {
+  if (!value || typeof value !== 'object') {
+    throw new JobberDurableLoadError('decrypt_failed', JOBBER_DURABLE_TOKEN_LOAD_FAILED);
   }
-  return decoded;
+  const raw = value as Record<string, unknown>;
+  const generation =
+    typeof raw.generation === 'number' && Number.isFinite(raw.generation)
+      ? raw.generation
+      : typeof raw.generation === 'string' && /^[0-9]+$/.test(raw.generation)
+        ? Number(raw.generation)
+        : 0;
+  const refreshFingerprint =
+    typeof raw.refreshFingerprint === 'string' && raw.refreshFingerprint
+      ? raw.refreshFingerprint
+      : null;
+  const leaseOwner = typeof raw.leaseOwner === 'string' && raw.leaseOwner ? raw.leaseOwner : null;
+  const leaseUntilMs = parseLeaseMillis(raw.leaseUntil);
+  const seededFrom: JobberAuthSource | null =
+    raw.seededFrom === 'durable' || raw.seededFrom === 'env_bootstrap' ? raw.seededFrom : null;
+  const bootstrap = raw.bootstrap === true;
+  const hasCiphertext = raw.v === 1 && typeof raw.data === 'string' && raw.data.length > 0;
+
+  let tokens: JobberTokenSet | null = null;
+  if (!bootstrap && hasCiphertext) {
+    tokens = decryptJobberTokenEnvelope(value, env);
+    if (!tokens) {
+      throw new JobberDurableLoadError('decrypt_failed', JOBBER_DURABLE_TOKEN_LOAD_FAILED);
+    }
+  }
+
+  return {
+    tokens,
+    generation,
+    refreshFingerprint,
+    leaseOwner,
+    leaseUntilMs,
+    seededFrom: tokens ? seededFrom ?? 'durable' : seededFrom,
+  };
+}
+
+export function buildCommittedJobberValue(
+  tokens: JobberTokenSet,
+  commit: Pick<JobberRefreshCommit, 'expectedGeneration' | 'seededFrom'>,
+  env: NodeJS.ProcessEnv = process.env
+): Record<string, unknown> {
+  const next = applyJobberRefreshCommit(
+    {
+      tokens: null,
+      generation: commit.expectedGeneration,
+      refreshFingerprint: null,
+      leaseOwner: null,
+      leaseUntilMs: null,
+      seededFrom: null,
+    },
+    {
+      owner: 'commit',
+      expectedGeneration: commit.expectedGeneration,
+      expectedFingerprint: null,
+      tokens,
+      seededFrom: commit.seededFrom,
+    }
+  );
+  return {
+    ...encryptJobberTokenEnvelope(tokens, env),
+    generation: next.generation,
+    refreshFingerprint: next.refreshFingerprint,
+    leaseOwner: null,
+    leaseUntil: null,
+    seededFrom: commit.seededFrom,
+    expiresAt: new Date(tokens.expiresAtMs).toISOString(),
+    bootstrap: false,
+  };
 }
 
 export function decryptJobberTokenEnvelope(
@@ -250,9 +384,18 @@ export function decryptJobberTokenEnvelope(
   return null;
 }
 
+type SettingsError = { code?: string | null; message?: string | null } | null;
+
+function generationIsStored(raw: Record<string, unknown>): boolean {
+  return (
+    typeof raw.generation === 'number' ||
+    (typeof raw.generation === 'string' && /^[0-9]+$/.test(raw.generation))
+  );
+}
+
 export function createSupabaseJobberTokenStore(
   env: NodeJS.ProcessEnv = process.env
-): JobberDurableTokenStore | null {
+): JobberLockedTokenStore | null {
   const url = supabaseUrl(env);
   const serviceKey = supabaseServiceKey(env);
   if (!url || !serviceKey) return null;
@@ -271,40 +414,237 @@ export function createSupabaseJobberTokenStore(
     });
   };
 
-  return {
-    async load() {
-      const client = await getClient();
-      const result = await client
-        .from('settings')
-        .select('value')
-        .eq('key', JOBBER_OAUTH_SETTINGS_KEY)
-        .maybeSingle();
-      if (result.error) {
-        if (isMissingSettingsRelationError(result.error)) {
-          console.warn(
-            '[jobber-auth] settings relation missing; treating as no stored tokens'
-          );
-        } else {
-          console.error('[jobber-auth] durable token load failed');
-        }
+  async function readRow(): Promise<Record<string, unknown> | null> {
+    const client = await getClient();
+    const result = await client
+      .from('settings')
+      .select('value')
+      .eq('key', JOBBER_OAUTH_SETTINGS_KEY)
+      .maybeSingle();
+    if (result.error) throw asDurableLoadError(result.error);
+    if (!result.data?.value || typeof result.data.value !== 'object') return null;
+    return result.data.value as Record<string, unknown>;
+  }
+
+  async function loadRecord(): Promise<JobberOAuthRecord | null> {
+    const value = await readRow();
+    if (!value) return null;
+    return recordFromStoredJobberValue(value, env);
+  }
+
+  async function tryClaim(claim: JobberRefreshClaim): Promise<{
+    acquired: boolean;
+    record: JobberOAuthRecord | null;
+  }> {
+    const client = await getClient();
+    const rpc = await client.rpc('jobber_oauth_claim', {
+      p_owner: claim.owner,
+      p_expected_generation: claim.expectedGeneration,
+      p_expected_fingerprint: claim.expectedFingerprint,
+      p_now_ms: claim.nowMs,
+      p_lease_until: padLeaseMillis(claim.leaseUntilMs),
+    });
+    if (!rpc.error) {
+      const body = (rpc.data ?? {}) as { acquired?: boolean; value?: unknown };
+      if (!body.acquired) {
+        const latest = await loadRecord();
+        return { acquired: false, record: latest };
       }
-      return tokensFromSettingsLoadResult(result, env);
-    },
-    async save(tokens) {
-      const client = await getClient();
-      const value = encryptJobberTokenEnvelope(tokens, env);
-      const { error } = await client.from('settings').upsert(
-        {
+      const record = body.value ? recordFromStoredJobberValue(body.value, env) : await loadRecord();
+      if (record?.leaseOwner && record.leaseOwner !== claim.owner) {
+        return { acquired: false, record };
+      }
+      return { acquired: true, record };
+    }
+    if (!isMissingJobberLockRpc(rpc.error)) {
+      throw asDurableLoadError(rpc.error);
+    }
+    return claimWithRowCompareAndSwap(claim);
+  }
+
+  async function claimWithRowCompareAndSwap(claim: JobberRefreshClaim): Promise<{
+    acquired: boolean;
+    record: JobberOAuthRecord | null;
+  }> {
+    const currentValue = await readRow();
+    const current = currentValue ? recordFromStoredJobberValue(currentValue, env) : null;
+    if (!canClaimJobberRefresh(current, claim)) {
+      return { acquired: false, record: current };
+    }
+
+    const client = await getClient();
+    if (!currentValue) {
+      const placeholder = {
+        bootstrap: true,
+        generation: 0,
+        leaseOwner: claim.owner,
+        leaseUntil: padLeaseMillis(claim.leaseUntilMs),
+        seededFrom: null,
+        expiresAt: null,
+      };
+      const inserted = await client
+        .from('settings')
+        .insert({
           key: JOBBER_OAUTH_SETTINGS_KEY,
-          value,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'key' }
-      );
-      if (error) {
+          value: placeholder,
+          updated_at: new Date(claim.nowMs).toISOString(),
+        })
+        .select('value')
+        .maybeSingle();
+      if (inserted.error) {
+        if ((inserted.error.code ?? '') === '23505') {
+          return { acquired: false, record: await loadRecord() };
+        }
+        throw asDurableLoadError(inserted.error);
+      }
+      return {
+        acquired: true,
+        record: recordFromStoredJobberValue(placeholder, env),
+      };
+    }
+
+    const nextValue: Record<string, unknown> = {
+      ...currentValue,
+      generation: current?.generation ?? 0,
+      leaseOwner: claim.owner,
+      leaseUntil: padLeaseMillis(claim.leaseUntilMs),
+    };
+    let update = client
+      .from('settings')
+      .update({
+        value: nextValue,
+        updated_at: new Date(claim.nowMs).toISOString(),
+      })
+      .eq('key', JOBBER_OAUTH_SETTINGS_KEY);
+
+    update = generationIsStored(currentValue)
+      ? update.eq('value->>generation', String(current?.generation ?? 0))
+      : update.is('value->>generation', null);
+
+    update =
+      current?.refreshFingerprint
+        ? update.eq('value->>refreshFingerprint', current.refreshFingerprint)
+        : update.is('value->>refreshFingerprint', null);
+
+    const nowPad = padLeaseMillis(claim.nowMs);
+    const { data, error } = await update
+      .or(
+        `value->>leaseUntil.is.null,value->>leaseUntil.lt.${nowPad},value->>leaseOwner.eq.${claim.owner}`
+      )
+      .select('value')
+      .maybeSingle();
+    if (error) {
+      if ((error as SettingsError)?.code === 'PGRST116') {
+        return { acquired: false, record: await loadRecord() };
+      }
+      throw asDurableLoadError(error);
+    }
+    if (!data?.value) return { acquired: false, record: await loadRecord() };
+    const record = recordFromStoredJobberValue(data.value, env);
+    if (record.leaseOwner !== claim.owner) return { acquired: false, record };
+    return { acquired: true, record };
+  }
+
+  async function commit(commitClaim: JobberRefreshCommit): Promise<JobberCommitResult> {
+    const client = await getClient();
+    const nextValue = buildCommittedJobberValue(commitClaim.tokens, commitClaim, env);
+    const rpc = await client.rpc('jobber_oauth_commit', {
+      p_owner: commitClaim.owner,
+      p_expected_generation: commitClaim.expectedGeneration,
+      p_expected_fingerprint: commitClaim.expectedFingerprint,
+      p_value: nextValue,
+    });
+    if (!rpc.error) {
+      const body = (rpc.data ?? {}) as { committed?: boolean; value?: unknown };
+      if (!body.committed) {
+        const latest = body.value
+          ? recordFromStoredJobberValue(body.value, env)
+          : await loadRecord();
+        return { committed: false, record: latest };
+      }
+      return { committed: true, record: recordFromStoredJobberValue(nextValue, env) };
+    }
+    if (!isMissingJobberLockRpc(rpc.error)) {
+      throw new Error(JOBBER_DURABLE_TOKEN_PERSIST_FAILED);
+    }
+
+    let update = client
+      .from('settings')
+      .update({
+        value: nextValue,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('key', JOBBER_OAUTH_SETTINGS_KEY)
+      .eq('value->>leaseOwner', commitClaim.owner)
+      .eq('value->>generation', String(commitClaim.expectedGeneration));
+    update =
+      commitClaim.expectedFingerprint
+        ? update.eq('value->>refreshFingerprint', commitClaim.expectedFingerprint)
+        : update.is('value->>refreshFingerprint', null);
+    const { data, error } = await update.select('value').maybeSingle();
+    if (error || !data?.value) {
+      if (error && !isMissingSettingsRelationError(error) && (error as SettingsError)?.code !== 'PGRST116') {
         throw new Error(JOBBER_DURABLE_TOKEN_PERSIST_FAILED);
       }
+      return { committed: false, record: await loadRecord().catch(() => null) };
+    }
+    return { committed: true, record: recordFromStoredJobberValue(data.value, env) };
+  }
+
+  async function release(owner: string): Promise<void> {
+    const client = await getClient();
+    const rpc = await client.rpc('jobber_oauth_release', { p_owner: owner });
+    if (!rpc.error || isMissingJobberLockRpc(rpc.error)) {
+      if (!rpc.error) return;
+      const current = await readRow().catch(() => null);
+      if (!current || current.leaseOwner !== owner) return;
+      const next = { ...current };
+      delete next.leaseOwner;
+      delete next.leaseUntil;
+      await client
+        .from('settings')
+        .update({ value: next, updated_at: new Date().toISOString() })
+        .eq('key', JOBBER_OAUTH_SETTINGS_KEY)
+        .eq('value->>leaseOwner', owner);
+      return;
+    }
+  }
+
+  async function save(tokens: JobberTokenSet): Promise<void> {
+    const owner = newJobberRefreshOwner();
+    const nowMs = Date.now();
+    const current = await loadRecord();
+    const claim: JobberRefreshClaim = {
+      owner,
+      expectedGeneration: current?.generation ?? 0,
+      expectedFingerprint: current?.refreshFingerprint ?? null,
+      nowMs,
+      leaseUntilMs: nowMs + 20_000,
+    };
+    const claimed = await tryClaim(claim);
+    if (!claimed.acquired || !claimed.record) {
+      throw new Error(JOBBER_DURABLE_TOKEN_PERSIST_FAILED);
+    }
+    const committed = await commit({
+      owner,
+      expectedGeneration: claimed.record.generation,
+      expectedFingerprint: claimed.record.refreshFingerprint,
+      tokens,
+      seededFrom: current?.tokens ? 'durable' : 'env_bootstrap',
+    });
+    if (!committed.committed) throw new Error(JOBBER_DURABLE_TOKEN_PERSIST_FAILED);
+  }
+
+  return {
+    async load() {
+      const record = await loadRecord();
+      return record?.tokens ?? null;
     },
+    save,
+    loadRecord,
+    tryClaim,
+    commit,
+    release,
   };
 }
 
@@ -331,9 +671,9 @@ export function assertJobberDurableStoreConfigured(deps: JobberTokenStoreDeps = 
 }
 
 /**
- * Best-effort durable read. Production must not block env bootstrap
- * when Supabase is unreachable (missing table, 401 Invalid API key,
- * network). Persist after refresh is the loud path.
+ * Durable read. A configured store that fails throws JobberDurableLoadError.
+ * Callers must not treat that as an empty row and refresh env tokens.
+ * Null means the store is not configured, or the row is genuinely absent.
  */
 export async function loadDurableJobberTokens(
   deps: JobberTokenStoreDeps = {}
@@ -343,14 +683,9 @@ export async function loadDurableJobberTokens(
   try {
     return await store.load();
   } catch (error) {
-    if (error instanceof Error && isMissingSettingsRelationError(error)) {
-      console.warn(
-        '[jobber-auth] settings relation missing; treating as no stored tokens'
-      );
-      return null;
-    }
-    console.error('[jobber-auth] durable token load failed');
-    return null;
+    const loadError = asDurableLoadError(error);
+    console.error(`[jobber-auth] durable token load failed reason=${loadError.reason}`);
+    throw loadError;
   }
 }
 
@@ -386,12 +721,26 @@ export async function persistJobberTokensDurable(
 async function probeSupabaseJobberOauth(env: NodeJS.ProcessEnv): Promise<{
   reachable: boolean;
   storedRow: boolean | null;
+  settingsTable: JobberSettingsTableState;
+  lockReady: boolean | null;
+  loadError: string | null;
+  expiresAt: string | null;
+  hasCiphertext: boolean | null;
+  seededFrom: JobberAuthSource | null;
 }> {
+  const empty = {
+    reachable: false,
+    storedRow: null,
+    settingsTable: 'unknown' as JobberSettingsTableState,
+    lockReady: null,
+    loadError: null,
+    expiresAt: null,
+    hasCiphertext: null,
+    seededFrom: null,
+  };
   const url = supabaseUrl(env);
   const serviceKey = supabaseServiceKey(env);
-  if (!url || !serviceKey) {
-    return { reachable: false, storedRow: null };
-  }
+  if (!url || !serviceKey) return empty;
 
   try {
     const { createClient } = await import('@supabase/supabase-js');
@@ -401,15 +750,67 @@ async function probeSupabaseJobberOauth(env: NodeJS.ProcessEnv): Promise<{
         persistSession: false,
       },
     });
+    const status = await client.rpc('jobber_oauth_lock_status');
+    if (!status.error && status.data && typeof status.data === 'object') {
+      const body = status.data as {
+        stored_row?: boolean;
+        expires_at?: string | null;
+        seeded_from?: string | null;
+        has_ciphertext?: boolean;
+      };
+      const seededFrom =
+        body.seeded_from === 'durable' || body.seeded_from === 'env_bootstrap'
+          ? body.seeded_from
+          : null;
+      return {
+        reachable: true,
+        storedRow: Boolean(body.stored_row),
+        settingsTable: 'present',
+        lockReady: true,
+        loadError: null,
+        expiresAt: typeof body.expires_at === 'string' ? body.expires_at : null,
+        hasCiphertext: Boolean(body.has_ciphertext),
+        seededFrom,
+      };
+    }
+
+    const lockMissing = isMissingJobberLockRpc(status.error);
     const { data, error } = await client
       .from('settings')
       .select('key')
       .eq('key', JOBBER_OAUTH_SETTINGS_KEY)
       .maybeSingle();
-    if (error) return { reachable: false, storedRow: null };
-    return { reachable: true, storedRow: Boolean(data?.key) };
+    if (error) {
+      if (isMissingSettingsRelationError(error)) {
+        return {
+          ...empty,
+          reachable: true,
+          storedRow: null,
+          settingsTable: 'missing',
+          lockReady: false,
+          loadError: JOBBER_SETTINGS_TABLE_MISSING,
+        };
+      }
+      return {
+        ...empty,
+        reachable: false,
+        settingsTable: 'unknown',
+        lockReady: lockMissing ? false : null,
+        loadError: JOBBER_DURABLE_TOKEN_LOAD_FAILED,
+      };
+    }
+    return {
+      reachable: true,
+      storedRow: Boolean(data?.key),
+      settingsTable: 'present',
+      lockReady: lockMissing ? false : null,
+      loadError: null,
+      expiresAt: null,
+      hasCiphertext: null,
+      seededFrom: null,
+    };
   } catch {
-    return { reachable: false, storedRow: null };
+    return empty;
   }
 }
 
@@ -428,9 +829,19 @@ export function getJobberDurableStoreConfig(
   };
 }
 
+function diagnosisAuthMode(
+  hasStoredTokens: boolean | null,
+  envBootstrap: boolean
+): JobberDurableStoreDiagnosis['authMode'] {
+  if (hasStoredTokens) return 'durable';
+  if (envBootstrap) return 'env_bootstrap';
+  return 'unconfigured';
+}
+
 /**
- * Secret-free diagnostic: key present, Supabase reachable, encrypted row
- * decryptable. Never includes token or key values.
+ * Secret-free diagnostic: key present, Supabase reachable, whether the
+ * settings table and single-writer lock are present, and token expiry.
+ * Never includes token or key values.
  */
 export async function diagnoseJobberDurableStore(
   deps: JobberTokenStoreDeps = {}
@@ -442,6 +853,10 @@ export async function diagnoseJobberDurableStore(
   let reachable: boolean | null = null;
   let storedRow: boolean | null = null;
   let hasStoredTokens: boolean | null = null;
+  let settingsTable: JobberSettingsTableState = 'unknown';
+  let lockReady: boolean | null = null;
+  let loadError: string | null = null;
+  let expiresAt: string | null = null;
 
   if (deps.durableStore) {
     try {
@@ -449,21 +864,42 @@ export async function diagnoseJobberDurableStore(
       hasStoredTokens = Boolean(tokens);
       storedRow = hasStoredTokens;
       reachable = true;
-    } catch {
-      hasStoredTokens = false;
-      reachable = false;
+      settingsTable = 'present';
+      lockReady = true;
+      expiresAt =
+        tokens && Number.isFinite(tokens.expiresAtMs)
+          ? new Date(tokens.expiresAtMs).toISOString()
+          : null;
+    } catch (error) {
+      const parsed = asDurableLoadError(error);
+      hasStoredTokens = null;
+      reachable = parsed.reason === 'missing_table' ? true : false;
+      settingsTable = parsed.reason === 'missing_table' ? 'missing' : 'unknown';
+      lockReady = false;
+      loadError = parsed.message;
     }
   } else if (config.supabaseConfigured) {
     const probe = await probeSupabaseJobberOauth(env);
     reachable = probe.reachable;
     storedRow = probe.storedRow;
-    if (probe.reachable) {
+    settingsTable = probe.settingsTable;
+    lockReady = probe.lockReady;
+    loadError = probe.loadError;
+    expiresAt = probe.expiresAt;
+    if (probe.hasCiphertext != null) {
+      hasStoredTokens = probe.hasCiphertext;
+    } else if (probe.reachable && probe.settingsTable === 'present') {
       const store = resolveJobberDurableStore(deps);
       if (store) {
         try {
-          hasStoredTokens = Boolean(await store.load());
-        } catch {
-          hasStoredTokens = false;
+          const tokens = await store.load();
+          hasStoredTokens = Boolean(tokens);
+          if (tokens) expiresAt = new Date(tokens.expiresAtMs).toISOString();
+        } catch (error) {
+          const parsed = asDurableLoadError(error);
+          hasStoredTokens = null;
+          loadError = parsed.message;
+          if (parsed.reason === 'missing_table') settingsTable = 'missing';
         }
       }
     }
@@ -481,5 +917,10 @@ export async function diagnoseJobberDurableStore(
     storedRow,
     hasStoredTokens,
     source,
+    authMode: diagnosisAuthMode(hasStoredTokens, envBootstrap),
+    expiresAt,
+    settingsTable,
+    lockReady,
+    loadError,
   };
 }

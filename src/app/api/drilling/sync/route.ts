@@ -1,30 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-
-const JOBBER_API = 'https://api.getjobber.com/api/graphql';
-
-async function jobberQuery(query: string, token: string) {
-  const res = await fetch(JOBBER_API, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2025-04-16'
-    },
-    body: JSON.stringify({ query })
-  });
-  return res.json();
-}
+import { jobberGraphql } from '@/lib/jobber/client';
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = createServiceClient();
-    const token = process.env.JOBBER_ACCESS_TOKEN;
-    if (!token) {
-      return NextResponse.json({ error: 'Jobber token not configured' }, { status: 500 });
-    }
 
-    // Fetch approved drilling quotes from Jobber
+    // Fetch approved drilling quotes from Jobber. Tokens come from the
+    // durable settings.jobber_oauth row (env is bootstrap only).
     const query = `
       {
         quotes(first: 100, filter: {status: approved}) {
@@ -53,7 +36,7 @@ export async function POST(request: NextRequest) {
       }
     `;
 
-    const result = await jobberQuery(query, token);
+    const result = await jobberGraphql(query);
     const quotes = result.data?.quotes?.nodes || [];
 
     // Filter for drilling-related quotes (wells, not tanks/pumps)
@@ -113,7 +96,8 @@ export async function POST(request: NextRequest) {
       already_imported: drillingQuotes.length - imported
     });
   } catch (error) {
-    console.error('Error syncing from Jobber:', error);
-    return NextResponse.json({ error: 'Failed to sync from Jobber' }, { status: 500 });
+    const message = error instanceof Error ? error.message : 'Failed to sync from Jobber';
+    console.error(`[drilling-sync] ${message}`);
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

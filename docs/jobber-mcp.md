@@ -5,7 +5,7 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
 **Auth:** `Authorization: Bearer <named MCP key>` from `JOBBER_MCP_API_KEYS`.  
-**Jobber OAuth:** stays on this app. `JOBBER_ACCESS_TOKEN` / `JOBBER_REFRESH_TOKEN` are bootstrap only. After the first successful refresh, Supabase `settings.jobber_oauth` (AES-256-GCM via `JOBBER_TOKEN_ENCRYPTION_KEY`) is the source of truth so a cold lambda does not replay a stale Vercel refresh token.
+**Jobber OAuth:** stays on this app. `JOBBER_ACCESS_TOKEN` / `JOBBER_REFRESH_TOKEN` seed Supabase `settings.jobber_oauth` once, only when that row is empty. After that, the row is the only refresh writer. A failed durable read is an error, not permission to refresh the env pair. See `docs/JOBBER_OAUTH.md`. Do not refresh Jobber from a box or laptop script.
 
 ## Safety (v1)
 
@@ -121,13 +121,13 @@ openssl rand -hex 32
 
 Name: `JOBBER_TOKEN_ENCRYPTION_KEY`. Paste the hex. Do not commit it. Do not reuse `JOBBER_CLIENT_SECRET`.
 
-Also confirm Production already has `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, and that `supabase/migrations/20260915_jobber_oauth_settings.sql` has been run in the Supabase SQL Editor (hides `jobber_oauth` from CRM settings reads).
+Also confirm Production already has `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, and that `supabase/migrations/20260922_jobber_oauth_single_writer.sql` has been run in the Supabase SQL Editor (creates `public.settings` if needed, hides `jobber_oauth` from CRM settings reads, and installs the single-writer lock). `node scripts/verify-jobber-settings.js` exits 2 when the table is missing.
 
 After deploy:
 
-1. `GET /api/jobber/oauth-health` with `Authorization: Bearer $JOBBER_MCP_KEY` (or `CRON_SECRET`) must be **200** with `encryptionKeyConfigured: true`, `supabaseConfigured: true`, `reachable: true`.
-2. First MCP / quote / refresh uses env tokens as seed, writes both access + refresh to `settings.jobber_oauth`, then later cold starts load that row.
-3. If health is **503** with `encryptionKeyConfigured: false`, the key is not on that deployment — set it and redeploy. Do not expect env-only refresh to survive a cold start.
+1. `GET /api/jobber/oauth-health` with `Authorization: Bearer $JOBBER_MCP_KEY` (or `CRON_SECRET`) must be **200** with `encryptionKeyConfigured: true`, `supabaseConfigured: true`, `reachable: true`, `settingsTable: "present"`. `authMode` is `durable` once the row has tokens, or `env_bootstrap` while the row is still empty. `expiresAt` is the access-token expiry. The body never includes tokens.
+2. The first Production refresh, only when the row is empty, seeds env tokens into `settings.jobber_oauth`. Later cold starts load that row and do not send the env refresh token to Jobber.
+3. If health is **503** with `encryptionKeyConfigured: false`, the key is not on that deployment — set it and redeploy. If `settingsTable` is `missing` or `loadError` is set, apply the SQL. That is not a Jobber 401, and the app will not refresh env tokens to paper over it.
 
 `GET /api/mcp/jobber` includes the same `durableTokenStore` object (no secrets).
 

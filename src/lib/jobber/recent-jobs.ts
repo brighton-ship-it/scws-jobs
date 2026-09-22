@@ -13,6 +13,7 @@ import {
   jobberGraphql,
 } from './client.ts';
 import { getJobberOAuthCredentials } from './auth.ts';
+import { getJobberDurableStoreConfig } from './token-store.ts';
 
 export { DEFAULT_JOBBER_GRAPHQL_VERSION, JOBBER_GRAPHQL_URL, getJobberAccessToken };
 
@@ -72,7 +73,13 @@ export async function fetchRecentlyUpdatedJobs(options?: {
   env?: NodeJS.ProcessEnv;
 }): Promise<JobberJobNode[]> {
   const env = options?.env ?? process.env;
-  if (!options?.token && !getJobberAccessToken(env) && !getJobberOAuthCredentials(env)) {
+  const durableReady = getJobberDurableStoreConfig(env).ready;
+  if (
+    !options?.token &&
+    !getJobberAccessToken(env) &&
+    !getJobberOAuthCredentials(env) &&
+    !durableReady
+  ) {
     throw new Error('JOBBER_ACCESS_TOKEN is not set');
   }
 
