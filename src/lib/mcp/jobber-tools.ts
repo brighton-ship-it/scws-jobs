@@ -1,8 +1,9 @@
 /**
- * Quote-focused MCP tools for shop bots.
+ * MCP tools for shop bots.
  *
- * v1 surface is clients + draft quotes + product lookup.
- * There are no send / approve / convert / delete / payroll tools.
+ * v1 surface is clients, draft quotes, product lookup, and read-only invoices.
+ * There are no send / approve / convert / delete / payroll tools,
+ * and no invoice send, create, or payment tools.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -23,12 +24,13 @@ import {
   updateUnsentQuoteDraft,
   type JobberQuoteDetail,
 } from '../jobber/mcp-quotes.ts';
+import { getInvoice, searchInvoices } from '../jobber/mcp-invoices.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.0.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.1.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -41,11 +43,20 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'quote_delete',
   'payroll',
   'send_invoice',
+  'create_invoice',
+  'update_invoice',
+  'delete_invoice',
+  'invoice_send',
+  'invoice_create',
+  'invoice_update',
+  'invoice_delete',
+  'record_payment',
+  'collect_payment',
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Draft quotes only.',
-  'Never send, approve, convert, or delete quotes. Never touch payroll.',
+  'Shared SCWS Jobber gateway. Draft quotes only. Invoice tools are read-only.',
+  'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never touch payroll.',
   'Customer-facing title/message must not include GP FLAG math.',
   'Look up an existing client before creating a draft. Do not invent duplicates.',
 ].join(' ');
@@ -155,6 +166,54 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'search_invoices',
+    description:
+      'Search Jobber invoices by invoice number, client name, or status. Read-only. Filter unpaid (balance > 0), overdue, or issued before a date. Paginate with first/after (pageInfo.endCursor). Does not send or create invoices.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Invoice number or client name' },
+        status: {
+          type: 'string',
+          description: 'draft | awaiting_payment | past_due | paid | bad_debt | unpaid | overdue | all',
+        },
+        unpaid: { type: 'boolean', description: 'Only invoices with balance greater than 0' },
+        overdue: {
+          type: 'boolean',
+          description: 'Only past-due invoices (status past_due, or unpaid with a due date before today)',
+        },
+        issuedBefore: {
+          type: 'string',
+          description: 'ISO date (YYYY-MM-DD). Only invoices issued before this date.',
+        },
+        first: { type: 'number', description: 'Page size. Default 15, max 25.' },
+        after: { type: 'string', description: 'Cursor from the previous pageInfo.endCursor' },
+        includeLineItems: {
+          type: 'boolean',
+          description: 'Include a short line-item summary. Default false.',
+        },
+      },
+    },
+  },
+  {
+    name: 'get_invoice',
+    description:
+      'Load one Jobber invoice by encoded id or invoice number. Read-only. Returns client, emails, amounts (total and balance), issued/due dates, status, and the client-hub payment link when Jobber provides one.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        invoiceId: { type: 'string', description: 'Encoded Jobber invoice id' },
+        invoiceNumber: { type: 'string', description: 'Invoice number, if the id is unknown' },
+        includeLineItems: {
+          type: 'boolean',
+          description: 'Include a line-item summary. Default true.',
+        },
+      },
+    },
+  },
+  {
     name: 'search_products',
     description:
       'Search Jobber products & services for line-item names and default street prices. Does not return internal cost.',
@@ -169,9 +228,16 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   },
 ];
 
+export function normalizeJobberMcpToolName(name: string): string {
+  return name
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[\s-]+/g, '_');
+}
+
 export function isForbiddenJobberMcpTool(name: string): boolean {
-  const normalized = name.trim().toLowerCase().replace(/[\s-]+/g, '_');
-  return (FORBIDDEN_JOBBER_MCP_TOOLS as readonly string[]).includes(normalized);
+  return (FORBIDDEN_JOBBER_MCP_TOOLS as readonly string[]).includes(normalizeJobberMcpToolName(name));
 }
 
 function textResult(payload: unknown, isError = false): McpToolResult {
@@ -189,6 +255,23 @@ function textResult(payload: unknown, isError = false): McpToolResult {
 
 function errorResult(message: string): McpToolResult {
   return textResult({ error: message, draftOnly: true }, true);
+}
+
+function optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {
+  const value = args[key];
+  if (typeof value === 'boolean') return value;
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return undefined;
+}
+
+function optionalNumber(args: Record<string, unknown>, key: string): number | undefined {
+  const value = args[key];
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() && Number.isFinite(Number(value))) return Number(value);
+  return undefined;
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
@@ -296,7 +379,9 @@ export async function callJobberMcpTool(
   deps?: JobberDeps
 ): Promise<McpToolResult> {
   if (isForbiddenJobberMcpTool(name)) {
-    return errorResult('This gateway cannot send, approve, convert, or delete quotes, and has no payroll tools.');
+    return errorResult(
+      'This gateway cannot send, approve, convert, or delete quotes, cannot send or create invoices, and has no payroll tools.'
+    );
   }
 
   try {
@@ -385,6 +470,56 @@ export async function callJobberMcpTool(
           quote: summarizeQuote(quote),
         });
       }
+      case 'search_invoices': {
+        const query = optionalString(args, 'query');
+        const status = optionalString(args, 'status');
+        const unpaid = optionalBoolean(args, 'unpaid') ?? false;
+        const overdue = optionalBoolean(args, 'overdue') ?? false;
+        const issuedBefore = optionalString(args, 'issuedBefore');
+        const result = await searchInvoices(
+          {
+            query,
+            status,
+            unpaid,
+            overdue,
+            issuedBefore,
+            first: optionalNumber(args, 'first'),
+            after: optionalString(args, 'after'),
+            includeLineItems: optionalBoolean(args, 'includeLineItems') ?? false,
+          },
+          deps
+        );
+        return textResult({
+          query: query || null,
+          status: status || null,
+          unpaid,
+          overdue,
+          issuedBefore: issuedBefore || null,
+          count: result.invoices.length,
+          pageInfo: result.pageInfo,
+          invoices: result.invoices,
+          note: [
+            result.note,
+            'Read-only. This gateway cannot send invoices, create invoices, or record payments.',
+          ]
+            .filter(Boolean)
+            .join(' '),
+        });
+      }
+      case 'get_invoice': {
+        const invoice = await getInvoice(
+          {
+            invoiceId: optionalString(args, 'invoiceId'),
+            invoiceNumber: optionalString(args, 'invoiceNumber'),
+            includeLineItems: optionalBoolean(args, 'includeLineItems') ?? true,
+          },
+          deps
+        );
+        return textResult({
+          invoice,
+          note: 'Read-only. This gateway cannot send invoices, create invoices, or record payments.',
+        });
+      }
       case 'search_products': {
         const query = requiredString(args, 'query');
         const products = await searchProducts(query, deps);
@@ -431,6 +566,8 @@ export async function jobberMcpHealthBody(
     safety: {
       draftOnly: true,
       sendsQuotes: false,
+      sendsInvoices: false,
+      invoiceMutations: false,
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
     },

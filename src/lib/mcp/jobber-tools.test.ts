@@ -38,9 +38,12 @@ function mockJobberFetch(handlers: Array<(query: string, variables: Record<strin
 }
 
 describe('JOBBER_MCP_TOOLS', () => {
-  it('exposes quote + client tools and none of the forbidden mutations', () => {
+  it('exposes quote + client + read-only invoice tools and none of the forbidden mutations', () => {
     const names = JOBBER_MCP_TOOLS.map((tool) => tool.name);
     assert.ok(names.includes('search_clients'));
+    assert.ok(names.includes('search_quotes'));
+    assert.ok(names.includes('search_invoices'));
+    assert.ok(names.includes('get_invoice'));
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
     for (const forbidden of FORBIDDEN_JOBBER_MCP_TOOLS) {
@@ -224,6 +227,70 @@ describe('callJobberMcpTool', () => {
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /cannot send/i);
   });
+
+  it('searches invoices through the same JSON text shape as quotes', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpInvoices')
+          ? jsonResponse({
+              data: {
+                invoices: {
+                  edges: [
+                    {
+                      cursor: 'c-inv-1',
+                      node: {
+                        id: 'inv-1',
+                        invoiceNumber: '1042',
+                        invoiceStatus: 'awaiting_payment',
+                        issuedDate: '2026-01-02T00:00:00Z',
+                        dueDate: '2026-01-16T00:00:00Z',
+                        clientHubUri: 'https://clienthub.getjobber.com/invoices/1042',
+                        amounts: { total: 500, paymentsTotal: 0, invoiceBalance: 500 },
+                        client: {
+                          id: 'client-1',
+                          name: 'Pat Example',
+                          emails: [{ address: 'pat@example.com' }],
+                        },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: 'c-inv-1' },
+                },
+              },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'search_invoices',
+      { query: '1042', unpaid: true },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      count: number;
+      invoices: Array<{ id: string; balance: number; publicUrl: string }>;
+      pageInfo: { endCursor: string | null };
+      draftOnly?: boolean;
+    };
+    assert.equal(payload.count, 1);
+    assert.equal(payload.invoices[0].id, 'inv-1');
+    assert.equal(payload.invoices[0].balance, 500);
+    assert.equal(payload.invoices[0].publicUrl, 'https://clienthub.getjobber.com/invoices/1042');
+    assert.equal(payload.pageInfo.endCursor, 'c-inv-1');
+    assert.equal(payload.draftOnly, undefined);
+    assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
+  });
+
+  it('refuses invoice send and create', async () => {
+    for (const name of ['send_invoice', 'create_invoice', 'sendInvoice']) {
+      const result = await callJobberMcpTool(name, { invoiceId: 'inv-1' }, { token: 'test' });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /cannot send/i);
+      const payload = JSON.parse(result.content[0].text) as { error: string; draftOnly: boolean };
+      assert.equal(payload.draftOnly, true);
+    }
+  });
 });
 
 describe('handleJobberMcpRequest auth gate', () => {
@@ -283,5 +350,12 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.equal(listed.status, 200);
     const rpc = (await listed.json()) as { result: { tools: Array<{ name: string }> } };
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_clients'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_quotes'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_invoices'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_invoice'));
+    assert.equal(
+      rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
+      false
+    );
   });
 });
