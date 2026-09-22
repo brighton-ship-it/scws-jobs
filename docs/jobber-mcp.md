@@ -1,6 +1,6 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients and **draft quotes** without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **draft quotes**, and **read invoices** (collections follow-up) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
@@ -9,7 +9,7 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 
 ## Safety (v1)
 
-This gateway is **draft-only**.
+Quote writes are **draft-only**. Invoice tools are **read-only**.
 
 | Allowed | Not in v1 — do not add |
 | --- | --- |
@@ -17,7 +17,8 @@ This gateway is **draft-only**.
 | Search / get quotes | Approve / convert quote |
 | Create unsent quote draft | Delete quote |
 | Update unsent draft (title, message, add lines) | Payroll |
-| Search products for line names / street list | Invoice send, visits, anything that emails the customer |
+| Search products for line names / street list | Invoice send, create, edit, or payment |
+| Search / get invoices (read-only, including unpaid) | Visits, anything that emails the customer |
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
@@ -71,6 +72,8 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 - `create_quote_draft` — unsent draft only
 - `update_quote_draft` — unsent draft only
 - `search_products` — catalog name + default street price (not internal cost)
+- `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
+- `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
 
 ## Brighton: connect Travis / Damien in Grok Bot
 
@@ -83,7 +86,7 @@ Grok Bot only accepts **remote** Streamable HTTP MCP (not local stdio). Each per
    - **Transport:** Streamable HTTP (if the UI only says HTTP/SSE, still use this URL)
    - **Header:** `Authorization` = `Bearer <that person's key>`
    - Tell the bot this is a **static API key**, not OAuth. Do not start an OAuth connect card.
-3. Confirm tools load: `search_clients`, `create_quote_draft`, etc.
+3. Confirm tools load: `search_clients`, `create_quote_draft`, `search_invoices`, `get_invoice`, etc.
 4. Cursor MCP (`~/.cursor/mcp.json`) is the same URL + header:
 
 ```json
@@ -181,6 +184,7 @@ curl -sS \
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
+| `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
 | `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |
 | `src/app/api/jobber/oauth-health/route.ts` | Secret-free durable-store diagnostic |
