@@ -2,9 +2,9 @@
  * MCP tools for shop bots.
  *
  * v1 surface is clients, draft quotes, product lookup, read-only invoices,
- * and read-only jobs (completed work + photo URLs for GBP).
+ * read-only jobs (completed work + photo URLs for GBP), and read-only tasks.
  * There are no send / approve / convert / delete / payroll tools,
- * no invoice send, create, or payment tools, and no job mutations.
+ * no invoice send, create, or payment tools, no job mutations, and no task mutations.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -27,12 +27,13 @@ import {
 } from '../jobber/mcp-quotes.ts';
 import { getInvoice, searchInvoices } from '../jobber/mcp-invoices.ts';
 import { getJob, searchJobs } from '../jobber/mcp-jobs.ts';
+import { getTask, searchTasks } from '../jobber/mcp-tasks.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.2.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.3.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -70,11 +71,21 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'job_send',
   'job_close',
   'job_email',
+  'create_task',
+  'update_task',
+  'edit_task',
+  'complete_task',
+  'delete_task',
+  'task_create',
+  'task_update',
+  'task_edit',
+  'task_complete',
+  'task_delete',
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Draft quotes only. Invoice and job tools are read-only.',
-  'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never create, update, complete, or email a job. Never touch payroll.',
+  'Shared SCWS Jobber gateway. Draft quotes only. Invoice, job, and task tools are read-only.',
+  'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never create, update, complete, or email a job. Never create, update, complete, or delete a task. Never touch payroll.',
   'Customer-facing title/message must not include GP FLAG math.',
   'Look up an existing client before creating a draft. Do not invent duplicates.',
 ].join(' ');
@@ -275,6 +286,43 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'search_tasks',
+    description:
+      'Search Jobber tasks by assignee, title, or instructions. Read-only. incompleteOnly defaults to true (TaskFilterAttributes.isComplete false). assignee is a name fragment or encoded user id (TaskFilterAttributes.assignedTo). Returns id, title, truncated instructions, isComplete, startAt, createdAt, assigned users, client, property address, and jobberWebUri when Jobber provides them. Does not create, update, complete, or delete tasks.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        assignee: {
+          type: 'string',
+          description: 'Name fragment or encoded Jobber user id',
+        },
+        incompleteOnly: {
+          type: 'boolean',
+          description: 'Only incomplete tasks. Default true.',
+        },
+        query: {
+          type: 'string',
+          description: 'Title or instructions search',
+        },
+        first: { type: 'number', description: 'Page size. Default 50, max 100.' },
+      },
+    },
+  },
+  {
+    name: 'get_task',
+    description:
+      'Load one Jobber task by encoded id. Read-only. Same fields as search_tasks, with a longer instructions excerpt. Does not create, update, complete, or delete the task.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['taskId'],
+      properties: {
+        taskId: { type: 'string', description: 'Encoded Jobber task id' },
+      },
+    },
+  },
+  {
     name: 'search_products',
     description:
       'Search Jobber products & services for line-item names and default street prices. Does not return internal cost.',
@@ -441,7 +489,7 @@ export async function callJobberMcpTool(
 ): Promise<McpToolResult> {
   if (isForbiddenJobberMcpTool(name)) {
     return errorResult(
-      'This gateway cannot send, approve, convert, or delete quotes, cannot send or create invoices, cannot create, update, complete, or email jobs, and has no payroll tools.'
+      'This gateway cannot send, approve, convert, or delete quotes, cannot send or create invoices, cannot create, update, complete, or email jobs, cannot create, update, complete, or delete tasks, and has no payroll tools.'
     );
   }
 
@@ -626,6 +674,41 @@ export async function callJobberMcpTool(
           note: 'Read-only. This gateway cannot create, update, complete, or email jobs.',
         });
       }
+      case 'search_tasks': {
+        const assignee = optionalString(args, 'assignee');
+        const query = optionalString(args, 'query');
+        const incompleteOnly = optionalBoolean(args, 'incompleteOnly') ?? true;
+        const result = await searchTasks(
+          {
+            assignee,
+            incompleteOnly,
+            query,
+            first: optionalNumber(args, 'first'),
+          },
+          deps
+        );
+        return textResult({
+          assignee: assignee || null,
+          incompleteOnly,
+          query: query || null,
+          count: result.tasks.length,
+          pageInfo: result.pageInfo,
+          tasks: result.tasks,
+          note: [
+            result.note,
+            'Read-only. This gateway cannot create, update, complete, or delete tasks.',
+          ]
+            .filter(Boolean)
+            .join(' '),
+        });
+      }
+      case 'get_task': {
+        const task = await getTask({ taskId: requiredString(args, 'taskId') }, deps);
+        return textResult({
+          task,
+          note: 'Read-only. This gateway cannot create, update, complete, or delete tasks.',
+        });
+      }
       case 'search_products': {
         const query = requiredString(args, 'query');
         const products = await searchProducts(query, deps);
@@ -675,6 +758,7 @@ export async function jobberMcpHealthBody(
       sendsInvoices: false,
       invoiceMutations: false,
       jobMutations: false,
+      taskMutations: false,
       emailsCustomers: false,
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],

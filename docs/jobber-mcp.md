@@ -9,7 +9,7 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 
 ## Safety (v1)
 
-Quote writes are **draft-only**. Invoice tools and job tools are **read-only**.
+Quote writes are **draft-only**. Invoice, job, and task tools are **read-only**.
 
 | Allowed | Not in v1 — do not add |
 | --- | --- |
@@ -20,6 +20,7 @@ Quote writes are **draft-only**. Invoice tools and job tools are **read-only**.
 | Search products for line names / street list | Invoice send, create, edit, or payment |
 | Search / get invoices (read-only, including unpaid) | Visits, anything that emails the customer |
 | Search / get jobs (read-only, completed window + photo URLs) | Job create, update, complete, close, or send |
+| Search / get tasks (read-only, incomplete by assignee) | Task create, update, complete, or delete |
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
@@ -77,6 +78,8 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
 - `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs
 - `get_job` — one job by encoded id or job number: same fields plus the full https photo list for GBP media
+- `search_tasks` — incomplete tasks by assignee (name fragment or encoded user id), optional title/instructions `query`, page size `first` (default 50, max 100). `incompleteOnly` defaults to true. Each task includes truncated instructions, start/created times, assigned user names and ids, client, property address, and `jobberWebUri` when Jobber returns them
+- `get_task` — one task by encoded id: same fields as `search_tasks`
 
 ## Brighton: connect Travis / Damien in Grok Bot
 
@@ -89,7 +92,7 @@ Grok Bot only accepts **remote** Streamable HTTP MCP (not local stdio). Each per
    - **Transport:** Streamable HTTP (if the UI only says HTTP/SSE, still use this URL)
    - **Header:** `Authorization` = `Bearer <that person's key>`
    - Tell the bot this is a **static API key**, not OAuth. Do not start an OAuth connect card.
-3. Confirm tools load: `search_clients`, `create_quote_draft`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, etc.
+3. Confirm tools load: `search_clients`, `create_quote_draft`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, `search_tasks`, `get_task`, etc.
 4. Cursor MCP (`~/.cursor/mcp.json`) is the same URL + header:
 
 ```json
@@ -189,6 +192,7 @@ curl -sS \
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |
+| `src/lib/jobber/mcp-tasks.ts` | read-only task search / get (`tasks` + `TaskFilterAttributes`) |
 | `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
 | `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |
 | `src/app/api/jobber/oauth-health/route.ts` | Secret-free durable-store diagnostic |
