@@ -211,6 +211,34 @@ const QUOTE_NOTE_CREATE_ALT = `
   }
 `;
 
+/** Last resort when the quote note mutations are missing. Private client note only. */
+const CLIENT_NOTE_CREATE = `
+  mutation ClientCreateNote($clientId: EncodedId!, $message: String!) {
+    clientCreateNote(clientId: $clientId, input: { message: $message }) {
+      clientNote { id }
+      userErrors { message path }
+    }
+  }
+`;
+
+const CLIENT_NOTE_CREATE_ALT = `
+  mutation ClientCreateNoteAlt($clientId: EncodedId!, $message: String!) {
+    clientCreateNote(clientId: $clientId, input: { message: $message }) {
+      note { id }
+      userErrors { message path }
+    }
+  }
+`;
+
+export type QuoteNoteMethod = 'quoteCreateNote' | 'noteCreate' | 'clientCreateNote';
+
+export type QuoteNoteAttachResult = {
+  ok: boolean;
+  noteId?: string;
+  method?: QuoteNoteMethod;
+  userErrors?: string[];
+};
+
 const PRODUCTS_SEARCH = `
   query ProductsAndServices($searchTerm: String!) {
     productsAndServices(searchTerm: $searchTerm, first: 15) {
@@ -311,24 +339,111 @@ export function toJobberLineItems(lines: QuoteLineDraft[]): Array<Record<string,
   }));
 }
 
+type NotePayload = {
+  quoteNote?: { id?: string | null } | null;
+  note?: { id?: string | null } | null;
+  clientNote?: { id?: string | null } | null;
+  userErrors?: Array<{ message?: string; path?: unknown }>;
+};
+
+type NoteAttempt = {
+  method: QuoteNoteMethod;
+  query: string;
+  variables: Record<string, unknown>;
+  read: (data: Record<string, NotePayload | undefined> | undefined) => NotePayload | undefined;
+  noteId: (payload: NotePayload) => string | null | undefined;
+};
+
+function rememberNoteErrors(bucket: string[], errors: Array<string | null | undefined>): void {
+  for (const error of errors) {
+    const message = error?.trim();
+    if (message && !bucket.includes(message)) bucket.push(message);
+  }
+}
+
+/**
+ * Attach a private note. Tries quoteCreateNote, then noteCreate, then
+ * clientCreateNote when a client id is available. Never edits the quote itself.
+ * Blank notes are a no-op (`ok: false`) so draft create can ignore them.
+ */
 export async function attachInternalQuoteNote(
   quoteId: string,
   note: string,
-  deps?: JobberDeps
-): Promise<boolean> {
-  if (!note.trim()) return false;
-  for (const query of [QUOTE_NOTE_CREATE, QUOTE_NOTE_CREATE_ALT]) {
+  deps?: JobberDeps,
+  clientId?: string | null
+): Promise<QuoteNoteAttachResult> {
+  const message = note.trim();
+  const linkedQuoteId = quoteId.trim();
+  if (!message || !linkedQuoteId) return { ok: false };
+
+  const userErrors: string[] = [];
+  const attempts: NoteAttempt[] = [
+    {
+      method: 'quoteCreateNote',
+      query: QUOTE_NOTE_CREATE,
+      variables: { quoteId: linkedQuoteId, message },
+      read: (data) => data?.quoteCreateNote,
+      noteId: (payload) => payload.quoteNote?.id,
+    },
+    {
+      method: 'noteCreate',
+      query: QUOTE_NOTE_CREATE_ALT,
+      variables: { quoteId: linkedQuoteId, message },
+      read: (data) => data?.noteCreate,
+      noteId: (payload) => payload.note?.id,
+    },
+  ];
+
+  const linkedClientId = clientId?.trim();
+  if (linkedClientId) {
+    attempts.push(
+      {
+        method: 'clientCreateNote',
+        query: CLIENT_NOTE_CREATE,
+        variables: { clientId: linkedClientId, message },
+        read: (data) => data?.clientCreateNote,
+        noteId: (payload) => payload.clientNote?.id,
+      },
+      {
+        method: 'clientCreateNote',
+        query: CLIENT_NOTE_CREATE_ALT,
+        variables: { clientId: linkedClientId, message },
+        read: (data) => data?.clientCreateNote,
+        noteId: (payload) => payload.note?.id,
+      }
+    );
+  }
+
+  for (const attempt of attempts) {
     try {
-      const result = await graphql(query, { quoteId, message: note }, deps);
-      if (result.errors?.length) continue;
-      const payload = result.data?.quoteCreateNote || result.data?.noteCreate;
-      if (jobberUserErrors(payload).length) continue;
-      if (payload?.quoteNote?.id || payload?.note?.id) return true;
-    } catch {
+      const result = await graphql(attempt.query, attempt.variables, deps);
+      if (result.errors?.length) {
+        rememberNoteErrors(
+          userErrors,
+          result.errors.map((error) => error.message)
+        );
+        continue;
+      }
+      const payload = attempt.read(result.data);
+      const errors = jobberUserErrors(payload);
+      if (errors.length) {
+        rememberNoteErrors(userErrors, errors);
+        continue;
+      }
+      const noteId = payload ? attempt.noteId(payload) : undefined;
+      if (noteId) return { ok: true, noteId, method: attempt.method };
+    } catch (error) {
       // Schema mismatch — title suffix + API JSON still carry the FLAG.
+      rememberNoteErrors(userErrors, [
+        error instanceof Error ? error.message : 'Jobber note request failed',
+      ]);
     }
   }
-  return false;
+
+  return {
+    ok: false,
+    userErrors: userErrors.length ? userErrors : ['Jobber did not attach a note'],
+  };
 }
 
 export async function fetchProductCosts(

@@ -1,8 +1,8 @@
 /**
  * MCP tools for shop bots.
  *
- * v1 surface is clients, draft quotes, product lookup, read-only invoices,
- * and read-only jobs (completed work + photo URLs for GBP).
+ * v1 surface is clients, draft quotes, private quote notes, product lookup,
+ * read-only invoices, and read-only jobs (completed work + photo URLs for GBP).
  * There are no send / approve / convert / delete / payroll tools,
  * no invoice send, create, or payment tools, and no job mutations.
  */
@@ -18,6 +18,7 @@ import {
   type JobberDeps,
 } from '../jobber/quotes.ts';
 import {
+  createMcpQuoteNote,
   getClientById,
   getQuoteById,
   searchProducts,
@@ -32,7 +33,7 @@ import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.2.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.3.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -73,9 +74,9 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Draft quotes only. Invoice and job tools are read-only.',
+  'Shared SCWS Jobber gateway. Draft quotes only, plus private notes on existing quotes. Invoice and job tools are read-only.',
   'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never create, update, complete, or email a job. Never touch payroll.',
-  'Customer-facing title/message must not include GP FLAG math.',
+  'Customer-facing title/message must not include GP FLAG math. Private quote notes may.',
   'Look up an existing client before creating a draft. Do not invent duplicates.',
 ].join(' ');
 
@@ -89,6 +90,28 @@ const LINE_ITEM_SCHEMA = {
     quantity: { type: 'number' },
     unitPrice: { type: 'number', description: 'Street sell price. Do not invent a 60% GP raise.' },
     taxable: { type: 'boolean' },
+  },
+};
+
+const CREATE_QUOTE_NOTE_SCHEMA: McpToolDefinition['inputSchema'] = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['message'],
+  properties: {
+    quoteId: { type: 'string', description: 'Encoded Jobber quote id' },
+    quoteNumber: {
+      description: 'Quote number (string or number) when quoteId is unknown. Resolved with quote search.',
+      anyOf: [{ type: 'string' }, { type: 'number' }],
+    },
+    message: {
+      type: 'string',
+      description: 'Private note body. Never copied onto the customer-facing title or message.',
+    },
+    clientId: {
+      type: 'string',
+      description:
+        'Optional. Used only for clientCreateNote if quoteCreateNote and noteCreate both fail. If omitted, the quote client is used for that fallback.',
+    },
   },
 };
 
@@ -182,6 +205,18 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         addLineItems: { type: 'array', items: LINE_ITEM_SCHEMA },
       },
     },
+  },
+  {
+    name: 'create_quote_note',
+    description:
+      'Attach a private Jobber note to an existing quote (sent or draft). Does not send, approve, convert, or edit the customer-facing quote. Pass quoteId or quoteNumber. GP FLAG math is allowed in message only.',
+    inputSchema: CREATE_QUOTE_NOTE_SCHEMA,
+  },
+  {
+    name: 'quote_create_note',
+    description:
+      'Alias of create_quote_note. Attach a private Jobber note to an existing quote. Does not send, approve, or convert.',
+    inputSchema: CREATE_QUOTE_NOTE_SCHEMA,
   },
   {
     name: 'search_invoices',
@@ -350,6 +385,13 @@ function optionalString(args: Record<string, unknown>, key: string): string | un
   return trimmed || undefined;
 }
 
+function optionalQuoteNumber(args: Record<string, unknown>): string | number | undefined {
+  const value = args.quoteNumber;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  return undefined;
+}
+
 function parseLineItems(value: unknown, field: string): QuoteLineDraft[] {
   if (!Array.isArray(value) || !value.length) {
     throw new Error(`${field} must be a non-empty array`);
@@ -508,6 +550,19 @@ export async function callJobberMcpTool(
           note: 'Draft stays unsent. No send/approve/convert tools exist on this gateway.',
           quote,
         });
+      }
+      case 'create_quote_note':
+      case 'quote_create_note': {
+        const note = await createMcpQuoteNote(
+          {
+            quoteId: optionalString(args, 'quoteId'),
+            quoteNumber: optionalQuoteNumber(args),
+            message: requiredString(args, 'message'),
+            clientId: optionalString(args, 'clientId'),
+          },
+          deps
+        );
+        return textResult(note, !note.ok);
       }
       case 'update_quote_draft': {
         const addLineItems = Array.isArray(args.addLineItems)

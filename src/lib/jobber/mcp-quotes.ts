@@ -13,12 +13,14 @@ import {
 } from './client.ts';
 import {
   assertUnsentQuoteAttributes,
+  attachInternalQuoteNote,
   searchClients,
   toJobberLineItems,
   type JobberAddress,
   type JobberClient,
   type JobberDeps,
   type JobberQuoteSummary,
+  type QuoteNoteAttachResult,
 } from './quotes.ts';
 import type { QuoteLineDraft } from './shop-book.ts';
 
@@ -424,4 +426,87 @@ export async function updateUnsentQuoteDraft(
 
 export function quoteEditUsedForbiddenFields(body: string): boolean {
   return /transitionQuoteTo/.test(body) || /"sentAt"\s*:/.test(body);
+}
+
+export type CreateMcpQuoteNoteResult = {
+  ok: boolean;
+  quoteId: string;
+  quoteNumber?: string | number;
+  noteId?: string;
+  method?: QuoteNoteAttachResult['method'];
+  userErrors?: string[];
+};
+
+function quoteNumberText(value: string | number | null | undefined): string {
+  if (value == null) return '';
+  return String(value).trim();
+}
+
+/**
+ * Resolve a quote by encoded id or quote number, then attach a private note
+ * through Production's Jobber token (the shared GraphQL client).
+ * Does not send, approve, convert, or edit customer-facing quote fields.
+ */
+export async function createMcpQuoteNote(
+  input: {
+    quoteId?: string | null;
+    quoteNumber?: string | number | null;
+    message: string;
+    clientId?: string | null;
+  },
+  deps?: JobberDeps
+): Promise<CreateMcpQuoteNoteResult> {
+  const message = input.message.trim();
+  if (!message) throw new Error('message is required');
+
+  const requestedId = input.quoteId?.trim() || '';
+  const requestedNumber = quoteNumberText(input.quoteNumber);
+  if (!requestedId && !requestedNumber) {
+    throw new Error('quoteId or quoteNumber is required');
+  }
+
+  let quoteId = requestedId;
+  let quoteNumber: string | number | undefined = requestedNumber || undefined;
+  let clientId = input.clientId?.trim() || '';
+
+  if (!quoteId) {
+    const quotes = await searchQuotes({ searchTerm: requestedNumber }, deps);
+    const exact = quotes.filter((quote) => quoteNumberText(quote.quoteNumber) === requestedNumber);
+    if (exact.length > 1) {
+      throw new Error(`Multiple Jobber quotes match number ${requestedNumber}. Pass quoteId.`);
+    }
+    const match = exact[0];
+    if (!match?.id) throw new Error(`Jobber quote ${requestedNumber} not found`);
+    quoteId = match.id;
+    quoteNumber = match.quoteNumber ?? requestedNumber;
+    if (!clientId && match.client?.id) clientId = match.client.id;
+  } else {
+    try {
+      const quote = await getQuoteById(quoteId, deps);
+      quoteId = quote.id;
+      if (
+        requestedNumber &&
+        quote.quoteNumber != null &&
+        quoteNumberText(quote.quoteNumber) !== requestedNumber
+      ) {
+        throw new Error(`quoteId ${quote.id} is quote ${quote.quoteNumber}, not ${requestedNumber}`);
+      }
+      if (quote.quoteNumber != null) quoteNumber = quote.quoteNumber;
+      if (!clientId && quote.client?.id) clientId = quote.client.id;
+    } catch (error) {
+      const messageText = error instanceof Error ? error.message : '';
+      if (/not found/i.test(messageText) || /is quote /.test(messageText)) throw error;
+    }
+  }
+
+  const attached = await attachInternalQuoteNote(quoteId, message, deps, clientId || undefined);
+  const result: CreateMcpQuoteNoteResult = {
+    ok: attached.ok,
+    quoteId,
+  };
+  if (quoteNumber != null && quoteNumber !== '') result.quoteNumber = quoteNumber;
+  if (attached.noteId) result.noteId = attached.noteId;
+  if (attached.method) result.method = attached.method;
+  if (attached.userErrors?.length) result.userErrors = attached.userErrors;
+  return result;
 }

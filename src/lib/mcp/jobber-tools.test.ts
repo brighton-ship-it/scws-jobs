@@ -48,6 +48,8 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_job'));
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
+    assert.ok(names.includes('create_quote_note'));
+    assert.ok(names.includes('quote_create_note'));
     for (const forbidden of FORBIDDEN_JOBBER_MCP_TOOLS) {
       assert.equal(names.includes(forbidden), false);
     }
@@ -436,6 +438,309 @@ describe('callJobberMcpTool', () => {
   });
 });
 
+const NOTE_QUOTE = {
+  id: 'Z2lkOi8vSm9iYmVyL1F1b3RlLzQ0MDE',
+  quoteNumber: 4401,
+  title: 'Pull well pump',
+  quoteStatus: 'sent',
+  sentAt: '2026-09-01T00:00:00Z',
+  client: { id: 'client-1', name: 'Pat Example' },
+};
+
+function mutationQuery(body: string): string {
+  return (JSON.parse(body) as { query?: string }).query || '';
+}
+
+describe('create_quote_note', () => {
+  it('attaches a private note with quoteCreateNote and does not send the quote', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({ data: { quote: NOTE_QUOTE } })
+          : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({
+              data: { quoteCreateNote: { quoteNote: { id: 'note-1' }, userErrors: [] } },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_note',
+      {
+        quoteId: NOTE_QUOTE.id,
+        message: 'Customer called back. Hold the pump quote until Thursday.',
+      },
+      { fetchImpl, token: 'test' }
+    );
+
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      ok: boolean;
+      quoteId: string;
+      quoteNumber: number;
+      noteId: string;
+      method: string;
+    };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.quoteId, NOTE_QUOTE.id);
+    assert.equal(payload.quoteNumber, 4401);
+    assert.equal(payload.noteId, 'note-1');
+    assert.equal(payload.method, 'quoteCreateNote');
+    const noteBodies = bodies.filter((body) => mutationQuery(body).includes('mutation'));
+    assert.equal(noteBodies.length, 1);
+    assert.match(noteBodies[0], /quoteCreateNote/);
+    assert.match(noteBodies[0], /Hold the pump quote/);
+    assert.ok(bodies.every((body) => !/transitionQuoteTo/.test(body)));
+    assert.ok(bodies.every((body) => !/quoteEdit/.test(body)));
+    assert.ok(bodies.every((body) => !/"sentAt"\s*:/.test(body)));
+  });
+
+  it('resolves quoteNumber through quote search when no encoded id is given', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuotesSearch')
+          ? jsonResponse({ data: { quotes: { nodes: [NOTE_QUOTE] } } })
+          : null,
+      (query) =>
+        query.includes('ClientSearch') ? jsonResponse({ data: { clients: { nodes: [] } } }) : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({
+              data: { quoteCreateNote: { quoteNote: { id: 'note-2' }, userErrors: [] } },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_note',
+      { quoteNumber: 4401, message: 'Reply received. Leave the quote unsent.' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as { quoteId: string; method: string; noteId: string };
+    assert.equal(payload.quoteId, NOTE_QUOTE.id);
+    assert.equal(payload.noteId, 'note-2');
+    assert.equal(payload.method, 'quoteCreateNote');
+    const noteBody = bodies.find((body) => mutationQuery(body).includes('quoteCreateNote')) || '';
+    const vars = JSON.parse(noteBody) as { variables?: { quoteId?: string; message?: string } };
+    assert.equal(vars.variables?.quoteId, NOTE_QUOTE.id);
+    assert.equal(vars.variables?.message, 'Reply received. Leave the quote unsent.');
+    assert.ok(bodies.every((body) => !mutationQuery(body).includes('quoteEdit')));
+  });
+
+  it('accepts the quote_create_note alias', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({ data: { quote: NOTE_QUOTE } })
+          : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({
+              data: { quoteCreateNote: { quoteNote: { id: 'note-alias' }, userErrors: [] } },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'quote_create_note',
+      { quoteId: NOTE_QUOTE.id, message: 'Alias path.' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as { method: string; noteId: string };
+    assert.equal(payload.method, 'quoteCreateNote');
+    assert.equal(payload.noteId, 'note-alias');
+  });
+
+  it('falls back to noteCreate when quoteCreateNote is rejected', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({ data: { quote: NOTE_QUOTE } })
+          : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({ errors: [{ message: "Field 'quoteCreateNote' doesn't exist on type 'Mutation'" }] })
+          : null,
+      (query) =>
+        query.includes('noteCreate')
+          ? jsonResponse({ data: { noteCreate: { note: { id: 'note-3' }, userErrors: [] } } })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_note',
+      { quoteId: NOTE_QUOTE.id, message: 'Private fallback note.' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as { ok: boolean; method: string; noteId: string };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.method, 'noteCreate');
+    assert.equal(payload.noteId, 'note-3');
+    assert.ok(bodies.some((body) => mutationQuery(body).includes('quoteCreateNote')));
+    assert.ok(bodies.some((body) => mutationQuery(body).includes('noteCreate')));
+    assert.equal(
+      bodies.some((body) => mutationQuery(body).includes('clientCreateNote')),
+      false
+    );
+  });
+
+  it('falls back to clientCreateNote when both quote note mutations fail', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({ data: { quote: NOTE_QUOTE } })
+          : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({ errors: [{ message: 'quoteCreateNote unavailable' }] })
+          : null,
+      (query) =>
+        query.includes('NoteCreate')
+          ? jsonResponse({
+              data: { noteCreate: { note: null, userErrors: [{ message: 'Cannot link note to quote' }] } },
+            })
+          : null,
+      (query) =>
+        query.includes('clientCreateNote') && query.includes('clientNote')
+          ? jsonResponse({
+              data: { clientCreateNote: { clientNote: { id: 'note-4' }, userErrors: [] } },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_note',
+      {
+        quoteId: NOTE_QUOTE.id,
+        message: 'FLAG PM260 street $1370 vs cost $616.50 = 55% GP — not applied',
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      ok: boolean;
+      method: string;
+      noteId: string;
+      quoteId: string;
+    };
+    assert.equal(payload.ok, true);
+    assert.equal(payload.method, 'clientCreateNote');
+    assert.equal(payload.noteId, 'note-4');
+    assert.equal(payload.quoteId, NOTE_QUOTE.id);
+    const clientBody = bodies.find((body) => mutationQuery(body).includes('clientCreateNote')) || '';
+    const vars = JSON.parse(clientBody) as { variables?: { clientId?: string; message?: string } };
+    assert.equal(vars.variables?.clientId, 'client-1');
+    assert.match(vars.variables?.message || '', /FLAG PM260/);
+    assert.ok(bodies.every((body) => !/quoteEdit|transitionQuoteTo/.test(body)));
+    assert.ok(
+      bodies.every((body) => {
+        if (mutationQuery(body).includes('clientCreateNote') || mutationQuery(body).includes('quoteCreateNote') || mutationQuery(body).includes('noteCreate')) {
+          return true;
+        }
+        return !body.includes('FLAG PM260');
+      })
+    );
+  });
+
+  it('uses an explicit clientId for the clientCreateNote fallback', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({ data: { quote: NOTE_QUOTE } })
+          : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({ errors: [{ message: 'quoteCreateNote unavailable' }] })
+          : null,
+      (query) =>
+        query.includes('mutation NoteCreate')
+          ? jsonResponse({
+              data: { noteCreate: { userErrors: [{ message: 'Cannot link note to quote' }] } },
+            })
+          : null,
+      (query) =>
+        query.includes('clientCreateNote') && query.includes('clientNote')
+          ? jsonResponse({
+              data: { clientCreateNote: { clientNote: { id: 'note-explicit' }, userErrors: [] } },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_note',
+      { quoteId: NOTE_QUOTE.id, clientId: 'client-explicit', message: 'Use the caller client.' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as { method: string; noteId: string };
+    assert.equal(payload.method, 'clientCreateNote');
+    assert.equal(payload.noteId, 'note-explicit');
+    const clientBody = bodies.find((body) => mutationQuery(body).includes('clientCreateNote')) || '';
+    const vars = JSON.parse(clientBody) as { variables?: { clientId?: string } };
+    assert.equal(vars.variables?.clientId, 'client-explicit');
+  });
+
+  it('returns ok false with userErrors when every note mutation fails', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({ data: { quote: { ...NOTE_QUOTE, client: null } } })
+          : null,
+      (query) =>
+        query.includes('quoteCreateNote')
+          ? jsonResponse({ errors: [{ message: 'quoteCreateNote unavailable' }] })
+          : null,
+      (query) =>
+        query.includes('noteCreate')
+          ? jsonResponse({
+              data: { noteCreate: { userErrors: [{ message: 'Cannot link note to quote' }] } },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'create_quote_note',
+      { quoteId: NOTE_QUOTE.id, message: 'No client fallback.' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    const payload = JSON.parse(result.content[0].text) as {
+      ok: boolean;
+      quoteId: string;
+      userErrors: string[];
+      method?: string;
+    };
+    assert.equal(payload.ok, false);
+    assert.equal(payload.quoteId, NOTE_QUOTE.id);
+    assert.equal(payload.method, undefined);
+    assert.ok(payload.userErrors.includes('quoteCreateNote unavailable'));
+    assert.ok(payload.userErrors.includes('Cannot link note to quote'));
+  });
+
+  it('requires a message and a quote id or number', async () => {
+    const missingMessage = await callJobberMcpTool(
+      'create_quote_note',
+      { quoteId: NOTE_QUOTE.id },
+      { token: 'test' }
+    );
+    assert.equal(missingMessage.isError, true);
+    assert.match(missingMessage.content[0].text, /message is required/);
+
+    const missingQuote = await callJobberMcpTool(
+      'create_quote_note',
+      { message: 'Hello' },
+      { token: 'test' }
+    );
+    assert.equal(missingQuote.isError, true);
+    assert.match(missingQuote.content[0].text, /quoteId or quoteNumber is required/);
+  });
+});
+
 describe('handleJobberMcpRequest auth gate', () => {
   const env = { JOBBER_MCP_API_KEYS: '{"travis":"trav-secret"}' };
 
@@ -474,6 +779,8 @@ describe('handleJobberMcpRequest auth gate', () => {
     };
     assert.equal(healthBody.authenticatedAs, 'travis');
     assert.ok(healthBody.tools.includes('create_quote_draft'));
+    assert.ok(healthBody.tools.includes('create_quote_note'));
+    assert.ok(healthBody.tools.includes('quote_create_note'));
     assert.equal(healthBody.durableTokenStore.encryptionKeyConfigured, false);
     assert.equal(healthBody.durableTokenStore.ready, false);
     assert.equal(JSON.stringify(healthBody).includes('trav-secret'), false);
@@ -498,6 +805,8 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_invoice'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_jobs'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_job'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'create_quote_note'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'quote_create_note'));
     assert.equal(
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
       false
