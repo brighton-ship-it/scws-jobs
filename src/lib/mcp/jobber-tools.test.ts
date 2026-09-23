@@ -46,6 +46,8 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_invoice'));
     assert.ok(names.includes('search_jobs'));
     assert.ok(names.includes('get_job'));
+    assert.ok(names.includes('search_tasks'));
+    assert.ok(names.includes('get_task'));
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
     for (const forbidden of FORBIDDEN_JOBBER_MCP_TOOLS) {
@@ -414,6 +416,123 @@ describe('callJobberMcpTool', () => {
     assert.deepEqual(payload.job.photoUrls, ['https://files.getjobber.com/well.jpg']);
   });
 
+  it('searches incomplete tasks for an assignee', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpTaskUsers')
+          ? jsonResponse({
+              data: { users: { nodes: [{ id: 'user-trav', name: { full: 'Travis Example' } }] } },
+            })
+          : null,
+      (query) =>
+        query.includes('McpTasks')
+          ? jsonResponse({
+              data: {
+                tasks: {
+                  nodes: [
+                    {
+                      id: 'task-1',
+                      title: 'Quote follow-up',
+                      instructions: 'Call Pat about the well.',
+                      isComplete: false,
+                      startAt: '2026-09-24T15:00:00.000Z',
+                      createdAt: '2026-09-23T12:00:00.000Z',
+                      jobberWebUri: 'https://secure.getjobber.com/tasks/1',
+                      assignedUsers: { nodes: [{ id: 'user-trav', name: { full: 'Travis Example' } }] },
+                      client: { id: 'client-1', name: 'Pat Example' },
+                      property: {
+                        id: 'prop-1',
+                        address: { street1: '100 Oak Rd', city: 'Ramona', province: 'CA', postalCode: '92065' },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: 'c-task-1' },
+                },
+              },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'search_tasks',
+      { assignee: 'Travis' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      incompleteOnly: boolean;
+      count: number;
+      tasks: Array<{
+        id: string;
+        title: string;
+        instructions: string;
+        isComplete: boolean;
+        client: { id: string; name: string };
+        property: { address: string };
+        assignedUsers: Array<{ id: string; name: string }>;
+        jobberWebUri: string;
+      }>;
+    };
+    assert.equal(payload.incompleteOnly, true);
+    assert.equal(payload.count, 1);
+    assert.equal(payload.tasks[0].id, 'task-1');
+    assert.equal(payload.tasks[0].title, 'Quote follow-up');
+    assert.equal(payload.tasks[0].instructions, 'Call Pat about the well.');
+    assert.equal(payload.tasks[0].isComplete, false);
+    assert.deepEqual(payload.tasks[0].client, { id: 'client-1', name: 'Pat Example' });
+    assert.equal(payload.tasks[0].property.address, '100 Oak Rd, Ramona, CA 92065');
+    assert.deepEqual(payload.tasks[0].assignedUsers, [{ id: 'user-trav', name: 'Travis Example' }]);
+    assert.equal(payload.tasks[0].jobberWebUri, 'https://secure.getjobber.com/tasks/1');
+    assert.match(result.content[0].text, /Read-only/);
+    assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
+    const sent = JSON.parse(bodies.find((body) => body.includes('McpTasks')) || '{}') as {
+      variables?: { filter?: { isComplete?: boolean; assignedTo?: string[] } };
+    };
+    assert.equal(sent.variables?.filter?.isComplete, false);
+    assert.deepEqual(sent.variables?.filter?.assignedTo, ['user-trav']);
+  });
+
+  it('loads one task by id', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('McpTaskById')
+          ? jsonResponse({
+              data: {
+                task: {
+                  id: 'task-1',
+                  title: 'Quote follow-up',
+                  instructions: 'Call Pat',
+                  isComplete: false,
+                  client: { id: 'client-1', name: 'Pat Example' },
+                  assignedUsers: { nodes: [{ id: 'user-trav', name: { full: 'Travis Example' } }] },
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'get_task',
+      { taskId: 'Z2lkOi8vSm9iYmVyL1Rhc2svMQ' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as { task: { id: string; title: string } };
+    assert.equal(payload.task.id, 'task-1');
+    assert.equal(payload.task.title, 'Quote follow-up');
+    assert.match(result.content[0].text, /Read-only/);
+  });
+
+  it('refuses task create, update, and complete', async () => {
+    for (const name of ['create_task', 'update_task', 'complete_task', 'completeTask', 'delete_task']) {
+      const result = await callJobberMcpTool(name, { taskId: 'task-1' }, { token: 'test' });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /cannot send/i);
+      const payload = JSON.parse(result.content[0].text) as { error: string; draftOnly: boolean };
+      assert.equal(payload.draftOnly, true);
+      assert.match(payload.error, /task/i);
+    }
+  });
+
   it('refuses job create, update, and complete', async () => {
     for (const name of ['create_job', 'update_job', 'complete_job', 'completeJob', 'send_job']) {
       const result = await callJobberMcpTool(name, { jobId: 'job-1' }, { token: 'test' });
@@ -498,6 +617,8 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_invoice'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_jobs'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_job'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_tasks'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_task'));
     assert.equal(
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
       false
@@ -505,6 +626,12 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.equal(
       rpc.result.tools.some(
         (tool) => tool.name === 'create_job' || tool.name === 'complete_job' || tool.name === 'update_job'
+      ),
+      false
+    );
+    assert.equal(
+      rpc.result.tools.some(
+        (tool) => tool.name === 'create_task' || tool.name === 'complete_task' || tool.name === 'delete_task'
       ),
       false
     );

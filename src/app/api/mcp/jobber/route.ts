@@ -14,7 +14,7 @@ export const maxDuration = 60;
  *
  * Auth: Authorization: Bearer <JOBBER_MCP_API_KEYS entry>
  * Jobber OAuth stays on this app (durable Supabase store). Draft quotes only.
- * Invoice and job tools are read-only (no send, create, complete, or customer email).
+ * Invoice, job, and task tools are read-only (no send, create, complete, or customer email).
  */
 export async function GET(request: NextRequest) {
   return handleJobberMcpRequest(request);
