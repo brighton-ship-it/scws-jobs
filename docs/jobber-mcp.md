@@ -9,7 +9,7 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 
 ## Safety (v1)
 
-Quote writes are **draft-only**. Invoice tools and job tools are **read-only**.
+Quote edits are **draft-only**. Private notes can be attached to an existing quote, including one Jobber already sent. Invoice tools and job tools are **read-only**.
 
 | Allowed | Not in v1 — do not add |
 | --- | --- |
@@ -17,11 +17,12 @@ Quote writes are **draft-only**. Invoice tools and job tools are **read-only**.
 | Search / get quotes | Approve / convert quote |
 | Create unsent quote draft | Delete quote |
 | Update unsent draft (title, message, add lines) | Payroll |
+| Attach a private note on an existing quote (`create_quote_note`) | Putting GP FLAG math on the customer-facing title or message |
 | Search products for line names / street list | Invoice send, create, edit, or payment |
 | Search / get invoices (read-only, including unpaid) | Visits, anything that emails the customer |
 | Search / get jobs (read-only, completed window + photo URLs) | Job create, update, complete, close, or send |
 
-`create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
+`create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. `create_quote_note` only writes a private note. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
 If Jobber already sent the quote, `update_quote_draft` refuses.
 
@@ -72,6 +73,7 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 - `get_quote` — one quote + line items
 - `create_quote_draft` — unsent draft only
 - `update_quote_draft` — unsent draft only
+- `create_quote_note` (alias `quote_create_note`) — private note on an existing quote, by `quoteId` or `quoteNumber`. Tries `quoteCreateNote`, then `noteCreate`, then `clientCreateNote`. Does not send, approve, or convert.
 - `search_products` — catalog name + default street price (not internal cost)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
@@ -186,7 +188,7 @@ curl -sS \
 | `src/lib/mcp/jobber-http.ts` | Auth + Streamable HTTP |
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
-| `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
+| `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers, private quote notes |
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |
 | `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
