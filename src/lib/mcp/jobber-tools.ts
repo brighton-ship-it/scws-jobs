@@ -1,9 +1,10 @@
 /**
  * MCP tools for shop bots.
  *
- * v1 surface is clients, draft quotes, product lookup, and read-only invoices.
+ * v1 surface is clients, draft quotes, product lookup, read-only invoices,
+ * and read-only jobs (completed work + photo URLs for GBP).
  * There are no send / approve / convert / delete / payroll tools,
- * and no invoice send, create, or payment tools.
+ * no invoice send, create, or payment tools, and no job mutations.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -25,12 +26,13 @@ import {
   type JobberQuoteDetail,
 } from '../jobber/mcp-quotes.ts';
 import { getInvoice, searchInvoices } from '../jobber/mcp-invoices.ts';
+import { getJob, searchJobs } from '../jobber/mcp-jobs.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.1.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.2.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -52,11 +54,27 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'invoice_delete',
   'record_payment',
   'collect_payment',
+  'create_job',
+  'update_job',
+  'edit_job',
+  'complete_job',
+  'delete_job',
+  'send_job',
+  'close_job',
+  'email_job',
+  'job_create',
+  'job_update',
+  'job_edit',
+  'job_complete',
+  'job_delete',
+  'job_send',
+  'job_close',
+  'job_email',
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Draft quotes only. Invoice tools are read-only.',
-  'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never touch payroll.',
+  'Shared SCWS Jobber gateway. Draft quotes only. Invoice and job tools are read-only.',
+  'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never create, update, complete, or email a job. Never touch payroll.',
   'Customer-facing title/message must not include GP FLAG math.',
   'Look up an existing client before creating a draft. Do not invent duplicates.',
 ].join(' ');
@@ -210,6 +228,49 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           type: 'boolean',
           description: 'Include a line-item summary. Default true.',
         },
+      },
+    },
+  },
+  {
+    name: 'search_jobs',
+    description:
+      'Search Jobber jobs by job number, title, client, or city. Read-only. completedAfter (ISO timestamp) is required for the GBP daily window of completed field jobs. Optional completedBefore, status (prefer completed), and first/after pagination. Returns client first name, property city, and a short list of https photo URLs. Does not create, update, complete, or email jobs.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Job number, title, client name, or city',
+        },
+        completedAfter: {
+          type: 'string',
+          description: 'ISO timestamp. Only jobs completed at or after this instant. Required for the GBP daily window.',
+        },
+        completedBefore: {
+          type: 'string',
+          description: 'ISO timestamp. Only jobs completed at or before this instant.',
+        },
+        status: {
+          type: 'string',
+          description:
+            'completed (has completedAt; preferred) | archived | requires_invoicing | active | today | upcoming | all',
+        },
+        first: { type: 'number', description: 'Page size. Default 15, max 25.' },
+        after: { type: 'string', description: 'Cursor from the previous pageInfo.endCursor' },
+      },
+    },
+  },
+  {
+    name: 'get_job',
+    description:
+      'Load one Jobber job by encoded id or job number. Read-only. Same fields as search_jobs, plus the full https photo list for GBP media. Does not create, update, complete, or email the job.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        jobId: { type: 'string', description: 'Encoded Jobber job id' },
+        jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
       },
     },
   },
@@ -380,7 +441,7 @@ export async function callJobberMcpTool(
 ): Promise<McpToolResult> {
   if (isForbiddenJobberMcpTool(name)) {
     return errorResult(
-      'This gateway cannot send, approve, convert, or delete quotes, cannot send or create invoices, and has no payroll tools.'
+      'This gateway cannot send, approve, convert, or delete quotes, cannot send or create invoices, cannot create, update, complete, or email jobs, and has no payroll tools.'
     );
   }
 
@@ -520,6 +581,51 @@ export async function callJobberMcpTool(
           note: 'Read-only. This gateway cannot send invoices, create invoices, or record payments.',
         });
       }
+      case 'search_jobs': {
+        const query = optionalString(args, 'query');
+        const status = optionalString(args, 'status');
+        const completedAfter = optionalString(args, 'completedAfter');
+        const completedBefore = optionalString(args, 'completedBefore');
+        const result = await searchJobs(
+          {
+            query,
+            status,
+            completedAfter,
+            completedBefore,
+            first: optionalNumber(args, 'first'),
+            after: optionalString(args, 'after'),
+          },
+          deps
+        );
+        return textResult({
+          query: query || null,
+          status: status || null,
+          completedAfter: completedAfter || null,
+          completedBefore: completedBefore || null,
+          count: result.jobs.length,
+          pageInfo: result.pageInfo,
+          jobs: result.jobs,
+          note: [
+            result.note,
+            'Read-only. This gateway cannot create, update, complete, or email jobs.',
+          ]
+            .filter(Boolean)
+            .join(' '),
+        });
+      }
+      case 'get_job': {
+        const job = await getJob(
+          {
+            jobId: optionalString(args, 'jobId'),
+            jobNumber: optionalString(args, 'jobNumber'),
+          },
+          deps
+        );
+        return textResult({
+          job,
+          note: 'Read-only. This gateway cannot create, update, complete, or email jobs.',
+        });
+      }
       case 'search_products': {
         const query = requiredString(args, 'query');
         const products = await searchProducts(query, deps);
@@ -568,6 +674,8 @@ export async function jobberMcpHealthBody(
       sendsQuotes: false,
       sendsInvoices: false,
       invoiceMutations: false,
+      jobMutations: false,
+      emailsCustomers: false,
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
     },
