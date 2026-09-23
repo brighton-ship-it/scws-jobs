@@ -44,6 +44,8 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('search_quotes'));
     assert.ok(names.includes('search_invoices'));
     assert.ok(names.includes('get_invoice'));
+    assert.ok(names.includes('search_jobs'));
+    assert.ok(names.includes('get_job'));
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
     for (const forbidden of FORBIDDEN_JOBBER_MCP_TOOLS) {
@@ -282,6 +284,147 @@ describe('callJobberMcpTool', () => {
     assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
   });
 
+  it('searches jobs completed in a window and returns photo urls', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpJobs')
+          ? jsonResponse({
+              data: {
+                jobs: {
+                  edges: [
+                    {
+                      cursor: 'c-job-1',
+                      node: {
+                        id: 'job-1',
+                        jobNumber: 4401,
+                        title: 'Pull pump',
+                        jobStatus: 'requires_invoicing',
+                        completedAt: '2026-09-22T18:00:00.000Z',
+                        createdAt: '2026-09-20T15:00:00.000Z',
+                        client: { id: 'client-1', firstName: 'Pat', name: 'Pat Example' },
+                        property: { id: 'prop-1', address: { city: 'Ramona' } },
+                        noteAttachments: {
+                          nodes: [
+                            {
+                              id: 'file-1',
+                              fileName: 'well.jpg',
+                              contentType: 'image/jpeg',
+                              url: 'https://files.getjobber.com/well.jpg',
+                            },
+                          ],
+                          pageInfo: { hasNextPage: false, endCursor: null },
+                        },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: 'c-job-1' },
+                },
+              },
+            })
+          : null,
+    ]);
+
+    const result = await callJobberMcpTool(
+      'search_jobs',
+      { completedAfter: '2026-09-22T00:00:00.000Z', status: 'completed' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      count: number;
+      jobs: Array<{ id: string; city: string; photoUrls: string[]; client: { firstName: string } }>;
+      pageInfo: { endCursor: string | null };
+      completedAfter: string;
+    };
+    assert.equal(payload.count, 1);
+    assert.equal(payload.completedAfter, '2026-09-22T00:00:00.000Z');
+    assert.equal(payload.jobs[0].id, 'job-1');
+    assert.equal(payload.jobs[0].city, 'Ramona');
+    assert.equal(payload.jobs[0].client.firstName, 'Pat');
+    assert.deepEqual(payload.jobs[0].photoUrls, ['https://files.getjobber.com/well.jpg']);
+    assert.equal(payload.pageInfo.endCursor, 'c-job-1');
+    assert.match(result.content[0].text, /Read-only/);
+    assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
+  });
+
+  it('returns structured JSON when the completed window is empty', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('McpJobs')
+          ? jsonResponse({
+              data: { jobs: { edges: [], pageInfo: { hasNextPage: false, endCursor: null } } },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'search_jobs',
+      { completedAfter: '2026-09-22T00:00:00.000Z' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      count: number;
+      jobs: unknown[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+    assert.equal(payload.count, 0);
+    assert.deepEqual(payload.jobs, []);
+    assert.deepEqual(payload.pageInfo, { hasNextPage: false, endCursor: null });
+  });
+
+  it('loads one job by id', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('McpJobById')
+          ? jsonResponse({
+              data: {
+                job: {
+                  id: 'job-1',
+                  jobNumber: 4401,
+                  title: 'Pull pump',
+                  completedAt: '2026-09-22T18:00:00.000Z',
+                  createdAt: '2026-09-20T15:00:00.000Z',
+                  client: { id: 'client-1', firstName: 'Pat' },
+                  property: { address: { city: 'Ramona' } },
+                  noteAttachments: {
+                    nodes: [
+                      {
+                        id: 'file-1',
+                        contentType: 'image/jpeg',
+                        url: 'https://files.getjobber.com/well.jpg',
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'get_job',
+      { jobId: 'Z2lkOi8vSm9iYmVyL0pvYi8x' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      job: { id: string; photoUrls: string[] };
+    };
+    assert.equal(payload.job.id, 'job-1');
+    assert.deepEqual(payload.job.photoUrls, ['https://files.getjobber.com/well.jpg']);
+  });
+
+  it('refuses job create, update, and complete', async () => {
+    for (const name of ['create_job', 'update_job', 'complete_job', 'completeJob', 'send_job']) {
+      const result = await callJobberMcpTool(name, { jobId: 'job-1' }, { token: 'test' });
+      assert.equal(result.isError, true);
+      assert.match(result.content[0].text, /cannot send/i);
+      const payload = JSON.parse(result.content[0].text) as { error: string; draftOnly: boolean };
+      assert.equal(payload.draftOnly, true);
+      assert.match(payload.error, /job/i);
+    }
+  });
+
   it('refuses invoice send and create', async () => {
     for (const name of ['send_invoice', 'create_invoice', 'sendInvoice']) {
       const result = await callJobberMcpTool(name, { invoiceId: 'inv-1' }, { token: 'test' });
@@ -353,8 +496,16 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_quotes'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_invoices'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_invoice'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_jobs'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_job'));
     assert.equal(
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
+      false
+    );
+    assert.equal(
+      rpc.result.tools.some(
+        (tool) => tool.name === 'create_job' || tool.name === 'complete_job' || tool.name === 'update_job'
+      ),
       false
     );
   });
