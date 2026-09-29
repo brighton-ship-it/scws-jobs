@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { FORBIDDEN_JOBBER_MCP_TOOLS, JOBBER_MCP_TOOLS, callJobberMcpTool } from './jobber-tools.ts';
+import {
+  FORBIDDEN_JOBBER_MCP_TOOLS,
+  JOBBER_MCP_SERVER_VERSION,
+  JOBBER_MCP_TOOLS,
+  callJobberMcpTool,
+} from './jobber-tools.ts';
 import { handleJobberMcpRequest } from './jobber-http.ts';
 
 const CLIENT = {
@@ -52,6 +57,16 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('create_invoice_draft'));
     assert.ok(names.includes('close_job'));
     assert.ok(names.includes('list_tax_rates'));
+    assert.ok(names.includes('search_products'));
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.4.0');
+    assert.equal(names.filter((name) => name === 'list_tax_rates').length, 1);
+    const schema = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'create_quote_draft')?.inputSchema as {
+      properties?: { lineItems?: { items?: { properties?: Record<string, unknown> } } };
+    };
+    const lineProps = schema?.properties?.lineItems?.items?.properties;
+    assert.ok(lineProps?.optional);
+    assert.ok(lineProps?.recommended);
+    assert.ok(lineProps?.productOrServiceId);
     for (const forbidden of FORBIDDEN_JOBBER_MCP_TOOLS) {
       assert.equal(names.includes(forbidden), false);
     }
@@ -429,6 +444,206 @@ describe('callJobberMcpTool', () => {
     }
   });
 
+  it('returns product matches and surfaces catalog GraphQL errors', async () => {
+    const hit = mockJobberFetch([
+      (query, variables) => {
+        if (!query.includes('JobberProductsSearch')) return null;
+        assert.equal(query.includes('internalUnitCost'), false);
+        assert.equal(query.includes('productsAndServices'), false);
+        assert.equal(variables.searchTerm, '25GBC');
+        return jsonResponse({
+          data: {
+            products: {
+              nodes: [
+                {
+                  id: 'prod-25gbc',
+                  name: 'Goulds 25GBC',
+                  description: '1 HP',
+                  defaultUnitCost: 899,
+                  taxable: true,
+                  category: 'PRODUCT',
+                  internalUnitCost: 410,
+                },
+              ],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        });
+      },
+    ]);
+    const found = await callJobberMcpTool('search_products', { query: '25GBC' }, { fetchImpl: hit.fetchImpl, token: 'test' });
+    assert.equal(found.isError, undefined);
+    const payload = JSON.parse(found.content[0].text) as {
+      count: number;
+      matchedBy: string;
+      products: Array<{ id: string; internalUnitCost?: number }>;
+    };
+    assert.equal(payload.count, 1);
+    assert.equal(payload.matchedBy, 'search');
+    assert.equal(payload.products[0]?.id, 'prod-25gbc');
+    assert.equal('internalUnitCost' in (payload.products[0] || {}), false);
+
+    const failed = mockJobberFetch([
+      (query) =>
+        query.includes('JobberProducts')
+          ? jsonResponse({ errors: [{ message: "Cannot query field 'products' on type 'Query'" }] })
+          : null,
+    ]);
+    const error = await callJobberMcpTool(
+      'search_products',
+      { query: '25GBC' },
+      { fetchImpl: failed.fetchImpl, token: 'test' }
+    );
+    assert.equal(error.isError, true);
+    assert.match(error.content[0].text, /Cannot query field 'products'/);
+    assert.equal(error.content[0].text.includes('"count": 0'), false);
+  });
+
+  it('lists tax rates with an optional query filter', async () => {
+    const { fetchImpl } = mockJobberFetch([
+      (query) =>
+        query.includes('JobberTaxRates')
+          ? jsonResponse({
+              data: {
+                taxRates: {
+                  nodes: [
+                    {
+                      id: 'sd-tax',
+                      name: 'San Diego Tax',
+                      label: 'San Diego Tax (7.75%)',
+                      tax: 7.75,
+                      default: true,
+                    },
+                    { id: 'riv-tax', name: 'Riverside', label: 'Riverside (8.75%)', tax: 8.75, default: false },
+                  ],
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool('list_tax_rates', { query: '7.75' }, { fetchImpl, token: 'test' });
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      count: number;
+      taxRates: Array<{ id: string; label: string; rate: number; default: boolean }>;
+    };
+    assert.equal(payload.count, 1);
+    assert.equal(payload.taxRates[0]?.id, 'sd-tax');
+    assert.equal(payload.taxRates[0]?.label, 'San Diego Tax (7.75%)');
+    assert.equal(payload.taxRates[0]?.rate, 7.75);
+    assert.equal(payload.taxRates[0]?.default, true);
+  });
+
+  it('passes optional quote lines through create and returns them from get_quote', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('JobberUsers')
+          ? jsonResponse({ data: { users: { nodes: [{ id: 'brighton-1', name: 'Brighton' }] } } })
+          : null,
+      (query) =>
+        query.includes('QuoteCreate') && query.includes('mutation')
+          ? jsonResponse({
+              data: {
+                quoteCreate: {
+                  quote: {
+                    id: 'quote-1',
+                    quoteNumber: 4402,
+                    title: 'Pump options',
+                    sentAt: null,
+                    quoteStatus: 'draft',
+                  },
+                  userErrors: [],
+                },
+              },
+            })
+          : null,
+    ]);
+    const created = await callJobberMcpTool(
+      'create_quote_draft',
+      {
+        clientId: 'client-1',
+        propertyId: 'prop-1',
+        title: 'Pump options',
+        message: 'Choose a pump.',
+        lineItems: [
+          {
+            name: 'Goulds 25GBC',
+            quantity: 1,
+            unitPrice: 899,
+            taxable: true,
+            optional: true,
+            recommended: false,
+            productOrServiceId: 'prod-25gbc',
+          },
+        ],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(created.isError, undefined);
+    const createBody = bodies.find((body) => {
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      return query.includes('mutation') && query.includes('quoteCreate') && !query.includes('LineItems');
+    });
+    const vars = JSON.parse(createBody || '{}') as {
+      variables?: {
+        attributes?: {
+          lineItems?: Array<{ optional?: boolean; recommended?: boolean; productOrServiceId?: string; sku?: string }>;
+        };
+      };
+    };
+    assert.deepEqual(vars.variables?.attributes?.lineItems, [
+      {
+        name: 'Goulds 25GBC',
+        quantity: 1,
+        unitPrice: 899,
+        taxable: true,
+        saveToProductsAndServices: false,
+        optional: true,
+        recommended: false,
+        productOrServiceId: 'prod-25gbc',
+      },
+    ]);
+
+    const loaded = mockJobberFetch([
+      (query) => {
+        if (!query.includes('McpQuoteById')) return null;
+        assert.match(query, /optional/);
+        assert.match(query, /recommended/);
+        return jsonResponse({
+          data: {
+            quote: {
+              id: 'quote-1',
+              quoteNumber: 4402,
+              title: 'Pump options',
+              quoteStatus: 'draft',
+              sentAt: null,
+              lineItems: {
+                nodes: [
+                  {
+                    id: 'li-1',
+                    name: 'Goulds 25GBC',
+                    description: '1 HP',
+                    quantity: 1,
+                    unitPrice: 899,
+                    optional: true,
+                    recommended: false,
+                  },
+                ],
+              },
+            },
+          },
+        });
+      },
+    ]);
+    const quote = await callJobberMcpTool('get_quote', { quoteId: 'quote-1' }, { fetchImpl: loaded.fetchImpl, token: 'test' });
+    assert.equal(quote.isError, undefined);
+    const body = JSON.parse(quote.content[0].text) as {
+      quote: { lineItems: Array<{ optional: boolean; recommended: boolean }> };
+    };
+    assert.equal(body.quote.lineItems[0]?.optional, true);
+    assert.equal(body.quote.lineItems[0]?.recommended, false);
+  });
+
   it('refuses invoice send and create', async () => {
     for (const name of ['send_invoice', 'create_invoice', 'sendInvoice', 'mark_invoice_sent']) {
       const result = await callJobberMcpTool(name, { invoiceId: 'inv-1' }, { token: 'test' });
@@ -597,6 +812,8 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_invoice'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_jobs'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_job'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'list_tax_rates'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_products'));
     assert.equal(
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
       false

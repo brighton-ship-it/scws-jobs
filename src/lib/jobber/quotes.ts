@@ -4,8 +4,14 @@ import {
   jobberUserErrors,
 } from './client.ts';
 import { mentionsGpFlag, type JobberProductCost } from './gross-profit.ts';
+import { searchJobberProducts, type ProductCatalogCache } from './products.ts';
 import type { QuoteLineDraft } from './shop-book.ts';
-import type { JobberTaxRate } from './tax.ts';
+import {
+  summarizeJobberTaxRate,
+  taxRateMatchesQuery,
+  type JobberTaxRate,
+  type JobberTaxRateSummary,
+} from './tax.ts';
 
 export const LIVE_QUOTE_STATUSES = new Set([
   'draft',
@@ -162,7 +168,7 @@ const CLIENT_SEARCH = `
 const TAX_RATES = `
   query JobberTaxRates {
     taxRates {
-      nodes { id name description }
+      nodes { id name label tax default description }
     }
   }
 `;
@@ -207,14 +213,6 @@ const QUOTE_NOTE_CREATE_ALT = `
     noteCreate(input: { linkedTo: $quoteId, message: $message }) {
       note { id }
       userErrors { message path }
-    }
-  }
-`;
-
-const PRODUCTS_SEARCH = `
-  query ProductsAndServices($searchTerm: String!) {
-    productsAndServices(searchTerm: $searchTerm, first: 15) {
-      nodes { id name internalUnitCost defaultUnitCost }
     }
   }
 `;
@@ -301,14 +299,21 @@ export function assertUnsentQuoteAttributes(attributes: Record<string, unknown>)
 }
 
 export function toJobberLineItems(lines: QuoteLineDraft[]): Array<Record<string, unknown>> {
-  return lines.map((line) => ({
-    name: line.name,
-    description: line.description || undefined,
-    quantity: line.quantity,
-    unitPrice: line.unitPrice,
-    taxable: line.taxable,
-    saveToProductsAndServices: false,
-  }));
+  return lines.map((line) => {
+    const item: Record<string, unknown> = {
+      name: line.name,
+      description: line.description || undefined,
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      taxable: line.taxable,
+      saveToProductsAndServices: false,
+    };
+    if (typeof line.optional === 'boolean') item.optional = line.optional;
+    if (typeof line.recommended === 'boolean') item.recommended = line.recommended;
+    const productOrServiceId = line.productOrServiceId?.trim();
+    if (productOrServiceId) item.productOrServiceId = productOrServiceId;
+    return item;
+  });
 }
 
 export async function attachInternalQuoteNote(
@@ -338,18 +343,22 @@ export async function fetchProductCosts(
   if (deps?.productCosts) return deps.productCosts;
   const found: JobberProductCost[] = [];
   const seen = new Set<string>();
-  for (const term of searchTerms.filter(Boolean)) {
-    try {
-      const result = await graphql(PRODUCTS_SEARCH, { searchTerm: term }, deps);
-      if (result.errors?.length) continue;
-      for (const node of (result.data?.productsAndServices?.nodes || []) as JobberProductCost[]) {
-        const key = `${node.name || ''}|${node.sku || ''}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        found.push(node);
-      }
-    } catch {
-      // Live catalog is optional — vendor nets in this repo still score.
+  const catalogCache: ProductCatalogCache = {};
+  for (const term of searchTerms) {
+    const trimmed = term?.trim();
+    if (!trimmed) continue;
+    const result = await searchJobberProducts(trimmed, deps, {
+      includeInternalCost: true,
+      catalogCache,
+    });
+    for (const node of result.products) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      found.push({
+        name: node.name,
+        internalUnitCost: node.internalUnitCost ?? null,
+        defaultUnitCost: node.defaultUnitCost,
+      });
     }
   }
   return found;
@@ -464,8 +473,16 @@ export function findExistingPropertyId(
 
 export async function fetchTaxRates(deps?: JobberDeps): Promise<JobberTaxRate[]> {
   const result = await graphql(TAX_RATES, {}, deps);
-  if (result.errors?.length) return [];
-  return (result.data?.taxRates?.nodes || []) as JobberTaxRate[];
+  assertNoJobberErrors(result, 'taxRates');
+  return ((result.data?.taxRates?.nodes || []) as JobberTaxRate[]).filter((rate) => Boolean(rate?.id));
+}
+
+export async function listTaxRates(
+  query: string | null | undefined,
+  deps?: JobberDeps
+): Promise<JobberTaxRateSummary[]> {
+  const rates = await fetchTaxRates(deps);
+  return rates.filter((rate) => taxRateMatchesQuery(rate, query)).map(summarizeJobberTaxRate);
 }
 
 export async function findBrightonSalespersonId(deps?: JobberDeps): Promise<string | null> {

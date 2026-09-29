@@ -12,6 +12,7 @@ import {
   createUnsentQuote,
   findBrightonSalespersonId,
   jobberClientProperties,
+  listTaxRates,
   resolveQuoteCreatePropertyId,
   searchClients,
   type JobberClient,
@@ -37,7 +38,6 @@ import {
   parseRemoveLineItemIds,
 } from '../jobber/mcp-invoice-writes.ts';
 import { closeJob, normalizeIncompleteVisits } from '../jobber/mcp-job-writes.ts';
-import { listJobberTaxRates } from '../jobber/mcp-tax-rates.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
@@ -90,7 +90,9 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll.',
   'edit_invoice changes line items and taxRateId only. Card, ACH, and partial-payment toggles are not in the API.',
   'Customer-facing title/message must not include GP FLAG math.',
-  'Look up an existing client before creating a draft. Use list_tax_rates before setting taxRateId.',
+  'Look up an existing client before creating a draft. Do not invent duplicates.',
+  'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost.',
+  'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
 ].join(' ');
 
 const LINE_ITEM_SCHEMA = {
@@ -103,6 +105,18 @@ const LINE_ITEM_SCHEMA = {
     quantity: { type: 'number' },
     unitPrice: { type: 'number', description: 'Street sell price. Do not invent a 60% GP raise.' },
     taxable: { type: 'boolean' },
+    optional: {
+      type: 'boolean',
+      description: 'Optional quote line the client can include or skip. Omit for a required line.',
+    },
+    recommended: {
+      type: 'boolean',
+      description: 'Pre-select an optional line in Client Hub. Pass with optional: true.',
+    },
+    productOrServiceId: {
+      type: 'string',
+      description: 'Jobber product or service id from search_products.',
+    },
   },
 };
 
@@ -145,7 +159,8 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'get_quote',
-    description: 'Load one Jobber quote by encoded id, including line items. Read-only.',
+    description:
+      'Load one Jobber quote by encoded id, including line items. Each line includes optional and recommended. Read-only.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -254,7 +269,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'edit_invoice',
     description:
-      'Edit an existing Jobber invoice: add, update, or remove line items (name, description, quantity, unitPrice, taxable) and/or set taxRateId. Does not send, email, text, or mark the invoice sent. Per-invoice card, ACH/bank, and partial-payment toggles are not in the API and are rejected.',
+      'Edit an existing Jobber invoice: add, update, or remove line items (name, description, quantity, unitPrice, taxable) and/or set taxRateId from list_tax_rates. Does not send, email, text, or mark the invoice sent. Per-invoice card, ACH/bank, and partial-payment toggles are not in the API and are rejected.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -384,7 +399,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'list_tax_rates',
     description:
-      'List Jobber tax rates (id, name, description). Read-only. Optional query matches name or description, for example "San Diego" or "7.75". Pass id as taxRateId on quote drafts or edit_invoice / create_invoice_draft.',
+      'List Jobber tax rates (id, name, label, rate, default). Read-only. Optional query matches name, label, or description, for example "San Diego" or "7.75". Pass the id as taxRateId on create_quote_draft, update_quote_draft, edit_invoice, or create_invoice_draft.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -396,7 +411,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'search_products',
     description:
-      'Search Jobber products & services for line-item names and default street prices. Does not return internal cost.',
+      'Search Jobber products and services by name or description. Returns id, name, description, defaultUnitCost (street list, not internal cost), taxable, and category. If Jobber search is empty, pages the catalog and filters locally. GraphQL errors are returned instead of an empty list.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -485,14 +500,38 @@ function parseLineItems(value: unknown, field: string): QuoteLineDraft[] {
     if (!Number.isFinite(unitPrice)) {
       throw new Error(`${field}[${index}].unitPrice must be a number`);
     }
+    const optional = lineBoolean(row, 'optional', index, field);
+    const recommended = lineBoolean(row, 'recommended', index, field);
+    const productOrServiceId =
+      typeof row.productOrServiceId === 'string' ? row.productOrServiceId.trim() : '';
     return {
       name,
       description: typeof row.description === 'string' ? row.description : undefined,
       quantity,
       unitPrice,
       taxable: row.taxable === false ? false : true,
+      ...(optional === undefined ? {} : { optional }),
+      ...(recommended === undefined ? {} : { recommended }),
+      ...(productOrServiceId ? { productOrServiceId } : {}),
     };
   });
+}
+
+function lineBoolean(
+  row: Record<string, unknown>,
+  key: string,
+  index: number,
+  field: string
+): boolean | undefined {
+  const value = row[key];
+  if (!(key in row) || value == null || value === '') return undefined;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  throw new Error(`${field}[${index}].${key} must be a boolean`);
 }
 
 function summarizeClient(client: JobberClient) {
@@ -548,6 +587,8 @@ function summarizeQuote(quote: JobberQuoteDetail) {
         description: line.description ?? null,
         quantity: line.quantity ?? null,
         unitPrice: line.unitPrice ?? null,
+        optional: typeof line.optional === 'boolean' ? line.optional : null,
+        recommended: typeof line.recommended === 'boolean' ? line.recommended : null,
       })),
     draft: !quote.sentAt && (quote.quoteStatus || 'draft').toLowerCase() === 'draft',
   };
@@ -819,21 +860,23 @@ export async function callJobberMcpTool(
       }
       case 'list_tax_rates': {
         const query = optionalString(args, 'query');
-        const taxRates = await listJobberTaxRates(query, deps);
+        const taxRates = await listTaxRates(query, deps);
         return textResult({
           query: query || null,
           count: taxRates.length,
           taxRates,
-          note: 'Read-only. Pass taxRates[].id as taxRateId on a quote draft, edit_invoice, or create_invoice_draft.',
+          note: 'Read-only. Pass taxRates[].id as taxRateId on create_quote_draft, update_quote_draft, edit_invoice, or create_invoice_draft. This does not change a rate or send anything.',
         });
       }
       case 'search_products': {
         const query = requiredString(args, 'query');
-        const products = await searchProducts(query, deps);
+        const result = await searchProducts(query, deps);
         return textResult({
           query,
-          count: products.length,
-          products,
+          count: result.products.length,
+          matchedBy: result.matchedBy,
+          truncated: result.truncated,
+          products: result.products,
           note: 'defaultUnitCost is catalog/street list, not internal cost. Do not use this to invent 60% GP raises.',
         });
       }

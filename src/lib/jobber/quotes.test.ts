@@ -4,15 +4,18 @@ import {
   assertUnsentQuoteAttributes,
   buildUnsentQuoteAttributes,
   createUnsentQuote,
+  fetchTaxRates,
   findExistingClient,
   findExistingPropertyId,
   findLiveQuoteForJob,
   isLiveQuote,
   jobberClientProperties,
+  listTaxRates,
   loadJobByIdOrNumber,
   quoteCreateUsedForbiddenFields,
   resolveQuoteCreatePropertyId,
   searchClients,
+  toJobberLineItems,
 } from './quotes.ts';
 
 const PROPERTY = { id: 'prop-1', address: { street1: '100 Oak Rd', city: 'Ramona' } };
@@ -30,6 +33,104 @@ function assertPropertiesIsPropertyList(query: string) {
   assert.equal(/properties\s*\{\s*nodes/.test(query), false);
   assert.match(query, /properties\s*\{\s*id/);
 }
+
+describe('quote line items', () => {
+  it('passes optional, recommended, and productOrServiceId through and keeps GP fields off the wire', () => {
+    assert.deepEqual(
+      toJobberLineItems([
+        {
+          name: 'Goulds 25GBC',
+          description: '1 HP',
+          quantity: 1,
+          unitPrice: 899,
+          taxable: true,
+          optional: true,
+          recommended: true,
+          productOrServiceId: ' prod-25gbc ',
+          sku: '25GBC',
+          unitCost: 410,
+        },
+      ]),
+      [
+        {
+          name: 'Goulds 25GBC',
+          description: '1 HP',
+          quantity: 1,
+          unitPrice: 899,
+          taxable: true,
+          saveToProductsAndServices: false,
+          optional: true,
+          recommended: true,
+          productOrServiceId: 'prod-25gbc',
+        },
+      ]
+    );
+  });
+
+  it('omits optional line fields when the caller did not set them', () => {
+    const [line] = toJobberLineItems([{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }]);
+    assert.equal('optional' in (line || {}), false);
+    assert.equal('recommended' in (line || {}), false);
+    assert.equal('productOrServiceId' in (line || {}), false);
+    assert.equal('sku' in (line || {}), false);
+    assert.equal('unitCost' in (line || {}), false);
+  });
+});
+
+describe('tax rates', () => {
+  it('surfaces GraphQL errors instead of an empty list', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({ errors: [{ message: "Cannot query field 'label' on type 'TaxRate'" }] });
+    await assert.rejects(() => fetchTaxRates({ fetchImpl, token: 'test' }), /label/);
+  });
+
+  it('filters list_tax_rates by label and maps tax to rate', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({
+        data: {
+          taxRates: {
+            nodes: [
+              {
+                id: 'sd-tax',
+                name: 'San Diego Tax',
+                label: 'San Diego Tax (7.75%)',
+                tax: 7.75,
+                default: true,
+                description: 'San Diego County',
+              },
+              {
+                id: 'riv-tax',
+                name: 'Riverside',
+                label: 'Riverside (8.75%)',
+                tax: 8.75,
+                default: false,
+              },
+            ],
+          },
+        },
+      });
+    const rates = await listTaxRates('San Diego Tax (7.75%)', { fetchImpl, token: 'test' });
+    assert.deepEqual(rates, [
+      {
+        id: 'sd-tax',
+        name: 'San Diego Tax',
+        label: 'San Diego Tax (7.75%)',
+        rate: 7.75,
+        default: true,
+      },
+    ]);
+    const query = '';
+    const bodies: string[] = [];
+    const recording: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body || ''));
+      return fetchImpl(_url, init);
+    };
+    await listTaxRates(query, { fetchImpl: recording, token: 'test' });
+    assert.match((JSON.parse(bodies[0] || '{}') as { query?: string }).query || '', /label/);
+    assert.match((JSON.parse(bodies[0] || '{}') as { query?: string }).query || '', /\btax\b/);
+    assert.match((JSON.parse(bodies[0] || '{}') as { query?: string }).query || '', /default/);
+  });
+});
 
 describe('unsent quote attributes', () => {
   it('builds attributes without transitionQuoteTo or sentAt', () => {

@@ -16,14 +16,14 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails or 
 | Search / get clients | Send quote to customer |
 | Search / get quotes | Approve / convert quote |
 | Create unsent quote draft | Delete quote |
-| Update unsent draft (title, message, add lines, taxRateId) | Payroll |
-| List tax rates | Invoice send, mark-sent, or record payment |
+| Update unsent draft (title, message, optional/recommended lines, taxRateId) | Payroll |
+| Search products for line names / street list | Invoice send, mark-sent, or record payment |
+| List tax rates (id, name, label, rate, default) | Changing the tax-rate catalog |
 | Search / get invoices | Per-invoice card, ACH, or partial-payment toggles (not in the API) |
-| Edit invoice lines and tax rate | Optional quote line items (no verified schema field) |
-| Create unsent invoice draft from a job | Visits, anything that emails the customer |
-| Search / get jobs | Job create, update, or send |
-| Close a job (`jobClose` + incomplete-visit decision) | `jobComplete` (removed) |
-| Search products for line names / street list | |
+| Edit invoice lines and tax rate | Visits, anything that emails the customer |
+| Create unsent invoice draft from a job | Job create, update, or send |
+| Search / get jobs (completed window + photo URLs) | `jobComplete` (removed) |
+| Close a job (`jobClose` + incomplete-visit decision) | |
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
@@ -72,14 +72,16 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
+MCP server version **1.4.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`.
+
 - `search_clients` — name / phone / email / address
 - `get_client` — one client + properties + recent quotes
 - `search_quotes` — number / title / client / address, optional status
-- `get_quote` — one quote + line items
-- `create_quote_draft` — unsent draft only. `taxRateId` from `list_tax_rates`
-- `update_quote_draft` — unsent draft only. `taxRateId` sets the quote tax rate
-- `search_products` — catalog name + default street price (not internal cost)
-- `list_tax_rates` — id, name, description. Optional `query` (for example `San Diego` or `7.75`)
+- `get_quote` — one quote + line items. Each line includes `optional` and `recommended`
+- `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`
+- `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields. `taxRateId` sets the quote tax rate
+- `list_tax_rates` — read-only. Optional `query` filters name, label, or description (for example `San Diego` or `7.75`). Returns `id`, `name`, `label`, `rate`, `default`. Pass `id` as `taxRateId` on a quote draft, `edit_invoice`, or `create_invoice_draft`
+- `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
 - `edit_invoice` — add / update / remove line items (`name`, `description`, `quantity`, `unitPrice`, `taxable`) and/or `taxRateId`. Does not send
@@ -99,7 +101,7 @@ Grok Bot only accepts **remote** Streamable HTTP MCP (not local stdio). Each per
    - **Transport:** Streamable HTTP (if the UI only says HTTP/SSE, still use this URL)
    - **Header:** `Authorization` = `Bearer <that person's key>`
    - Tell the bot this is a **static API key**, not OAuth. Do not start an OAuth connect card.
-3. Confirm tools load: `search_clients`, `create_quote_draft`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, etc.
+3. Confirm tools load: `search_clients`, `create_quote_draft`, `list_tax_rates`, `search_products`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, etc.
 4. Cursor MCP (`~/.cursor/mcp.json`) is the same URL + header:
 
 ```json
@@ -196,12 +198,13 @@ curl -sS \
 | `src/lib/mcp/jobber-http.ts` | Auth + Streamable HTTP |
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
+| `src/lib/jobber/products.ts` | product catalog search (`products`, not `productsAndServices`) + local name/description fallback |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/mcp-invoice-writes.ts` | invoice line/tax edit and unsent create-from-job |
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |
 | `src/lib/jobber/mcp-job-writes.ts` | `jobClose` only |
-| `src/lib/jobber/mcp-tax-rates.ts` | tax rate list |
-| `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
+| `src/lib/jobber/quotes.ts` | Client search, unsent quote create, and `listTaxRates` |
+| `src/lib/jobber/tax.ts` | Tax-rate summary (`id`, `name`, `label`, `rate`, `default`) and query filter |
 | `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |
 | `src/app/api/jobber/oauth-health/route.ts` | Secret-free durable-store diagnostic |

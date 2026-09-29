@@ -4,7 +4,42 @@ export type JobberTaxRate = {
   id: string;
   name?: string | null;
   description?: string | null;
+  /** Jobber display label, often "San Diego Tax (7.75%)". */
+  label?: string | null;
+  /** Percentage, from TaxRate.tax. */
+  tax?: number | null;
+  default?: boolean | null;
 };
+
+export type JobberTaxRateSummary = {
+  id: string;
+  name: string | null;
+  label: string | null;
+  rate: number | null;
+  default: boolean | null;
+};
+
+export function summarizeJobberTaxRate(rate: JobberTaxRate): JobberTaxRateSummary {
+  const tax = typeof rate.tax === 'number' && Number.isFinite(rate.tax) ? rate.tax : null;
+  const label =
+    rate.label?.trim() ||
+    (rate.name && tax != null ? `${rate.name} (${tax}%)` : null) ||
+    rate.name ||
+    null;
+  return {
+    id: rate.id,
+    name: rate.name ?? null,
+    label,
+    rate: tax,
+    default: typeof rate.default === 'boolean' ? rate.default : null,
+  };
+}
+
+export function taxRateMatchesQuery(rate: JobberTaxRate, query: string | null | undefined): boolean {
+  const needle = query?.trim().toLowerCase() || '';
+  if (!needle) return true;
+  return `${rate.name || ''} ${rate.label || ''} ${rate.description || ''}`.toLowerCase().includes(needle);
+}
 
 export type ResolvedJobberTax = {
   county: string;
@@ -33,7 +68,7 @@ export function envTaxRateId(
 }
 
 function rateText(rate: JobberTaxRate): string {
-  return `${rate.name || ''} ${rate.description || ''}`.toLowerCase();
+  return `${rate.name || ''} ${rate.label || ''} ${rate.description || ''}`.toLowerCase();
 }
 
 /**
