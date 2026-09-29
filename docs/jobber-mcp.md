@@ -19,17 +19,17 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails or 
 | Update unsent draft (title, message, optional/recommended lines, taxRateId) | Payroll |
 | Search products for line names / street list | Invoice send, mark-sent, or record payment |
 | List tax rates (id, name, label, rate, default) | Changing the tax-rate catalog |
-| Search / get invoices | Per-invoice card, ACH, or partial-payment toggles (not in the API) |
-| Edit invoice lines and tax rate | Visits, anything that emails the customer |
+| Search / get invoices | Per-invoice card, ACH, or partial-payment toggles (rejected; not sent) |
+| Set an invoice tax rate (`edit_invoice` / `taxRateId`) | Invoice line add, update, or remove (not on InvoiceEditInput) |
 | Create unsent invoice draft from a job | Job create, update, or send |
 | Search / get jobs (completed window + photo URLs) | `jobComplete` (removed) |
-| Close a job (`jobClose` + incomplete-visit decision) | |
+| Close a job (`jobClose` + incomplete-visit decision) | Visits, anything that emails the customer |
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
 If Jobber already sent the quote, `update_quote_draft` refuses.
 
-`create_invoice_draft` never sets `issuedDate` and never calls `invoiceMarkAsSent`. `edit_invoice` rejects `allowCardPayments`, `allowAchPayments` / `allowBankPayments`, and `allowPartialPayments`.
+`create_invoice_draft` never sets `issuedDate` and never calls `invoiceMarkAsSent`. `edit_invoice` sets `taxRateId` only. It rejects `addLineItems`, `updateLineItems`, and `removeLineItemIds` (live Jobber error: `lineItemsToEdit` is not defined on `InvoiceEditInput`; the 2025-01-20 public schema has no invoice line-item mutations). It also rejects `allowCardPayments`, `allowAchPayments` / `allowBankPayments`, and `allowPartialPayments`.
 
 ## Env vars
 
@@ -84,7 +84,7 @@ MCP server version **1.4.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stay
 - `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
-- `edit_invoice` — add / update / remove line items (`name`, `description`, `quantity`, `unitPrice`, `taxable`) and/or `taxRateId`. Does not send
+- `edit_invoice` — sets `taxRateId` from `list_tax_rates` via `invoiceEdit`. `addLineItems`, `updateLineItems`, and `removeLineItemIds` are rejected. Does not send
 - `create_invoice_draft` — unsent invoice from a job (`jobId` or `jobNumber`). Copies job lines when `lineItems` is omitted
 - `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs
 - `get_job` — one job by encoded id or job number: same fields plus the full https photo list for GBP media

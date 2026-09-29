@@ -54,34 +54,37 @@ function invoiceNode(extra?: Record<string, unknown>) {
 }
 
 describe('invoice write builders', () => {
-  it('builds the non-taxable card-fee line for invoice edits', () => {
-    const input = buildInvoiceEditInput({
-      addLineItems: parseInvoiceLineDrafts(
-        [
-          {
-            name: 'Credit card processing fee (2.9%)',
-            description: 'Card processing',
-            quantity: 1,
-            unitPrice: 510.91,
-            taxable: false,
-          },
-        ],
-        'addLineItems'
-      ),
-      taxRateId: 'sd-tax',
-    });
-    assert.deepEqual(input.lineItemsToAdd, [
-      {
-        name: 'Credit card processing fee (2.9%)',
-        description: 'Card processing',
-        quantity: 1,
-        unitPrice: 510.91,
-        taxable: false,
-        saveToProductsAndServices: false,
-      },
-    ]);
-    assert.equal(input.taxRateId, 'sd-tax');
-    assert.equal('issuedDate' in input, false);
+  it('sends only taxRateId on invoiceEdit', () => {
+    const input = buildInvoiceEditInput({ taxRateId: 'sd-tax' });
+    assert.deepEqual(input, { taxRateId: 'sd-tax' });
+    assert.equal('lineItemsToAdd' in input, false);
+    assert.equal('lineItemsToEdit' in input, false);
+    assert.equal('lineItemsToDelete' in input, false);
+  });
+
+  it('refuses add, update, and remove line items instead of guessing InvoiceEditInput fields', () => {
+    const fee = parseInvoiceLineDrafts(
+      [
+        {
+          name: 'Credit card processing fee (2.9%)',
+          description: 'Card processing',
+          quantity: 1,
+          unitPrice: 510.91,
+          taxable: false,
+        },
+      ],
+      'addLineItems'
+    );
+    assert.throws(() => buildInvoiceEditInput({ addLineItems: fee, taxRateId: 'sd-tax' }), /lineItemsToEdit/);
+    assert.throws(
+      () =>
+        buildInvoiceEditInput({
+          updateLineItems: [{ lineItemId: 'li-1', name: 'Pump', quantity: 1, unitPrice: 100 }],
+        }),
+      /invoiceEditLineItems/
+    );
+    assert.throws(() => buildInvoiceEditInput({ removeLineItemIds: ['li-1'] }), /invoiceCreateLineItems/);
+    assert.throws(() => buildInvoiceEditInput({}), /taxRateId/);
   });
 
   it('builds an unsent invoice create from a job', () => {
@@ -114,7 +117,27 @@ describe('invoice write builders', () => {
 });
 
 describe('editInvoice', () => {
-  it('sends invoiceEdit for the fee line and does not mark the invoice sent', async () => {
+  it('does not call Jobber when the caller tries to update a line', async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return jsonResponse({ errors: [{ message: 'should not be called' }] });
+    };
+    await assert.rejects(
+      () =>
+        editInvoice(
+          {
+            invoiceId: INVOICE_ID,
+            updateLineItems: [{ lineItemId: 'li-pump', name: 'Pump', quantity: 1, unitPrice: 100, taxable: true }],
+          },
+          { fetchImpl, token: 'test' }
+        ),
+      /lineItemsToEdit is not defined/
+    );
+    assert.equal(calls, 0);
+  });
+
+  it('sends invoiceEdit with taxRateId only and does not mark the invoice sent', async () => {
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       const body = String(init?.body || '');
@@ -124,40 +147,26 @@ describe('editInvoice', () => {
         return jsonResponse({
           data: {
             invoiceEdit: {
-              invoice: { id: INVOICE_ID, invoiceNumber: '5806', invoiceStatus: 'awaiting_payment' },
+              invoice: { id: INVOICE_ID, invoiceNumber: '5764', invoiceStatus: 'draft' },
               userErrors: [],
             },
           },
         });
       }
       if (query.includes('invoice(id:')) {
-        return jsonResponse({ data: { invoice: invoiceNode() } });
+        return jsonResponse({ data: { invoice: { ...invoiceNode(), invoiceNumber: '5764', invoiceStatus: 'draft' } } });
       }
       return jsonResponse({ errors: [{ message: `unexpected ${query.slice(0, 80)}` }] });
     };
 
-    const invoice = await editInvoice(
-      {
-        invoiceId: INVOICE_ID,
-        addLineItems: [
-          {
-            name: 'Credit card processing fee (2.9%)',
-            quantity: 1,
-            unitPrice: 510.91,
-            taxable: false,
-          },
-        ],
-      },
-      { fetchImpl, token: 'test' }
-    );
-    assert.equal(invoice.invoiceNumber, '5806');
+    const invoice = await editInvoice({ invoiceId: INVOICE_ID, taxRateId: 'sd-tax' }, { fetchImpl, token: 'test' });
+    assert.equal(invoice.invoiceNumber, '5764');
     const edit = bodies.find((body) => body.includes('invoiceEdit'));
     assert.ok(edit);
-    const variables = (JSON.parse(edit) as { variables: { input: { lineItemsToAdd: Array<Record<string, unknown>> } } })
-      .variables;
-    assert.equal(variables.input.lineItemsToAdd[0].taxable, false);
-    assert.equal(variables.input.lineItemsToAdd[0].unitPrice, 510.91);
-    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice/.test(body)));
+    const variables = (JSON.parse(edit) as { query: string; variables: { input: Record<string, unknown> } }).variables;
+    assert.deepEqual(variables.input, { taxRateId: 'sd-tax' });
+    assert.equal(variables.input.lineItemsToEdit, undefined);
+    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice|invoiceCreateLineItems|invoiceEditLineItems|invoiceDeleteLineItems/.test(body)));
   });
 });
 

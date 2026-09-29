@@ -11,11 +11,20 @@
  *   (EXCLUSIVE | INCLUSIVE), and a non-empty lineItems list (name at minimum).
  *   jobId is an accepted optional argument. issuedDate is omitted so the
  *   create stays unissued.
- * - ClientEditInput on that same schema is differential
- *   (emailsToAdd / emailsToEdit / emailsToDelete). Invoice line edits use
- *   that same ToAdd / ToEdit / ToDelete pattern: lineItemsToAdd,
- *   lineItemsToEdit (each row has id), lineItemsToDelete. taxRateId is the
- *   same field quote create/edit already send.
+ * - InvoiceEditInput does not take line items. A live invoiceEdit on
+ *   2025-04-16 was rejected: lineItemsToEdit is not defined on
+ *   InvoiceEditInput. The public introspection at API version 2025-01-20
+ *   (hightreequency/jobberschema) lists InvoiceEditInput as message,
+ *   taxRateId, discount, allowClientHubCreditCardPayments,
+ *   allowClientHubAchPayments, invoiceNumber, issuedDate, dueDetails,
+ *   subject, contractDisclaimer, customFields, allowReviewRequest,
+ *   salespersonId, allowPartialPayments. That schema has
+ *   quoteCreateLineItems / quoteEditLineItems / quoteDeleteLineItems and
+ *   the same trio for jobs and visits. It has no invoiceCreateLineItems,
+ *   invoiceEditLineItems, or invoiceDeleteLineItems. Those names are
+ *   unverified on later API versions and are not called.
+ * - taxRateId is on InvoiceEditInput in that introspection. This module
+ *   sends only that field. Payment booleans on the input are not sent.
  * - invoiceMarkAsSent exists and only flags the record, but this module
  *   never calls it. invoiceSend is gone. Nothing here emails or texts.
  * - The published Invoice type has no per-invoice card, ACH, or partial
@@ -126,6 +135,32 @@ export function assertInvoiceWriteDoesNotDeliver(query: string): void {
   }
 }
 
+/**
+ * Line-item writes are not sent. Sources for the refusal:
+ * - Live Jobber error (API pin 2025-04-16): lineItemsToEdit is not defined
+ *   on InvoiceEditInput.
+ * - Public introspection, extensions.versioning.version 2025-01-20: no
+ *   line-item fields on InvoiceEditInput, and no invoice*LineItems mutations.
+ * invoiceCreateLineItems / invoiceEditLineItems / invoiceDeleteLineItems are
+ * unverified and are not called.
+ */
+export const INVOICE_LINE_ITEMS_UNSUPPORTED =
+  'Unsupported: Jobber invoice line items cannot be added, updated, or removed through invoiceEdit. ' +
+  'A live call was rejected because lineItemsToEdit is not defined on InvoiceEditInput. ' +
+  'The public schema at API version 2025-01-20 has no lineItems, lineItemsToAdd, lineItemsToEdit, or lineItemsToDelete on InvoiceEditInput, ' +
+  'and no invoiceCreateLineItems, invoiceEditLineItems, or invoiceDeleteLineItems mutations ' +
+  '(quotes, jobs, and visits have those; invoices do not in that schema). ' +
+  'Those invoice mutation names are unverified on the current API and are not called. ' +
+  'Set line items with create_invoice_draft. edit_invoice can set taxRateId only.';
+
+export function invoiceLineItemsRequested(input: {
+  addLineItems?: InvoiceLineDraft[];
+  updateLineItems?: InvoiceLineUpdate[];
+  removeLineItemIds?: string[];
+}): boolean {
+  return Boolean(input.addLineItems?.length || input.updateLineItems?.length || input.removeLineItemIds?.length);
+}
+
 export function assertNoInvoicePaymentOptions(args: Record<string, unknown>): void {
   const present = UNSUPPORTED_INVOICE_PAYMENT_FIELDS.filter((key) => key in args && args[key] != null);
   if (!present.length) return;
@@ -152,29 +187,15 @@ export function buildInvoiceEditInput(input: {
   removeLineItemIds?: string[];
   taxRateId?: string | null;
 }): Record<string, unknown> {
-  const attributes: Record<string, unknown> = {};
-  if (input.addLineItems?.length) {
-    attributes.lineItemsToAdd = input.addLineItems.map(linePayload);
+  if (invoiceLineItemsRequested(input)) {
+    throw new Error(INVOICE_LINE_ITEMS_UNSUPPORTED);
   }
-  if (input.updateLineItems?.length) {
-    attributes.lineItemsToEdit = input.updateLineItems.map((line) => {
-      const row: Record<string, unknown> = { id: line.lineItemId };
-      if (line.name != null) row.name = line.name;
-      if (line.description != null) row.description = line.description;
-      if (line.quantity != null) row.quantity = line.quantity;
-      if (line.unitPrice != null) row.unitPrice = line.unitPrice;
-      if (line.taxable != null) row.taxable = line.taxable;
-      return row;
-    });
+  const taxRateId = input.taxRateId?.trim();
+  if (!taxRateId) {
+    throw new Error('edit_invoice needs taxRateId. Line item add, update, and remove are not on InvoiceEditInput.');
   }
-  if (input.removeLineItemIds?.length) {
-    attributes.lineItemsToDelete = input.removeLineItemIds;
-  }
-  if (input.taxRateId?.trim()) attributes.taxRateId = input.taxRateId.trim();
-  if (!Object.keys(attributes).length) {
-    throw new Error('edit_invoice needs addLineItems, updateLineItems, removeLineItemIds, or taxRateId');
-  }
-  return attributes;
+  // Verified InvoiceEditInput field (introspection 2025-01-20). Nothing else is sent.
+  return { taxRateId };
 }
 
 export function buildUnsentInvoiceCreateInput(input: {
@@ -317,6 +338,7 @@ export async function editInvoice(
   },
   deps?: JobberDeps
 ): Promise<JobberInvoiceSummary> {
+  const attributes = buildInvoiceEditInput(input);
   const existing = await getInvoice(
     {
       invoiceId: input.invoiceId,
@@ -325,7 +347,6 @@ export async function editInvoice(
     },
     deps
   );
-  const attributes = buildInvoiceEditInput(input);
   const edited = await graphql(INVOICE_EDIT, { invoiceId: existing.id, input: attributes }, deps);
   assertNoJobberErrors(edited, 'invoiceEdit');
   const payload = edited.data?.invoiceEdit;
