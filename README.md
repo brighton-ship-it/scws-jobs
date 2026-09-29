@@ -182,7 +182,7 @@ npm test         # Unit tests (node:test)
 
 **Internal quote GP tracker:** `/ops/quotes-gp` (this app, not the marketing site). Sign in to the CRM, or set `QUOTES_GP_KEY` and open `/ops/quotes-gp?key=<QUOTES_GP_KEY>` (`ADMIN_SECRET` works if the dedicated key is unset). Needs `JOBBER_ACCESS_TOKEN`. Read-only; street prices stay street; FLAG/GP stay off customer titles and messages. See `src/app/ops/quotes-gp/README.md`.
 
-**Shared Jobber MCP (shop bots):** `POST/GET /api/mcp/jobber` — Streamable HTTP MCP so Travis / Damien / Grok Bot can draft Jobber quotes without holding Jobber OAuth. Auth is `Authorization: Bearer` from `JOBBER_MCP_API_KEYS`. Draft-only: no send, approve, convert, delete, or payroll. See `docs/jobber-mcp.md`.
+**Shared Jobber MCP (shop bots):** `POST/GET /api/mcp/jobber` — Streamable HTTP MCP so Travis / Damien / Grok Bot can draft Jobber quotes and enter clients, requests, assessments, jobs, and visits without holding Jobber OAuth. Auth is `Authorization: Bearer` from `JOBBER_MCP_API_KEYS`. Nothing emails or texts a client. No send, approve, convert, delete, or payroll. See `docs/jobber-mcp.md`.
 
 **Jobber OAuth:** one writer. Encrypted `settings.jobber_oauth` is the only place a refresh may land. Env `JOBBER_*_TOKEN` seeds that row once when it is empty; a failed durable read does not refresh env. Never refresh Jobber from a laptop or box script that only updates a local file. See `docs/JOBBER_OAUTH.md`. Health: `GET /api/jobber/oauth-health`. Apply `supabase/migrations/20260922_jobber_oauth_single_writer.sql` in the SQL Editor if `public.settings` is missing.
 

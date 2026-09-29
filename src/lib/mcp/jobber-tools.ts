@@ -1,10 +1,12 @@
 /**
  * MCP tools for shop bots.
  *
- * Clients, unsent quote drafts, product lookup, invoice reads plus unsent
- * invoice drafts and invoice line/tax edits, job reads plus close, and tax
- * rates. Nothing sends, emails, or texts a client. jobComplete does not exist.
- * Per-invoice card / ACH / partial payment toggles are not in Jobber's API.
+ * Clients (search, create, property), users, unsent quote drafts, product
+ * lookup, invoice reads plus unsent invoice drafts and tax/Client Hub edits,
+ * requests (search, create, assessment schedule), job reads plus one-off
+ * create, visit schedule, and close, notes, and tax rates. Nothing sends,
+ * emails, or texts a client. jobComplete does not exist. Per-invoice card /
+ * ACH / partial payment toggles are not in Jobber's API.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -37,13 +39,26 @@ import {
   parseInvoiceLineUpdates,
   parseRemoveLineItemIds,
 } from '../jobber/mcp-invoice-writes.ts';
-import { closeJob, normalizeIncompleteVisits } from '../jobber/mcp-job-writes.ts';
+import { createClient, createProperty, listUsers, parseCreateClientArgs, parsePropertyAddressArgs } from '../jobber/mcp-client-writes.ts';
+import {
+  closeJob,
+  createJob,
+  createVisit,
+  normalizeIncompleteVisits,
+  parseAssigneeIds,
+  parseCreateJobArgs,
+  parseCreateVisitArgs,
+} from '../jobber/mcp-job-writes.ts';
+import { createNote, parseCreateNoteArgs } from '../jobber/mcp-notes.ts';
+import { assertNoNotifyArgs } from '../jobber/mcp-notify.ts';
+import { createRequest } from '../jobber/mcp-request-writes.ts';
+import { getRequest, searchRequests } from '../jobber/mcp-requests.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.4.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.5.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -69,28 +84,39 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'text_invoice',
   'record_payment',
   'collect_payment',
-  'create_job',
   'update_job',
   'edit_job',
   'complete_job',
   'delete_job',
   'send_job',
   'email_job',
-  'job_create',
   'job_update',
   'job_edit',
   'job_complete',
   'job_delete',
   'job_send',
   'job_email',
+  'complete_visit',
+  'visit_complete',
+  'send_request',
+  'email_request',
+  'text_request',
+  'send_client',
+  'email_client',
+  'text_client',
+  'send_visit',
+  'visit_reminder',
+  'booking_confirmation',
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. Nothing emails or texts a client.',
-  'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll.',
+  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. create_client, create_property, create_request, create_job, create_visit, and create_note write records. Nothing emails, texts, or notifies a client.',
+  'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
   'edit_invoice sets taxRateId and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings, not a charge. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
-  'Look up an existing client before creating a draft. Do not invent duplicates.',
+  'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
+  'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
+  'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
 ].join(' ');
@@ -120,6 +146,27 @@ const LINE_ITEM_SCHEMA = {
   },
 };
 
+const JOB_LINE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['quantity'],
+  properties: {
+    name: { type: 'string', description: 'Required unless productOrServiceId is set.' },
+    description: { type: 'string' },
+    quantity: { type: 'number' },
+    unitPrice: {
+      type: 'number',
+      description: 'Street sell price. Required unless productOrServiceId is set.',
+    },
+    taxable: { type: 'boolean' },
+    productOrServiceId: {
+      type: 'string',
+      description:
+        'Catalog id from search_products. Jobber job lines cannot store this id. The gateway copies name and street defaultUnitCost.',
+    },
+  },
+};
+
 export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'search_clients',
@@ -143,6 +190,110 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         clientId: { type: 'string' },
       },
       required: ['clientId'],
+    },
+  },
+  {
+    name: 'create_client',
+    description:
+      'Create a Jobber client. Optional company, emails, phones, billing address, and an initial property (street1, city, province, postalCode, country). If the same email or full name already exists, returns those matches and does not create unless force=true. Reminder, follow-up, and SMS flags are forced off. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['firstName', 'lastName'],
+      properties: {
+        firstName: { type: 'string' },
+        lastName: { type: 'string' },
+        companyName: { type: 'string' },
+        force: {
+          type: 'boolean',
+          description: 'Create even when an email or full-name match already exists. Default false.',
+        },
+        emails: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['address'],
+            properties: {
+              address: { type: 'string' },
+              description: { type: 'string', description: 'MAIN, WORK, PERSONAL, or OTHER. Default MAIN.' },
+              primary: { type: 'boolean' },
+            },
+          },
+        },
+        phones: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['number'],
+            properties: {
+              number: { type: 'string' },
+              description: { type: 'string', description: 'MAIN, WORK, MOBILE, HOME, FAX, or OTHER. Default MAIN.' },
+              primary: { type: 'boolean' },
+            },
+          },
+        },
+        billingAddress: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['street1', 'city', 'province', 'postalCode'],
+          description: 'Billing address. country defaults to US.',
+          properties: {
+            street1: { type: 'string' },
+            street2: { type: 'string' },
+            city: { type: 'string' },
+            province: { type: 'string', description: 'State or province. California is CA.' },
+            postalCode: { type: 'string' },
+            country: { type: 'string', description: 'Default US when omitted.' },
+          },
+        },
+        property: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['street1', 'city', 'province', 'postalCode'],
+          description: 'Optional property created with the client. country defaults to US.',
+          properties: {
+            street1: { type: 'string' },
+            street2: { type: 'string' },
+            city: { type: 'string' },
+            province: { type: 'string', description: 'State or province. California is CA.' },
+            postalCode: { type: 'string' },
+            country: { type: 'string', description: 'Default US when omitted.' },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'create_property',
+    description:
+      'Add a property to an existing Jobber client via propertyCreate. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['clientId', 'street1', 'city', 'province', 'postalCode'],
+      properties: {
+        clientId: { type: 'string' },
+        street1: { type: 'string' },
+        street2: { type: 'string' },
+        city: { type: 'string' },
+        province: { type: 'string' },
+        postalCode: { type: 'string' },
+        country: { type: 'string', description: 'Default US when omitted.' },
+      },
+    },
+  },
+  {
+    name: 'list_users',
+    description:
+      'List Jobber users (team members) with encoded ids, name, email, and status. Optional query matches name or email, for example Brighton Scala. Read-only. Does not invite or email anyone. Pass ids as assigneeIds on create_request, create_job, or create_visit.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Optional name or email fragment' },
+      },
     },
   },
   {
@@ -354,7 +505,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'search_jobs',
     description:
-      'Search Jobber jobs by job number, title, client, or city. Read-only. completedAfter (ISO timestamp) is required for the GBP daily window of completed field jobs. Optional completedBefore, status (prefer completed), and first/after pagination. Returns client first name, property city, and a short list of https photo URLs. Does not create, update, complete, or email jobs.',
+      'Search Jobber jobs by job number, title, client, or city. Read-only. completedAfter (ISO timestamp) is the GBP daily window of completed field jobs. Optional completedBefore, status (prefer completed), and first/after pagination. Returns client first name, property city, and a short list of https photo URLs. Does not update, complete, or email jobs. Use create_job to add a one-off job.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -384,7 +535,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'get_job',
     description:
-      'Load one Jobber job by encoded id or job number. Read-only. Same fields as search_jobs, plus the full https photo list for GBP media. Does not create, update, complete, or email the job.',
+      'Load one Jobber job by encoded id or job number. Read-only. Same fields as search_jobs, plus the full https photo list for GBP media. Does not update, complete, or email the job. Use create_visit to add a visit.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -410,6 +561,144 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           description:
             'COMPLETE_PAST_DESTROY_FUTURE or DESTROY_ALL. Required. DESTROY_ALL deletes incomplete visits, past and future.',
         },
+      },
+    },
+  },
+  {
+    name: 'create_job',
+    description:
+      'Create a one-off Jobber job for a client property. jobCreate has no visit datetime: scheduling.createVisits is false and notifyTeam is false, then visitCreate runs when startAt and endAt are set (America/Los_Angeles). Optional line items. productOrServiceId is looked up and copied as name and street price; Jobber job lines cannot store the product id. Does not email, text, or request a review.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['clientId', 'title'],
+      properties: {
+        clientId: { type: 'string' },
+        propertyId: {
+          type: 'string',
+          description: 'Required unless the client has exactly one property.',
+        },
+        title: { type: 'string' },
+        instructions: { type: 'string' },
+        lineItems: {
+          type: 'array',
+          items: JOB_LINE_SCHEMA,
+          description:
+            'Optional. productOrServiceId is resolved with product(id). The id is not sent on the job line.',
+        },
+        startAt: {
+          type: 'string',
+          description:
+            'First visit start. ISO datetime. A value without a zone is America/Los_Angeles wall time. Requires endAt.',
+        },
+        endAt: { type: 'string', description: 'First visit end. Same timezone rules as startAt.' },
+        assigneeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'User ids from list_users. Requires startAt and endAt.',
+        },
+      },
+    },
+  },
+  {
+    name: 'create_visit',
+    description:
+      'Schedule a visit on an existing job via visitCreate. startAt and endAt are America/Los_Angeles. notifyTeam is forced off. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['startAt', 'endAt'],
+      properties: {
+        jobId: { type: 'string', description: 'Encoded Jobber job id' },
+        jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
+        title: { type: 'string' },
+        instructions: { type: 'string' },
+        startAt: { type: 'string', description: 'ISO datetime. No zone means America/Los_Angeles wall time.' },
+        endAt: { type: 'string' },
+        assigneeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'User ids from list_users.',
+        },
+      },
+    },
+  },
+  {
+    name: 'search_requests',
+    description:
+      'Search Jobber requests by title, client, or address. Read-only. Optional clientId, status, and first/after pagination. Includes the assessment start, end, and assignees when Jobber returns them. Does not email the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Title, client, or address fragment' },
+        clientId: { type: 'string' },
+        status: {
+          type: 'string',
+          description:
+            'new | unscheduled | upcoming | today | overdue | assessment_completed | converted | completed | archived | all',
+        },
+        first: { type: 'number', description: 'Page size. Default 15, max 25.' },
+        after: { type: 'string', description: 'Cursor from the previous pageInfo.endCursor' },
+      },
+    },
+  },
+  {
+    name: 'get_request',
+    description:
+      'Load one Jobber request by encoded id, including its assessment when one exists. Read-only. Does not email the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['requestId'],
+      properties: {
+        requestId: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'create_request',
+    description:
+      'Create a Jobber request for a client property. Optional on-site assessment: pass startAt and endAt (America/Los_Angeles) and assigneeIds from list_users. The assessment title cannot be set. details are stored as assessment instructions and a request note. notifyTeam is forced off. Does not email, text, or send a booking confirmation.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['clientId', 'title'],
+      properties: {
+        clientId: { type: 'string' },
+        propertyId: {
+          type: 'string',
+          description: 'Required unless the client has exactly one property.',
+        },
+        title: { type: 'string' },
+        details: { type: 'string', description: 'Notes for the request and, when scheduled, the assessment instructions.' },
+        startAt: {
+          type: 'string',
+          description: 'Assessment start. ISO datetime. No zone means America/Los_Angeles wall time. Requires endAt.',
+        },
+        endAt: { type: 'string', description: 'Assessment end. Same timezone rules as startAt.' },
+        assigneeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'User ids from list_users, for example Brighton Scala. Requires startAt and endAt.',
+        },
+      },
+    },
+  },
+  {
+    name: 'create_note',
+    description:
+      'Add a note to a client, request, job, or quote. Uses clientCreateNote, requestCreateNote, jobCreateNote, or quoteCreateNote. Pass exactly one id. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['message'],
+      properties: {
+        message: { type: 'string' },
+        clientId: { type: 'string' },
+        requestId: { type: 'string' },
+        jobId: { type: 'string' },
+        quoteId: { type: 'string' },
       },
     },
   },
@@ -637,6 +926,49 @@ export async function callJobberMcpTool(
         const client = await getClientById(requiredString(args, 'clientId'), deps);
         return textResult({ client: summarizeClient(client) });
       }
+      case 'create_client': {
+        assertNoNotifyArgs(args);
+        const created = await createClient(parseCreateClientArgs(args), deps);
+        return textResult({
+          created: created.created,
+          notified: false,
+          warning: created.warning ?? null,
+          matches: created.matches.map((match) => ({
+            matchedBy: match.matchedBy,
+            client: summarizeClient(match.client),
+          })),
+          client: created.client ? summarizeClient(created.client) : null,
+          note: created.created
+            ? 'Created with clientCreate. Reminder, follow-up, and smsAllowed flags are false. Nothing was emailed or texted.'
+            : created.warning,
+        });
+      }
+      case 'create_property': {
+        assertNoNotifyArgs(args);
+        const property = await createProperty(
+          {
+            clientId: requiredString(args, 'clientId'),
+            address: parsePropertyAddressArgs(args),
+          },
+          deps
+        );
+        return textResult({
+          notified: false,
+          property,
+          note: 'Created with propertyCreate. Nothing was emailed or texted.',
+        });
+      }
+      case 'list_users': {
+        const query = optionalString(args, 'query');
+        const listed = await listUsers(query, deps);
+        return textResult({
+          query: query || null,
+          count: listed.users.length,
+          truncated: listed.truncated,
+          users: listed.users,
+          note: 'Read-only. Pass users[].id as assigneeIds. Prefer status ACTIVATED. This does not invite or email anyone.',
+        });
+      }
       case 'search_quotes': {
         const query = optionalString(args, 'query');
         const status = optionalString(args, 'status');
@@ -844,7 +1176,7 @@ export async function callJobberMcpTool(
           jobs: result.jobs,
           note: [
             result.note,
-            'Read-only search. Use close_job to close a job. This gateway cannot create, update, or email jobs.',
+            'Read-only search. Use create_job or create_visit to write, and close_job to close. This gateway cannot email a job.',
           ]
             .filter(Boolean)
             .join(' '),
@@ -860,7 +1192,7 @@ export async function callJobberMcpTool(
         );
         return textResult({
           job,
-          note: 'Read-only. Use close_job to close a job. This gateway cannot email a job.',
+          note: 'Read-only. Use create_visit to add a visit and close_job to close. This gateway cannot email a job.',
         });
       }
       case 'close_job': {
@@ -877,6 +1209,94 @@ export async function callJobberMcpTool(
           emailed: false,
           job,
           note: 'Closed with jobClose. jobComplete was not called. Nothing was emailed or texted.',
+        });
+      }
+      case 'create_job': {
+        assertNoNotifyArgs(args);
+        const created = await createJob(parseCreateJobArgs(args), deps);
+        return textResult({
+          notified: false,
+          job: created.job,
+          visits: created.visits,
+          visitError: created.visitError,
+          limitations: created.limitations,
+          note: 'Created with jobCreate (createVisits false, notifyTeam false, allowReviewRequest false). A first visit, when startAt and endAt are set, is visitCreate. Nothing was emailed or texted.',
+        });
+      }
+      case 'create_visit': {
+        assertNoNotifyArgs(args);
+        const visits = await createVisit(parseCreateVisitArgs(args), deps);
+        return textResult({
+          notified: false,
+          visits,
+          note: 'Scheduled with visitCreate. notifyTeam is false. Nothing was emailed or texted.',
+        });
+      }
+      case 'search_requests': {
+        const query = optionalString(args, 'query');
+        const status = optionalString(args, 'status');
+        const result = await searchRequests(
+          {
+            query,
+            clientId: optionalString(args, 'clientId'),
+            status,
+            first: optionalNumber(args, 'first'),
+            after: optionalString(args, 'after'),
+          },
+          deps
+        );
+        return textResult({
+          query: query || null,
+          status: status || null,
+          count: result.requests.length,
+          pageInfo: result.pageInfo,
+          requests: result.requests,
+          note: 'Read-only. Use create_request to add a request and schedule an assessment. This does not email the client.',
+        });
+      }
+      case 'get_request': {
+        const request = await getRequest(requiredString(args, 'requestId'), deps);
+        return textResult({
+          request,
+          note: 'Read-only. This does not email the client.',
+        });
+      }
+      case 'create_request': {
+        assertNoNotifyArgs(args);
+        const created = await createRequest(
+          {
+            clientId: requiredString(args, 'clientId'),
+            propertyId: optionalString(args, 'propertyId'),
+            title: requiredString(args, 'title'),
+            details: optionalString(args, 'details'),
+            startAt: optionalString(args, 'startAt'),
+            endAt: optionalString(args, 'endAt'),
+            assigneeIds: parseAssigneeIds(args.assigneeIds),
+          },
+          deps
+        );
+        return textResult({
+          notified: false,
+          scheduledAssessment: created.scheduledAssessment,
+          request: created.request,
+          noteId: created.noteId,
+          noteError: created.noteError,
+          limitations: created.limitations,
+          note: created.scheduledAssessment
+            ? 'Created with requestCreate and an assessment schedule. notifyTeam is false. Nothing was emailed or texted.'
+            : 'Created with requestCreate. No assessment was scheduled. Nothing was emailed or texted.',
+        });
+      }
+      case 'create_note': {
+        assertNoNotifyArgs(args);
+        const note = await createNote(parseCreateNoteArgs(args), deps);
+        return textResult({
+          notified: false,
+          target: note.target,
+          id: note.id,
+          noteId: note.noteId,
+          message: note.message,
+          note: 'Saved with the matching CreateNote mutation. Nothing was emailed or texted.',
         });
       }
       case 'list_tax_rates': {
@@ -940,7 +1360,11 @@ export async function jobberMcpHealthBody(
       sendsInvoices: false,
       invoiceMutations: true,
       jobMutations: true,
+      clientMutations: true,
+      requestMutations: true,
+      visitMutations: true,
       emailsCustomers: false,
+      notifiesClients: false,
       paymentOptionEdits: true,
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
