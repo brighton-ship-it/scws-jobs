@@ -53,9 +53,13 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_job'));
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
+    assert.ok(names.includes('edit_invoice'));
+    assert.ok(names.includes('create_invoice_draft'));
+    assert.ok(names.includes('close_job'));
     assert.ok(names.includes('list_tax_rates'));
     assert.ok(names.includes('search_products'));
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.3.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.4.0');
+    assert.equal(names.filter((name) => name === 'list_tax_rates').length, 1);
     const schema = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'create_quote_draft')?.inputSchema as {
       properties?: { lineItems?: { items?: { properties?: Record<string, unknown> } } };
     };
@@ -641,13 +645,108 @@ describe('callJobberMcpTool', () => {
   });
 
   it('refuses invoice send and create', async () => {
-    for (const name of ['send_invoice', 'create_invoice', 'sendInvoice']) {
+    for (const name of ['send_invoice', 'create_invoice', 'sendInvoice', 'mark_invoice_sent']) {
       const result = await callJobberMcpTool(name, { invoiceId: 'inv-1' }, { token: 'test' });
       assert.equal(result.isError, true);
       assert.match(result.content[0].text, /cannot send/i);
       const payload = JSON.parse(result.content[0].text) as { error: string; draftOnly: boolean };
       assert.equal(payload.draftOnly, true);
     }
+  });
+
+  it('rejects per-invoice card and partial payment toggles', async () => {
+    const result = await callJobberMcpTool(
+      'edit_invoice',
+      {
+        invoiceNumber: '5806',
+        allowCardPayments: true,
+        addLineItems: [
+          {
+            name: 'Credit card processing fee (2.9%)',
+            quantity: 1,
+            unitPrice: 510.91,
+            taxable: false,
+          },
+        ],
+      },
+      { token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Unsupported/);
+    assert.match(result.content[0].text, /card/i);
+  });
+
+  it('edits invoice 5806 with a non-taxable processing fee and does not send', async () => {
+    const invoiceId = 'Z2lkOi8vSm9iYmVyL0ludm9pY2UvNTgwNg';
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('invoiceEdit')) {
+        return jsonResponse({
+          data: {
+            invoiceEdit: {
+              invoice: { id: invoiceId, invoiceNumber: '5806', invoiceStatus: 'awaiting_payment' },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      return jsonResponse({
+        data: {
+          invoice: {
+            id: invoiceId,
+            invoiceNumber: '5806',
+            subject: 'Well',
+            invoiceStatus: 'awaiting_payment',
+            issuedDate: '2026-09-01',
+            dueDate: '2026-09-15',
+            createdAt: '2026-09-01T00:00:00Z',
+            clientHubUri: null,
+            jobberWebUri: 'https://secure.getjobber.com/invoices/5806',
+            amounts: { total: 18128.5, paymentsTotal: 0, invoiceBalance: 18128.5 },
+            client: { id: 'c1', name: 'Pat', emails: [] },
+            lineItems: {
+              nodes: [
+                {
+                  id: 'fee',
+                  name: 'Credit card processing fee (2.9%)',
+                  description: null,
+                  quantity: 1,
+                  unitPrice: 510.91,
+                },
+              ],
+            },
+          },
+        },
+      });
+    };
+
+    const result = await callJobberMcpTool(
+      'edit_invoice',
+      {
+        invoiceId,
+        addLineItems: [
+          {
+            name: 'Credit card processing fee (2.9%)',
+            quantity: 1,
+            unitPrice: 510.91,
+            taxable: false,
+          },
+        ],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    assert.match(result.content[0].text, /510.91/);
+    assert.match(result.content[0].text, /"emailed": false/);
+    const edit = JSON.parse(bodies.find((body) => body.includes('invoiceEdit')) || '{}') as {
+      variables?: { input?: { lineItemsToAdd?: Array<{ taxable?: boolean; unitPrice?: number }> } };
+    };
+    assert.equal(edit.variables?.input?.lineItemsToAdd?.[0].taxable, false);
+    assert.equal(edit.variables?.input?.lineItemsToAdd?.[0].unitPrice, 510.91);
+    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend/.test(body)));
   });
 });
 
