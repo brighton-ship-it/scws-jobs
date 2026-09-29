@@ -23,12 +23,13 @@
  *   the same trio for jobs and visits. It has no invoiceCreateLineItems,
  *   invoiceEditLineItems, or invoiceDeleteLineItems. Those names are
  *   unverified on later API versions and are not called.
- * - taxRateId is on InvoiceEditInput in that introspection. This module
- *   sends only that field. Payment booleans on the input are not sent.
+ * - taxRateId, allowClientHubCreditCardPayments, allowClientHubAchPayments,
+ *   and allowPartialPayments are on InvoiceEditInput in that introspection.
+ *   edit_invoice maps allowCardPayments, allowAchPayments, and
+ *   allowPartialPayments onto those three fields. They are invoice settings,
+ *   not a charge. This module never records or collects a payment.
  * - invoiceMarkAsSent exists and only flags the record, but this module
  *   never calls it. invoiceSend is gone. Nothing here emails or texts.
- * - The published Invoice type has no per-invoice card, ACH, or partial
- *   payment fields. Those arguments are rejected before any mutation.
  */
 
 import {
@@ -44,12 +45,15 @@ import type { JobberInvoiceSummary } from './mcp-invoices.ts';
 export const INVOICE_TAX_METHODS = ['EXCLUSIVE', 'INCLUSIVE'] as const;
 export type InvoiceTaxMethod = (typeof INVOICE_TAX_METHODS)[number];
 
-export const UNSUPPORTED_INVOICE_PAYMENT_FIELDS = [
-  'allowCardPayments',
-  'allowCreditCardPayments',
-  'allowAchPayments',
-  'allowBankPayments',
-  'allowPartialPayments',
+/** Argument names that would send, flag sent, record, or collect. Not settings. */
+export const REJECTED_INVOICE_ACTION_FIELDS = [
+  'recordPayment',
+  'collectPayment',
+  'sendInvoice',
+  'markInvoiceSent',
+  'markAsSent',
+  'emailInvoice',
+  'textInvoice',
 ] as const;
 
 const DELIVERY_MUTATION =
@@ -145,13 +149,7 @@ export function assertInvoiceWriteDoesNotDeliver(query: string): void {
  * unverified and are not called.
  */
 export const INVOICE_LINE_ITEMS_UNSUPPORTED =
-  'Unsupported: Jobber invoice line items cannot be added, updated, or removed through invoiceEdit. ' +
-  'A live call was rejected because lineItemsToEdit is not defined on InvoiceEditInput. ' +
-  'The public schema at API version 2025-01-20 has no lineItems, lineItemsToAdd, lineItemsToEdit, or lineItemsToDelete on InvoiceEditInput, ' +
-  'and no invoiceCreateLineItems, invoiceEditLineItems, or invoiceDeleteLineItems mutations ' +
-  '(quotes, jobs, and visits have those; invoices do not in that schema). ' +
-  'Those invoice mutation names are unverified on the current API and are not called. ' +
-  'Set line items with create_invoice_draft. edit_invoice can set taxRateId only.';
+  "Jobber's API cannot edit invoice line items; use the Jobber web UI.";
 
 export function invoiceLineItemsRequested(input: {
   addLineItems?: InvoiceLineDraft[];
@@ -162,10 +160,10 @@ export function invoiceLineItemsRequested(input: {
 }
 
 export function assertNoInvoicePaymentOptions(args: Record<string, unknown>): void {
-  const present = UNSUPPORTED_INVOICE_PAYMENT_FIELDS.filter((key) => key in args && args[key] != null);
+  const present = REJECTED_INVOICE_ACTION_FIELDS.filter((key) => key in args && args[key] != null);
   if (!present.length) return;
   throw new Error(
-    `Unsupported: Jobber's Invoice type has no per-invoice payment toggles (${present.join(', ')}). Card, ACH/bank, and partial payments are set in the Jobber web UI, not this gateway.`
+    `Unsupported: this gateway cannot send, mark sent, record, or collect a payment (${present.join(', ')}).`
   );
 }
 
@@ -186,16 +184,32 @@ export function buildInvoiceEditInput(input: {
   updateLineItems?: InvoiceLineUpdate[];
   removeLineItemIds?: string[];
   taxRateId?: string | null;
+  allowCardPayments?: boolean | null;
+  allowAchPayments?: boolean | null;
+  allowPartialPayments?: boolean | null;
 }): Record<string, unknown> {
   if (invoiceLineItemsRequested(input)) {
     throw new Error(INVOICE_LINE_ITEMS_UNSUPPORTED);
   }
+  const attributes: Record<string, unknown> = {};
   const taxRateId = input.taxRateId?.trim();
-  if (!taxRateId) {
-    throw new Error('edit_invoice needs taxRateId. Line item add, update, and remove are not on InvoiceEditInput.');
+  if (taxRateId) attributes.taxRateId = taxRateId;
+  // InvoiceEditInput fields from the 2025-01-20 introspection. Settings only.
+  if (typeof input.allowCardPayments === 'boolean') {
+    attributes.allowClientHubCreditCardPayments = input.allowCardPayments;
   }
-  // Verified InvoiceEditInput field (introspection 2025-01-20). Nothing else is sent.
-  return { taxRateId };
+  if (typeof input.allowAchPayments === 'boolean') {
+    attributes.allowClientHubAchPayments = input.allowAchPayments;
+  }
+  if (typeof input.allowPartialPayments === 'boolean') {
+    attributes.allowPartialPayments = input.allowPartialPayments;
+  }
+  if (!Object.keys(attributes).length) {
+    throw new Error(
+      'edit_invoice needs taxRateId, allowCardPayments, allowAchPayments, or allowPartialPayments.'
+    );
+  }
+  return attributes;
 }
 
 export function buildUnsentInvoiceCreateInput(input: {
@@ -335,6 +349,9 @@ export async function editInvoice(
     updateLineItems?: InvoiceLineUpdate[];
     removeLineItemIds?: string[];
     taxRateId?: string | null;
+    allowCardPayments?: boolean | null;
+    allowAchPayments?: boolean | null;
+    allowPartialPayments?: boolean | null;
   },
   deps?: JobberDeps
 ): Promise<JobberInvoiceSummary> {

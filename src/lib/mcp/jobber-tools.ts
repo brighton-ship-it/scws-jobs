@@ -88,7 +88,7 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 export const JOBBER_MCP_INSTRUCTIONS = [
   'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. Nothing emails or texts a client.',
   'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll.',
-  'edit_invoice sets taxRateId only. Invoice line item add, update, and remove are rejected: lineItemsToEdit is not on InvoiceEditInput. Card, ACH, and partial-payment toggles are rejected.',
+  'edit_invoice sets taxRateId and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings, not a charge. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
   'Look up an existing client before creating a draft. Do not invent duplicates.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost.',
@@ -269,7 +269,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'edit_invoice',
     description:
-      'Set taxRateId on an existing Jobber invoice via invoiceEdit. addLineItems, updateLineItems, and removeLineItemIds stay on the input and are rejected: InvoiceEditInput has no line-item fields (live error: lineItemsToEdit is not defined). Does not send, email, text, or mark the invoice sent. Payment toggles are rejected.',
+      'Edit an existing Jobber invoice via invoiceEdit. Sets taxRateId and optional Client Hub settings allowCardPayments, allowAchPayments, and allowPartialPayments (card, ACH, partial). Those are settings, not a charge. addLineItems, updateLineItems, and removeLineItemIds are rejected. Does not send, email, text, mark sent, record, or collect a payment.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -279,8 +279,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         addLineItems: {
           type: 'array',
           items: LINE_ITEM_SCHEMA,
-          description:
-            'Rejected. InvoiceEditInput has no line-item fields. Use create_invoice_draft to set lines on a new invoice.',
+          description: "Rejected. Jobber's API cannot edit invoice line items; use the Jobber web UI.",
         },
         updateLineItems: {
           type: 'array',
@@ -297,16 +296,28 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
               taxable: { type: 'boolean' },
             },
           },
-          description: 'Rejected. lineItemsToEdit is not defined on InvoiceEditInput.',
+          description: "Rejected. Jobber's API cannot edit invoice line items; use the Jobber web UI.",
         },
         removeLineItemIds: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Rejected. No invoiceDeleteLineItems mutation is in the published schema.',
+          description: "Rejected. Jobber's API cannot edit invoice line items; use the Jobber web UI.",
         },
         taxRateId: {
           type: 'string',
           description: 'Jobber tax rate id from list_tax_rates (for example San Diego 7.75%).',
+        },
+        allowCardPayments: {
+          type: 'boolean',
+          description: 'Maps to InvoiceEditInput.allowClientHubCreditCardPayments. A setting, not a charge.',
+        },
+        allowAchPayments: {
+          type: 'boolean',
+          description: 'Maps to InvoiceEditInput.allowClientHubAchPayments. A setting, not a charge.',
+        },
+        allowPartialPayments: {
+          type: 'boolean',
+          description: 'Maps to InvoiceEditInput.allowPartialPayments. A setting, not a charge.',
         },
       },
     },
@@ -744,7 +755,7 @@ export async function callJobberMcpTool(
         );
         return textResult({
           invoice,
-          note: 'Read-only. Use edit_invoice to set taxRateId. Line item edits are not on InvoiceEditInput. This gateway cannot send invoices or record payments.',
+          note: "Read-only. Use edit_invoice to set taxRateId or Client Hub card, ACH, and partial-payment settings. Jobber's API cannot edit invoice line items; use the Jobber web UI. This gateway cannot send invoices or record payments.",
         });
       }
       case 'edit_invoice': {
@@ -766,14 +777,18 @@ export async function callJobberMcpTool(
             updateLineItems,
             removeLineItemIds,
             taxRateId: optionalString(args, 'taxRateId'),
+            allowCardPayments: optionalBoolean(args, 'allowCardPayments'),
+            allowAchPayments: optionalBoolean(args, 'allowAchPayments'),
+            allowPartialPayments: optionalBoolean(args, 'allowPartialPayments'),
           },
           deps
         );
         return textResult({
           sent: false,
           emailed: false,
+          collected: false,
           invoice,
-          note: 'Set taxRateId with invoiceEdit. Nothing was emailed or texted. Line item edits and payment toggles were not sent.',
+          note: 'Updated tax and/or Client Hub payment settings with invoiceEdit. Nothing was emailed, texted, or charged.',
         });
       }
       case 'create_invoice_draft': {
@@ -926,7 +941,7 @@ export async function jobberMcpHealthBody(
       invoiceMutations: true,
       jobMutations: true,
       emailsCustomers: false,
-      paymentOptionEdits: false,
+      paymentOptionEdits: true,
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
     },

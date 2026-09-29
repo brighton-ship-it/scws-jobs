@@ -654,8 +654,16 @@ describe('callJobberMcpTool', () => {
     }
   });
 
-  it('rejects per-invoice card and partial payment toggles', async () => {
-    const result = await callJobberMcpTool(
+  it('rejects recording a payment and still refuses line edits', async () => {
+    const recorded = await callJobberMcpTool(
+      'edit_invoice',
+      { invoiceNumber: '5806', recordPayment: 510.91, allowCardPayments: true },
+      { token: 'test' }
+    );
+    assert.equal(recorded.isError, true);
+    assert.match(recorded.content[0].text, /cannot send, mark sent, record, or collect/i);
+
+    const lines = await callJobberMcpTool(
       'edit_invoice',
       {
         invoiceNumber: '5806',
@@ -671,9 +679,8 @@ describe('callJobberMcpTool', () => {
       },
       { token: 'test' }
     );
-    assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /Unsupported/);
-    assert.match(result.content[0].text, /card/i);
+    assert.equal(lines.isError, true);
+    assert.match(lines.content[0].text, /Jobber's API cannot edit invoice line items; use the Jobber web UI/);
   });
 
   it('rejects invoice line edits and does not call Jobber', async () => {
@@ -691,8 +698,7 @@ describe('callJobberMcpTool', () => {
       { fetchImpl, token: 'test' }
     );
     assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /lineItemsToEdit/);
-    assert.match(result.content[0].text, /invoiceEditLineItems/);
+    assert.match(result.content[0].text, /Jobber's API cannot edit invoice line items; use the Jobber web UI/);
     assert.equal(calls, 0);
   });
 
@@ -735,16 +741,30 @@ describe('callJobberMcpTool', () => {
 
     const result = await callJobberMcpTool(
       'edit_invoice',
-      { invoiceId, taxRateId: 'sd-tax' },
+      {
+        invoiceId,
+        taxRateId: 'sd-tax',
+        allowCardPayments: true,
+        allowAchPayments: true,
+        allowPartialPayments: false,
+      },
       { fetchImpl, token: 'test' }
     );
     assert.equal(result.isError, undefined);
     assert.match(result.content[0].text, /"emailed": false/);
+    assert.match(result.content[0].text, /"collected": false/);
     const edit = JSON.parse(bodies.find((body) => body.includes('invoiceEdit')) || '{}') as {
       variables?: { input?: Record<string, unknown> };
     };
-    assert.deepEqual(edit.variables?.input, { taxRateId: 'sd-tax' });
-    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|lineItemsToEdit|invoiceEditLineItems/.test(body)));
+    assert.deepEqual(edit.variables?.input, {
+      taxRateId: 'sd-tax',
+      allowClientHubCreditCardPayments: true,
+      allowClientHubAchPayments: true,
+      allowPartialPayments: false,
+    });
+    assert.ok(
+      bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|recordPayment|collectPayment|lineItemsToEdit/.test(body))
+    );
   });
 });
 

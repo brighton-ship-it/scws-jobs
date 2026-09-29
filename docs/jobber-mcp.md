@@ -1,6 +1,6 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **draft quotes**, **read and edit invoices** (line items and tax, never send), **read jobs and close them**, and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **draft quotes**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
@@ -19,8 +19,8 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails or 
 | Update unsent draft (title, message, optional/recommended lines, taxRateId) | Payroll |
 | Search products for line names / street list | Invoice send, mark-sent, or record payment |
 | List tax rates (id, name, label, rate, default) | Changing the tax-rate catalog |
-| Search / get invoices | Per-invoice card, ACH, or partial-payment toggles (rejected; not sent) |
-| Set an invoice tax rate (`edit_invoice` / `taxRateId`) | Invoice line add, update, or remove (not on InvoiceEditInput) |
+| Search / get invoices | Record or collect a payment |
+| Set an invoice tax rate and Client Hub card, ACH, and partial-payment settings | Invoice line add, update, or remove |
 | Create unsent invoice draft from a job | Job create, update, or send |
 | Search / get jobs (completed window + photo URLs) | `jobComplete` (removed) |
 | Close a job (`jobClose` + incomplete-visit decision) | Visits, anything that emails the customer |
@@ -29,7 +29,7 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails or 
 
 If Jobber already sent the quote, `update_quote_draft` refuses.
 
-`create_invoice_draft` never sets `issuedDate` and never calls `invoiceMarkAsSent`. `edit_invoice` sets `taxRateId` only. It rejects `addLineItems`, `updateLineItems`, and `removeLineItemIds` (live Jobber error: `lineItemsToEdit` is not defined on `InvoiceEditInput`; the 2025-01-20 public schema has no invoice line-item mutations). It also rejects `allowCardPayments`, `allowAchPayments` / `allowBankPayments`, and `allowPartialPayments`.
+`create_invoice_draft` never sets `issuedDate` and never calls `invoiceMarkAsSent`. `edit_invoice` sets `taxRateId` and optional Client Hub settings: `allowCardPayments` → `allowClientHubCreditCardPayments`, `allowAchPayments` → `allowClientHubAchPayments`, `allowPartialPayments` → `allowPartialPayments`. Those are settings, not a charge. It rejects `addLineItems`, `updateLineItems`, and `removeLineItemIds` with: Jobber's API cannot edit invoice line items; use the Jobber web UI. It still refuses send, mark-sent, record, and collect.
 
 ## Env vars
 
@@ -84,7 +84,7 @@ MCP server version **1.4.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stay
 - `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
-- `edit_invoice` — sets `taxRateId` from `list_tax_rates` via `invoiceEdit`. `addLineItems`, `updateLineItems`, and `removeLineItemIds` are rejected. Does not send
+- `edit_invoice` — `taxRateId` from `list_tax_rates`, plus optional `allowCardPayments`, `allowAchPayments`, and `allowPartialPayments` (Client Hub settings on `InvoiceEditInput`). Line-item arguments are rejected. Does not send, mark sent, record, or collect
 - `create_invoice_draft` — unsent invoice from a job (`jobId` or `jobNumber`). Copies job lines when `lineItems` is omitted
 - `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs
 - `get_job` — one job by encoded id or job number: same fields plus the full https photo list for GBP media

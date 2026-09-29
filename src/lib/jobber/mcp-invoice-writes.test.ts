@@ -54,15 +54,25 @@ function invoiceNode(extra?: Record<string, unknown>) {
 }
 
 describe('invoice write builders', () => {
-  it('sends only taxRateId on invoiceEdit', () => {
-    const input = buildInvoiceEditInput({ taxRateId: 'sd-tax' });
-    assert.deepEqual(input, { taxRateId: 'sd-tax' });
-    assert.equal('lineItemsToAdd' in input, false);
+  it('maps Client Hub payment settings onto InvoiceEditInput fields', () => {
+    const input = buildInvoiceEditInput({
+      taxRateId: 'sd-tax',
+      allowCardPayments: true,
+      allowAchPayments: false,
+      allowPartialPayments: true,
+    });
+    assert.deepEqual(input, {
+      taxRateId: 'sd-tax',
+      allowClientHubCreditCardPayments: true,
+      allowClientHubAchPayments: false,
+      allowPartialPayments: true,
+    });
+    assert.equal('allowCardPayments' in input, false);
+    assert.equal('allowAchPayments' in input, false);
     assert.equal('lineItemsToEdit' in input, false);
-    assert.equal('lineItemsToDelete' in input, false);
   });
 
-  it('refuses add, update, and remove line items instead of guessing InvoiceEditInput fields', () => {
+  it('refuses add, update, and remove line items', () => {
     const fee = parseInvoiceLineDrafts(
       [
         {
@@ -75,15 +85,16 @@ describe('invoice write builders', () => {
       ],
       'addLineItems'
     );
-    assert.throws(() => buildInvoiceEditInput({ addLineItems: fee, taxRateId: 'sd-tax' }), /lineItemsToEdit/);
+    const message = /Jobber's API cannot edit invoice line items; use the Jobber web UI\./;
+    assert.throws(() => buildInvoiceEditInput({ addLineItems: fee, allowCardPayments: true }), message);
     assert.throws(
       () =>
         buildInvoiceEditInput({
           updateLineItems: [{ lineItemId: 'li-1', name: 'Pump', quantity: 1, unitPrice: 100 }],
         }),
-      /invoiceEditLineItems/
+      message
     );
-    assert.throws(() => buildInvoiceEditInput({ removeLineItemIds: ['li-1'] }), /invoiceCreateLineItems/);
+    assert.throws(() => buildInvoiceEditInput({ removeLineItemIds: ['li-1'] }), message);
     assert.throws(() => buildInvoiceEditInput({}), /taxRateId/);
   });
 
@@ -104,10 +115,17 @@ describe('invoice write builders', () => {
     assert.equal(JSON.stringify(input).includes('invoiceMarkAsSent'), false);
   });
 
-  it('rejects payment toggles and delivery mutations', () => {
+  it('allows payment settings and still rejects send, record, and collect', () => {
+    assert.doesNotThrow(() =>
+      assertNoInvoicePaymentOptions({
+        allowCardPayments: true,
+        allowAchPayments: true,
+        allowPartialPayments: false,
+      })
+    );
     assert.throws(
-      () => assertNoInvoicePaymentOptions({ allowCardPayments: true, allowPartialPayments: true }),
-      /Unsupported/
+      () => assertNoInvoicePaymentOptions({ recordPayment: true, collectPayment: 10 }),
+      /cannot send, mark sent, record, or collect/
     );
     assert.throws(
       () => assertInvoiceWriteDoesNotDeliver('mutation { invoiceMarkAsSent(id: "x") { invoice { id } } }'),
@@ -132,7 +150,7 @@ describe('editInvoice', () => {
           },
           { fetchImpl, token: 'test' }
         ),
-      /lineItemsToEdit is not defined/
+      /Jobber's API cannot edit invoice line items; use the Jobber web UI/
     );
     assert.equal(calls, 0);
   });
