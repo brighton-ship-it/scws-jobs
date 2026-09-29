@@ -1,29 +1,35 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **draft quotes**, **read invoices** (collections follow-up), and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **draft quotes**, **read and edit invoices** (line items and tax, never send), **read jobs and close them**, and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
 **Auth:** `Authorization: Bearer <named MCP key>` from `JOBBER_MCP_API_KEYS`.  
 **Jobber OAuth:** stays on this app. `JOBBER_ACCESS_TOKEN` / `JOBBER_REFRESH_TOKEN` seed Supabase `settings.jobber_oauth` once, only when that row is empty. After that, the row is the only refresh writer. A failed durable read is an error, not permission to refresh the env pair. See `docs/JOBBER_OAUTH.md`. Do not refresh Jobber from a box or laptop script.
 
-## Safety (v1)
+## Safety
 
-Quote writes are **draft-only**. Invoice tools and job tools are **read-only**.
+Quote writes and new invoices are **unsent**. Nothing in this gateway emails or texts a client. `invoiceMarkAsSent` is not exposed (it does not email, and it still is not called). `jobComplete` is not in Jobber's API; closing is `close_job`.
 
-| Allowed | Not in v1 — do not add |
+| Allowed | Not exposed |
 | --- | --- |
 | Search / get clients | Send quote to customer |
 | Search / get quotes | Approve / convert quote |
 | Create unsent quote draft | Delete quote |
-| Update unsent draft (title, message, add lines) | Payroll |
-| Search products for line names / street list | Invoice send, create, edit, or payment |
-| Search / get invoices (read-only, including unpaid) | Visits, anything that emails the customer |
-| Search / get jobs (read-only, completed window + photo URLs) | Job create, update, complete, close, or send |
+| Update unsent draft (title, message, add lines, taxRateId) | Payroll |
+| List tax rates | Invoice send, mark-sent, or record payment |
+| Search / get invoices | Per-invoice card, ACH, or partial-payment toggles (not in the API) |
+| Edit invoice lines and tax rate | Optional quote line items (no verified schema field) |
+| Create unsent invoice draft from a job | Visits, anything that emails the customer |
+| Search / get jobs | Job create, update, or send |
+| Close a job (`jobClose` + incomplete-visit decision) | `jobComplete` (removed) |
+| Search products for line names / street list | |
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
 If Jobber already sent the quote, `update_quote_draft` refuses.
+
+`create_invoice_draft` never sets `issuedDate` and never calls `invoiceMarkAsSent`. `edit_invoice` rejects `allowCardPayments`, `allowAchPayments` / `allowBankPayments`, and `allowPartialPayments`.
 
 ## Env vars
 
@@ -70,13 +76,17 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 - `get_client` — one client + properties + recent quotes
 - `search_quotes` — number / title / client / address, optional status
 - `get_quote` — one quote + line items
-- `create_quote_draft` — unsent draft only
-- `update_quote_draft` — unsent draft only
+- `create_quote_draft` — unsent draft only. `taxRateId` from `list_tax_rates`
+- `update_quote_draft` — unsent draft only. `taxRateId` sets the quote tax rate
 - `search_products` — catalog name + default street price (not internal cost)
+- `list_tax_rates` — id, name, description. Optional `query` (for example `San Diego` or `7.75`)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
+- `edit_invoice` — add / update / remove line items (`name`, `description`, `quantity`, `unitPrice`, `taxable`) and/or `taxRateId`. Does not send
+- `create_invoice_draft` — unsent invoice from a job (`jobId` or `jobNumber`). Copies job lines when `lineItems` is omitted
 - `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs
 - `get_job` — one job by encoded id or job number: same fields plus the full https photo list for GBP media
+- `close_job` — `jobClose`. Required `incompleteVisits`: `COMPLETE_PAST_DESTROY_FUTURE` or `DESTROY_ALL`
 
 ## Brighton: connect Travis / Damien in Grok Bot
 
@@ -188,7 +198,10 @@ curl -sS \
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
+| `src/lib/jobber/mcp-invoice-writes.ts` | invoice line/tax edit and unsent create-from-job |
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |
+| `src/lib/jobber/mcp-job-writes.ts` | `jobClose` only |
+| `src/lib/jobber/mcp-tax-rates.ts` | tax rate list |
 | `src/lib/jobber/quotes.ts` | Existing client search + unsent create |
 | `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |
 | `src/app/api/jobber/oauth-health/route.ts` | Secret-free durable-store diagnostic |

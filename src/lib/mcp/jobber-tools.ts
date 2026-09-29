@@ -1,10 +1,10 @@
 /**
  * MCP tools for shop bots.
  *
- * v1 surface is clients, draft quotes, product lookup, read-only invoices,
- * and read-only jobs (completed work + photo URLs for GBP).
- * There are no send / approve / convert / delete / payroll tools,
- * no invoice send, create, or payment tools, and no job mutations.
+ * Clients, unsent quote drafts, product lookup, invoice reads plus unsent
+ * invoice drafts and invoice line/tax edits, job reads plus close, and tax
+ * rates. Nothing sends, emails, or texts a client. jobComplete does not exist.
+ * Per-invoice card / ACH / partial payment toggles are not in Jobber's API.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -27,12 +27,23 @@ import {
 } from '../jobber/mcp-quotes.ts';
 import { getInvoice, searchInvoices } from '../jobber/mcp-invoices.ts';
 import { getJob, searchJobs } from '../jobber/mcp-jobs.ts';
+import {
+  assertNoInvoicePaymentOptions,
+  createInvoiceDraftFromJob,
+  editInvoice,
+  normalizeInvoiceTaxMethod,
+  parseInvoiceLineDrafts,
+  parseInvoiceLineUpdates,
+  parseRemoveLineItemIds,
+} from '../jobber/mcp-invoice-writes.ts';
+import { closeJob, normalizeIncompleteVisits } from '../jobber/mcp-job-writes.ts';
+import { listJobberTaxRates } from '../jobber/mcp-tax-rates.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.2.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.4.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -52,6 +63,10 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'invoice_create',
   'invoice_update',
   'invoice_delete',
+  'mark_invoice_sent',
+  'invoice_mark_as_sent',
+  'email_invoice',
+  'text_invoice',
   'record_payment',
   'collect_payment',
   'create_job',
@@ -60,7 +75,6 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'complete_job',
   'delete_job',
   'send_job',
-  'close_job',
   'email_job',
   'job_create',
   'job_update',
@@ -68,15 +82,15 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'job_complete',
   'job_delete',
   'job_send',
-  'job_close',
   'job_email',
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Draft quotes only. Invoice and job tools are read-only.',
-  'Never send, approve, convert, or delete quotes. Never send, create, or collect invoices. Never create, update, complete, or email a job. Never touch payroll.',
+  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. Nothing emails or texts a client.',
+  'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll.',
+  'edit_invoice changes line items and taxRateId only. Card, ACH, and partial-payment toggles are not in the API.',
   'Customer-facing title/message must not include GP FLAG math.',
-  'Look up an existing client before creating a draft. Do not invent duplicates.',
+  'Look up an existing client before creating a draft. Use list_tax_rates before setting taxRateId.',
 ].join(' ');
 
 const LINE_ITEM_SCHEMA = {
@@ -159,7 +173,10 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         title: { type: 'string' },
         message: { type: 'string', description: 'Customer-facing body. No GP FLAG math.' },
         internalNote: { type: 'string', description: 'Private Jobber note. FLAG math is allowed here only.' },
-        taxRateId: { type: 'string' },
+        taxRateId: {
+          type: 'string',
+          description: 'Jobber tax rate id from list_tax_rates (for example San Diego 7.75%).',
+        },
         salespersonId: { type: 'string' },
         lineItems: { type: 'array', items: LINE_ITEM_SCHEMA, minItems: 1 },
       },
@@ -177,7 +194,10 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         quoteId: { type: 'string' },
         title: { type: 'string' },
         message: { type: 'string' },
-        taxRateId: { type: 'string' },
+        taxRateId: {
+          type: 'string',
+          description: 'Jobber tax rate id from list_tax_rates. Refuses if the quote was already sent.',
+        },
         salespersonId: { type: 'string' },
         addLineItems: { type: 'array', items: LINE_ITEM_SCHEMA },
       },
@@ -232,6 +252,74 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'edit_invoice',
+    description:
+      'Edit an existing Jobber invoice: add, update, or remove line items (name, description, quantity, unitPrice, taxable) and/or set taxRateId. Does not send, email, text, or mark the invoice sent. Per-invoice card, ACH/bank, and partial-payment toggles are not in the API and are rejected.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        invoiceId: { type: 'string', description: 'Encoded Jobber invoice id' },
+        invoiceNumber: { type: 'string', description: 'Invoice number, if the id is unknown. Example: 5806' },
+        addLineItems: { type: 'array', items: LINE_ITEM_SCHEMA },
+        updateLineItems: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['lineItemId'],
+            properties: {
+              lineItemId: { type: 'string', description: 'Existing line id from get_invoice' },
+              name: { type: 'string' },
+              description: { type: 'string' },
+              quantity: { type: 'number' },
+              unitPrice: { type: 'number' },
+              taxable: { type: 'boolean' },
+            },
+          },
+        },
+        removeLineItemIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Line item ids from get_invoice to remove',
+        },
+        taxRateId: {
+          type: 'string',
+          description: 'Jobber tax rate id from list_tax_rates (for example San Diego 7.75%).',
+        },
+      },
+    },
+  },
+  {
+    name: 'create_invoice_draft',
+    description:
+      'Create an UNSENT Jobber invoice from a job. Does not email, text, or call invoiceMarkAsSent. issuedDate is omitted. Pass lineItems or the job lines are copied. Optional taxRateId from list_tax_rates.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        jobId: { type: 'string', description: 'Encoded Jobber job id' },
+        jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
+        subject: { type: 'string', description: 'Invoice subject. Defaults to the job title.' },
+        lineItems: {
+          type: 'array',
+          items: LINE_ITEM_SCHEMA,
+          description: 'Invoice lines. When omitted, lines are copied from the job.',
+        },
+        taxRateId: {
+          type: 'string',
+          description: 'Jobber tax rate id from list_tax_rates (for example San Diego 7.75%).',
+        },
+        taxCalculationMethod: {
+          type: 'string',
+          description: 'EXCLUSIVE (default; prices do not include tax) or INCLUSIVE.',
+        },
+        dueDate: { type: 'string', description: 'Optional YYYY-MM-DD due date.' },
+        invoiceNet: { type: 'number', description: 'Optional payment terms in days (net).' },
+      },
+    },
+  },
+  {
     name: 'search_jobs',
     description:
       'Search Jobber jobs by job number, title, client, or city. Read-only. completedAfter (ISO timestamp) is required for the GBP daily window of completed field jobs. Optional completedBefore, status (prefer completed), and first/after pagination. Returns client first name, property city, and a short list of https photo URLs. Does not create, update, complete, or email jobs.',
@@ -271,6 +359,37 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         jobId: { type: 'string', description: 'Encoded Jobber job id' },
         jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
+      },
+    },
+  },
+  {
+    name: 'close_job',
+    description:
+      'Close a Jobber job (jobClose). jobComplete was removed. incompleteVisits is required: COMPLETE_PAST_DESTROY_FUTURE or DESTROY_ALL (deletes every incomplete visit). Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['incompleteVisits'],
+      properties: {
+        jobId: { type: 'string', description: 'Encoded Jobber job id' },
+        jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
+        incompleteVisits: {
+          type: 'string',
+          description:
+            'COMPLETE_PAST_DESTROY_FUTURE or DESTROY_ALL. Required. DESTROY_ALL deletes incomplete visits, past and future.',
+        },
+      },
+    },
+  },
+  {
+    name: 'list_tax_rates',
+    description:
+      'List Jobber tax rates (id, name, description). Read-only. Optional query matches name or description, for example "San Diego" or "7.75". Pass id as taxRateId on quote drafts or edit_invoice / create_invoice_draft.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        query: { type: 'string', description: 'Optional filter, e.g. San Diego or 7.75' },
       },
     },
   },
@@ -441,7 +560,7 @@ export async function callJobberMcpTool(
 ): Promise<McpToolResult> {
   if (isForbiddenJobberMcpTool(name)) {
     return errorResult(
-      'This gateway cannot send, approve, convert, or delete quotes, cannot send or create invoices, cannot create, update, complete, or email jobs, and has no payroll tools.'
+      'This gateway cannot send, approve, convert, or delete quotes, cannot send or mark invoices sent, cannot email or text a client, and has no payroll tools. jobComplete was removed; use close_job.'
     );
   }
 
@@ -561,7 +680,7 @@ export async function callJobberMcpTool(
           invoices: result.invoices,
           note: [
             result.note,
-            'Read-only. This gateway cannot send invoices, create invoices, or record payments.',
+            'Read-only search. Use create_invoice_draft or edit_invoice to write. This gateway cannot send invoices or record payments.',
           ]
             .filter(Boolean)
             .join(' '),
@@ -578,7 +697,63 @@ export async function callJobberMcpTool(
         );
         return textResult({
           invoice,
-          note: 'Read-only. This gateway cannot send invoices, create invoices, or record payments.',
+          note: 'Read-only. Use edit_invoice to change lines or tax. This gateway cannot send invoices or record payments.',
+        });
+      }
+      case 'edit_invoice': {
+        assertNoInvoicePaymentOptions(args);
+        const addLineItems = Array.isArray(args.addLineItems)
+          ? parseInvoiceLineDrafts(args.addLineItems, 'addLineItems')
+          : undefined;
+        const updateLineItems = Array.isArray(args.updateLineItems)
+          ? parseInvoiceLineUpdates(args.updateLineItems)
+          : undefined;
+        const removeLineItemIds = Array.isArray(args.removeLineItemIds)
+          ? parseRemoveLineItemIds(args.removeLineItemIds)
+          : undefined;
+        const invoice = await editInvoice(
+          {
+            invoiceId: optionalString(args, 'invoiceId'),
+            invoiceNumber: optionalString(args, 'invoiceNumber'),
+            addLineItems,
+            updateLineItems,
+            removeLineItemIds,
+            taxRateId: optionalString(args, 'taxRateId'),
+          },
+          deps
+        );
+        return textResult({
+          sent: false,
+          emailed: false,
+          invoice,
+          note: 'Invoice lines and/or tax were updated. Nothing was emailed or texted. Card, ACH, and partial-payment toggles are not in the Jobber API.',
+        });
+      }
+      case 'create_invoice_draft': {
+        const lineItems = Array.isArray(args.lineItems)
+          ? parseInvoiceLineDrafts(args.lineItems, 'lineItems')
+          : undefined;
+        const taxMethod = optionalString(args, 'taxCalculationMethod');
+        const created = await createInvoiceDraftFromJob(
+          {
+            jobId: optionalString(args, 'jobId'),
+            jobNumber: optionalString(args, 'jobNumber'),
+            subject: optionalString(args, 'subject'),
+            lineItems,
+            taxRateId: optionalString(args, 'taxRateId'),
+            taxCalculationMethod: taxMethod ? normalizeInvoiceTaxMethod(taxMethod) : undefined,
+            dueDate: optionalString(args, 'dueDate'),
+            invoiceNet: optionalNumber(args, 'invoiceNet'),
+          },
+          deps
+        );
+        return textResult({
+          draft: created.invoice.invoiceStatus === 'draft',
+          sent: false,
+          emailed: false,
+          invoiceStatus: created.invoiceStatus,
+          invoice: created.invoice,
+          note: 'Created with invoiceCreate only. issuedDate was not set. invoiceMarkAsSent was not called. Nothing was emailed or texted.',
         });
       }
       case 'search_jobs': {
@@ -607,7 +782,7 @@ export async function callJobberMcpTool(
           jobs: result.jobs,
           note: [
             result.note,
-            'Read-only. This gateway cannot create, update, complete, or email jobs.',
+            'Read-only search. Use close_job to close a job. This gateway cannot create, update, or email jobs.',
           ]
             .filter(Boolean)
             .join(' '),
@@ -623,7 +798,33 @@ export async function callJobberMcpTool(
         );
         return textResult({
           job,
-          note: 'Read-only. This gateway cannot create, update, complete, or email jobs.',
+          note: 'Read-only. Use close_job to close a job. This gateway cannot email a job.',
+        });
+      }
+      case 'close_job': {
+        const job = await closeJob(
+          {
+            jobId: optionalString(args, 'jobId'),
+            jobNumber: optionalString(args, 'jobNumber'),
+            incompleteVisits: normalizeIncompleteVisits(optionalString(args, 'incompleteVisits')),
+          },
+          deps
+        );
+        return textResult({
+          closed: true,
+          emailed: false,
+          job,
+          note: 'Closed with jobClose. jobComplete was not called. Nothing was emailed or texted.',
+        });
+      }
+      case 'list_tax_rates': {
+        const query = optionalString(args, 'query');
+        const taxRates = await listJobberTaxRates(query, deps);
+        return textResult({
+          query: query || null,
+          count: taxRates.length,
+          taxRates,
+          note: 'Read-only. Pass taxRates[].id as taxRateId on a quote draft, edit_invoice, or create_invoice_draft.',
         });
       }
       case 'search_products': {
@@ -673,9 +874,10 @@ export async function jobberMcpHealthBody(
       draftOnly: true,
       sendsQuotes: false,
       sendsInvoices: false,
-      invoiceMutations: false,
-      jobMutations: false,
+      invoiceMutations: true,
+      jobMutations: true,
       emailsCustomers: false,
+      paymentOptionEdits: false,
       payroll: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
     },
