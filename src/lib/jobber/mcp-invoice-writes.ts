@@ -11,15 +11,25 @@
  *   (EXCLUSIVE | INCLUSIVE), and a non-empty lineItems list (name at minimum).
  *   jobId is an accepted optional argument. issuedDate is omitted so the
  *   create stays unissued.
- * - ClientEditInput on that same schema is differential
- *   (emailsToAdd / emailsToEdit / emailsToDelete). Invoice line edits use
- *   that same ToAdd / ToEdit / ToDelete pattern: lineItemsToAdd,
- *   lineItemsToEdit (each row has id), lineItemsToDelete. taxRateId is the
- *   same field quote create/edit already send.
+ * - InvoiceEditInput does not take line items. A live invoiceEdit on
+ *   2025-04-16 was rejected: lineItemsToEdit is not defined on
+ *   InvoiceEditInput. The public introspection at API version 2025-01-20
+ *   (hightreequency/jobberschema) lists InvoiceEditInput as message,
+ *   taxRateId, discount, allowClientHubCreditCardPayments,
+ *   allowClientHubAchPayments, invoiceNumber, issuedDate, dueDetails,
+ *   subject, contractDisclaimer, customFields, allowReviewRequest,
+ *   salespersonId, allowPartialPayments. That schema has
+ *   quoteCreateLineItems / quoteEditLineItems / quoteDeleteLineItems and
+ *   the same trio for jobs and visits. It has no invoiceCreateLineItems,
+ *   invoiceEditLineItems, or invoiceDeleteLineItems. Those names are
+ *   unverified on later API versions and are not called.
+ * - taxRateId, allowClientHubCreditCardPayments, allowClientHubAchPayments,
+ *   and allowPartialPayments are on InvoiceEditInput in that introspection.
+ *   edit_invoice maps allowCardPayments, allowAchPayments, and
+ *   allowPartialPayments onto those three fields. They are invoice settings,
+ *   not a charge. This module never records or collects a payment.
  * - invoiceMarkAsSent exists and only flags the record, but this module
  *   never calls it. invoiceSend is gone. Nothing here emails or texts.
- * - The published Invoice type has no per-invoice card, ACH, or partial
- *   payment fields. Those arguments are rejected before any mutation.
  */
 
 import {
@@ -35,12 +45,15 @@ import type { JobberInvoiceSummary } from './mcp-invoices.ts';
 export const INVOICE_TAX_METHODS = ['EXCLUSIVE', 'INCLUSIVE'] as const;
 export type InvoiceTaxMethod = (typeof INVOICE_TAX_METHODS)[number];
 
-export const UNSUPPORTED_INVOICE_PAYMENT_FIELDS = [
-  'allowCardPayments',
-  'allowCreditCardPayments',
-  'allowAchPayments',
-  'allowBankPayments',
-  'allowPartialPayments',
+/** Argument names that would send, flag sent, record, or collect. Not settings. */
+export const REJECTED_INVOICE_ACTION_FIELDS = [
+  'recordPayment',
+  'collectPayment',
+  'sendInvoice',
+  'markInvoiceSent',
+  'markAsSent',
+  'emailInvoice',
+  'textInvoice',
 ] as const;
 
 const DELIVERY_MUTATION =
@@ -126,11 +139,31 @@ export function assertInvoiceWriteDoesNotDeliver(query: string): void {
   }
 }
 
+/**
+ * Line-item writes are not sent. Sources for the refusal:
+ * - Live Jobber error (API pin 2025-04-16): lineItemsToEdit is not defined
+ *   on InvoiceEditInput.
+ * - Public introspection, extensions.versioning.version 2025-01-20: no
+ *   line-item fields on InvoiceEditInput, and no invoice*LineItems mutations.
+ * invoiceCreateLineItems / invoiceEditLineItems / invoiceDeleteLineItems are
+ * unverified and are not called.
+ */
+export const INVOICE_LINE_ITEMS_UNSUPPORTED =
+  "Jobber's API cannot edit invoice line items; use the Jobber web UI.";
+
+export function invoiceLineItemsRequested(input: {
+  addLineItems?: InvoiceLineDraft[];
+  updateLineItems?: InvoiceLineUpdate[];
+  removeLineItemIds?: string[];
+}): boolean {
+  return Boolean(input.addLineItems?.length || input.updateLineItems?.length || input.removeLineItemIds?.length);
+}
+
 export function assertNoInvoicePaymentOptions(args: Record<string, unknown>): void {
-  const present = UNSUPPORTED_INVOICE_PAYMENT_FIELDS.filter((key) => key in args && args[key] != null);
+  const present = REJECTED_INVOICE_ACTION_FIELDS.filter((key) => key in args && args[key] != null);
   if (!present.length) return;
   throw new Error(
-    `Unsupported: Jobber's Invoice type has no per-invoice payment toggles (${present.join(', ')}). Card, ACH/bank, and partial payments are set in the Jobber web UI, not this gateway.`
+    `Unsupported: this gateway cannot send, mark sent, record, or collect a payment (${present.join(', ')}).`
   );
 }
 
@@ -151,28 +184,30 @@ export function buildInvoiceEditInput(input: {
   updateLineItems?: InvoiceLineUpdate[];
   removeLineItemIds?: string[];
   taxRateId?: string | null;
+  allowCardPayments?: boolean | null;
+  allowAchPayments?: boolean | null;
+  allowPartialPayments?: boolean | null;
 }): Record<string, unknown> {
+  if (invoiceLineItemsRequested(input)) {
+    throw new Error(INVOICE_LINE_ITEMS_UNSUPPORTED);
+  }
   const attributes: Record<string, unknown> = {};
-  if (input.addLineItems?.length) {
-    attributes.lineItemsToAdd = input.addLineItems.map(linePayload);
+  const taxRateId = input.taxRateId?.trim();
+  if (taxRateId) attributes.taxRateId = taxRateId;
+  // InvoiceEditInput fields from the 2025-01-20 introspection. Settings only.
+  if (typeof input.allowCardPayments === 'boolean') {
+    attributes.allowClientHubCreditCardPayments = input.allowCardPayments;
   }
-  if (input.updateLineItems?.length) {
-    attributes.lineItemsToEdit = input.updateLineItems.map((line) => {
-      const row: Record<string, unknown> = { id: line.lineItemId };
-      if (line.name != null) row.name = line.name;
-      if (line.description != null) row.description = line.description;
-      if (line.quantity != null) row.quantity = line.quantity;
-      if (line.unitPrice != null) row.unitPrice = line.unitPrice;
-      if (line.taxable != null) row.taxable = line.taxable;
-      return row;
-    });
+  if (typeof input.allowAchPayments === 'boolean') {
+    attributes.allowClientHubAchPayments = input.allowAchPayments;
   }
-  if (input.removeLineItemIds?.length) {
-    attributes.lineItemsToDelete = input.removeLineItemIds;
+  if (typeof input.allowPartialPayments === 'boolean') {
+    attributes.allowPartialPayments = input.allowPartialPayments;
   }
-  if (input.taxRateId?.trim()) attributes.taxRateId = input.taxRateId.trim();
   if (!Object.keys(attributes).length) {
-    throw new Error('edit_invoice needs addLineItems, updateLineItems, removeLineItemIds, or taxRateId');
+    throw new Error(
+      'edit_invoice needs taxRateId, allowCardPayments, allowAchPayments, or allowPartialPayments.'
+    );
   }
   return attributes;
 }
@@ -314,9 +349,13 @@ export async function editInvoice(
     updateLineItems?: InvoiceLineUpdate[];
     removeLineItemIds?: string[];
     taxRateId?: string | null;
+    allowCardPayments?: boolean | null;
+    allowAchPayments?: boolean | null;
+    allowPartialPayments?: boolean | null;
   },
   deps?: JobberDeps
 ): Promise<JobberInvoiceSummary> {
+  const attributes = buildInvoiceEditInput(input);
   const existing = await getInvoice(
     {
       invoiceId: input.invoiceId,
@@ -325,7 +364,6 @@ export async function editInvoice(
     },
     deps
   );
-  const attributes = buildInvoiceEditInput(input);
   const edited = await graphql(INVOICE_EDIT, { invoiceId: existing.id, input: attributes }, deps);
   assertNoJobberErrors(edited, 'invoiceEdit');
   const payload = edited.data?.invoiceEdit;

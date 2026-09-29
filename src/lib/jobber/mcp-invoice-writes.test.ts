@@ -54,34 +54,48 @@ function invoiceNode(extra?: Record<string, unknown>) {
 }
 
 describe('invoice write builders', () => {
-  it('builds the non-taxable card-fee line for invoice edits', () => {
+  it('maps Client Hub payment settings onto InvoiceEditInput fields', () => {
     const input = buildInvoiceEditInput({
-      addLineItems: parseInvoiceLineDrafts(
-        [
-          {
-            name: 'Credit card processing fee (2.9%)',
-            description: 'Card processing',
-            quantity: 1,
-            unitPrice: 510.91,
-            taxable: false,
-          },
-        ],
-        'addLineItems'
-      ),
       taxRateId: 'sd-tax',
+      allowCardPayments: true,
+      allowAchPayments: false,
+      allowPartialPayments: true,
     });
-    assert.deepEqual(input.lineItemsToAdd, [
-      {
-        name: 'Credit card processing fee (2.9%)',
-        description: 'Card processing',
-        quantity: 1,
-        unitPrice: 510.91,
-        taxable: false,
-        saveToProductsAndServices: false,
-      },
-    ]);
-    assert.equal(input.taxRateId, 'sd-tax');
-    assert.equal('issuedDate' in input, false);
+    assert.deepEqual(input, {
+      taxRateId: 'sd-tax',
+      allowClientHubCreditCardPayments: true,
+      allowClientHubAchPayments: false,
+      allowPartialPayments: true,
+    });
+    assert.equal('allowCardPayments' in input, false);
+    assert.equal('allowAchPayments' in input, false);
+    assert.equal('lineItemsToEdit' in input, false);
+  });
+
+  it('refuses add, update, and remove line items', () => {
+    const fee = parseInvoiceLineDrafts(
+      [
+        {
+          name: 'Credit card processing fee (2.9%)',
+          description: 'Card processing',
+          quantity: 1,
+          unitPrice: 510.91,
+          taxable: false,
+        },
+      ],
+      'addLineItems'
+    );
+    const message = /Jobber's API cannot edit invoice line items; use the Jobber web UI\./;
+    assert.throws(() => buildInvoiceEditInput({ addLineItems: fee, allowCardPayments: true }), message);
+    assert.throws(
+      () =>
+        buildInvoiceEditInput({
+          updateLineItems: [{ lineItemId: 'li-1', name: 'Pump', quantity: 1, unitPrice: 100 }],
+        }),
+      message
+    );
+    assert.throws(() => buildInvoiceEditInput({ removeLineItemIds: ['li-1'] }), message);
+    assert.throws(() => buildInvoiceEditInput({}), /taxRateId/);
   });
 
   it('builds an unsent invoice create from a job', () => {
@@ -101,10 +115,17 @@ describe('invoice write builders', () => {
     assert.equal(JSON.stringify(input).includes('invoiceMarkAsSent'), false);
   });
 
-  it('rejects payment toggles and delivery mutations', () => {
+  it('allows payment settings and still rejects send, record, and collect', () => {
+    assert.doesNotThrow(() =>
+      assertNoInvoicePaymentOptions({
+        allowCardPayments: true,
+        allowAchPayments: true,
+        allowPartialPayments: false,
+      })
+    );
     assert.throws(
-      () => assertNoInvoicePaymentOptions({ allowCardPayments: true, allowPartialPayments: true }),
-      /Unsupported/
+      () => assertNoInvoicePaymentOptions({ recordPayment: true, collectPayment: 10 }),
+      /cannot send, mark sent, record, or collect/
     );
     assert.throws(
       () => assertInvoiceWriteDoesNotDeliver('mutation { invoiceMarkAsSent(id: "x") { invoice { id } } }'),
@@ -114,7 +135,27 @@ describe('invoice write builders', () => {
 });
 
 describe('editInvoice', () => {
-  it('sends invoiceEdit for the fee line and does not mark the invoice sent', async () => {
+  it('does not call Jobber when the caller tries to update a line', async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return jsonResponse({ errors: [{ message: 'should not be called' }] });
+    };
+    await assert.rejects(
+      () =>
+        editInvoice(
+          {
+            invoiceId: INVOICE_ID,
+            updateLineItems: [{ lineItemId: 'li-pump', name: 'Pump', quantity: 1, unitPrice: 100, taxable: true }],
+          },
+          { fetchImpl, token: 'test' }
+        ),
+      /Jobber's API cannot edit invoice line items; use the Jobber web UI/
+    );
+    assert.equal(calls, 0);
+  });
+
+  it('sends invoiceEdit with taxRateId only and does not mark the invoice sent', async () => {
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       const body = String(init?.body || '');
@@ -124,40 +165,26 @@ describe('editInvoice', () => {
         return jsonResponse({
           data: {
             invoiceEdit: {
-              invoice: { id: INVOICE_ID, invoiceNumber: '5806', invoiceStatus: 'awaiting_payment' },
+              invoice: { id: INVOICE_ID, invoiceNumber: '5764', invoiceStatus: 'draft' },
               userErrors: [],
             },
           },
         });
       }
       if (query.includes('invoice(id:')) {
-        return jsonResponse({ data: { invoice: invoiceNode() } });
+        return jsonResponse({ data: { invoice: { ...invoiceNode(), invoiceNumber: '5764', invoiceStatus: 'draft' } } });
       }
       return jsonResponse({ errors: [{ message: `unexpected ${query.slice(0, 80)}` }] });
     };
 
-    const invoice = await editInvoice(
-      {
-        invoiceId: INVOICE_ID,
-        addLineItems: [
-          {
-            name: 'Credit card processing fee (2.9%)',
-            quantity: 1,
-            unitPrice: 510.91,
-            taxable: false,
-          },
-        ],
-      },
-      { fetchImpl, token: 'test' }
-    );
-    assert.equal(invoice.invoiceNumber, '5806');
+    const invoice = await editInvoice({ invoiceId: INVOICE_ID, taxRateId: 'sd-tax' }, { fetchImpl, token: 'test' });
+    assert.equal(invoice.invoiceNumber, '5764');
     const edit = bodies.find((body) => body.includes('invoiceEdit'));
     assert.ok(edit);
-    const variables = (JSON.parse(edit) as { variables: { input: { lineItemsToAdd: Array<Record<string, unknown>> } } })
-      .variables;
-    assert.equal(variables.input.lineItemsToAdd[0].taxable, false);
-    assert.equal(variables.input.lineItemsToAdd[0].unitPrice, 510.91);
-    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice/.test(body)));
+    const variables = (JSON.parse(edit) as { query: string; variables: { input: Record<string, unknown> } }).variables;
+    assert.deepEqual(variables.input, { taxRateId: 'sd-tax' });
+    assert.equal(variables.input.lineItemsToEdit, undefined);
+    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice|invoiceCreateLineItems|invoiceEditLineItems|invoiceDeleteLineItems/.test(body)));
   });
 });
 

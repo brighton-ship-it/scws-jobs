@@ -654,8 +654,16 @@ describe('callJobberMcpTool', () => {
     }
   });
 
-  it('rejects per-invoice card and partial payment toggles', async () => {
-    const result = await callJobberMcpTool(
+  it('rejects recording a payment and still refuses line edits', async () => {
+    const recorded = await callJobberMcpTool(
+      'edit_invoice',
+      { invoiceNumber: '5806', recordPayment: 510.91, allowCardPayments: true },
+      { token: 'test' }
+    );
+    assert.equal(recorded.isError, true);
+    assert.match(recorded.content[0].text, /cannot send, mark sent, record, or collect/i);
+
+    const lines = await callJobberMcpTool(
       'edit_invoice',
       {
         invoiceNumber: '5806',
@@ -671,13 +679,31 @@ describe('callJobberMcpTool', () => {
       },
       { token: 'test' }
     );
-    assert.equal(result.isError, true);
-    assert.match(result.content[0].text, /Unsupported/);
-    assert.match(result.content[0].text, /card/i);
+    assert.equal(lines.isError, true);
+    assert.match(lines.content[0].text, /Jobber's API cannot edit invoice line items; use the Jobber web UI/);
   });
 
-  it('edits invoice 5806 with a non-taxable processing fee and does not send', async () => {
-    const invoiceId = 'Z2lkOi8vSm9iYmVyL0ludm9pY2UvNTgwNg';
+  it('rejects invoice line edits and does not call Jobber', async () => {
+    let calls = 0;
+    const fetchImpl: typeof fetch = async () => {
+      calls += 1;
+      return jsonResponse({ errors: [{ message: 'should not be called' }] });
+    };
+    const result = await callJobberMcpTool(
+      'edit_invoice',
+      {
+        invoiceNumber: '5764',
+        updateLineItems: [{ lineItemId: 'li-1', name: 'Pump', quantity: 1, unitPrice: 100 }],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /Jobber's API cannot edit invoice line items; use the Jobber web UI/);
+    assert.equal(calls, 0);
+  });
+
+  it('sets taxRateId with invoiceEdit and does not send line-item fields', async () => {
+    const invoiceId = 'Z2lkOi8vSm9iYmVyL0ludm9pY2UvNTc2NA';
     const bodies: string[] = [];
     const fetchImpl: typeof fetch = async (_url, init) => {
       const body = String(init?.body || '');
@@ -687,7 +713,7 @@ describe('callJobberMcpTool', () => {
         return jsonResponse({
           data: {
             invoiceEdit: {
-              invoice: { id: invoiceId, invoiceNumber: '5806', invoiceStatus: 'awaiting_payment' },
+              invoice: { id: invoiceId, invoiceNumber: '5764', invoiceStatus: 'draft' },
               userErrors: [],
             },
           },
@@ -697,27 +723,17 @@ describe('callJobberMcpTool', () => {
         data: {
           invoice: {
             id: invoiceId,
-            invoiceNumber: '5806',
+            invoiceNumber: '5764',
             subject: 'Well',
-            invoiceStatus: 'awaiting_payment',
-            issuedDate: '2026-09-01',
-            dueDate: '2026-09-15',
+            invoiceStatus: 'draft',
+            issuedDate: null,
+            dueDate: null,
             createdAt: '2026-09-01T00:00:00Z',
             clientHubUri: null,
-            jobberWebUri: 'https://secure.getjobber.com/invoices/5806',
-            amounts: { total: 18128.5, paymentsTotal: 0, invoiceBalance: 18128.5 },
+            jobberWebUri: 'https://secure.getjobber.com/invoices/5764',
+            amounts: { total: 100, paymentsTotal: 0, invoiceBalance: 100 },
             client: { id: 'c1', name: 'Pat', emails: [] },
-            lineItems: {
-              nodes: [
-                {
-                  id: 'fee',
-                  name: 'Credit card processing fee (2.9%)',
-                  description: null,
-                  quantity: 1,
-                  unitPrice: 510.91,
-                },
-              ],
-            },
+            lineItems: { nodes: [{ id: 'li-1', name: 'Pump', description: null, quantity: 1, unitPrice: 100 }] },
           },
         },
       });
@@ -727,26 +743,28 @@ describe('callJobberMcpTool', () => {
       'edit_invoice',
       {
         invoiceId,
-        addLineItems: [
-          {
-            name: 'Credit card processing fee (2.9%)',
-            quantity: 1,
-            unitPrice: 510.91,
-            taxable: false,
-          },
-        ],
+        taxRateId: 'sd-tax',
+        allowCardPayments: true,
+        allowAchPayments: true,
+        allowPartialPayments: false,
       },
       { fetchImpl, token: 'test' }
     );
     assert.equal(result.isError, undefined);
-    assert.match(result.content[0].text, /510.91/);
     assert.match(result.content[0].text, /"emailed": false/);
+    assert.match(result.content[0].text, /"collected": false/);
     const edit = JSON.parse(bodies.find((body) => body.includes('invoiceEdit')) || '{}') as {
-      variables?: { input?: { lineItemsToAdd?: Array<{ taxable?: boolean; unitPrice?: number }> } };
+      variables?: { input?: Record<string, unknown> };
     };
-    assert.equal(edit.variables?.input?.lineItemsToAdd?.[0].taxable, false);
-    assert.equal(edit.variables?.input?.lineItemsToAdd?.[0].unitPrice, 510.91);
-    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend/.test(body)));
+    assert.deepEqual(edit.variables?.input, {
+      taxRateId: 'sd-tax',
+      allowClientHubCreditCardPayments: true,
+      allowClientHubAchPayments: true,
+      allowPartialPayments: false,
+    });
+    assert.ok(
+      bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|recordPayment|collectPayment|lineItemsToEdit/.test(body))
+    );
   });
 });
 
