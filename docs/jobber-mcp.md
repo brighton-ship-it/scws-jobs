@@ -1,6 +1,6 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **draft quotes**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **add notes**, **draft quotes**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
@@ -9,21 +9,27 @@ Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Bri
 
 ## Safety
 
-Quote writes and new invoices are **unsent**. Nothing in this gateway emails or texts a client. `invoiceMarkAsSent` is not exposed (it does not email, and it still is not called). `jobComplete` is not in Jobber's API; closing is `close_job`.
+Quote writes and new invoices are **unsent**. Nothing in this gateway emails, texts, or notifies a client. Notify, reminder, review-request, and booking-confirmation flags are forced off and are not tool arguments. `invoiceMarkAsSent` is not exposed (it does not email, and it still is not called). `jobComplete` is not in Jobber's API; closing is `close_job`.
 
 | Allowed | Not exposed |
 | --- | --- |
-| Search / get clients | Send quote to customer |
-| Search / get quotes | Approve / convert quote |
-| Create unsent quote draft | Delete quote |
-| Update unsent draft (title, message, optional/recommended lines, taxRateId) | Payroll |
-| Search products for line names / street list | Invoice send, mark-sent, or record payment |
-| List tax rates (id, name, label, rate, default) | Changing the tax-rate catalog |
-| Search / get invoices | Record or collect a payment |
-| Set an invoice tax rate and Client Hub card, ACH, and partial-payment settings | Invoice line add, update, or remove |
-| Create unsent invoice draft from a job | Job create, update, or send |
-| Search / get jobs (completed window + photo URLs) | `jobComplete` (removed) |
-| Close a job (`jobClose` + incomplete-visit decision) | Visits, anything that emails the customer |
+| Search / get / create clients (deduped by email or full name) | Send quote to customer |
+| Add a property to a client | Approve / convert quote |
+| List users (ids for assignment) | Delete quote |
+| Search / get quotes | Payroll |
+| Create unsent quote draft | Invoice send, mark-sent, or record payment |
+| Update unsent draft (title, message, optional/recommended lines, taxRateId) | Changing the tax-rate catalog |
+| Search products for line names / street list | Record or collect a payment |
+| List tax rates (id, name, label, rate, default) | Invoice line add, update, or remove |
+| Search / get invoices | `jobComplete` (removed) |
+| Set an invoice tax rate and Client Hub card, ACH, and partial-payment settings | Job update or send |
+| Create unsent invoice draft from a job | Visit complete, or any client email / text / booking confirmation |
+| Search / get jobs (completed window + photo URLs) | Assessment title (not on `AssessmentCreateInput`) |
+| Create a one-off job and schedule a visit | A visit datetime on `jobCreate` (use `visitCreate`) |
+| Search / get requests | Request form answers (`requestDetails` is a form, not notes) |
+| Create a request and schedule its assessment | A product id stored on a job line |
+| Add a note on a client, request, job, or quote | Generic `noteCreate` (use the per-object CreateNote mutation) |
+| Close a job (`jobClose` + incomplete-visit decision) | Client email, text, or booking confirmation |
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
@@ -72,10 +78,13 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.4.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`.
+MCP server version **1.5.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
-- `search_clients` — name / phone / email / address
+- `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
+- `create_client` — `clientCreate`. firstName, lastName, optional companyName, emails, phones, billingAddress, and an initial property. Same email or full name returns the matches and does not create unless `force=true`. `receivesReminders`, follow-up flags, and `smsAllowed` are false
+- `create_property` — `propertyCreate`. `PropertyCreateInput.properties[].address` (street1, city, province, postalCode, country default `US`)
+- `list_users` — team members (`id`, name, email, status) so assignee ids can be chosen by name, for example Brighton Scala
 - `search_quotes` — number / title / client / address, optional status
 - `get_quote` — one quote + line items. Each line includes `optional` and `recommended`
 - `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`
@@ -86,9 +95,26 @@ MCP server version **1.4.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stay
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
 - `edit_invoice` — `taxRateId` from `list_tax_rates`, plus optional `allowCardPayments`, `allowAchPayments`, and `allowPartialPayments` (Client Hub settings on `InvoiceEditInput`). Line-item arguments are rejected. Does not send, mark sent, record, or collect
 - `create_invoice_draft` — unsent invoice from a job (`jobId` or `jobNumber`). Copies job lines when `lineItems` is omitted
-- `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs
+- `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs. A query without the completed window still finds a job to schedule
 - `get_job` — one job by encoded id or job number: same fields plus the full https photo list for GBP media
 - `close_job` — `jobClose`. Required `incompleteVisits`: `COMPLETE_PAST_DESTROY_FUTURE` or `DESTROY_ALL`
+- `create_job` — `jobCreate` for a one-off job (`clientId`, `propertyId` unless the client has one property, `title`, optional `instructions` and `lineItems`). `scheduling` is `{ createVisits: false, notifyTeam: false }`. `invoicing` is fixed price on completion. `allowReviewRequest` is false. Recurrence is omitted, which is the one-off job (`jobType` is not an input). Optional `startAt` / `endAt` / `assigneeIds` then call `visitCreate`. `productOrServiceId` is loaded with `product(id)` and copied as name and street `defaultUnitCost`. The id is not sent. `saveToProductsAndServices` is false
+- `create_visit` — `visitCreate` on an existing job (`jobId` or `jobNumber`). `startAt` and `endAt` become `LocalDateTimeAttributes` in `America/Los_Angeles`. `notifyTeam` is false
+- `search_requests` — title / client / address. Optional `clientId`, status, and `first` / `after`. Includes the assessment when Jobber returns it. `search_clients` and `search_jobs` were already enough for client and job lookup; request lookup was missing
+- `get_request` — one request by encoded id, including its assessment
+- `create_request` — `requestCreate` (`clientId`, `propertyId` unless the client has one property, `title`, optional `details`). Optional `startAt`, `endAt`, and `assigneeIds` schedule the on-site assessment on `RequestCreateInput.assessment` (`AssessmentCreateInput.schedule`). `details` are the assessment instructions and a `requestCreateNote`
+- `create_note` — exactly one of `clientId`, `requestId`, `jobId`, `quoteId`, plus `message`. Mutations: `clientCreateNote`, `requestCreateNote`, `jobCreateNote`, `quoteCreateNote`. There is no generic `noteCreate` on this schema
+
+### What Jobber's API cannot do here
+
+Checked against API version 2025-01-20 introspection. The gateway still sends `X-JOBBER-GRAPHQL-VERSION: 2025-04-16`.
+
+- An assessment **can** be created and scheduled. `requestCreate.assessment` and `assessmentCreate` take `instructions` and `schedule` (`startAt` / `endAt` as date + time + timezone, plus `teamMemberIdsToAssign`). The assessment **title cannot be set**. `clientConfirmed` is not an input. `notifyTeam` is forced false, and `teamReminderOffset` is omitted, so this does not send a booking confirmation or a reminder.
+- `requestDetails` is a structured form, not a notes field. Free-text details go to assessment instructions and `requestCreateNote`.
+- `jobCreate` **cannot** take a visit start/end datetime. `JobSchedulingAttributes` has `startTime` / `endTime` (time of day only), `createVisits`, and `notifyTeam`. `create_job` does not use the time-of-day fields. The first visit is a separate `visitCreate`.
+- Job line items have **no** `productOrServiceId` (quote lines do). The tool copies catalog name and street price instead.
+- The 2025-04-16 changelog removed the older `clientNoteCreate`, `jobNoteCreate`, and `requestNoteCreate` names. The tools call `clientCreateNote`, `jobCreateNote`, and `requestCreateNote`, which were already on the 2025-01-20 schema.
+- Nothing in these tools sends, emails, texts, or notifies the client.
 
 ## Brighton: connect Travis / Damien in Grok Bot
 
@@ -101,7 +127,7 @@ Grok Bot only accepts **remote** Streamable HTTP MCP (not local stdio). Each per
    - **Transport:** Streamable HTTP (if the UI only says HTTP/SSE, still use this URL)
    - **Header:** `Authorization` = `Bearer <that person's key>`
    - Tell the bot this is a **static API key**, not OAuth. Do not start an OAuth connect card.
-3. Confirm tools load: `search_clients`, `create_quote_draft`, `list_tax_rates`, `search_products`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, etc.
+3. Confirm tools load: `search_clients`, `create_client`, `list_users`, `create_request`, `create_job`, `create_visit`, `create_quote_draft`, `search_requests`, `search_invoices`, `search_jobs`, etc.
 4. Cursor MCP (`~/.cursor/mcp.json`) is the same URL + header:
 
 ```json
@@ -203,7 +229,13 @@ curl -sS \
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/mcp-invoice-writes.ts` | invoice line/tax edit and unsent create-from-job |
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |
-| `src/lib/jobber/mcp-job-writes.ts` | `jobClose` only |
+| `src/lib/jobber/mcp-job-writes.ts` | `jobClose`, one-off `jobCreate`, `visitCreate` |
+| `src/lib/jobber/mcp-client-writes.ts` | `clientCreate`, `propertyCreate`, `users` |
+| `src/lib/jobber/mcp-requests.ts` | read-only request search / get |
+| `src/lib/jobber/mcp-request-writes.ts` | `requestCreate` plus assessment schedule and `requestCreateNote` |
+| `src/lib/jobber/mcp-notes.ts` | client / request / job / quote notes |
+| `src/lib/jobber/mcp-schedule.ts` | America/Los_Angeles `LocalDateTimeAttributes` |
+| `src/lib/jobber/mcp-notify.ts` | blocks send / email / text / notify flags |
 | `src/lib/jobber/quotes.ts` | Client search, unsent quote create, and `listTaxRates` |
 | `src/lib/jobber/tax.ts` | Tax-rate summary (`id`, `name`, `label`, `rate`, `default`) and query filter |
 | `src/lib/jobber/auth.ts` / `token-store.ts` / `client.ts` | OAuth refresh, durable `jobber_oauth` persist, GraphQL |

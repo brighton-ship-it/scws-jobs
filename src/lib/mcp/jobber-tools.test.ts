@@ -58,7 +58,20 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('close_job'));
     assert.ok(names.includes('list_tax_rates'));
     assert.ok(names.includes('search_products'));
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.4.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.5.0');
+    for (const name of [
+      'create_client',
+      'create_property',
+      'list_users',
+      'search_requests',
+      'get_request',
+      'create_request',
+      'create_job',
+      'create_visit',
+      'create_note',
+    ]) {
+      assert.ok(names.includes(name), name);
+    }
     assert.equal(names.filter((name) => name === 'list_tax_rates').length, 1);
     const schema = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'create_quote_draft')?.inputSchema as {
       properties?: { lineItems?: { items?: { properties?: Record<string, unknown> } } };
@@ -433,8 +446,8 @@ describe('callJobberMcpTool', () => {
     assert.deepEqual(payload.job.photoUrls, ['https://files.getjobber.com/well.jpg']);
   });
 
-  it('refuses job create, update, and complete', async () => {
-    for (const name of ['create_job', 'update_job', 'complete_job', 'completeJob', 'send_job']) {
+  it('refuses job update, complete, and send', async () => {
+    for (const name of ['update_job', 'complete_job', 'completeJob', 'send_job', 'booking_confirmation']) {
       const result = await callJobberMcpTool(name, { jobId: 'job-1' }, { token: 'test' });
       assert.equal(result.isError, true);
       assert.match(result.content[0].text, /cannot send/i);
@@ -836,10 +849,10 @@ describe('handleJobberMcpRequest auth gate', () => {
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
       false
     );
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'create_job'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'create_request'));
     assert.equal(
-      rpc.result.tools.some(
-        (tool) => tool.name === 'create_job' || tool.name === 'complete_job' || tool.name === 'update_job'
-      ),
+      rpc.result.tools.some((tool) => tool.name === 'complete_job' || tool.name === 'update_job' || tool.name === 'send_job'),
       false
     );
   });
