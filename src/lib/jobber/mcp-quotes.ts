@@ -11,6 +11,7 @@ import {
   jobberGraphql,
   jobberUserErrors,
 } from './client.ts';
+import { searchJobberProducts, type ProductSearchResult } from './products.ts';
 import {
   assertUnsentQuoteAttributes,
   searchClients,
@@ -73,7 +74,7 @@ const QUOTE_FIELDS = `
     address { street1 street2 city province postalCode }
   }
   lineItems(first: 80) {
-    nodes { id name description quantity unitPrice }
+    nodes { id name description quantity unitPrice optional recommended }
   }
 `;
 
@@ -114,14 +115,6 @@ const QUOTES_FILTER = `
     quotes(first: $first, filter: $filter) {
       nodes { ${QUOTE_FIELDS} }
       pageInfo { hasNextPage endCursor }
-    }
-  }
-`;
-
-const PRODUCTS_SEARCH = `
-  query McpProductsAndServices($searchTerm: String!) {
-    productsAndServices(searchTerm: $searchTerm, first: 15) {
-      nodes { id name defaultUnitCost }
     }
   }
 `;
@@ -169,6 +162,8 @@ export type JobberQuoteLine = {
   description?: string | null;
   quantity?: number | null;
   unitPrice?: number | null;
+  optional?: boolean | null;
+  recommended?: boolean | null;
 };
 
 export type JobberQuoteDetail = JobberQuoteSummary & {
@@ -186,12 +181,6 @@ export type JobberQuoteDetail = JobberQuoteSummary & {
   } | null;
   property?: { id?: string | null; address?: JobberAddress | null } | null;
   lineItems?: { nodes?: Array<JobberQuoteLine | null> | null } | null;
-};
-
-export type JobberProductSummary = {
-  id: string;
-  name?: string | null;
-  defaultUnitCost?: number | null;
 };
 
 function graphql(query: string, variables: Record<string, unknown>, deps?: JobberDeps) {
@@ -365,14 +354,8 @@ export async function searchQuotes(
 export async function searchProducts(
   searchTerm: string,
   deps?: JobberDeps
-): Promise<JobberProductSummary[]> {
-  const term = searchTerm.trim();
-  if (!term) return [];
-  const result = await graphql(PRODUCTS_SEARCH, { searchTerm: term }, deps);
-  if (result.errors?.length) return [];
-  return ((result.data?.productsAndServices?.nodes || []) as JobberProductSummary[]).filter(
-    (node) => Boolean(node?.id)
-  );
+): Promise<ProductSearchResult> {
+  return searchJobberProducts(searchTerm, deps, { includeInternalCost: false });
 }
 
 export async function updateUnsentQuoteDraft(

@@ -142,6 +142,72 @@ describe('updateUnsentQuoteDraft', () => {
     assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
   });
 
+  it('adds optional line items without sending the quote', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const parsed = JSON.parse(body || '{}') as { query?: string };
+      if (parsed.query?.includes('McpQuoteById')) {
+        return jsonResponse({
+          data: {
+            quote: {
+              id: 'quote-1',
+              quoteNumber: 4401,
+              title: 'Old title',
+              quoteStatus: 'draft',
+              sentAt: null,
+              lineItems: { nodes: [] },
+            },
+          },
+        });
+      }
+      if (parsed.query?.includes('McpQuoteCreateLineItems')) {
+        return jsonResponse({
+          data: { quoteCreateLineItems: { createdLineItems: [{ id: 'li-1' }], userErrors: [] } },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+
+    await updateUnsentQuoteDraft(
+      {
+        quoteId: 'quote-1',
+        addLineItems: [
+          {
+            name: 'Goulds 25GBC',
+            quantity: 1,
+            unitPrice: 899,
+            taxable: true,
+            optional: true,
+            recommended: true,
+            productOrServiceId: 'prod-25gbc',
+            sku: '25GBC',
+            unitCost: 410,
+          },
+        ],
+      },
+      { fetchImpl, token: 'test' }
+    );
+
+    const lineBody = JSON.parse(
+      bodies.find((body) => (JSON.parse(body) as { query?: string }).query?.includes('quoteCreateLineItems')) || '{}'
+    ) as { variables?: { lineItems?: Array<Record<string, unknown>> } };
+    assert.deepEqual(lineBody.variables?.lineItems, [
+      {
+        name: 'Goulds 25GBC',
+        quantity: 1,
+        unitPrice: 899,
+        taxable: true,
+        saveToProductsAndServices: false,
+        optional: true,
+        recommended: true,
+        productOrServiceId: 'prod-25gbc',
+      },
+    ]);
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+  });
+
   it('refuses to edit a quote Jobber already sent', async () => {
     const fetchImpl: typeof fetch = async () =>
       jsonResponse({

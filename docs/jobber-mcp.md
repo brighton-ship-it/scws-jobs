@@ -18,6 +18,7 @@ Quote writes are **draft-only**. Invoice tools and job tools are **read-only**.
 | Create unsent quote draft | Delete quote |
 | Update unsent draft (title, message, add lines) | Payroll |
 | Search products for line names / street list | Invoice send, create, edit, or payment |
+| List tax rates (read-only) | Changing tax rates |
 | Search / get invoices (read-only, including unpaid) | Visits, anything that emails the customer |
 | Search / get jobs (read-only, completed window + photo URLs) | Job create, update, complete, close, or send |
 
@@ -66,13 +67,16 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
+MCP server version **1.3.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`.
+
 - `search_clients` — name / phone / email / address
 - `get_client` — one client + properties + recent quotes
 - `search_quotes` — number / title / client / address, optional status
-- `get_quote` — one quote + line items
-- `create_quote_draft` — unsent draft only
-- `update_quote_draft` — unsent draft only
-- `search_products` — catalog name + default street price (not internal cost)
+- `get_quote` — one quote + line items. Each line includes `optional` and `recommended`
+- `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`
+- `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields
+- `list_tax_rates` — read-only. Optional `query` filters name, label, or description. Returns `id`, `name`, `label`, `rate`, `default`. Pass `id` as `taxRateId` on a draft
+- `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
 - `search_jobs` — job number / title / client / city. `completedAfter` (ISO) is the GBP daily window; optional `completedBefore` and status (`completed` means `completedAt` is set). Page with `first` / `after`. Each job includes client first name, property city, and a short list of https photo URLs
@@ -89,7 +93,7 @@ Grok Bot only accepts **remote** Streamable HTTP MCP (not local stdio). Each per
    - **Transport:** Streamable HTTP (if the UI only says HTTP/SSE, still use this URL)
    - **Header:** `Authorization` = `Bearer <that person's key>`
    - Tell the bot this is a **static API key**, not OAuth. Do not start an OAuth connect card.
-3. Confirm tools load: `search_clients`, `create_quote_draft`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, etc.
+3. Confirm tools load: `search_clients`, `create_quote_draft`, `list_tax_rates`, `search_products`, `search_invoices`, `get_invoice`, `search_jobs`, `get_job`, etc.
 4. Cursor MCP (`~/.cursor/mcp.json`) is the same URL + header:
 
 ```json
@@ -186,6 +190,7 @@ curl -sS \
 | `src/lib/mcp/jobber-http.ts` | Auth + Streamable HTTP |
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
+| `src/lib/jobber/products.ts` | product catalog search (`products`, not `productsAndServices`) + local name/description fallback |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |

@@ -84,6 +84,12 @@ export type QuoteLineDraft = {
   sku?: string;
   /** Line-level true cost when already known. Never invent this. */
   unitCost?: number;
+  /** Optional quote line the client can include or skip. */
+  optional?: boolean;
+  /** Pre-select an optional line. Meaningful with optional: true. */
+  recommended?: boolean;
+  /** Jobber catalog id. Not a SKU string. */
+  productOrServiceId?: string;
 };
 
 const BT2_NEAR_CITIES = new Set([
