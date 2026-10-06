@@ -13,6 +13,7 @@ import {
 } from './client.ts';
 import { searchJobberProducts, type ProductSearchResult } from './products.ts';
 import {
+  assertQuoteSalespersonApplied,
   assertUnsentQuoteAttributes,
   searchClients,
   toJobberLineItems,
@@ -47,6 +48,7 @@ const CLIENT_FIELDS = `
       sentAt
       jobberWebUri
       property { id }
+      salesperson { id name { full } }
     }
   }
 `;
@@ -59,6 +61,7 @@ const QUOTE_FIELDS = `
   sentAt
   createdAt
   jobberWebUri
+  salesperson { id name { full } }
   amounts { subtotal total }
   client {
     id
@@ -123,7 +126,7 @@ const QUOTES_FILTER = `
 const QUOTE_EDIT = `
   mutation McpQuoteEdit($quoteId: EncodedId!, $attributes: QuoteEditAttributes!) {
     quoteEdit(quoteId: $quoteId, attributes: $attributes) {
-      quote { id quoteNumber title quoteStatus sentAt jobberWebUri }
+      quote { id quoteNumber title quoteStatus sentAt jobberWebUri salesperson { id name { full } } }
       userErrors { message path }
     }
   }
@@ -132,7 +135,7 @@ const QUOTE_EDIT = `
 const QUOTE_EDIT_ALT = `
   mutation McpQuoteEditAlt($quoteId: EncodedId!, $attributes: QuoteEditAttributes!) {
     quoteEdit(input: { quoteId: $quoteId, attributes: $attributes }) {
-      quote { id quoteNumber title quoteStatus sentAt jobberWebUri }
+      quote { id quoteNumber title quoteStatus sentAt jobberWebUri salesperson { id name { full } } }
       userErrors { message path }
     }
   }
@@ -141,7 +144,7 @@ const QUOTE_EDIT_ALT = `
 const QUOTE_EDIT_ALT2 = `
   mutation McpQuoteEditAlt2($quoteId: EncodedId!, $attributes: QuoteEditAttributes!) {
     quoteEdit(quoteId: $quoteId, input: { attributes: $attributes }) {
-      quote { id quoteNumber title quoteStatus sentAt jobberWebUri }
+      quote { id quoteNumber title quoteStatus sentAt jobberWebUri salesperson { id name { full } } }
       userErrors { message path }
     }
   }
@@ -402,7 +405,11 @@ export async function updateUnsentQuoteDraft(
     if (lineErrors.length) throw new Error(lineErrors.join('; '));
   }
 
-  return getQuoteById(quoteId, deps);
+  const updated = await getQuoteById(quoteId, deps);
+  if (input.salespersonId?.trim()) {
+    assertQuoteSalespersonApplied(updated, input.salespersonId, 'quoteEdit');
+  }
+  return updated;
 }
 
 export function quoteEditUsedForbiddenFields(body: string): boolean {

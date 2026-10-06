@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { BRIGHTON_SALESPERSON_ID } from '../jobber/quotes.ts';
 import {
   FORBIDDEN_JOBBER_MCP_TOOLS,
   JOBBER_MCP_SERVER_VERSION,
@@ -58,7 +59,7 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('close_job'));
     assert.ok(names.includes('list_tax_rates'));
     assert.ok(names.includes('search_products'));
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.5.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.6.0');
     for (const name of [
       'create_client',
       'create_property',
@@ -129,6 +130,7 @@ describe('callJobberMcpTool', () => {
                     title: 'Pull well pump and evaluate',
                     sentAt: null,
                     quoteStatus: 'draft',
+                    salesperson: { id: 'brighton-1', name: { full: 'Brighton Scala' } },
                   },
                   userErrors: [],
                 },
@@ -168,7 +170,23 @@ describe('callJobberMcpTool', () => {
         ) as { query?: string }
       ).query || '';
     assert.match(createQuery, /quoteCreate\s*\(\s*attributes:/);
+    assert.match(createQuery, /salesperson\s*\{\s*id name \{ full \}\s*\}/);
     assert.equal(/quoteCreate\s*\(\s*input:/.test(createQuery), false);
+    const createVars = JSON.parse(
+      bodies.find((body) => {
+        const query = (JSON.parse(body) as { query?: string }).query || '';
+        return query.includes('mutation') && query.includes('quoteCreate') && !query.includes('LineItems');
+      }) || '{}'
+    ) as { variables?: { attributes?: { salespersonId?: string } } };
+    assert.equal(createVars.variables?.attributes?.salespersonId, 'brighton-1');
+    const usersQuery =
+      (JSON.parse(bodies.find((body) => body.includes('JobberUsers')) || '{}') as { query?: string }).query || '';
+    assert.match(usersQuery, /name\s*\{\s*full first last\s*\}/);
+    assert.match(usersQuery, /email\s*\{\s*raw\s*\}/);
+    const created = JSON.parse(result.content[0].text) as {
+      quote: { salesperson: { id: string; name: string | null } | null };
+    };
+    assert.deepEqual(created.quote.salesperson, { id: 'brighton-1', name: 'Brighton Scala' });
     assert.ok(bodies.some((body) => body.includes('quoteCreate')));
     assert.ok(bodies.every((body) => !/transitionQuoteTo/.test(body)));
     assert.ok(bodies.every((body) => !/"sentAt"\s*:/.test(body)));
@@ -195,6 +213,7 @@ describe('callJobberMcpTool', () => {
                     title: 'Pull well pump and evaluate',
                     sentAt: null,
                     quoteStatus: 'draft',
+                    salesperson: { id: 'brighton-1', name: { full: 'Brighton Scala' } },
                   },
                   userErrors: [],
                 },
@@ -564,6 +583,7 @@ describe('callJobberMcpTool', () => {
                     title: 'Pump options',
                     sentAt: null,
                     quoteStatus: 'draft',
+                    salesperson: { id: 'brighton-1', name: { full: 'Brighton Scala' } },
                   },
                   userErrors: [],
                 },
@@ -622,6 +642,7 @@ describe('callJobberMcpTool', () => {
         if (!query.includes('McpQuoteById')) return null;
         assert.match(query, /optional/);
         assert.match(query, /recommended/);
+        assert.match(query, /salesperson\s*\{\s*id name \{ full \}\s*\}/);
         return jsonResponse({
           data: {
             quote: {
@@ -630,6 +651,7 @@ describe('callJobberMcpTool', () => {
               title: 'Pump options',
               quoteStatus: 'draft',
               sentAt: null,
+              salesperson: { id: 'brighton-1', name: { full: 'Brighton Scala' } },
               lineItems: {
                 nodes: [
                   {
@@ -651,10 +673,197 @@ describe('callJobberMcpTool', () => {
     const quote = await callJobberMcpTool('get_quote', { quoteId: 'quote-1' }, { fetchImpl: loaded.fetchImpl, token: 'test' });
     assert.equal(quote.isError, undefined);
     const body = JSON.parse(quote.content[0].text) as {
-      quote: { lineItems: Array<{ optional: boolean; recommended: boolean }> };
+      quote: {
+        salesperson: { id: string; name: string | null } | null;
+        lineItems: Array<{ optional: boolean; recommended: boolean }>;
+      };
     };
     assert.equal(body.quote.lineItems[0]?.optional, true);
     assert.equal(body.quote.lineItems[0]?.recommended, false);
+    assert.deepEqual(body.quote.salesperson, { id: 'brighton-1', name: 'Brighton Scala' });
+  });
+
+  it('defaults salesperson to the known Brighton id when the user lookup errors', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('JobberUsers')
+          ? jsonResponse({ errors: [{ message: "Field 'name' must have a selection of subfields" }] })
+          : null,
+      (query) =>
+        query.includes('QuoteCreate') && query.includes('mutation')
+          ? jsonResponse({
+              data: {
+                quoteCreate: {
+                  quote: {
+                    id: 'quote-1',
+                    quoteNumber: 4652,
+                    title: 'Pull well pump and evaluate',
+                    sentAt: null,
+                    quoteStatus: 'draft',
+                    salesperson: { id: BRIGHTON_SALESPERSON_ID, name: { full: 'Brighton Scala' } },
+                  },
+                  userErrors: [],
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'create_quote_draft',
+      {
+        clientId: 'client-1',
+        propertyId: 'prop-1',
+        title: 'Pull well pump and evaluate',
+        message: 'Proposal to pull the well pump and evaluate the pumping system.',
+        lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const vars = JSON.parse(
+      bodies.find((body) => (JSON.parse(body) as { query?: string }).query?.includes('quoteCreate(')) || '{}'
+    ) as { variables?: { attributes?: { salespersonId?: string } } };
+    assert.equal(vars.variables?.attributes?.salespersonId, BRIGHTON_SALESPERSON_ID);
+  });
+
+  it('errors when quoteEdit leaves the previous salesperson in place', async () => {
+    const fetchImpl = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({
+              data: {
+                quote: {
+                  id: 'quote-4651',
+                  quoteNumber: 4651,
+                  title: 'Draft',
+                  quoteStatus: 'draft',
+                  sentAt: null,
+                  salesperson: { id: 'brian', name: { full: 'Brian Schroeder' } },
+                  lineItems: { nodes: [] },
+                },
+              },
+            })
+          : null,
+      (query) =>
+        query.includes('McpQuoteEdit')
+          ? jsonResponse({
+              data: {
+                quoteEdit: {
+                  quote: {
+                    id: 'quote-4651',
+                    quoteNumber: 4651,
+                    quoteStatus: 'draft',
+                    sentAt: null,
+                    salesperson: { id: 'brian', name: { full: 'Brian Schroeder' } },
+                  },
+                  userErrors: [],
+                },
+              },
+            })
+          : null,
+    ]).fetchImpl;
+    const result = await callJobberMcpTool(
+      'update_quote_draft',
+      { quoteId: 'quote-4651', salespersonId: BRIGHTON_SALESPERSON_ID },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /salesperson is still Brian Schroeder/);
+    assert.match(result.content[0].text, /4651/);
+  });
+
+  it('returns the new salesperson after quoteEdit applies it', async () => {
+    let reads = 0;
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) => {
+        if (!query.includes('McpQuoteById')) return null;
+        reads += 1;
+        const salesperson =
+          reads === 1
+            ? { id: 'brian', name: { full: 'Brian Schroeder' } }
+            : { id: BRIGHTON_SALESPERSON_ID, name: { full: 'Brighton Scala' } };
+        return jsonResponse({
+          data: {
+            quote: {
+              id: 'quote-4651',
+              quoteNumber: 4651,
+              title: 'Draft',
+              quoteStatus: 'draft',
+              sentAt: null,
+              salesperson,
+              lineItems: { nodes: [] },
+            },
+          },
+        });
+      },
+      (query) =>
+        query.includes('McpQuoteEdit')
+          ? jsonResponse({
+              data: {
+                quoteEdit: {
+                  quote: {
+                    id: 'quote-4651',
+                    quoteNumber: 4651,
+                    quoteStatus: 'draft',
+                    sentAt: null,
+                  },
+                  userErrors: [],
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'update_quote_draft',
+      { quoteId: 'quote-4651', salespersonId: BRIGHTON_SALESPERSON_ID },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      quote: { salesperson: { id: string; name: string | null } | null };
+    };
+    assert.deepEqual(payload.quote.salesperson, { id: BRIGHTON_SALESPERSON_ID, name: 'Brighton Scala' });
+    const editBody = JSON.parse(
+      bodies.find((body) => (JSON.parse(body) as { query?: string }).query?.includes('quoteEdit')) || '{}'
+    ) as { variables?: { attributes?: { salespersonId?: string } } };
+    assert.equal(editBody.variables?.attributes?.salespersonId, BRIGHTON_SALESPERSON_ID);
+    assert.equal(/transitionQuoteTo/.test(bodies.join('\n')), false);
+  });
+
+  it('includes salesperson on search_quotes', async () => {
+    const fetchImpl = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuotesSearch')
+          ? jsonResponse({
+              data: {
+                quotes: {
+                  nodes: [
+                    {
+                      id: 'quote-4651',
+                      quoteNumber: '4651',
+                      title: 'Draft',
+                      quoteStatus: 'draft',
+                      sentAt: null,
+                      salesperson: { id: BRIGHTON_SALESPERSON_ID, name: { full: 'Brighton Scala' } },
+                      client: { id: 'client-1', name: 'Pat Example' },
+                      lineItems: { nodes: [] },
+                    },
+                  ],
+                },
+              },
+            })
+          : null,
+    ]).fetchImpl;
+    const result = await callJobberMcpTool(
+      'search_quotes',
+      { query: '4651' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      quotes: Array<{ salesperson: { id: string; name: string | null } | null }>;
+    };
+    assert.deepEqual(payload.quotes[0]?.salesperson, { id: BRIGHTON_SALESPERSON_ID, name: 'Brighton Scala' });
   });
 
   it('refuses invoice send and create', async () => {

@@ -18,7 +18,7 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | List users (ids for assignment) | Delete quote |
 | Search / get quotes | Payroll |
 | Create unsent quote draft | Invoice send, mark-sent, or record payment |
-| Update unsent draft (title, message, optional/recommended lines, taxRateId) | Changing the tax-rate catalog |
+| Update unsent draft (title, message, optional/recommended lines, taxRateId, salesperson) | Changing the tax-rate catalog |
 | Search products for line names / street list | Record or collect a payment |
 | List tax rates (id, name, label, rate, default) | Invoice line add, update, or remove |
 | Search / get invoices | `jobComplete` (removed) |
@@ -50,7 +50,7 @@ Set these on the Vercel project **scws-jobs** (Production). Do not commit values
 | `JOBBER_CLIENT_ID` | OAuth client |
 | `JOBBER_CLIENT_SECRET` | OAuth client secret. Local/dev may fall back to this for encryption; Production will not. |
 | `JOBBER_GRAPHQL_VERSION` | Optional. Defaults to `2025-04-16` |
-| `JOBBER_SALESPERSON_ID` | Optional. Drafts default to a Jobber user named Brighton |
+| `JOBBER_SALESPERSON_ID` | Optional override. Drafts otherwise use the Jobber user named Brighton (`info@scwellservice.com`), then Brighton's known user id if that lookup fails. |
 
 ### `JOBBER_MCP_API_KEYS` formats
 
@@ -78,17 +78,17 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.5.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.6.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
 - `create_client` — `clientCreate`. firstName, lastName, optional companyName, emails, phones, billingAddress, and an initial property. Same email or full name returns the matches and does not create unless `force=true`. `receivesReminders`, follow-up flags, and `smsAllowed` are false
 - `create_property` — `propertyCreate`. `PropertyCreateInput.properties[].address` (street1, city, province, postalCode, country default `US`)
 - `list_users` — team members (`id`, name, email, status) so assignee ids can be chosen by name, for example Brighton Scala
-- `search_quotes` — number / title / client / address, optional status
-- `get_quote` — one quote + line items. Each line includes `optional` and `recommended`
-- `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`
-- `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields. `taxRateId` sets the quote tax rate
+- `search_quotes` — number / title / client / address, optional status. Each quote includes `salesperson` (`id`, `name`)
+- `get_quote` — one quote + line items + salesperson (`id`, `name`). Each line includes `optional` and `recommended`
+- `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`. `salespersonId` defaults to Brighton Scala
+- `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields. `taxRateId` sets the quote tax rate. `salespersonId` is sent on `quoteEdit` (the only quote mutation with that field). The tool re-reads `Quote.salesperson` and errors if Jobber left the previous salesperson in place
 - `list_tax_rates` — read-only. Optional `query` filters name, label, or description (for example `San Diego` or `7.75`). Returns `id`, `name`, `label`, `rate`, `default`. Pass `id` as `taxRateId` on a quote draft, `edit_invoice`, or `create_invoice_draft`
 - `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`)
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)

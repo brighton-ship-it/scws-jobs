@@ -106,7 +106,13 @@ describe('createDrillQuote', () => {
         return jsonResponse({
           data: {
             quoteCreate: {
-              quote: { id: 'quote-drill', quoteNumber: 4303, sentAt: null, quoteStatus: 'draft' },
+              quote: {
+                id: 'quote-drill',
+                quoteNumber: 4303,
+                sentAt: null,
+                quoteStatus: 'draft',
+                salesperson: { id: 'user-brighton', name: { full: 'Brighton Scala' } },
+              },
               userErrors: [],
             },
           },

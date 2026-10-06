@@ -1,10 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertQuoteSalespersonApplied,
   assertUnsentQuoteAttributes,
+  BRIGHTON_SALESPERSON_ID,
   buildUnsentQuoteAttributes,
   createUnsentQuote,
   fetchTaxRates,
+  findBrightonSalespersonId,
   findExistingClient,
   findExistingPropertyId,
   findLiveQuoteForJob,
@@ -15,6 +18,7 @@ import {
   quoteCreateUsedForbiddenFields,
   resolveQuoteCreatePropertyId,
   searchClients,
+  summarizeJobberSalesperson,
   toJobberLineItems,
 } from './quotes.ts';
 
@@ -145,6 +149,7 @@ describe('unsent quote attributes', () => {
     assert.equal(attributes.clientId, 'client-1');
     assert.equal(attributes.propertyId, 'prop-1');
     assert.equal(attributes.taxRateId, 'sd-tax');
+    assert.equal(attributes.salespersonId, 'brighton-1');
     assert.ok(!('transitionQuoteTo' in attributes));
     assert.ok(!('sentAt' in attributes));
     assertUnsentQuoteAttributes(attributes);
@@ -245,6 +250,138 @@ describe('jobberClientProperties', () => {
       ['prop-1']
     );
     assert.deepEqual(jobberClientProperties(null), []);
+  });
+});
+
+describe('Brighton salesperson default', () => {
+  it('reads nested user name and email and prefers info@scwellservice.com', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body || ''));
+      return jsonResponse({
+        data: {
+          users: {
+            nodes: [
+              {
+                id: 'other-brighton',
+                name: { full: 'Brighton Helper', first: 'Brighton', last: 'Helper' },
+                email: { raw: 'helper@example.com' },
+              },
+              {
+                id: 'brighton-real',
+                name: { full: 'Brighton Scala', first: 'Brighton', last: 'Scala' },
+                email: { raw: 'info@scwellservice.com' },
+              },
+            ],
+          },
+        },
+      });
+    };
+
+    const id = await findBrightonSalespersonId({ fetchImpl, token: 'test', env: {} });
+    assert.equal(id, 'brighton-real');
+    const query = (JSON.parse(bodies[0] || '{}') as { query?: string }).query || '';
+    assert.match(query, /name\s*\{\s*full first last\s*\}/);
+    assert.match(query, /email\s*\{\s*raw\s*\}/);
+    assert.equal(/nodes\s*\{\s*id name email\s*\}/.test(query), false);
+  });
+
+  it('falls back to the known Brighton user id when the user query errors', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({
+        errors: [{ message: "Field 'name' must have a selection of subfields" }],
+      });
+    const id = await findBrightonSalespersonId({ fetchImpl, token: 'test', env: {} });
+    assert.equal(id, BRIGHTON_SALESPERSON_ID);
+  });
+
+  it('uses JOBBER_SALESPERSON_ID without calling Jobber', async () => {
+    let called = false;
+    const fetchImpl: typeof fetch = async () => {
+      called = true;
+      return jsonResponse({ data: {} });
+    };
+    const id = await findBrightonSalespersonId({
+      fetchImpl,
+      token: 'test',
+      env: { JOBBER_SALESPERSON_ID: ' from-env ' },
+    });
+    assert.equal(id, 'from-env');
+    assert.equal(called, false);
+  });
+
+  it('retries without email when Jobber rejects User.email', async () => {
+    const queries: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const query = (JSON.parse(String(init?.body || '{}')) as { query?: string }).query || '';
+      queries.push(query);
+      if (query.includes('email')) {
+        return jsonResponse({ errors: [{ message: "Cannot query field 'email' on type 'User'" }] });
+      }
+      return jsonResponse({
+        data: {
+          users: {
+            nodes: [{ id: 'brighton-name', name: { full: 'Brighton Scala', first: 'Brighton', last: 'Scala' } }],
+          },
+        },
+      });
+    };
+    const id = await findBrightonSalespersonId({ fetchImpl, token: 'test', env: {} });
+    assert.equal(id, 'brighton-name');
+    assert.equal(queries.length, 2);
+  });
+
+  it('rejects a create whose salesperson did not stick', async () => {
+    const fetchImpl: typeof fetch = async () =>
+      jsonResponse({
+        data: {
+          quoteCreate: {
+            quote: {
+              id: 'quote-1',
+              quoteNumber: 4651,
+              sentAt: null,
+              quoteStatus: 'draft',
+              salesperson: { id: 'brian', name: { full: 'Brian Schroeder' } },
+            },
+            userErrors: [],
+          },
+        },
+      });
+    await assert.rejects(
+      () =>
+        createUnsentQuote(
+          {
+            clientId: 'client-1',
+            propertyId: 'prop-1',
+            title: 'Pull well pump and evaluate',
+            message: 'Proposal to pull the well pump and evaluate the pumping system.',
+            salespersonId: BRIGHTON_SALESPERSON_ID,
+            lineItems: [{ name: 'BT2', quantity: 1, unitPrice: 600, taxable: false }],
+          },
+          { fetchImpl, token: 'test' }
+        ),
+      /salesperson is still Brian Schroeder/
+    );
+    assert.throws(
+      () =>
+        assertQuoteSalespersonApplied(
+          { id: 'quote-1', quoteNumber: 4651, salesperson: null },
+          BRIGHTON_SALESPERSON_ID,
+          'quoteEdit'
+        ),
+      /quoteEdit returned no errors/
+    );
+  });
+
+  it('summarizes salesperson id and full name', () => {
+    assert.deepEqual(
+      summarizeJobberSalesperson({
+        id: BRIGHTON_SALESPERSON_ID,
+        name: { full: 'Brighton Scala', first: 'Brighton', last: 'Scala' },
+      }),
+      { id: BRIGHTON_SALESPERSON_ID, name: 'Brighton Scala' }
+    );
+    assert.equal(summarizeJobberSalesperson(null), null);
   });
 });
 
