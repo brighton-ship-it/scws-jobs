@@ -11,6 +11,13 @@
  *   (EXCLUSIVE | INCLUSIVE), and a non-empty lineItems list (name at minimum).
  *   jobId is an accepted optional argument. issuedDate is omitted so the
  *   create stays unissued.
+ * - InvoiceCreationLineItemInput does not define saveToProductsAndServices.
+ *   A live invoiceCreate on the 2025-04-16 pin rejects that field
+ *   ("Field is not defined on InvoiceCreationLineItemInput"). Quote create
+ *   lines (QuoteCreateLineItemAttributes) and job create lines
+ *   (JobCreateLineItemAttributes) still require it. Quote edit lines
+ *   (QuoteEditLineItemAttributes) do not have it; this gateway adds quote
+ *   lines with quoteCreateLineItems, not quoteEditLineItems.
  * - InvoiceEditInput does not take line items. A live invoiceEdit on
  *   2025-04-16 was rejected: lineItemsToEdit is not defined on
  *   InvoiceEditInput. The public introspection at API version 2025-01-20
@@ -173,7 +180,6 @@ function linePayload(line: InvoiceLineDraft): Record<string, unknown> {
     quantity: line.quantity,
     unitPrice: line.unitPrice,
     taxable: line.taxable,
-    saveToProductsAndServices: false,
   };
   if (line.description?.trim()) row.description = line.description.trim();
   return row;

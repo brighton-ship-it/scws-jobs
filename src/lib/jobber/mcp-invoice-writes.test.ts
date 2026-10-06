@@ -113,6 +113,47 @@ describe('invoice write builders', () => {
     assert.equal(input.taxRateId, 'sd-tax');
     assert.equal('issuedDate' in input, false);
     assert.equal(JSON.stringify(input).includes('invoiceMarkAsSent'), false);
+    assert.deepEqual(input.lineItems, [
+      { name: 'Pump', quantity: 1, unitPrice: 100, taxable: true },
+    ]);
+  });
+
+  it('omits saveToProductsAndServices, which InvoiceCreationLineItemInput does not define', () => {
+    const lines = parseInvoiceLineDrafts(
+      [
+        {
+          name: 'Goulds 25GBC',
+          description: '1 HP',
+          quantity: 1,
+          unitPrice: 899,
+          taxable: true,
+          productOrServiceId: 'prod-25gbc',
+          saveToProductsAndServices: false,
+          optional: true,
+          recommended: true,
+        },
+      ],
+      'lineItems'
+    );
+    const input = buildUnsentInvoiceCreateInput({
+      clientId: 'client-1',
+      jobId: JOB_ID,
+      subject: 'Job 8801',
+      lineItems: lines,
+    });
+    assert.deepEqual(input.lineItems, [
+      {
+        name: 'Goulds 25GBC',
+        description: '1 HP',
+        quantity: 1,
+        unitPrice: 899,
+        taxable: true,
+      },
+    ]);
+    const wire = JSON.stringify(input.lineItems);
+    assert.equal(wire.includes('saveToProductsAndServices'), false);
+    assert.equal(wire.includes('productOrServiceId'), false);
+    assert.equal(wire.includes('optional'), false);
   });
 
   it('allows payment settings and still rejects send, record, and collect', () => {
@@ -244,12 +285,103 @@ describe('createInvoiceDraftFromJob', () => {
       { fetchImpl, token: 'test' }
     );
     assert.equal(result.invoice.invoiceStatus, 'draft');
+    assert.equal(result.invoice.invoiceNumber, '5810');
+    assert.equal(result.invoice.jobberWebUri, 'https://secure.getjobber.com/invoices/5806');
+    assert.equal(result.invoice.amounts.total, 17617.59);
     const create = JSON.parse(bodies.find((body) => body.includes('invoiceCreate')) || '{}') as {
-      variables?: { input?: Record<string, unknown> };
+      variables?: { input?: { lineItems?: Array<Record<string, unknown>> } };
     };
     assert.equal(create.variables?.input?.jobId, JOB_ID);
     assert.equal(create.variables?.input?.clientId, 'client-1');
     assert.equal('issuedDate' in (create.variables?.input || {}), false);
-    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend/.test(body)));
+    assert.deepEqual(create.variables?.input?.lineItems, [
+      { name: 'Pump', quantity: 1, unitPrice: 100, taxable: true },
+    ]);
+    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|saveToProductsAndServices/.test(body)));
+  });
+
+  it('copies job lines onto an unsent draft without saveToProductsAndServices', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('mutation') && query.includes('invoiceCreate')) {
+        return jsonResponse({
+          data: {
+            invoiceCreate: {
+              invoice: { id: INVOICE_ID, invoiceNumber: '5811', invoiceStatus: 'draft', subject: 'Pull pump' },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (query.includes('McpJobLinesForInvoice')) {
+        return jsonResponse({
+          data: {
+            job: {
+              id: JOB_ID,
+              lineItems: {
+                nodes: [
+                  {
+                    name: 'Pump pull',
+                    description: 'Evaluate the pumping system',
+                    quantity: 1,
+                    unitPrice: 600,
+                    taxable: false,
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
+      if (query.includes('job(id:') || query.includes('McpJobById')) {
+        return jsonResponse({
+          data: {
+            job: {
+              id: JOB_ID,
+              jobNumber: 8801,
+              title: 'Pull pump',
+              jobStatus: 'active',
+              client: { id: 'client-1', name: 'Pat', firstName: 'Pat' },
+              property: { id: 'prop-1', address: { city: 'Ramona' } },
+              noteAttachments: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+            },
+          },
+        });
+      }
+      if (query.includes('invoice(id:')) {
+        return jsonResponse({
+          data: {
+            invoice: {
+              ...invoiceNode(),
+              id: INVOICE_ID,
+              invoiceNumber: '5811',
+              invoiceStatus: 'draft',
+            },
+          },
+        });
+      }
+      return jsonResponse({ errors: [{ message: 'unexpected query' }] });
+    };
+
+    const result = await createInvoiceDraftFromJob({ jobId: JOB_ID }, { fetchImpl, token: 'test' });
+    assert.equal(result.invoice.invoiceNumber, '5811');
+    assert.equal(result.invoice.invoiceStatus, 'draft');
+    const create = JSON.parse(bodies.find((body) => body.includes('invoiceCreate')) || '{}') as {
+      variables?: { input?: { issuedDate?: string; lineItems?: Array<Record<string, unknown>> } };
+    };
+    assert.equal(create.variables?.input?.issuedDate, undefined);
+    assert.deepEqual(create.variables?.input?.lineItems, [
+      {
+        name: 'Pump pull',
+        description: 'Evaluate the pumping system',
+        quantity: 1,
+        unitPrice: 600,
+        taxable: false,
+      },
+    ]);
+    assert.ok(bodies.every((body) => !/saveToProductsAndServices|invoiceMarkAsSent|invoiceSend/.test(body)));
   });
 });
