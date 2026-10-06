@@ -487,7 +487,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'create_invoice_draft',
     description:
-      'Create an UNSENT Jobber invoice from a job. Does not email, text, or call invoiceMarkAsSent. issuedDate is omitted. Pass lineItems or the job lines are copied. Optional taxRateId from list_tax_rates.',
+      'Create an UNSENT Jobber invoice from a job. Does not email, text, or call invoiceMarkAsSent. issuedDate is omitted. Pass lineItems or the job lines are copied. Optional taxRateId from list_tax_rates. saveToProductsAndServices is not sent: InvoiceCreationLineItemInput does not define it. Returns invoice number, Jobber URL, and totals.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
