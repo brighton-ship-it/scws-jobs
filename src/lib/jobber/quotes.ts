@@ -32,6 +32,19 @@ export type JobberAddress = {
   postalCode?: string | null;
 };
 
+/** Jobber User.name is Name { full first last }, not a string. User.email is UserEmail { raw }. */
+export type JobberPersonName = {
+  full?: string | null;
+  first?: string | null;
+  last?: string | null;
+};
+
+export type JobberSalesperson = {
+  id?: string | null;
+  name?: string | JobberPersonName | null;
+  email?: string | { raw?: string | null } | null;
+};
+
 export type JobberQuoteSummary = {
   id: string;
   quoteNumber?: string | number | null;
@@ -40,7 +53,12 @@ export type JobberQuoteSummary = {
   sentAt?: string | null;
   jobberWebUri?: string | null;
   property?: { id?: string | null } | null;
+  salesperson?: JobberSalesperson | null;
 };
+
+/** Brighton Scala, info@scwellservice.com. Used when env and user lookup do not yield an id. */
+export const BRIGHTON_SALESPERSON_ID = 'Z2lkOi8vSm9iYmVyL1VzZXIvMjg0NDY4OQ==';
+export const BRIGHTON_SALESPERSON_EMAIL = 'info@scwellservice.com';
 
 export type JobberProperty = {
   id: string;
@@ -158,6 +176,7 @@ const CLIENT_SEARCH = `
             sentAt
             jobberWebUri
             property { id }
+            salesperson { id name { full } }
           }
         }
       }
@@ -176,7 +195,22 @@ const TAX_RATES = `
 const USERS = `
   query JobberUsers {
     users(first: 50) {
-      nodes { id name email }
+      nodes {
+        id
+        name { full first last }
+        email { raw }
+      }
+    }
+  }
+`;
+
+const USERS_NO_EMAIL = `
+  query JobberUsersNoEmail {
+    users(first: 50) {
+      nodes {
+        id
+        name { full first last }
+      }
     }
   }
 `;
@@ -192,6 +226,7 @@ const QUOTE_CREATE = `
         sentAt
         quoteStatus
         jobberWebUri
+        salesperson { id name { full } }
       }
       userErrors { message path }
     }
@@ -485,22 +520,101 @@ export async function listTaxRates(
   return rates.filter((rate) => taxRateMatchesQuery(rate, query)).map(summarizeJobberTaxRate);
 }
 
-export async function findBrightonSalespersonId(deps?: JobberDeps): Promise<string | null> {
+export function jobberSalespersonName(salesperson: JobberSalesperson | null | undefined): string | null {
+  const name = salesperson?.name;
+  if (!name) return null;
+  if (typeof name === 'string') {
+    const trimmed = name.trim();
+    return trimmed || null;
+  }
+  const full = name.full?.trim();
+  if (full) return full;
+  const joined = [name.first, name.last]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(' ');
+  return joined || null;
+}
+
+export function jobberSalespersonId(salesperson: JobberSalesperson | null | undefined): string | null {
+  const id = salesperson?.id?.trim();
+  return id || null;
+}
+
+function jobberSalespersonEmail(salesperson: JobberSalesperson | null | undefined): string {
+  const email = salesperson?.email;
+  if (!email) return '';
+  if (typeof email === 'string') return email.trim().toLowerCase();
+  return (email.raw || '').trim().toLowerCase();
+}
+
+function isBrightonSalesperson(user: JobberSalesperson): boolean {
+  const name = jobberSalespersonName(user) || '';
+  const email = jobberSalespersonEmail(user);
+  return email === BRIGHTON_SALESPERSON_EMAIL || /brighton/i.test(name) || /brighton@/i.test(email);
+}
+
+export function summarizeJobberSalesperson(
+  salesperson: JobberSalesperson | null | undefined
+): { id: string; name: string | null } | null {
+  const id = jobberSalespersonId(salesperson);
+  if (!id) return null;
+  return { id, name: jobberSalespersonName(salesperson) };
+}
+
+/**
+ * quoteCreate and quoteEdit both accept salespersonId (QuoteCreateAttributes /
+ * QuoteEditAttributes, public schema 2025-01-20; later changelogs do not remove it).
+ * An empty userErrors list is not proof the salesperson changed, so callers re-read
+ * Quote.salesperson. quoteEdit is the only mutation that writes it.
+ */
+export function assertQuoteSalespersonApplied(
+  quote: {
+    id?: string | null;
+    quoteNumber?: string | number | null;
+    salesperson?: JobberSalesperson | null;
+  },
+  requestedId: string,
+  operation: 'quoteCreate' | 'quoteEdit'
+): void {
+  const wanted = requestedId.trim();
+  if (!wanted) return;
+  if (jobberSalespersonId(quote.salesperson) === wanted) return;
+
+  const label = quote.quoteNumber ?? quote.id ?? 'unknown';
+  const actualId = jobberSalespersonId(quote.salesperson);
+  const actualName = jobberSalespersonName(quote.salesperson);
+  const current = actualId ? `${actualName ? `${actualName} ` : ''}(${actualId})` : 'no salesperson';
+  if (operation === 'quoteCreate') {
+    throw new Error(
+      `Jobber quoteCreate returned no errors, but quote ${label} salesperson is still ${current}. Requested salespersonId ${wanted} was not applied. The draft already exists${quote.id ? ` (${quote.id})` : ''}; do not create another copy.`
+    );
+  }
+  throw new Error(
+    `Jobber quoteEdit returned no errors, but quote ${label} salesperson is still ${current}. Requested salespersonId ${wanted} was not applied. quoteEdit is the only quote mutation that accepts salespersonId; change the salesperson in the Jobber UI if this persists.`
+  );
+}
+
+export async function findBrightonSalespersonId(deps?: JobberDeps): Promise<string> {
   const fromEnv = (deps?.env ?? process.env).JOBBER_SALESPERSON_ID?.trim();
   if (fromEnv) return fromEnv;
 
-  const result = await graphql(USERS, {}, deps);
-  if (result.errors?.length) return null;
-  const users = (result.data?.users?.nodes || []) as Array<{
-    id: string;
-    name?: string | null;
-    email?: string | null;
-  }>;
-  const brighton = users.find(
-    (user) =>
-      /brighton/i.test(user.name || '') || /brighton@/i.test(user.email || '')
-  );
-  return brighton?.id ?? null;
+  try {
+    let result = await graphql(USERS, {}, deps);
+    const errorText = () => (result.errors || []).map((error) => error.message || '').join(' ');
+    if (result.errors?.length && /email/i.test(errorText())) {
+      result = await graphql(USERS_NO_EMAIL, {}, deps);
+    }
+    if (!result.errors?.length) {
+      const users = (result.data?.users?.nodes || []) as JobberSalesperson[];
+      const byEmail = users.find((user) => jobberSalespersonEmail(user) === BRIGHTON_SALESPERSON_EMAIL);
+      const brighton = byEmail || users.find((user) => isBrightonSalesperson(user));
+      if (brighton?.id) return brighton.id;
+    }
+  } catch {
+    // Lookup can fail. The known Brighton user id still attributes the quote.
+  }
+  return BRIGHTON_SALESPERSON_ID;
 }
 
 export async function createUnsentQuote(
@@ -546,6 +660,9 @@ export async function createUnsentQuote(
   }
   if (quote.sentAt) {
     throw new Error('Jobber returned sentAt on a draft create — aborting');
+  }
+  if (input.salespersonId?.trim()) {
+    assertQuoteSalespersonApplied(quote, input.salespersonId, 'quoteCreate');
   }
 
   if (input.internalNote) {

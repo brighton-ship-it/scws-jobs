@@ -7,6 +7,7 @@ import {
   quoteEditUsedForbiddenFields,
   updateUnsentQuoteDraft,
 } from './mcp-quotes.ts';
+import { BRIGHTON_SALESPERSON_ID } from './quotes.ts';
 
 describe('draft quote edit safety', () => {
   it('builds edit attributes without send fields', () => {
@@ -15,6 +16,10 @@ describe('draft quote edit safety', () => {
       message: 'Proposal to pull the well pump and evaluate the pumping system.',
     });
     assert.equal(attributes.title, 'Pull well pump and evaluate');
+    assert.equal(
+      buildDraftQuoteEditAttributes({ salespersonId: '  brighton-1  ' }).salespersonId,
+      'brighton-1'
+    );
     assert.ok(!('transitionQuoteTo' in attributes));
     assert.ok(!('sentAt' in attributes));
   });
@@ -205,6 +210,53 @@ describe('updateUnsentQuoteDraft', () => {
         productOrServiceId: 'prod-25gbc',
       },
     ]);
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+  });
+
+  it('sends salespersonId and errors when the re-read still has the old salesperson', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const parsed = JSON.parse(body || '{}') as { query?: string; variables?: { attributes?: { salespersonId?: string } } };
+      if (parsed.query?.includes('McpQuoteById')) {
+        return jsonResponse({
+          data: {
+            quote: {
+              id: 'quote-1',
+              quoteNumber: 4651,
+              title: 'Draft',
+              quoteStatus: 'draft',
+              sentAt: null,
+              salesperson: { id: 'brian', name: { full: 'Brian Schroeder' } },
+              lineItems: { nodes: [] },
+            },
+          },
+        });
+      }
+      if (parsed.query?.includes('McpQuoteEdit')) {
+        assert.equal(parsed.variables?.attributes?.salespersonId, BRIGHTON_SALESPERSON_ID);
+        assert.match(parsed.query, /salesperson\s*\{\s*id name \{ full \}\s*\}/);
+        return jsonResponse({
+          data: {
+            quoteEdit: {
+              quote: { id: 'quote-1', quoteNumber: 4651, quoteStatus: 'draft', sentAt: null },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+
+    await assert.rejects(
+      () =>
+        updateUnsentQuoteDraft(
+          { quoteId: 'quote-1', salespersonId: BRIGHTON_SALESPERSON_ID },
+          { fetchImpl, token: 'test' }
+        ),
+      /salesperson is still Brian Schroeder/
+    );
     assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
   });
 

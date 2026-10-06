@@ -13,6 +13,7 @@ import { mentionsGpFlag } from '../jobber/gross-profit.ts';
 import {
   createUnsentQuote,
   findBrightonSalespersonId,
+  summarizeJobberSalesperson,
   jobberClientProperties,
   listTaxRates,
   resolveQuoteCreatePropertyId,
@@ -58,7 +59,7 @@ import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.5.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.6.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -119,6 +120,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
+  'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. Quote reads include salesperson id and name.',
 ].join(' ');
 
 const LINE_ITEM_SCHEMA = {
@@ -298,7 +300,8 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   },
   {
     name: 'search_quotes',
-    description: 'Search Jobber quotes by number, title, client, or address. Optional status filter (draft, sent, …).',
+    description:
+      'Search Jobber quotes by number, title, client, or address. Optional status filter (draft, sent, …). Each quote includes salesperson id and name.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -311,7 +314,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'get_quote',
     description:
-      'Load one Jobber quote by encoded id, including line items. Each line includes optional and recommended. Read-only.',
+      'Load one Jobber quote by encoded id, including line items and salesperson (id and name). Each line includes optional and recommended. Read-only.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -343,7 +346,11 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           description: 'Jobber tax rate id from list_tax_rates (for example San Diego 7.75%).',
         },
-        salespersonId: { type: 'string' },
+        salespersonId: {
+          type: 'string',
+          description:
+            'Jobber user id. Omit to assign Brighton Scala (info@scwellservice.com).',
+        },
         lineItems: { type: 'array', items: LINE_ITEM_SCHEMA, minItems: 1 },
       },
     },
@@ -351,7 +358,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'update_quote_draft',
     description:
-      'Update an UNSENT draft quote (title, message, and/or add line items). Refuses sent/approved/converted quotes.',
+      'Update an UNSENT draft quote (title, message, salesperson, and/or add line items). Refuses sent/approved/converted quotes. salespersonId is sent on quoteEdit; the tool re-reads the quote and errors if Jobber did not change the salesperson.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -364,7 +371,11 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           type: 'string',
           description: 'Jobber tax rate id from list_tax_rates. Refuses if the quote was already sent.',
         },
-        salespersonId: { type: 'string' },
+        salespersonId: {
+          type: 'string',
+          description:
+            'Jobber user id. Omit to leave the salesperson unchanged. The response salesperson must match this id or the tool errors.',
+        },
         addLineItems: { type: 'array', items: LINE_ITEM_SCHEMA },
       },
     },
@@ -885,6 +896,7 @@ function summarizeQuote(quote: JobberQuoteDetail) {
     property: quote.property
       ? { id: quote.property.id ?? null, address: quote.property.address ?? null }
       : null,
+    salesperson: summarizeJobberSalesperson(quote.salesperson),
     lineItems: (quote.lineItems?.nodes || [])
       .filter((line): line is NonNullable<typeof line> => Boolean(line))
       .map((line) => ({
@@ -1015,7 +1027,10 @@ export async function callJobberMcpTool(
           draft: true,
           sentAt: null,
           note: 'Draft stays unsent. No send/approve/convert tools exist on this gateway.',
-          quote,
+          quote: {
+            ...quote,
+            salesperson: summarizeJobberSalesperson(quote.salesperson),
+          },
         });
       }
       case 'update_quote_draft': {

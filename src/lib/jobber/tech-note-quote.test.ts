@@ -57,6 +57,7 @@ function jobberFetch(job: Record<string, unknown>) {
               title: job.title || 'Draft',
               sentAt: null,
               quoteStatus: 'draft',
+              salesperson: { id: 'user-brighton', name: { full: 'Brighton Scala' } },
             },
             userErrors: [],
           },
