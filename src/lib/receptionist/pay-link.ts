@@ -1,9 +1,18 @@
-export const SMS_SEND_URL = 'https://scws-receptionist.vercel.app/sms/send';
+import {
+  resolveInvoicePayEmail,
+  sendInvoicePayLinkSms,
+  type CollectionsInvoice,
+  type InvoiceRef,
+} from '../collections/pay-link-sms.ts';
+import { formatUsd } from '../collections/policy.ts';
+import type { JobberDeps } from '../jobber/quotes.ts';
+
 const VOICE_PHONE = '(760) 440-8520';
 const TEXT_PHONE = '760-219-5877';
 
 export type SendPayParams = {
   to?: unknown;
+  invoiceId?: unknown;
   invoiceNumber?: unknown;
   amount?: unknown;
   paymentUrl?: unknown;
@@ -18,9 +27,15 @@ export type SendEmailFn = (opts: {
 }) => Promise<{ success: boolean; messageId?: string; error?: string }>;
 
 export type PayLinkDeps = {
-  fetchFn?: typeof fetch;
   sendEmailFn?: SendEmailFn;
   textToHtmlFn?: (text: string) => string;
+  loadInvoice?: (ref: InvoiceRef) => Promise<CollectionsInvoice | null>;
+  sendSms?: (input: { to: string; body: string; messagingServiceSid: string }) => Promise<{
+    sid?: string;
+    errorCode?: string;
+    error?: string;
+  }>;
+  jobber?: JobberDeps;
 };
 
 function asTrimmedString(value: unknown): string {
@@ -82,107 +97,109 @@ export async function handleSendPayLink(
   params: SendPayParams,
   deps: PayLinkDeps = {}
 ) {
-  const fetchFn = deps.fetchFn ?? fetch;
+  // Model-supplied `to` and `paymentUrl` are ignored. Jobber is the source of both.
   const invoiceNumber = asTrimmedString(params.invoiceNumber);
-  const paymentUrl = asTrimmedString(params.paymentUrl);
-  const host = paymentUrl ? paymentHostForLog(paymentUrl) : 'missing-url';
-
-  if (!asTrimmedString(params.to) || !invoiceNumber || !paymentUrl) {
-    console.log(`[Receptionist] sendPayLink fail invoice=${invoiceNumber || 'missing'} host=${host} error=missing-fields`);
-    return {
-      result: { success: false, error: 'Missing to, invoiceNumber, or paymentUrl' },
-    };
-  }
-
-  const to = toE164US(params.to);
-  if (!to) {
-    console.log(`[Receptionist] sendPayLink fail invoice=${invoiceNumber} host=${host} error=invalid-phone`);
-    return {
-      result: { success: false, error: 'Invalid phone number' },
-    };
-  }
-
-  const message = buildPaySmsMessage(invoiceNumber, params.amount, paymentUrl);
-
-  try {
-    const response = await fetchFn(SMS_SEND_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, message }),
-    });
-
-    if (!response.ok) {
-      const error = response.statusText || `HTTP ${response.status}`;
-      console.log(`[Receptionist] sendPayLink fail invoice=${invoiceNumber} host=${host} error=${error}`);
-      return { result: { success: false, error } };
+  const invoiceId = asTrimmedString(params.invoiceId);
+  const outcome = await sendInvoicePayLinkSms(
+    { invoiceId: invoiceId || undefined, invoiceNumber: invoiceNumber || undefined },
+    {
+      dryRun: false,
+      deps: {
+        loadInvoice: deps.loadInvoice,
+        sendSms: deps.sendSms,
+        jobber: deps.jobber,
+      },
     }
+  );
 
-    console.log(`[Receptionist] sendPayLink success invoice=${invoiceNumber} host=${host}`);
-    return {
-      result: { success: true, channel: 'sms' as const, to, invoiceNumber },
-    };
-  } catch (error: any) {
-    const messageText = error?.message || 'Failed to send SMS';
-    console.log(`[Receptionist] sendPayLink fail invoice=${invoiceNumber} host=${host} error=${messageText}`);
-    return { result: { success: false, error: messageText } };
+  if (!outcome.ok) {
+    console.log(
+      `[Receptionist] sendPayLink fail invoice=${outcome.invoiceNumber || invoiceNumber || invoiceId || 'missing'} reason=${outcome.reason || 'failed'}`
+    );
+    return { result: { success: false, error: outcome.reason || 'Failed to send SMS' } };
   }
+
+  console.log(
+    `[Receptionist] sendPayLink success invoice=${outcome.invoiceNumber || invoiceNumber} last4=${outcome.phoneLast4 || ''}`
+  );
+  return {
+    result: {
+      success: true,
+      channel: 'sms' as const,
+      phoneLast4: outcome.phoneLast4,
+      invoiceNumber: outcome.invoiceNumber,
+      linkPresent: outcome.linkPresent,
+    },
+  };
 }
 
 export async function handleSendPayEmail(
   params: SendPayParams,
   deps: PayLinkDeps = {}
 ) {
-  const to = asTrimmedString(params.to);
+  // Model-supplied `to` is ignored. The address on the Jobber client is used.
   const invoiceNumber = asTrimmedString(params.invoiceNumber);
-  const paymentUrl = asTrimmedString(params.paymentUrl);
-  const host = paymentUrl ? paymentHostForLog(paymentUrl) : 'missing-url';
+  const invoiceId = asTrimmedString(params.invoiceId);
+  const resolved = await resolveInvoicePayEmail(
+    { invoiceId: invoiceId || undefined, invoiceNumber: invoiceNumber || undefined },
+    { loadInvoice: deps.loadInvoice, jobber: deps.jobber }
+  );
 
-  if (!to || !invoiceNumber || !paymentUrl || !to.includes('@')) {
-    console.log(`[Receptionist] sendPayEmail fail invoice=${invoiceNumber || 'missing'} host=${host} error=missing-fields`);
+  if (!resolved.ok) {
+    console.log(
+      `[Receptionist] sendPayEmail fail invoice=${resolved.invoiceNumber || invoiceNumber || invoiceId || 'missing'} reason=${resolved.reason}`
+    );
     return {
       result: {
         success: false,
         channel: 'email' as const,
-        to,
-        invoiceNumber,
-        error: 'Missing to, invoiceNumber, or paymentUrl',
+        invoiceNumber: resolved.invoiceNumber || invoiceNumber,
+        error: resolved.reason,
       },
     };
   }
 
+  const host = paymentHostForLog(resolved.link);
   if (!deps.sendEmailFn) {
-    console.log(`[Receptionist] sendPayEmail fail invoice=${invoiceNumber} host=${host} error=mailer-missing`);
+    console.log(`[Receptionist] sendPayEmail fail invoice=${resolved.invoice.invoiceNumber} host=${host} error=mailer-missing`);
     return {
       result: {
         success: false,
         channel: 'email' as const,
-        to,
-        invoiceNumber,
+        to: resolved.email,
+        invoiceNumber: resolved.invoice.invoiceNumber,
         error: 'Email sender not configured',
       },
     };
   }
 
-  const text = buildPayEmailBody(invoiceNumber, params.amount, paymentUrl, params.customerName);
+  const text = buildPayEmailBody(
+    resolved.invoice.invoiceNumber,
+    formatUsd(resolved.invoice.balance),
+    resolved.link,
+    resolved.invoice.client?.firstName
+  );
   const emailResult = await deps.sendEmailFn({
-    to,
-    subject: `Invoice ${invoiceNumber} from Southern California Well Service`,
+    to: resolved.email,
+    subject: `Invoice ${resolved.invoice.invoiceNumber} from Southern California Well Service`,
     text,
     html: (deps.textToHtmlFn ?? ((body: string) => body))(text),
   });
 
   if (emailResult.success) {
-    console.log(`[Receptionist] sendPayEmail success invoice=${invoiceNumber} host=${host}`);
+    console.log(`[Receptionist] sendPayEmail success invoice=${resolved.invoice.invoiceNumber} host=${host}`);
   } else {
-    console.log(`[Receptionist] sendPayEmail fail invoice=${invoiceNumber} host=${host} error=${emailResult.error || 'send-failed'}`);
+    console.log(
+      `[Receptionist] sendPayEmail fail invoice=${resolved.invoice.invoiceNumber} host=${host} error=${emailResult.error || 'send-failed'}`
+    );
   }
 
   return {
     result: {
       success: emailResult.success,
       channel: 'email' as const,
-      to,
-      invoiceNumber,
+      to: resolved.email,
+      invoiceNumber: resolved.invoice.invoiceNumber,
       ...(emailResult.success ? {} : { error: emailResult.error || 'Failed to send email' }),
     },
   };

@@ -7,6 +7,32 @@
  * arguments may be a JSON string or an object.
  */
 
+export const SEND_PAY_LINK_TOOL = {
+  name: 'sendPayLink',
+  description:
+    'Text the client the Jobber pay link for an open invoice. The server looks up the phone number and the link. Do not pass a phone number or a URL.',
+  parameters: {
+    type: 'object',
+    properties: {
+      invoiceNumber: { type: 'string', description: 'Jobber invoice number' },
+      invoiceId: { type: 'string', description: 'Jobber invoice id, if known' },
+    },
+  },
+} as const;
+
+export const SEND_PAY_EMAIL_TOOL = {
+  name: 'sendPayEmail',
+  description:
+    'Email the pay link to the address on the Jobber invoice. The server looks up the email and the link. Do not pass an email address or a URL.',
+  parameters: {
+    type: 'object',
+    properties: {
+      invoiceNumber: { type: 'string', description: 'Jobber invoice number' },
+      invoiceId: { type: 'string', description: 'Jobber invoice id, if known' },
+    },
+  },
+} as const;
+
 export type ToolParams = Record<string, unknown>;
 
 export type ToolInvocation = {

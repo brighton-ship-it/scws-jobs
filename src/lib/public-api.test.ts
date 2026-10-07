@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { isCronApiPath, isMcpApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from './public-api.ts';
+import { isCollectionsApiPath, isCronApiPath, isMcpApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from './public-api.ts';
 
 describe('isPublicApiRoute', () => {
   it('allows GET /api/gbp-ratings for the marketing-site widget', () => {
@@ -43,6 +43,15 @@ describe('isPublicApiRoute', () => {
     assert.equal(isMcpApiPath('/api/mcp/jobber'), true);
     assert.equal(isMcpApiPath('/api/mcp'), true);
     assert.equal(isMcpApiPath('/api/jobber/tech-note-quote'), false);
+  });
+
+  it('lets the collections batch and inbound SMS past middleware (routes still authenticate)', () => {
+    assert.equal(isCollectionsApiPath('/api/collections/sms-batch'), true);
+    assert.equal(isCollectionsApiPath('/api/sms/collections-inbound'), true);
+    assert.equal(isPublicApiRoute('POST', '/api/collections/sms-batch'), true);
+    assert.equal(isPublicApiRoute('POST', '/api/sms/collections-inbound'), true);
+    assert.equal(isCollectionsApiPath('/api/sms/inbound'), false);
+    assert.equal(isPublicApiRoute('POST', '/api/collections/sms-batch/extra'), false);
   });
 
   it('lets the quote GP tracker past middleware (route still requires session or QUOTES_GP_KEY)', () => {

@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
+import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'shanicey@scwellservice.com'];
-const WEBHOOK_SECRET = process.env.SARAH_WEBHOOK_SECRET || 'scws-sarah-2024';
 const BRIGHTON_USER_ID = process.env.BRIGHTON_USER_ID || null; // Set in env
 
 interface SarahCallData {
@@ -52,12 +52,14 @@ interface SarahCallData {
  * Creates leads, tasks, and customer records
  */
 export async function POST(request: NextRequest) {
+  const webhookAuth = authorizeVapiWebhook(request.headers, process.env, {
+    secretEnvName: 'SARAH_WEBHOOK_SECRET',
+  });
+  if (!webhookAuth.ok) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  }
+
   try {
-    // Optional auth header check
-    const authHeader = request.headers.get('authorization');
-    const providedSecret = authHeader?.replace('Bearer ', '') || 
-                          request.headers.get('x-webhook-secret');
-    
     // Log incoming request for debugging
     const body: SarahCallData = await request.json();
     console.log('[Sarah Webhook] Received:', JSON.stringify(body, null, 2));
