@@ -566,7 +566,8 @@ export function summarizeJobberSalesperson(
  * quoteCreate and quoteEdit both accept salespersonId (QuoteCreateAttributes /
  * QuoteEditAttributes, public schema 2025-01-20; later changelogs do not remove it).
  * An empty userErrors list is not proof the salesperson changed, so callers re-read
- * Quote.salesperson. quoteEdit is the only mutation that writes it.
+ * Quote.salesperson. quoteEdit is the only mutation that writes it. That input has
+ * no status argument, so the schema does not limit salespersonId to drafts.
  */
 export function assertQuoteSalespersonApplied(
   quote: {
@@ -595,6 +596,12 @@ export function assertQuoteSalespersonApplied(
   );
 }
 
+/**
+ * users(first) { nodes { id name { full first last } email { raw } } } matches
+ * User.name (Name) and User.email (UserEmail.raw) on the public schema.
+ * Returns a string: JOBBER_SALESPERSON_ID, a matched user, or the known
+ * Brighton id. It does not return null.
+ */
 export async function findBrightonSalespersonId(deps?: JobberDeps): Promise<string> {
   const fromEnv = (deps?.env ?? process.env).JOBBER_SALESPERSON_ID?.trim();
   if (fromEnv) return fromEnv;

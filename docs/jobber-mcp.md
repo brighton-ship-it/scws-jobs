@@ -19,6 +19,7 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | Search / get quotes | Payroll |
 | Create unsent quote draft | Invoice send, mark-sent, or record payment |
 | Update unsent draft (title, message, optional/recommended lines, taxRateId, salesperson) | Changing the tax-rate catalog |
+| Set salesperson on a quote in any status (`set_quote_salesperson`) | Sending, resending, or changing anything except salesperson |
 | Search products for line names / street list | Record or collect a payment |
 | Read product cost, street price, markup, and visible (`get_products`) | Delete a product, or edit name, description, tax, or category |
 | Edit one product's cost, price, markup, or visibility (`edit_product`, optional `dryRun`) | Any product field outside that allow-list |
@@ -35,7 +36,9 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 
 `create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
 
-If Jobber already sent the quote, `update_quote_draft` refuses.
+If Jobber already sent the quote, `update_quote_draft` refuses. `set_quote_salesperson` is the only quote write that runs after send. It calls `quoteEdit` with `{ salespersonId }` and nothing else, then re-reads the quote. It does not send, resend, or notify the customer, and it does not change line items, amounts, message, or status.
+
+Public schema 2025-01-20 (`hightreequency/jobberschema`, the snapshot this gateway already checks) is what allows that. `quoteEdit(quoteId: EncodedId!, attributes: QuoteEditAttributes!)` is the only mutation that writes `Quote.salesperson`. `QuoteEditAttributes.salespersonId` is an optional `EncodedId`. The mutation takes no status argument, and the schema text does not limit it to drafts. `QuoteStatusTypeEnum` is `draft`, `awaiting_response`, `archived`, `approved`, `converted`, `changes_requested`. There is no `quoteSend` mutation in that schema. This repo does not call production to prove a live sent or converted quote accepts the edit. If Jobber returns `userErrors`, or the re-read salesperson does not match, the tool stops and does not try another mutation.
 
 `create_invoice_draft` never sets `issuedDate` and never calls `invoiceMarkAsSent`. `edit_invoice` sets `taxRateId` and optional Client Hub settings: `allowCardPayments` → `allowClientHubCreditCardPayments`, `allowAchPayments` → `allowClientHubAchPayments`, `allowPartialPayments` → `allowPartialPayments`. Those are settings, not a charge. It rejects `addLineItems`, `updateLineItems`, and `removeLineItemIds` with: Jobber's API cannot edit invoice line items; use the Jobber web UI. It still refuses send, mark-sent, record, and collect.
 
@@ -80,7 +83,7 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.7.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.8.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
@@ -89,8 +92,9 @@ MCP server version **1.7.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stay
 - `list_users` — team members (`id`, name, email, status) so assignee ids can be chosen by name, for example Brighton Scala
 - `search_quotes` — number / title / client / address, optional status. Each quote includes `salesperson` (`id`, `name`)
 - `get_quote` — one quote + line items + salesperson (`id`, `name`). Each line includes `optional` and `recommended`
-- `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`. `salespersonId` defaults to Brighton Scala
+- `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`. `salespersonId` defaults to Brighton Scala. `findBrightonSalespersonId` queries `users(first: 50) { nodes { id name { full first last } email { raw } } }`, which matches `User.name` (`Name`) and `User.email` (`UserEmail.raw`) on the 2025-01-20 schema. It returns a string (env override, matched user, or Brighton's known id) and does not return null
 - `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields. `taxRateId` sets the quote tax rate. `salespersonId` is sent on `quoteEdit` (the only quote mutation with that field). The tool re-reads `Quote.salesperson` and errors if Jobber left the previous salesperson in place
+- `set_quote_salesperson` — `{ quoteId, salespersonId }` only. Any status, including `awaiting_response`, `approved`, `converted`, and `changes_requested`. `quoteEdit` attributes are exactly `{ salespersonId }`. `salespersonId` must be an active user from `list_users` (`status` `ACTIVATED`). The tool re-reads the quote and returns the salesperson Jobber shows. Never contacts the customer
 - `list_tax_rates` — read-only. Optional `query` filters name, label, or description (for example `San Diego` or `7.75`). Returns `id`, `name`, `label`, `rate`, `default`. Pass `id` as `taxRateId` on a quote draft, `edit_invoice`, or `create_invoice_draft`
 - `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`). Cost, markup, and visibility are on `get_products`
 - `get_products` — read by one or more ids (`product(id)`, max 25) or one search page (`products(searchTerm, first, after)`). `first` is always sent (default 25, max 50) so the page stays near 900 points, under Jobber's 10,000-point cap. Returns `id`, `name`, `description`, `category`, `unitPrice` (the same number as `defaultUnitCost`; ProductOrService has no `unitPrice` field), `defaultUnitCost`, `internalUnitCost`, `markup`, `taxable`, `visible`, and `archived` (true when `visible` is false; Jobber has no archived field), plus duration, booking, and quantity range. `customFields` and `lastJobLineItem` are omitted. A Throttled response backs off and retries. A query that costs more than the maximum does not retry

@@ -62,6 +62,16 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.equal(invoiceSchema?.properties?.includeJobs?.type, 'boolean');
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
+    assert.ok(names.includes('set_quote_salesperson'));
+    const salespersonTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'set_quote_salesperson');
+    assert.match(salespersonTool?.description || '', /Never contacts the customer/);
+    assert.match(salespersonTool?.description || '', /does not send, resend, or notify/);
+    const salespersonSchema = salespersonTool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, unknown>;
+    };
+    assert.deepEqual(salespersonSchema?.required, ['quoteId', 'salespersonId']);
+    assert.equal(salespersonSchema?.properties?.title, undefined);
     assert.ok(names.includes('edit_invoice'));
     assert.ok(names.includes('create_invoice_draft'));
     assert.ok(names.includes('close_job'));
@@ -70,7 +80,7 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_products'));
     assert.ok(names.includes('edit_product'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.7.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.8.0');
     for (const name of [
       'create_client',
       'create_property',
@@ -964,6 +974,290 @@ describe('callJobberMcpTool', () => {
       quotes: Array<{ salesperson: { id: string; name: string | null } | null }>;
     };
     assert.deepEqual(payload.quotes[0]?.salesperson, { id: BRIGHTON_SALESPERSON_ID, name: 'Brighton Scala' });
+  });
+
+  it('sets only the salesperson on draft, sent, approved, converted, and changes_requested quotes', async () => {
+    for (const quoteStatus of ['draft', 'awaiting_response', 'approved', 'converted', 'changes_requested'] as const) {
+      const sentAt = quoteStatus === 'draft' ? null : '2026-09-01T12:00:00Z';
+      let reads = 0;
+      const { fetchImpl, bodies } = mockJobberFetch([
+        (query) =>
+          query.includes('McpUsers')
+            ? jsonResponse({
+                data: {
+                  users: {
+                    nodes: [
+                      {
+                        id: BRIGHTON_SALESPERSON_ID,
+                        status: 'ACTIVATED',
+                        name: { full: 'Brighton Scala', first: 'Brighton', last: 'Scala' },
+                        email: { raw: 'info@scwellservice.com' },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              })
+            : null,
+        (query) => {
+          if (!query.includes('McpQuoteById')) return null;
+          reads += 1;
+          const salesperson =
+            reads === 1 ? null : { id: BRIGHTON_SALESPERSON_ID, name: { full: 'Brighton Scala' } };
+          return jsonResponse({
+            data: {
+              quote: {
+                id: 'quote-4701',
+                quoteNumber: 4701,
+                title: 'Pull pump',
+                message: 'Proposal to pull the well pump.',
+                quoteStatus,
+                sentAt,
+                amounts: { subtotal: 600, total: 646.5 },
+                salesperson,
+                lineItems: {
+                  nodes: [
+                    {
+                      id: 'li-1',
+                      name: 'BT2',
+                      description: 'Pull',
+                      quantity: 1,
+                      unitPrice: 600,
+                      optional: false,
+                      recommended: false,
+                    },
+                  ],
+                },
+              },
+            },
+          });
+        },
+        (query) =>
+          query.includes('mutation') && query.includes('quoteEdit')
+            ? jsonResponse({
+                data: {
+                  quoteEdit: {
+                    quote: { id: 'quote-4701', quoteNumber: 4701, quoteStatus, sentAt },
+                    userErrors: [],
+                  },
+                },
+              })
+            : null,
+      ]);
+
+      const result = await callJobberMcpTool(
+        'set_quote_salesperson',
+        { quoteId: 'quote-4701', salespersonId: BRIGHTON_SALESPERSON_ID },
+        { fetchImpl, token: 'test' }
+      );
+      assert.equal(result.isError, undefined, quoteStatus);
+      const payload = JSON.parse(result.content[0].text) as {
+        notified: boolean;
+        sent: boolean;
+        changed: boolean;
+        salesperson: { id: string; name: string | null };
+        quote: { quoteStatus: string; sentAt: string | null; title: string; lineItems: Array<{ unitPrice: number }> };
+      };
+      assert.equal(payload.notified, false);
+      assert.equal(payload.sent, false);
+      assert.equal(payload.changed, true);
+      assert.deepEqual(payload.salesperson, { id: BRIGHTON_SALESPERSON_ID, name: 'Brighton Scala' });
+      assert.equal(payload.quote.quoteStatus, quoteStatus);
+      assert.equal(payload.quote.sentAt, sentAt);
+      assert.equal(payload.quote.title, 'Pull pump');
+      assert.equal(payload.quote.lineItems[0]?.unitPrice, 600);
+      assert.match(result.content[0].text, /Never contacts the customer/);
+
+      const editBodies = bodies.filter((body) => {
+        const query = (JSON.parse(body) as { query?: string }).query || '';
+        return query.includes('mutation') && query.includes('quoteEdit');
+      });
+      assert.equal(editBodies.length, 1, quoteStatus);
+      const edit = JSON.parse(editBodies[0] || '{}') as {
+        query?: string;
+        variables?: { quoteId?: string; attributes?: Record<string, unknown> };
+      };
+      assert.match(edit.query || '', /quoteEdit\s*\(\s*quoteId:\s*\$quoteId,\s*attributes:/);
+      assert.deepEqual(edit.variables?.attributes, { salespersonId: BRIGHTON_SALESPERSON_ID });
+      assert.equal(edit.variables?.quoteId, 'quote-4701');
+      assert.equal(bodies.some((body) => /quoteCreateLineItems|quoteSend|transitionQuoteTo|"sentAt"\s*:/.test(body)), false);
+    }
+  });
+
+  it('refuses a salesperson who is not an active Jobber user', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpUsers')
+          ? jsonResponse({
+              data: {
+                users: {
+                  nodes: [
+                    {
+                      id: 'brian',
+                      status: 'DEACTIVATED',
+                      name: { full: 'Brian Schroeder', first: 'Brian', last: 'Schroeder' },
+                      email: { raw: 'brian@example.com' },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            })
+          : null,
+    ]);
+    const inactive = await callJobberMcpTool(
+      'set_quote_salesperson',
+      { quoteId: 'quote-4701', salespersonId: 'brian' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(inactive.isError, true);
+    assert.match(inactive.content[0].text, /not an active Jobber user/);
+    const missing = await callJobberMcpTool(
+      'set_quote_salesperson',
+      { quoteId: 'quote-4701', salespersonId: BRIGHTON_SALESPERSON_ID },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(missing.isError, true);
+    assert.match(missing.content[0].text, /is not a Jobber user/);
+    assert.equal(
+      bodies.some((body) => (JSON.parse(body) as { query?: string }).query?.includes('quoteEdit')),
+      false
+    );
+  });
+
+  it('surfaces a Jobber refusal and does not send the quote', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpUsers')
+          ? jsonResponse({
+              data: {
+                users: {
+                  nodes: [
+                    {
+                      id: BRIGHTON_SALESPERSON_ID,
+                      status: 'ACTIVATED',
+                      name: { full: 'Brighton Scala' },
+                      email: { raw: 'info@scwellservice.com' },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false },
+                },
+              },
+            })
+          : null,
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({
+              data: {
+                quote: {
+                  id: 'quote-4701',
+                  quoteNumber: 4701,
+                  title: 'Pull pump',
+                  quoteStatus: 'converted',
+                  sentAt: '2026-09-01T12:00:00Z',
+                  salesperson: null,
+                  lineItems: { nodes: [] },
+                },
+              },
+            })
+          : null,
+      (query) =>
+        query.includes('mutation') && query.includes('quoteEdit')
+          ? jsonResponse({
+              data: {
+                quoteEdit: {
+                  quote: null,
+                  userErrors: [{ message: 'Quote is converted and cannot be edited', path: ['quoteId'] }],
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'set_quote_salesperson',
+      { quoteId: 'quote-4701', salespersonId: BRIGHTON_SALESPERSON_ID },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /cannot be edited/);
+    assert.match(result.content[0].text, /was not sent or resent/);
+    const mutations = bodies.filter((body) => (JSON.parse(body) as { query?: string }).query?.includes('mutation'));
+    assert.equal(mutations.length, 1);
+  });
+
+  it('errors when the re-read salesperson is still blank', async () => {
+    const fetchImpl = mockJobberFetch([
+      (query) =>
+        query.includes('McpUsers')
+          ? jsonResponse({
+              data: {
+                users: {
+                  nodes: [
+                    {
+                      id: BRIGHTON_SALESPERSON_ID,
+                      status: 'ACTIVATED',
+                      name: { full: 'Brighton Scala' },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false },
+                },
+              },
+            })
+          : null,
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({
+              data: {
+                quote: {
+                  id: 'quote-4701',
+                  quoteNumber: 4701,
+                  title: 'Pull pump',
+                  message: 'Proposal',
+                  quoteStatus: 'awaiting_response',
+                  sentAt: '2026-09-01T12:00:00Z',
+                  amounts: { subtotal: 600, total: 600 },
+                  salesperson: null,
+                  lineItems: { nodes: [] },
+                },
+              },
+            })
+          : null,
+      (query) =>
+        query.includes('quoteEdit')
+          ? jsonResponse({
+              data: { quoteEdit: { quote: { id: 'quote-4701' }, userErrors: [] } },
+            })
+          : null,
+    ]).fetchImpl;
+    const result = await callJobberMcpTool(
+      'set_quote_salesperson',
+      { quoteId: 'quote-4701', salespersonId: BRIGHTON_SALESPERSON_ID },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /salesperson is still no salesperson/);
+  });
+
+  it('refuses title, message, and line items on set_quote_salesperson', async () => {
+    let called = false;
+    const fetchImpl: typeof fetch = async () => {
+      called = true;
+      return jsonResponse({ data: {} });
+    };
+    const result = await callJobberMcpTool(
+      'set_quote_salesperson',
+      {
+        quoteId: 'quote-4701',
+        salespersonId: BRIGHTON_SALESPERSON_ID,
+        title: 'New title',
+        message: 'Hello',
+        addLineItems: [{ name: 'BT2', quantity: 1, unitPrice: 1 }],
+      },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /only changes salesperson/);
+    assert.equal(called, false);
   });
 
   it('refuses invoice send and create', async () => {

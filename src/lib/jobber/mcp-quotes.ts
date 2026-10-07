@@ -3,6 +3,8 @@
  * Reuses the shared GraphQL client and unsent-quote helpers.
  *
  * Mutations that send, approve, convert, or delete quotes must never live here.
+ * setQuoteSalesperson is the exception that may call quoteEdit on a quote in
+ * any status, and only with salespersonId.
  */
 
 import { mentionsGpFlag } from './gross-profit.ts';
@@ -11,10 +13,13 @@ import {
   jobberGraphql,
   jobberUserErrors,
 } from './client.ts';
+import { listUsers } from './mcp-client-writes.ts';
+import { assertNoClientNotification, assertWriteDoesNotDeliver } from './mcp-notify.ts';
 import { searchJobberProducts, type ProductSearchResult } from './products.ts';
 import {
   assertQuoteSalespersonApplied,
   assertUnsentQuoteAttributes,
+  jobberSalespersonId,
   searchClients,
   toJobberLineItems,
   type JobberAddress,
@@ -359,6 +364,126 @@ export async function searchProducts(
   deps?: JobberDeps
 ): Promise<ProductSearchResult> {
   return searchJobberProducts(searchTerm, deps, { includeInternalCost: false });
+}
+
+/**
+ * quoteEdit(quoteId, attributes: QuoteEditAttributes) is the only mutation that
+ * writes Quote.salesperson. Public schema 2025-01-20 (hightreequency/jobberschema)
+ * puts salespersonId on QuoteEditAttributes and does not take a status argument.
+ * QuoteStatusTypeEnum is draft, awaiting_response, archived, approved, converted,
+ * changes_requested. The schema does not limit this field to drafts.
+ * Attributes here are exactly { salespersonId }. No title, message, lines, tax,
+ * clientViewOptions, transitionQuoteTo, or sentAt.
+ */
+export function buildSalespersonOnlyEditAttributes(salespersonId: string): { salespersonId: string } {
+  const id = salespersonId.trim();
+  if (!id) throw new Error('salespersonId is required');
+  const attributes = { salespersonId: id };
+  assertUnsentQuoteAttributes(attributes);
+  const keys = Object.keys(attributes);
+  if (keys.length !== 1 || keys[0] !== 'salespersonId') {
+    throw new Error('Salesperson edit may set only salespersonId');
+  }
+  return attributes;
+}
+
+function quoteLineSignature(quote: JobberQuoteDetail): string {
+  return JSON.stringify(
+    (quote.lineItems?.nodes || []).map((line) =>
+      line
+        ? {
+            id: line.id ?? null,
+            name: line.name ?? null,
+            description: line.description ?? null,
+            quantity: line.quantity ?? null,
+            unitPrice: line.unitPrice ?? null,
+            optional: line.optional ?? null,
+            recommended: line.recommended ?? null,
+          }
+        : null
+    )
+  );
+}
+
+export function assertQuoteUnchangedExceptSalesperson(
+  before: JobberQuoteDetail,
+  after: JobberQuoteDetail
+): void {
+  const changes: string[] = [];
+  if (normalizeMcpQuoteStatus(before.quoteStatus) !== normalizeMcpQuoteStatus(after.quoteStatus)) {
+    changes.push(`status ${before.quoteStatus || 'unknown'} -> ${after.quoteStatus || 'unknown'}`);
+  }
+  if ((before.sentAt || null) !== (after.sentAt || null)) changes.push('sentAt');
+  if ((before.title || '') !== (after.title || '')) changes.push('title');
+  if ((before.message ?? '') !== (after.message ?? '')) changes.push('message');
+  const amounts = (quote: JobberQuoteDetail) =>
+    `${quote.amounts?.subtotal ?? ''}|${quote.amounts?.total ?? ''}`;
+  if (amounts(before) !== amounts(after)) changes.push('amounts');
+  if (quoteLineSignature(before) !== quoteLineSignature(after)) changes.push('line items');
+  if (!changes.length) return;
+  throw new Error(
+    `Jobber quoteEdit changed more than the salesperson on quote ${after.quoteNumber ?? after.id}: ${changes.join(', ')}. The request sent only salespersonId and did not send or notify the customer.`
+  );
+}
+
+async function requireActiveSalesperson(salespersonId: string, deps?: JobberDeps): Promise<void> {
+  const listed = await listUsers(null, deps);
+  const user = listed.users.find((entry) => entry.id === salespersonId);
+  if (!user) {
+    throw new Error(
+      listed.truncated
+        ? `salespersonId ${salespersonId} was not found in list_users, and the user list was truncated. Pass an id from list_users.`
+        : `salespersonId ${salespersonId} is not a Jobber user. Call list_users and pass an active user's id.`
+    );
+  }
+  if ((user.status || '').toUpperCase() !== 'ACTIVATED') {
+    const label = user.name || user.email || salespersonId;
+    throw new Error(
+      `salespersonId ${salespersonId} (${label}) is not an active Jobber user (status=${user.status || 'unknown'}). list_users must show ACTIVATED.`
+    );
+  }
+}
+
+export async function setQuoteSalesperson(
+  input: { quoteId: string; salespersonId: string },
+  deps?: JobberDeps
+): Promise<{ quote: JobberQuoteDetail; changed: boolean }> {
+  const quoteId = input.quoteId.trim();
+  const salespersonId = input.salespersonId.trim();
+  if (!quoteId) throw new Error('quoteId is required');
+  if (!salespersonId) throw new Error('salespersonId is required');
+
+  await requireActiveSalesperson(salespersonId, deps);
+  const existing = await getQuoteById(quoteId, deps);
+  if (jobberSalespersonId(existing.salesperson) === salespersonId) {
+    return { quote: existing, changed: false };
+  }
+
+  const attributes = buildSalespersonOnlyEditAttributes(salespersonId);
+  for (const document of [QUOTE_EDIT, QUOTE_EDIT_ALT, QUOTE_EDIT_ALT2]) {
+    assertWriteDoesNotDeliver(document);
+  }
+  assertNoClientNotification(attributes);
+
+  let edited = await graphql(QUOTE_EDIT, { quoteId, attributes }, deps);
+  if (edited.errors?.length && /argument|QuoteEdit/i.test(edited.errors[0]?.message || '')) {
+    edited = await graphql(QUOTE_EDIT_ALT, { quoteId, attributes }, deps);
+  }
+  if (edited.errors?.length && /argument|QuoteEdit/i.test(edited.errors[0]?.message || '')) {
+    edited = await graphql(QUOTE_EDIT_ALT2, { quoteId, attributes }, deps);
+  }
+  assertNoJobberErrors(edited, 'quoteEdit');
+  const editErrors = jobberUserErrors(edited.data?.quoteEdit);
+  if (editErrors.length) {
+    throw new Error(
+      `Jobber quoteEdit refused to set the salesperson on quote ${existing.quoteNumber ?? quoteId} (status=${existing.quoteStatus || 'unknown'}): ${editErrors.join('; ')}. Only salespersonId was sent. The quote was not sent or resent.`
+    );
+  }
+
+  const updated = await getQuoteById(quoteId, deps);
+  assertQuoteUnchangedExceptSalesperson(existing, updated);
+  assertQuoteSalespersonApplied(updated, salespersonId, 'quoteEdit');
+  return { quote: updated, changed: true };
 }
 
 export async function updateUnsentQuoteDraft(
