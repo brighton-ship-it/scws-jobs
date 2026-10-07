@@ -10,6 +10,7 @@ import {
   type OfficeAlertRow,
   type OfficeRequestDeps,
   findMatchingOfficeAlert,
+  isMissingOfficeDedupeColumnError,
   isSafeSarahMessage,
   officeRequestFromTool,
   resolveOfficeToolBatch,
@@ -331,6 +332,34 @@ describe('Sarah office alert dedupe', () => {
       sinceMs: NOW.getTime() - 10 * 60 * 1000,
     });
     assert.equal(match, null);
+  });
+
+  it('treats Postgres 42703 and "does not exist" as a missing dedupe column', () => {
+    assert.equal(isMissingOfficeDedupeColumnError({
+      code: '42703',
+      message: 'column booking_requests.vapi_call_id does not exist',
+    }), true);
+    assert.equal(isMissingOfficeDedupeColumnError({
+      code: 42703,
+      message: 'column "tool_call_id" does not exist',
+    }), true);
+    assert.equal(isMissingOfficeDedupeColumnError({
+      message: 'column tool_call_id of relation booking_requests does not exist',
+    }), true);
+    assert.equal(isMissingOfficeDedupeColumnError({
+      code: 'PGRST204',
+      message: "Could not find the 'vapi_call_id' column of 'booking_requests' in the schema cache",
+    }), true);
+
+    assert.equal(isMissingOfficeDedupeColumnError(null), false);
+    assert.equal(isMissingOfficeDedupeColumnError({
+      code: '42703',
+      message: 'column customers.gclid does not exist',
+    }), false);
+    assert.equal(isMissingOfficeDedupeColumnError({
+      code: '23505',
+      message: 'duplicate key value violates unique constraint',
+    }), false);
   });
 
   it('reads the call id from body.call when message.call is missing', () => {
