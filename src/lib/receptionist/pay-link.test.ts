@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  SMS_SEND_URL,
   buildPayEmailBody,
   buildPaySmsMessage,
   handleSendPayEmail,
@@ -9,6 +8,7 @@ import {
   paymentHostForLog,
   toE164US,
 } from './pay-link.ts';
+import type { CollectionsInvoice } from '../collections/pay-link-sms.ts';
 
 const PAY_URL = 'https://secure.jobber.com/pay/abc?token=SUPERSECRET&invoice=99';
 const FORBIDDEN = /collect|lawyer|urgent|broke|past due|15 minutes|within 15/i;
@@ -66,73 +66,93 @@ describe('pay message copy', () => {
   });
 });
 
-describe('handleSendPayLink', () => {
-  it('rejects missing to, invoiceNumber, or paymentUrl', async () => {
-    const result = await handleSendPayLink(
-      { invoiceNumber: 'INV-1', paymentUrl: PAY_URL },
-      { fetchFn: async () => { throw new Error('should not fetch'); } }
-    );
-    assert.equal(result.result.success, false);
-    assert.match(String(result.result.error), /Missing/);
-  });
+const JOBBER_LINK = 'https://clienthub.getjobber.com/client_hubs/abc/invoices/88';
 
-  it('POSTs E.164 to the live SMS endpoint and returns Vapi-shaped success', async () => {
-    let posted: { url: string; init: RequestInit } | null = null;
+function invoiceOnFile(): CollectionsInvoice {
+  return {
+    id: 'inv-88',
+    invoiceNumber: '88',
+    invoiceStatus: 'past_due',
+    balance: 45,
+    dueDate: '2026-01-01',
+    paymentUrl: JOBBER_LINK,
+    publicUrl: JOBBER_LINK,
+    client: {
+      id: 'client-88',
+      firstName: 'Pat',
+      lastName: 'Example',
+      companyName: null,
+      isCompany: false,
+      phones: [{ number: '7605550100', description: 'Mobile', primary: true, smsAllowed: true }],
+      emails: [{ address: 'pat.onfile@example.com', primary: true }],
+    },
+  };
+}
+
+describe('handleSendPayLink', () => {
+  it('ignores a model phone and URL and texts the Jobber phone and link', async () => {
+    let sent: { to: string; body: string; messagingServiceSid: string } | null = null;
     const result = await handleSendPayLink(
       {
         to: '760-219-5877',
-        invoiceNumber: 'INV-88',
-        amount: '$45',
-        paymentUrl: PAY_URL,
+        invoiceNumber: '88',
+        amount: '$1',
+        paymentUrl: 'https://evil.example/pay?token=NOPE',
       },
       {
-        fetchFn: async (url, init) => {
-          posted = { url: String(url), init: init || {} };
-          return new Response(JSON.stringify({ success: true, sid: 'SM123' }), { status: 200 });
+        loadInvoice: async () => invoiceOnFile(),
+        sendSms: async (input) => {
+          sent = input;
+          return { sid: 'SM123' };
         },
       }
     );
 
     assert.equal(result.result.success, true);
-    assert.deepEqual(result.result, {
-      success: true,
-      channel: 'sms',
-      to: '+17602195877',
-      invoiceNumber: 'INV-88',
-    });
-    assert.equal(posted?.url, SMS_SEND_URL);
-    const body = JSON.parse(String(posted?.init.body));
-    assert.equal(body.to, '+17602195877');
-    assert.match(body.message, /INV-88 for \$45/);
-    assert.match(body.message, /Pay here:/);
-    assert.equal(FORBIDDEN.test(body.message), false);
+    assert.equal(result.result.phoneLast4, '0100');
+    assert.equal(sent?.to, '+17605550100');
+    assert.match(sent?.body || '', /clienthub\.getjobber\.com/);
+    assert.equal((sent?.body || '').includes('evil.example'), false);
+    assert.equal((sent?.body || '').includes('760-219-5877'), false);
+    assert.ok(sent?.messagingServiceSid);
+    assert.equal(FORBIDDEN.test(sent?.body || ''), false);
   });
 
-  it('returns success:false with HTTP status text when sms/send fails', async () => {
+  it('refuses when the invoice reference is missing', async () => {
     const result = await handleSendPayLink(
-      { to: '+17602195877', invoiceNumber: 'INV-88', paymentUrl: PAY_URL },
+      { to: '+17602195877', paymentUrl: PAY_URL },
+      { loadInvoice: async () => { throw new Error('should not load'); } }
+    );
+    assert.equal(result.result.success, false);
+    assert.equal(result.result.error, 'missing_invoice');
+  });
+
+  it('returns the server refusal when the send fails', async () => {
+    const result = await handleSendPayLink(
+      { invoiceNumber: '88' },
       {
-        fetchFn: async () =>
-          new Response('nope', { status: 503, statusText: 'Service Unavailable' }),
+        loadInvoice: async () => invoiceOnFile(),
+        sendSms: async () => ({ error: 'send_failed', errorCode: '30007' }),
       }
     );
     assert.equal(result.result.success, false);
-    assert.equal(result.result.error, 'Service Unavailable');
+    assert.equal(result.result.error, 'send_failed');
   });
 });
 
 describe('handleSendPayEmail', () => {
-  it('sends a short invoice email through sendEmail and returns Vapi-shaped success', async () => {
+  it('emails the address on file and ignores the model to and URL', async () => {
     let sent: any = null;
     const result = await handleSendPayEmail(
       {
-        to: 'pat@example.com',
-        invoiceNumber: 'INV-88',
-        amount: '$45',
-        paymentUrl: PAY_URL,
-        customerName: 'Pat',
+        to: 'attacker@example.com',
+        invoiceNumber: '88',
+        amount: '$1',
+        paymentUrl: 'https://evil.example/pay',
+        customerName: 'Not Pat',
       },
       {
+        loadInvoice: async () => invoiceOnFile(),
         sendEmailFn: async (opts) => {
           sent = opts;
           return { success: true, messageId: 'msg_1' };
@@ -143,26 +163,31 @@ describe('handleSendPayEmail', () => {
     assert.deepEqual(result.result, {
       success: true,
       channel: 'email',
-      to: 'pat@example.com',
-      invoiceNumber: 'INV-88',
+      to: 'pat.onfile@example.com',
+      invoiceNumber: '88',
     });
-    assert.equal(sent.subject, 'Invoice INV-88 from Southern California Well Service');
-    assert.match(sent.text, /Pay here:/);
+    assert.equal(sent.to, 'pat.onfile@example.com');
+    assert.equal(sent.subject, 'Invoice 88 from Southern California Well Service');
+    assert.match(sent.text, /Pay here: https:\/\/clienthub\.getjobber\.com/);
+    assert.equal(sent.text.includes('evil.example'), false);
+    assert.equal(sent.text.includes('attacker@example.com'), false);
     assert.match(sent.text, /\(760\) 440-8520/);
     assert.match(sent.text, /760-219-5877/);
     assert.equal(FORBIDDEN.test(sent.text), false);
-    assert.equal(/15 minutes/i.test(sent.text), false);
   });
 
   it('returns success:false with channel when the mailer fails', async () => {
     const result = await handleSendPayEmail(
-      { to: 'pat@example.com', invoiceNumber: 'INV-88', paymentUrl: PAY_URL },
-      { sendEmailFn: async () => ({ success: false, error: 'Resend not configured' }) }
+      { to: 'attacker@example.com', invoiceNumber: '88' },
+      {
+        loadInvoice: async () => invoiceOnFile(),
+        sendEmailFn: async () => ({ success: false, error: 'Resend not configured' }),
+      }
     );
     assert.equal(result.result.success, false);
     assert.equal(result.result.channel, 'email');
-    assert.equal(result.result.to, 'pat@example.com');
-    assert.equal(result.result.invoiceNumber, 'INV-88');
+    assert.equal(result.result.to, 'pat.onfile@example.com');
+    assert.equal(result.result.invoiceNumber, '88');
     assert.equal(result.result.error, 'Resend not configured');
   });
 });

@@ -1,6 +1,6 @@
 import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
-import { isCronApiPath, isMcpApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from '@/lib/public-api';
+import { isCollectionsApiPath, isCronApiPath, isMcpApiPath, isOpsApiPath, isOpsPagePath, isPublicApiRoute } from '@/lib/public-api';
 
 // Check if we're in demo mode (no Supabase credentials)
 const isDemoMode = !process.env.NEXT_PUBLIC_SUPABASE_URL || 
@@ -85,6 +85,7 @@ export async function updateSession(request: NextRequest) {
       isCronApiPath(pathname) ||
       isMcpApiPath(pathname) ||
       isOpsApiPath(pathname) ||
+      isCollectionsApiPath(pathname) ||
       isPublicApiRoute(request.method, pathname) ||
       user
     ) {

@@ -28,6 +28,7 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
 
   // Inbound provider webhooks
   { method: 'POST', path: '/api/sms/inbound', match: 'exact' },
+  { method: 'POST', path: '/api/sms/collections-inbound', match: 'exact' },
   { method: 'POST', path: '/api/calls/webhook', match: 'exact' },
   { method: 'POST', path: '/api/calls/status', match: 'exact' },
   { method: 'POST', path: '/api/receptionist/webhook', match: 'exact' },
@@ -40,6 +41,9 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   // Vercel Cron (x-vercel-cron + Authorization Bearer CRON_SECRET).
   // Middleware must not 401 these; the route still requires CRON_SECRET.
   { method: '*', path: '/api/cron/', match: 'prefix' },
+
+  // Collections SMS batch — route still requires ADMIN_API_KEY or CRON_SECRET.
+  { method: 'POST', path: '/api/collections/sms-batch', match: 'exact' },
 
   // Jobber unsent quote drafts — route still requires Bearer CRON_SECRET.
   { method: 'POST', path: '/api/jobber/tech-note-quote', match: 'exact' },
@@ -64,6 +68,11 @@ export function isCronApiPath(pathname: string): boolean {
  */
 export function isMcpApiPath(pathname: string): boolean {
   return pathname === '/api/mcp' || pathname.startsWith('/api/mcp/');
+}
+
+/** Cookie-less collections batch and inbound SMS. Routes authenticate themselves. */
+export function isCollectionsApiPath(pathname: string): boolean {
+  return pathname === '/api/collections/sms-batch' || pathname === '/api/sms/collections-inbound';
 }
 
 /**
@@ -92,6 +101,10 @@ export function isPublicApiRoute(method: string, pathname: string): boolean {
   }
 
   if (isOpsApiPath(pathname)) {
+    return true;
+  }
+
+  if (isCollectionsApiPath(pathname)) {
     return true;
   }
 

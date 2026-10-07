@@ -4,6 +4,7 @@ import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyNewCall } from '@/lib/messaging/discord';
 import { notifyCall } from '@/lib/notifications';
 import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/receptionist/pay-link';
+import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
 import { getValidJobberAccessToken } from '@/lib/jobber/auth';
@@ -25,7 +26,6 @@ import {
 } from '@/lib/receptionist/office-callback';
 
 const OFFICE_EMAILS = OFFICE_ALERT_EMAILS;
-const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
 
 interface VapiMessage {
   role: string;
@@ -61,6 +61,11 @@ interface VapiCall {
  * Creates leads/requests in the CRM, handles function calls
  */
 export async function POST(request: NextRequest) {
+  const webhookAuth = authorizeVapiWebhook(request.headers, process.env);
+  if (!webhookAuth.ok) {
+    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
+  }
+
   try {
     const body = await request.json();
     
@@ -467,6 +472,19 @@ export async function GET() {
   });
 }
 
+function redactToolLog(params: Record<string, unknown>): Record<string, unknown> {
+  const logParams = { ...params };
+  if (logParams.paymentUrl) {
+    logParams.paymentUrl = paymentHostForLog(String(logParams.paymentUrl));
+  }
+  for (const key of ['to', 'phone', 'from', 'customerPhone']) {
+    if (logParams[key] == null || logParams[key] === '') continue;
+    const digits = String(logParams[key]).replace(/\D/g, '');
+    logParams[key] = digits ? `***${digits.slice(-4)}` : '[redacted]';
+  }
+  return logParams;
+}
+
 /**
  * Handle Vapi tool calls.
  * function-call returns { result }. tool-calls returns { results: [{ toolCallId, result }] }.
@@ -487,11 +505,7 @@ async function handleVapiTools(body: any) {
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
     const params = call.params || {};
-    const logParams = { ...params };
-    if (logParams.paymentUrl) {
-      logParams.paymentUrl = paymentHostForLog(String(logParams.paymentUrl));
-    }
-    console.log(`[Receptionist] Function call: ${call.name}`, JSON.stringify(logParams));
+    console.log(`[Receptionist] Function call: ${call.name}`, JSON.stringify(redactToolLog(params)));
     if (isOfficeAlertTool(call.name)) officeIndexes.push(i);
   }
 
