@@ -2,9 +2,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   assertQuoteIsDraftUnsent,
+  assertQuoteUnchangedExceptSalesperson,
   buildDraftQuoteEditAttributes,
+  buildSalespersonOnlyEditAttributes,
   getClientById,
   quoteEditUsedForbiddenFields,
+  setQuoteSalesperson,
   updateUnsentQuoteDraft,
 } from './mcp-quotes.ts';
 import { BRIGHTON_SALESPERSON_ID } from './quotes.ts';
@@ -278,5 +281,118 @@ describe('updateUnsentQuoteDraft', () => {
       () => updateUnsentQuoteDraft({ quoteId: 'quote-sent', title: 'Nope' }, { fetchImpl, token: 'test' }),
       /only unsent drafts/
     );
+  });
+});
+
+describe('setQuoteSalesperson', () => {
+  const line = {
+    id: 'li-1',
+    name: 'BT2',
+    description: 'Pull',
+    quantity: 1,
+    unitPrice: 600,
+    optional: false,
+    recommended: false,
+  };
+
+  it('builds attributes with salespersonId only', () => {
+    assert.deepEqual(buildSalespersonOnlyEditAttributes(`  ${BRIGHTON_SALESPERSON_ID}  `), {
+      salespersonId: BRIGHTON_SALESPERSON_ID,
+    });
+    assert.throws(() => buildSalespersonOnlyEditAttributes('  '), /salespersonId is required/);
+  });
+
+  it('rejects a re-read that changed status or line price', () => {
+    const before = {
+      id: 'quote-1',
+      quoteNumber: 4701,
+      title: 'Pull pump',
+      message: 'Proposal',
+      quoteStatus: 'converted',
+      sentAt: '2026-09-01T12:00:00Z',
+      amounts: { subtotal: 600, total: 600 },
+      lineItems: { nodes: [line] },
+    };
+    assert.doesNotThrow(() =>
+      assertQuoteUnchangedExceptSalesperson(before, {
+        ...before,
+        salesperson: { id: BRIGHTON_SALESPERSON_ID, name: { full: 'Brighton Scala' } },
+      })
+    );
+    assert.throws(
+      () => assertQuoteUnchangedExceptSalesperson(before, { ...before, quoteStatus: 'approved' }),
+      /status converted -> approved/
+    );
+    assert.throws(
+      () =>
+        assertQuoteUnchangedExceptSalesperson(before, {
+          ...before,
+          lineItems: { nodes: [{ ...line, unitPrice: 1 }] },
+        }),
+      /line items/
+    );
+  });
+
+  it('sends quoteEdit on a converted quote and returns the re-read salesperson', async () => {
+    const bodies: string[] = [];
+    let reads = 0;
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const parsed = JSON.parse(body || '{}') as { query?: string; variables?: { attributes?: Record<string, unknown> } };
+      const query = parsed.query || '';
+      if (query.includes('McpUsers')) {
+        return jsonResponse({
+          data: {
+            users: {
+              nodes: [
+                {
+                  id: BRIGHTON_SALESPERSON_ID,
+                  status: 'ACTIVATED',
+                  name: { full: 'Brighton Scala' },
+                  email: { raw: 'info@scwellservice.com' },
+                },
+              ],
+              pageInfo: { hasNextPage: false },
+            },
+          },
+        });
+      }
+      if (query.includes('McpQuoteById')) {
+        reads += 1;
+        return jsonResponse({
+          data: {
+            quote: {
+              id: 'quote-1',
+              quoteNumber: 4701,
+              title: 'Pull pump',
+              message: 'Proposal',
+              quoteStatus: 'converted',
+              sentAt: '2026-09-01T12:00:00Z',
+              amounts: { subtotal: 600, total: 600 },
+              salesperson: reads === 1 ? null : { id: BRIGHTON_SALESPERSON_ID, name: { full: 'Brighton Scala' } },
+              lineItems: { nodes: [line] },
+            },
+          },
+        });
+      }
+      if (query.includes('mutation') && query.includes('quoteEdit')) {
+        assert.deepEqual(parsed.variables?.attributes, { salespersonId: BRIGHTON_SALESPERSON_ID });
+        return jsonResponse({
+          data: { quoteEdit: { quote: { id: 'quote-1', quoteStatus: 'converted' }, userErrors: [] } },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+
+    const result = await setQuoteSalesperson(
+      { quoteId: 'quote-1', salespersonId: BRIGHTON_SALESPERSON_ID },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.changed, true);
+    assert.equal(result.quote.salesperson?.id, BRIGHTON_SALESPERSON_ID);
+    assert.equal(result.quote.quoteStatus, 'converted');
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+    assert.equal(bodies.some((body) => body.includes('quoteCreateLineItems')), false);
   });
 });

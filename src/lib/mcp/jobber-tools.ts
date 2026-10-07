@@ -28,6 +28,7 @@ import {
   getQuoteById,
   searchProducts,
   searchQuotes,
+  setQuoteSalesperson,
   updateUnsentQuoteDraft,
   type JobberQuoteDetail,
 } from '../jobber/mcp-quotes.ts';
@@ -68,7 +69,7 @@ import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.7.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.8.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -129,7 +130,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, and visible fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
-  'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. Quote reads include salesperson id and name.',
+  'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. set_quote_salesperson changes only the salesperson on a quote in any status and never contacts the customer. Quote reads include salesperson id and name.',
   'search_jobs and get_job accept includeVisits (default false) for visit times and assigned technician names. That path skips photos and caps the Jobber page at 10. search_invoices and get_invoice accept includeJobs (default false) for linked job ids and job numbers.',
 ].join(' ');
 
@@ -387,6 +388,24 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
             'Jobber user id. Omit to leave the salesperson unchanged. The response salesperson must match this id or the tool errors.',
         },
         addLineItems: { type: 'array', items: LINE_ITEM_SCHEMA },
+      },
+    },
+  },
+  {
+    name: 'set_quote_salesperson',
+    description:
+      'Set ONLY the salesperson on a Jobber quote in any status (draft, awaiting_response, approved, converted, or changes_requested). Uses quoteEdit with salespersonId and no other fields. Never contacts the customer: it does not send, resend, or notify. Does not change line items, amounts, message, or status. salespersonId must be an active Jobber user from list_users (status ACTIVATED). Re-reads the quote and returns the salesperson Jobber actually shows.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['quoteId', 'salespersonId'],
+      properties: {
+        quoteId: { type: 'string', description: 'Encoded Jobber quote id.' },
+        salespersonId: {
+          type: 'string',
+          description:
+            'Jobber user id from list_users. Must be status ACTIVATED. This is the only field the tool writes.',
+        },
       },
     },
   },
@@ -1140,6 +1159,43 @@ export async function callJobberMcpTool(
           quote: summarizeQuote(quote),
         });
       }
+      case 'set_quote_salesperson': {
+        assertNoNotifyArgs(args);
+        const rejected = [
+          'title',
+          'message',
+          'lineItems',
+          'addLineItems',
+          'taxRateId',
+          'status',
+          'quoteStatus',
+          'sentAt',
+          'transitionQuoteTo',
+        ].filter((key) => args[key] != null);
+        if (rejected.length) {
+          throw new Error(
+            `set_quote_salesperson only changes salesperson. Refusing ${rejected.join(', ')}.`
+          );
+        }
+        const result = await setQuoteSalesperson(
+          {
+            quoteId: requiredString(args, 'quoteId'),
+            salespersonId: requiredString(args, 'salespersonId'),
+          },
+          deps
+        );
+        const salesperson = summarizeJobberSalesperson(result.quote.salesperson);
+        return textResult({
+          notified: false,
+          sent: false,
+          changed: result.changed,
+          salesperson,
+          quote: summarizeQuote(result.quote),
+          note: result.changed
+            ? 'Changed only the salesperson via quoteEdit. Never contacts the customer. Did not send, resend, or notify. Did not change line items, amounts, message, or status.'
+            : 'Salesperson was already this user. No quoteEdit was sent. Never contacts the customer.',
+        });
+      }
       case 'search_invoices': {
         const query = optionalString(args, 'query');
         const status = optionalString(args, 'status');
@@ -1493,6 +1549,7 @@ export async function jobberMcpHealthBody(
     tools: JOBBER_MCP_TOOLS.map((tool) => tool.name),
     safety: {
       draftOnly: true,
+      quoteSalespersonAnyStatus: true,
       sendsQuotes: false,
       sendsInvoices: false,
       invoiceMutations: true,
