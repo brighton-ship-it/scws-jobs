@@ -59,7 +59,10 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('close_job'));
     assert.ok(names.includes('list_tax_rates'));
     assert.ok(names.includes('search_products'));
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.6.0');
+    assert.ok(names.includes('get_products'));
+    assert.ok(names.includes('edit_product'));
+    assert.equal(names.includes('delete_product'), false);
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.7.0');
     for (const name of [
       'create_client',
       'create_property',
@@ -1054,6 +1057,9 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_job'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'list_tax_rates'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_products'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_products'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'edit_product'));
+    assert.equal(rpc.result.tools.some((tool) => tool.name === 'delete_product'), false);
     assert.equal(
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
       false
