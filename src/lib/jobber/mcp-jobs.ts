@@ -2,6 +2,8 @@
  * Read-only Jobber job lookups for the MCP gateway.
  * Same GraphQL client as quotes and invoices. Photo URLs come from
  * Job.noteAttachments (the file connection recent-jobs does not select).
+ * includeVisits adds visit times and assignee names, and skips photos so
+ * the nested connection stays under Jobber's query-cost maximum.
  *
  * No create, update, complete, close, or send mutations live here.
  */
@@ -20,6 +22,16 @@ export const MCP_JOB_CLIENT_LIMIT = 5;
 export const MCP_JOB_SEARCH_PHOTO_LIMIT = 6;
 export const MCP_JOB_DETAIL_PHOTO_LIMIT = 40;
 export const MCP_JOB_PHOTO_PAGES = 4;
+/** visits(first) selected on each job when includeVisits is set. */
+export const MCP_JOB_VISITS_FIRST = 20;
+/** assignedUsers(first) selected on each visit. */
+export const MCP_JOB_VISIT_ASSIGNEES_FIRST = 10;
+/**
+ * jobs(first) while visits are selected. A page of 25 with
+ * visits(first: 20) and assignedUsers(first: 10) is over Jobber's
+ * 10,000-point maximum. See visitsJobsQueryCost.
+ */
+export const MCP_JOB_VISITS_PAGE_SIZE = 10;
 
 const READ_ONLY_JOB_QUERY =
   /\bmutation\b|jobCreate|jobEdit|jobComplete|jobDelete|jobClose|visitComplete|jobNoteCreate|jobNoteEdit|noteCreate\b|sendJob/i;
@@ -49,6 +61,31 @@ export type JobberJobAttachmentConnection = {
   pageInfo?: { hasNextPage?: boolean | null; endCursor?: string | null } | null;
 };
 
+export type JobberJobAssignee = {
+  id?: string | null;
+  name?: string | { full?: string | null; first?: string | null; last?: string | null } | null;
+};
+
+export type JobberJobVisitNode = {
+  id?: string | null;
+  title?: string | null;
+  startAt?: string | null;
+  endAt?: string | null;
+  completedAt?: string | null;
+  isComplete?: boolean | null;
+  assignedUsers?: { nodes?: Array<JobberJobAssignee | null> | null } | null;
+};
+
+export type JobberJobVisitSummary = {
+  id: string | null;
+  title: string | null;
+  startAt: string | null;
+  endAt: string | null;
+  completedAt: string | null;
+  isComplete: boolean | null;
+  assignees: string[];
+};
+
 export type JobberJobDetail = {
   id: string;
   jobNumber?: string | number | null;
@@ -60,6 +97,7 @@ export type JobberJobDetail = {
   client?: JobberJobClient | null;
   property?: { id?: string | null; address?: { city?: string | null } | null } | null;
   noteAttachments?: JobberJobAttachmentConnection | null;
+  visits?: { nodes?: Array<JobberJobVisitNode | null> | null } | null;
 };
 
 export type JobberJobPhoto = {
@@ -87,6 +125,7 @@ export type JobberJobSummary = {
   photos: JobberJobPhoto[];
   photoUrls: string[];
   photosTruncated: boolean;
+  visits?: JobberJobVisitSummary[];
 };
 
 export type JobberJobPageInfo = {
@@ -102,6 +141,7 @@ export type SearchJobsInput = {
   first?: number;
   after?: string | null;
   photoLimit?: number;
+  includeVisits?: boolean;
 };
 
 export type SearchJobsResult = {
@@ -121,6 +161,7 @@ type JobEdge = {
 };
 
 type UrlFieldName = 'url' | 'fileUrl' | 'downloadUrl';
+type AssigneeNameShape = 'full' | 'firstLast' | 'scalar' | 'none';
 
 type QueryShape = {
   searchTerm: boolean;
@@ -134,6 +175,9 @@ type QueryShape = {
   fileNameField: 'fileName' | 'filename';
   contentType: boolean;
   statusUpper: boolean;
+  visits: boolean;
+  visitIsComplete: boolean;
+  assigneeName: AssigneeNameShape;
 };
 
 function graphql(query: string, variables: Record<string, unknown>, deps?: JobberDeps) {
@@ -159,6 +203,33 @@ export function pageSize(first?: number): number {
   const n = first ?? MCP_JOB_PAGE_SIZE;
   if (!Number.isFinite(n) || n < 1) return MCP_JOB_PAGE_SIZE;
   return Math.min(Math.floor(n), MCP_JOB_MAX_PAGE_SIZE);
+}
+
+/**
+ * Jobber page size for one jobs() request. Visits nest another connection
+ * per job, so that path uses the smaller cap.
+ */
+export function jobQueryPageSize(includeVisits?: boolean): number {
+  return includeVisits ? MCP_JOB_VISITS_PAGE_SIZE : MCP_JOB_MAX_PAGE_SIZE;
+}
+
+/**
+ * Estimated requestedQueryCost for jobs(first: pageSize) when each job
+ * selects visits(first: 20) { assignedUsers(first: 10) { name { full } } }.
+ * Jobber prices edges, nodes, and node at 0. Every other field is 1.
+ * A connection costs `first` times the fields on one node. Cursor is
+ * counted per job. jobs.pageInfo is counted once.
+ */
+export function visitsJobsQueryCost(pageSize: number): number {
+  const assignedUsers = MCP_JOB_VISIT_ASSIGNEES_FIRST * 3;
+  const visitFields = 6 + assignedUsers;
+  const visits = MCP_JOB_VISITS_FIRST * visitFields;
+  const jobScalars = 7;
+  const client = 6;
+  const property = 4;
+  const cursor = 1;
+  const job = jobScalars + client + property + visits + cursor;
+  return pageSize * job + 2;
 }
 
 export function normalizeJobStatus(status: string | null | undefined): string {
@@ -292,6 +363,35 @@ function filterIsEmpty(filter: JobServerFilter | null): boolean {
   return !filter?.status && !filter?.completedAt?.after && !filter?.completedAt?.before;
 }
 
+function assigneeSelection(shape: QueryShape): string {
+  if (shape.assigneeName === 'full') return 'name { full }';
+  if (shape.assigneeName === 'firstLast') return 'name { first last }';
+  if (shape.assigneeName === 'scalar') return 'name';
+  return '';
+}
+
+function visitsSelection(shape: QueryShape): string {
+  if (!shape.visits) return '';
+  const name = assigneeSelection(shape);
+  const userFields = ['id', name].filter(Boolean).join('\n              ');
+  const complete = shape.visitIsComplete ? '\n            isComplete' : '';
+  return `
+    visits(first: ${MCP_JOB_VISITS_FIRST}) {
+      nodes {
+            id
+            title
+            startAt
+            endAt
+            completedAt${complete}
+            assignedUsers(first: ${MCP_JOB_VISIT_ASSIGNEES_FIRST}) {
+              nodes {
+              ${userFields}
+              }
+            }
+      }
+    }`;
+}
+
 function attachmentSelection(shape: QueryShape, photoLimit: number, withAfter = false): string {
   if (!shape.noteAttachments) return '';
   const first = Math.min(Math.max(photoLimit, 1) + 4, 50);
@@ -331,7 +431,7 @@ function jobNodeFields(shape: QueryShape, photoLimit: number): string {
     property {
       id
       address { city }
-    }${attachmentSelection(shape, photoLimit)}`;
+    }${attachmentSelection(shape, photoLimit)}${visitsSelection(shape)}`;
 }
 
 function jobsConnectionSelection(shape: QueryShape, photoLimit: number): string {
@@ -394,6 +494,41 @@ function mentionsField(message: string, field: string): boolean {
 
 function applySchemaFallback(message: string, shape: QueryShape, filter: JobServerFilter | null): boolean {
   let changed = false;
+  if (shape.visits && mentionsField(message, 'visits')) {
+    shape.visits = false;
+    changed = true;
+  }
+  if (shape.visitIsComplete && mentionsField(message, 'isComplete')) {
+    shape.visitIsComplete = false;
+    changed = true;
+  }
+  if (shape.visits && shape.assigneeName === 'full' && mentionsField(message, 'full')) {
+    shape.assigneeName = 'firstLast';
+    changed = true;
+  } else if (
+    shape.visits &&
+    (shape.assigneeName === 'full' || shape.assigneeName === 'firstLast') &&
+    /name/i.test(message) &&
+    /must not have a selection|no subfields|has no subfields/i.test(message)
+  ) {
+    shape.assigneeName = 'scalar';
+    changed = true;
+  } else if (
+    shape.visits &&
+    shape.assigneeName === 'firstLast' &&
+    (mentionsField(message, 'first') || mentionsField(message, 'last'))
+  ) {
+    shape.assigneeName = 'scalar';
+    changed = true;
+  } else if (
+    shape.visits &&
+    shape.assigneeName === 'scalar' &&
+    mentionsField(message, 'name') &&
+    /User|assignedUsers|field/i.test(message)
+  ) {
+    shape.assigneeName = 'none';
+    changed = true;
+  }
   if (shape.noteAttachments && mentionsField(message, 'noteAttachments')) {
     shape.noteAttachments = false;
     changed = true;
@@ -554,10 +689,66 @@ function clientDisplayName(client: JobberJobClient | null | undefined): string |
   return client?.companyName?.trim() || null;
 }
 
-export function summarizeJob(job: JobberJobDetail, photoLimit: number): JobberJobSummary {
+function assigneeFullName(user: JobberJobAssignee): string | null {
+  const name = user.name;
+  if (typeof name === 'string') {
+    const trimmed = name.trim();
+    return trimmed || null;
+  }
+  if (!name || typeof name !== 'object') return null;
+  const full = name.full?.trim();
+  if (full) return full;
+  const joined = [name.first, name.last]
+    .map((part) => part?.trim())
+    .filter((part): part is string => Boolean(part))
+    .join(' ');
+  return joined || null;
+}
+
+function summarizeVisits(connection: JobberJobDetail['visits']): JobberJobVisitSummary[] {
+  const visits: JobberJobVisitSummary[] = [];
+  for (const node of connection?.nodes || []) {
+    if (!node) continue;
+    const assignees: string[] = [];
+    for (const user of node.assignedUsers?.nodes || []) {
+      if (!user) continue;
+      const name = assigneeFullName(user);
+      if (name) assignees.push(name);
+    }
+    visits.push({
+      id: node.id ?? null,
+      title: node.title ?? null,
+      startAt: node.startAt ?? null,
+      endAt: node.endAt ?? null,
+      completedAt: node.completedAt ?? null,
+      isComplete: typeof node.isComplete === 'boolean' ? node.isComplete : null,
+      assignees,
+    });
+  }
+  return visits;
+}
+
+function jobResultNote(shape: QueryShape, includeVisits: boolean): string | undefined {
+  const parts: string[] = [];
+  if (includeVisits) {
+    parts.push('Photos omitted while includeVisits is set, to stay under Jobber query cost.');
+    if (!shape.visits) parts.push('Jobber did not return visits on this schema.');
+  } else if (!shape.noteAttachments) {
+    parts.push('Jobber did not return note attachment URLs on this schema.');
+  }
+  return parts.length ? parts.join(' ') : undefined;
+}
+
+export function summarizeJob(
+  job: JobberJobDetail,
+  photoLimit: number,
+  options?: { includeVisits?: boolean }
+): JobberJobSummary {
+  const includeVisits = Boolean(options?.includeVisits);
   const photos: JobberJobPhoto[] = [];
   const seen = new Set<string>();
-  for (const file of readFiles(job.noteAttachments)) {
+  const files = includeVisits ? [] : readFiles(job.noteAttachments);
+  for (const file of files) {
     if (!isJobPhoto(file)) continue;
     const url = downloadUrlOf(file);
     const thumbnailUrl = httpsUrl(file.thumbnailUrl);
@@ -574,8 +765,8 @@ export function summarizeJob(job: JobberJobDetail, photoLimit: number): JobberJo
     if (photos.length >= photoLimit) break;
   }
   const photoUrls = photos.map((photo) => photo.url).filter((url): url is string => Boolean(url));
-  const photoCount = readFiles(job.noteAttachments).filter(isJobPhoto).length;
-  return {
+  const photoCount = files.filter(isJobPhoto).length;
+  const summary: JobberJobSummary = {
     id: job.id,
     jobNumber: job.jobNumber ?? null,
     title: job.title ?? null,
@@ -593,16 +784,21 @@ export function summarizeJob(job: JobberJobDetail, photoLimit: number): JobberJo
       : null,
     photos,
     photoUrls,
-    photosTruncated: Boolean(job.noteAttachments?.pageInfo?.hasNextPage) || photoCount > photoLimit,
+    photosTruncated: includeVisits
+      ? false
+      : Boolean(job.noteAttachments?.pageInfo?.hasNextPage) || photoCount > photoLimit,
   };
+  if (includeVisits) summary.visits = summarizeVisits(job.visits);
+  return summary;
 }
 
 function initialShape(input: SearchJobsInput): QueryShape {
+  const includeVisits = Boolean(input.includeVisits);
   return {
     searchTerm: Boolean(input.query?.trim()),
     edges: true,
     useFilter: true,
-    noteAttachments: true,
+    noteAttachments: !includeVisits,
     url: true,
     urlName: 'url',
     thumbnailUrl: true,
@@ -610,6 +806,9 @@ function initialShape(input: SearchJobsInput): QueryShape {
     fileNameField: 'fileName',
     contentType: true,
     statusUpper: false,
+    visits: includeVisits,
+    visitIsComplete: includeVisits,
+    assigneeName: includeVisits ? 'full' : 'none',
   };
 }
 
@@ -657,6 +856,7 @@ async function jobsFromClients(
   input: SearchJobsInput,
   shape: QueryShape,
   photoLimit: number,
+  fetchFirst: number,
   deps?: JobberDeps
 ): Promise<SearchJobsResult | null> {
   const clients = await searchClients(query, deps);
@@ -667,7 +867,7 @@ async function jobsFromClients(
     if (!client?.id) continue;
     const result = await queryWithFallback(
       (current) => clientJobsQuery(current, photoLimit),
-      () => ({ id: client.id, first: MCP_JOB_MAX_PAGE_SIZE }),
+      () => ({ id: client.id, first: fetchFirst }),
       shape,
       null,
       deps,
@@ -686,7 +886,7 @@ async function jobsFromClients(
   const want = pageSize(input.first);
   const capped = matches.slice(0, want);
   return {
-    jobs: capped.map((job) => summarizeJob(job, photoLimit)),
+    jobs: capped.map((job) => summarizeJob(job, photoLimit, { includeVisits: Boolean(input.includeVisits) })),
     pageInfo: { hasNextPage: false, endCursor: null },
     note:
       truncated || matches.length > want
@@ -697,10 +897,12 @@ async function jobsFromClients(
 
 export async function searchJobs(input: SearchJobsInput, deps?: JobberDeps): Promise<SearchJobsResult> {
   const query = input.query?.trim() || '';
+  const includeVisits = Boolean(input.includeVisits);
   const want = pageSize(input.first);
   const photoLimit = photoLimitFor(input);
   const shape = initialShape(input);
   const filter = buildJobServerFilter(input);
+  const fetchFirst = jobQueryPageSize(includeVisits);
   if (!filter) shape.useFilter = false;
   const collected: JobEdge[] = [];
   let after: string | null = input.after?.trim() || null;
@@ -710,18 +912,17 @@ export async function searchJobs(input: SearchJobsInput, deps?: JobberDeps): Pro
 
   for (let pages = 0; pages < MCP_JOB_MAX_SCAN_PAGES && collected.length < want; pages++) {
     const page = await fetchJobPage(
-      { first: MCP_JOB_MAX_PAGE_SIZE, after, query, shape, filter, photoLimit },
+      { first: fetchFirst, after, query, shape, filter, photoLimit },
       deps
     );
 
     if (!triedClients && query && !shape.searchTerm && !isJobNumberQuery(query) && !input.after) {
       triedClients = true;
-      const fromClients = await jobsFromClients(query, input, shape, photoLimit, deps);
+      const fromClients = await jobsFromClients(query, input, shape, photoLimit, fetchFirst, deps);
       if (fromClients) {
-        if (!shape.noteAttachments) {
-          fromClients.note = [fromClients.note, 'Jobber did not return note attachment URLs on this schema.']
-            .filter(Boolean)
-            .join(' ');
+        const extra = jobResultNote(shape, includeVisits);
+        if (extra) {
+          fromClients.note = [fromClients.note, extra].filter(Boolean).join(' ');
         }
         return fromClients;
       }
@@ -768,15 +969,14 @@ export async function searchJobs(input: SearchJobsInput, deps?: JobberDeps): Pro
   }
 
   const cursors = collected.length === 0 || collected.every((edge) => edge.cursor);
-  const jobs = (cursors ? collected.slice(0, want) : collected).map((edge) => summarizeJob(edge.node, photoLimit));
-  const note = !shape.noteAttachments
-    ? 'Jobber did not return note attachment URLs on this schema.'
-    : undefined;
+  const jobs = (cursors ? collected.slice(0, want) : collected).map((edge) =>
+    summarizeJob(edge.node, photoLimit, { includeVisits })
+  );
 
   return {
     jobs,
     pageInfo: { hasNextPage, endCursor },
-    note,
+    note: jobResultNote(shape, includeVisits),
   };
 }
 
@@ -819,8 +1019,8 @@ async function appendPhotoPages(job: JobberJobDetail, shape: QueryShape, deps?: 
   };
 }
 
-async function getJobById(jobId: string, deps?: JobberDeps): Promise<JobberJobSummary> {
-  const shape = initialShape({});
+async function getJobById(jobId: string, includeVisits: boolean, deps?: JobberDeps): Promise<JobberJobSummary> {
+  const shape = initialShape({ includeVisits });
   const result = await queryWithFallback(
     (current) => jobByIdQuery(current, MCP_JOB_DETAIL_PHOTO_LIMIT),
     () => ({ id: jobId }),
@@ -834,20 +1034,21 @@ async function getJobById(jobId: string, deps?: JobberDeps): Promise<JobberJobSu
   if (shape.noteAttachments && job.noteAttachments?.pageInfo?.hasNextPage) {
     await appendPhotoPages(job, shape, deps);
   }
-  return summarizeJob(job, MCP_JOB_DETAIL_PHOTO_LIMIT);
+  return summarizeJob(job, MCP_JOB_DETAIL_PHOTO_LIMIT, { includeVisits });
 }
 
 export async function getJob(
-  input: { jobId?: string | null; jobNumber?: string | null },
+  input: { jobId?: string | null; jobNumber?: string | null; includeVisits?: boolean },
   deps?: JobberDeps
 ): Promise<JobberJobSummary> {
   const jobId = input.jobId?.trim() || '';
   const jobNumber = input.jobNumber?.trim() || '';
+  const includeVisits = Boolean(input.includeVisits);
   if (!jobId && !jobNumber) throw new Error('jobId or jobNumber is required');
 
   if (jobId && looksLikeJobberEncodedId(jobId)) {
     try {
-      return await getJobById(jobId, deps);
+      return await getJobById(jobId, includeVisits, deps);
     } catch (error) {
       if (!jobNumber) throw error;
     }
@@ -862,5 +1063,5 @@ export async function getJob(
   );
   const match = page.jobs.find((job) => normalizeJobNumber(job.jobNumber) === wanted);
   if (!match) throw new Error(`Jobber job ${number} not found`);
-  return getJobById(match.id, deps);
+  return getJobById(match.id, includeVisits, deps);
 }

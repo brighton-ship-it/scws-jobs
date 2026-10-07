@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertReadOnlyInvoiceQuery,
   buildInvoiceServerFilter,
   getInvoice,
   invoiceBalanceAmount,
@@ -144,12 +145,16 @@ describe('searchInvoices', () => {
     assert.equal(result.invoices[0].paymentUrl, OPEN_INVOICE.clientHubUri);
     assert.deepEqual(result.invoices[0].client?.emails, ['pat@example.com']);
     assert.equal(result.invoices[0].lineItems, undefined);
+    assert.equal(result.invoices[0].jobNumbers, undefined);
+    assert.equal(result.invoices[0].jobIds, undefined);
+    assert.equal(result.note, undefined);
     assert.equal(result.pageInfo.endCursor, 'c-inv-future');
     const variables = JSON.parse(bodies.find((body) => body.includes('McpInvoices')) || '{}') as {
       query?: string;
       variables?: { filter?: { invoiceStatus?: string[] } };
     };
     assert.deepEqual(variables.variables?.filter?.invoiceStatus, ['awaiting_payment', 'past_due', 'bad_debt']);
+    assert.equal(/jobs\s*\(first:/.test(variables.query || ''), false);
     assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
     assert.equal(bodies.some((body) => /invoiceCreate|invoiceSend|sendInvoice/.test(body)), false);
   });
@@ -309,6 +314,88 @@ describe('searchInvoices', () => {
     assert.equal(result.invoices[0].amounts.invoiceBalance, null);
     assert.equal(result.invoices[0].unpaid, true);
   });
+
+  it('returns linked job numbers when includeJobs is set', async () => {
+    const withJobs: JobberInvoiceDetail = {
+      ...OPEN_INVOICE,
+      jobs: {
+        nodes: [
+          { id: 'job-1', jobNumber: 4401 },
+          { id: 'job-2', jobNumber: '4402' },
+        ],
+      },
+    };
+    const { fetchImpl, bodies } = mockFetch([
+      (query) =>
+        query.includes('McpInvoices')
+          ? jsonResponse({ data: { invoices: connection([withJobs]) } })
+          : null,
+    ]);
+
+    const result = await searchInvoices(
+      { query: '1042', includeJobs: true },
+      { fetchImpl, token: 'test' }
+    );
+    assert.deepEqual(result.invoices[0].jobIds, ['job-1', 'job-2']);
+    assert.deepEqual(result.invoices[0].jobNumbers, [4401, '4402']);
+    assert.equal(result.invoices[0].lineItems, undefined);
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('McpInvoices')) || '{}') as { query?: string }).query || '';
+    assertReadOnlyInvoiceQuery(query);
+    assert.match(query, /jobs\(first: 5\)/);
+    assert.match(query, /nodes\s*\{\s*id jobNumber\s*\}/);
+    assert.equal(/\bmutation\b|invoiceCreate|invoiceEdit|invoiceSend/.test(query), false);
+    assert.equal(result.note, undefined);
+  });
+
+  it('drops linked jobs when Jobber rejects the jobs field', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) => {
+        if (/jobs\s*\(first:/.test(query)) {
+          return jsonResponse({
+            errors: [{ message: 'Cannot query field "jobs" on type "Invoice".' }],
+          });
+        }
+        return jsonResponse({ data: { invoices: connection([OPEN_INVOICE]) } });
+      },
+    ]);
+
+    const result = await searchInvoices({ query: '1042', includeJobs: true }, { fetchImpl, token: 'test' });
+    assert.deepEqual(result.invoices[0].jobIds, []);
+    assert.deepEqual(result.invoices[0].jobNumbers, []);
+    assert.match(result.note || '', /did not return linked jobs/);
+    const queries = bodies.map((body) => (JSON.parse(body) as { query?: string }).query || '');
+    assert.ok(queries.some((query) => /jobs\s*\(first:/.test(query)));
+    assert.ok(queries.some((query) => query.includes('McpInvoices') && !/jobs\s*\(first:/.test(query)));
+    assert.equal(queries.some((query) => /\bmutation\b/.test(query)), false);
+  });
+
+  it('keeps job ids when Jobber rejects jobNumber', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) => {
+        if (query.includes('jobNumber')) {
+          return jsonResponse({
+            errors: [{ message: 'Cannot query field "jobNumber" on type "Job".' }],
+          });
+        }
+        return jsonResponse({
+          data: {
+            invoices: connection([
+              { ...OPEN_INVOICE, jobs: { nodes: [{ id: 'job-1' }] } },
+            ]),
+          },
+        });
+      },
+    ]);
+
+    const result = await searchInvoices({ query: '1042', includeJobs: true }, { fetchImpl, token: 'test' });
+    assert.deepEqual(result.invoices[0].jobIds, ['job-1']);
+    assert.deepEqual(result.invoices[0].jobNumbers, []);
+    const queries = bodies.map((body) => (JSON.parse(body) as { query?: string }).query || '');
+    assert.ok(queries.some((query) => query.includes('jobNumber')));
+    const retried = queries.find((query) => /jobs\s*\(first:/.test(query) && !query.includes('jobNumber')) || '';
+    assert.match(retried, /nodes\s*\{\s*id\s*\}/);
+  });
 });
 
 describe('getInvoice', () => {
@@ -333,11 +420,43 @@ describe('getInvoice', () => {
     assert.equal(invoice.amounts.total, 500);
     assert.equal(invoice.balance, 400);
     assert.equal(invoice.lineItems?.[0]?.name, 'Pump');
+    assert.equal(invoice.jobNumbers, undefined);
+    assert.equal(invoice.jobIds, undefined);
     assert.equal(invoice.publicUrl, OPEN_INVOICE.clientHubUri);
     const query =
       (JSON.parse(bodies.find((body) => body.includes('McpInvoiceById')) || '{}') as { query?: string }).query ||
       '';
     assert.match(query, /query McpInvoiceById/);
+    assert.equal(/jobs\s*\(first:/.test(query), false);
+    assert.equal(/\bmutation\b/.test(query), false);
+  });
+
+  it('loads linked jobs by encoded id', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) =>
+        query.includes('McpInvoiceById')
+          ? jsonResponse({
+              data: {
+                invoice: {
+                  ...OPEN_INVOICE,
+                  jobs: { nodes: [{ id: 'job-1', jobNumber: 4401 }] },
+                },
+              },
+            })
+          : null,
+    ]);
+
+    const invoice = await getInvoice(
+      { invoiceId: 'Z2lkOi8vSm9iYmVyL0ludm9pY2UvMTA0Mg==', includeJobs: true, includeLineItems: false },
+      { fetchImpl, token: 'test' }
+    );
+    assert.deepEqual(invoice.jobIds, ['job-1']);
+    assert.deepEqual(invoice.jobNumbers, [4401]);
+    assert.equal(invoice.lineItems, undefined);
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('McpInvoiceById')) || '{}') as { query?: string }).query || '';
+    assertReadOnlyInvoiceQuery(query);
+    assert.match(query, /jobs\(first: 5\)/);
     assert.equal(/\bmutation\b/.test(query), false);
   });
 
