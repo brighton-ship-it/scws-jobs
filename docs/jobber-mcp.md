@@ -1,6 +1,6 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **add notes**, **draft quotes**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, and **read completed jobs with photo URLs** (GBP posts and photo backfill) without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **add notes**, **draft quotes**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, **read completed jobs with photo URLs** (GBP posts and photo backfill), and **read catalog cost/price and edit one product's cost, price, markup, or visibility** (never delete) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
@@ -20,6 +20,8 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | Create unsent quote draft | Invoice send, mark-sent, or record payment |
 | Update unsent draft (title, message, optional/recommended lines, taxRateId, salesperson) | Changing the tax-rate catalog |
 | Search products for line names / street list | Record or collect a payment |
+| Read product cost, street price, markup, and visible (`get_products`) | Delete a product, or edit name, description, tax, or category |
+| Edit one product's cost, price, markup, or visibility (`edit_product`, optional `dryRun`) | Any product field outside that allow-list |
 | List tax rates (id, name, label, rate, default) | Invoice line add, update, or remove |
 | Search / get invoices | `jobComplete` (removed) |
 | Set an invoice tax rate and Client Hub card, ACH, and partial-payment settings | Job update or send |
@@ -78,7 +80,7 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.6.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.7.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
@@ -90,7 +92,9 @@ MCP server version **1.6.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stay
 - `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`. `salespersonId` defaults to Brighton Scala
 - `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields. `taxRateId` sets the quote tax rate. `salespersonId` is sent on `quoteEdit` (the only quote mutation with that field). The tool re-reads `Quote.salesperson` and errors if Jobber left the previous salesperson in place
 - `list_tax_rates` — read-only. Optional `query` filters name, label, or description (for example `San Diego` or `7.75`). Returns `id`, `name`, `label`, `rate`, `default`. Pass `id` as `taxRateId` on a quote draft, `edit_invoice`, or `create_invoice_draft`
-- `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`)
+- `search_products` — catalog match on name or description. Returns `id`, `name`, `description`, `defaultUnitCost` (street list, not internal cost), `taxable`, `category`. Queries `products(searchTerm, first, after)`. A GraphQL error is returned to the caller. If Jobber search succeeds with no rows, the catalog is paged and filtered locally (`matchedBy: "catalog"`). Cost, markup, and visibility are on `get_products`
+- `get_products` — read by one or more ids (`product(id)`, max 25) or one search page (`products(searchTerm, first, after)`). `first` is always sent (default 25, max 50) so the page stays near 900 points, under Jobber's 10,000-point cap. Returns `id`, `name`, `description`, `category`, `unitPrice` (the same number as `defaultUnitCost`; ProductOrService has no `unitPrice` field), `defaultUnitCost`, `internalUnitCost`, `markup`, `taxable`, `visible`, and `archived` (true when `visible` is false; Jobber has no archived field), plus duration, booking, and quantity range. `customFields` and `lastJobLineItem` are omitted. A Throttled response backs off and retries. A query that costs more than the maximum does not retry
+- `edit_product` — `productsAndServicesEdit` for **one** product. Allowed arguments: `internalUnitCost`, `unitPrice` (sent as `defaultUnitCost`), `markup`, `visible`. Every other field is rejected, including `name`, `description`, `taxable`, `category`, `defaultUnitCost`, and `delete`. Reads the row first, then re-reads after a successful write, and returns `before` and `after`. `dryRun: true` returns the projected `after` and does not call the mutation. `userErrors` come back on the tool error with `before` so the caller can log and revert. Passing the `before` cost, price, markup, and visible values into another `edit_product` reverts a write. Nothing deletes a product
 - `search_invoices` — invoice number / client name / status. Optional `unpaid` (balance > 0), `overdue`, `issuedBefore`. Page with `first` / `after` (`pageInfo.endCursor`)
 - `get_invoice` — one invoice by encoded id or invoice number: client, emails, total, balance, issued/due dates, status, client-hub payment link, optional line summary
 - `edit_invoice` — `taxRateId` from `list_tax_rates`, plus optional `allowCardPayments`, `allowAchPayments`, and `allowPartialPayments` (Client Hub settings on `InvoiceEditInput`). Line-item arguments are rejected. Does not send, mark sent, record, or collect
@@ -115,6 +119,8 @@ Checked against API version 2025-01-20 introspection. The gateway still sends `X
 - Job line items have **no** `productOrServiceId` (quote lines do). The tool copies catalog name and street price instead.
 - The 2025-04-16 changelog removed the older `clientNoteCreate`, `jobNoteCreate`, and `requestNoteCreate` names. The tools call `clientCreateNote`, `jobCreateNote`, and `requestCreateNote`, which were already on the 2025-01-20 schema.
 - Nothing in these tools sends, emails, texts, or notifies the client.
+- `ProductOrService` has no `unitPrice` field. The street/default price is `defaultUnitCost`. `edit_product` maps `unitPrice` onto `ProductsAndServicesEditInput.defaultUnitCost` and does not send `unitPrice` to GraphQL.
+- The 2025-01-20 schema has `productsAndServicesEdit` and no product delete mutation. `visible: false` hides a catalog row from line-item autocomplete. There is no archived flag.
 
 ## Brighton: connect Travis / Damien in Grok Bot
 
@@ -225,6 +231,7 @@ curl -sS \
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
 | `src/lib/jobber/products.ts` | product catalog search (`products`, not `productsAndServices`) + local name/description fallback |
+| `src/lib/jobber/mcp-products.ts` | `get_products` and one-product `edit_product` (`productsAndServicesEdit`) |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
 | `src/lib/jobber/mcp-invoices.ts` | read-only invoice search / get |
 | `src/lib/jobber/mcp-invoice-writes.ts` | invoice line/tax edit and unsent create-from-job |

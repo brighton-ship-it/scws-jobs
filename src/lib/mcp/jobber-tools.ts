@@ -4,9 +4,11 @@
  * Clients (search, create, property), users, unsent quote drafts, product
  * lookup, invoice reads plus unsent invoice drafts and tax/Client Hub edits,
  * requests (search, create, assessment schedule), job reads plus one-off
- * create, visit schedule, and close, notes, and tax rates. Nothing sends,
- * emails, or texts a client. jobComplete does not exist. Per-invoice card /
- * ACH / partial payment toggles are not in Jobber's API.
+ * create, visit schedule, and close, notes, tax rates, and catalog cost
+ * reads plus a one-product price/cost/visibility edit. Nothing sends,
+ * emails, or texts a client. jobComplete does not exist. Products are not
+ * deleted. Per-invoice card / ACH / partial payment toggles are not in
+ * Jobber's API.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -54,12 +56,19 @@ import { createNote, parseCreateNoteArgs } from '../jobber/mcp-notes.ts';
 import { assertNoNotifyArgs } from '../jobber/mcp-notify.ts';
 import { createRequest } from '../jobber/mcp-request-writes.ts';
 import { getRequest, searchRequests } from '../jobber/mcp-requests.ts';
+import {
+  ProductEditUserError,
+  editProduct,
+  getProducts,
+  parseEditProductArgs,
+  parseGetProductsArgs,
+} from '../jobber/mcp-products.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.6.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.7.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -118,7 +127,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
   'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
-  'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost.',
+  'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, and visible fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
   'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. Quote reads include salesperson id and name.',
 ].join(' ');
@@ -728,13 +737,69 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'search_products',
     description:
-      'Search Jobber products and services by name or description. Returns id, name, description, defaultUnitCost (street list, not internal cost), taxable, and category. If Jobber search is empty, pages the catalog and filters locally. GraphQL errors are returned instead of an empty list.',
+      'Search Jobber products and services by name or description. Returns id, name, description, defaultUnitCost (street list, not internal cost), taxable, and category. If Jobber search is empty, pages the catalog and filters locally. GraphQL errors are returned instead of an empty list. For internalUnitCost, markup, and visible, use get_products.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       required: ['query'],
       properties: {
         query: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'get_products',
+    description:
+      'Read Jobber products or services by id, or one page of a name/description search. Returns id, name, description, category, unitPrice (Jobber defaultUnitCost, the street/default price), defaultUnitCost, internalUnitCost, markup, taxable, visible, and archived (true when visible is false; Jobber has no archived field), plus duration, booking, and quantity-range fields. customFields and last line items are omitted. Search pages send an explicit first (default 25, max 50) so the query stays under Jobber\'s 10,000-point cap. Does not edit the catalog.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        ids: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'ProductOrService encoded ids. At most 25. Do not combine with query.',
+        },
+        id: { type: 'string', description: 'One ProductOrService encoded id.' },
+        productId: { type: 'string', description: 'One ProductOrService encoded id.' },
+        query: {
+          type: 'string',
+          description: 'Catalog search term. One page of products(searchTerm, first, after).',
+        },
+        first: {
+          type: 'integer',
+          minimum: 1,
+          maximum: 50,
+          description: 'Search page size. Default 25, max 50. Always sent as products(first:).',
+        },
+        after: { type: 'string', description: 'pageInfo.endCursor from the previous get_products search page.' },
+      },
+    },
+  },
+  {
+    name: 'edit_product',
+    description:
+      'Edit ONE Jobber product or service with productsAndServicesEdit. Allowed fields only: internalUnitCost, unitPrice (sent as defaultUnitCost; Jobber has no unitPrice input), markup, and visible (false hides it from line-item autocomplete). Every other field is rejected. There is no delete. Reads the current row first and re-reads after a write so the result has before and after. dryRun returns the projected after without mutating. userErrors are returned on the error result with before.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['productId'],
+      properties: {
+        productId: { type: 'string', description: 'ProductOrService encoded id. One product per call.' },
+        internalUnitCost: { type: 'number', description: 'Catalog cost. ProductOrService.internalUnitCost.' },
+        unitPrice: {
+          type: 'number',
+          description: 'Street/default price. Sent as ProductsAndServicesEditInput.defaultUnitCost.',
+        },
+        markup: { type: 'number', description: 'Catalog markup. ProductOrService.markup.' },
+        visible: {
+          type: 'boolean',
+          description: 'false hides the item from quote, job, and invoice line-item autocomplete.',
+        },
+        dryRun: {
+          type: 'boolean',
+          description: 'When true, return before and the projected after without calling productsAndServicesEdit.',
+        },
       },
     },
   },
@@ -1333,13 +1398,46 @@ export async function callJobberMcpTool(
           matchedBy: result.matchedBy,
           truncated: result.truncated,
           products: result.products,
-          note: 'defaultUnitCost is catalog/street list, not internal cost. Do not use this to invent 60% GP raises.',
+          note: 'defaultUnitCost is catalog/street list, not internal cost. Use get_products for internalUnitCost, markup, and visible. Do not use this to invent 60% GP raises.',
+        });
+      }
+      case 'get_products': {
+        const result = await getProducts(parseGetProductsArgs(args), deps);
+        return textResult({
+          ...result,
+          count: result.products.length,
+          note: 'unitPrice is Jobber defaultUnitCost (street/default price). internalUnitCost is catalog cost. archived is true when visible is false; Jobber has no separate archived field. This does not edit the catalog.',
+        });
+      }
+      case 'edit_product': {
+        const result = await editProduct(parseEditProductArgs(args), deps);
+        return textResult({
+          ...result,
+          note: result.dryRun
+            ? 'dryRun: productsAndServicesEdit was not called. after is the projected row. Pass before.internalUnitCost, before.unitPrice, before.markup, and before.visible to edit_product to revert a later write. Nothing was deleted.'
+            : result.mutated
+              ? 'Updated one product with productsAndServicesEdit. after is a fresh read. Pass before.internalUnitCost, before.unitPrice, before.markup, and before.visible to edit_product to revert. Nothing was deleted.'
+              : 'Catalog already matched. productsAndServicesEdit was not called. Nothing was deleted.',
         });
       }
       default:
         return errorResult(`Unknown tool: ${name}`);
     }
   } catch (error) {
+    if (error instanceof ProductEditUserError) {
+      return textResult(
+        {
+          error: error.message,
+          userErrors: error.userErrors,
+          before: error.before,
+          after: null,
+          mutated: false,
+          dryRun: false,
+          productId: error.productId,
+        },
+        true
+      );
+    }
     const message = error instanceof Error ? error.message : 'Jobber tool failed';
     return errorResult(message);
   }
@@ -1374,6 +1472,8 @@ export async function jobberMcpHealthBody(
       sendsQuotes: false,
       sendsInvoices: false,
       invoiceMutations: true,
+      productMutations: true,
+      deletesProducts: false,
       jobMutations: true,
       clientMutations: true,
       requestMutations: true,
