@@ -340,13 +340,21 @@ function preferCustomerName(existing: string, incoming: string): string {
 
 const MISSING_DEDUPE_COLUMN = /vapi_call_id|tool_call_id/i;
 
-/** PostgREST PGRST204 when the dedupe columns are not in the schema cache yet. */
+/**
+ * True when booking_requests has no vapi_call_id / tool_call_id yet.
+ * PostgREST reports PGRST204 ("schema cache" / "could not find").
+ * Postgres reports 42703 ("column ... does not exist") before the migration is applied.
+ */
 export function isMissingOfficeDedupeColumnError(
-  error: { code?: string | null; message?: string | null } | null | undefined,
+  error: { code?: string | number | null; message?: string | null } | null | undefined,
 ): boolean {
   if (!error) return false;
-  if (!MISSING_DEDUPE_COLUMN.test(error.message ?? '')) return false;
-  return error.code === 'PGRST204' || /schema cache|could not find/i.test(error.message ?? '');
+  const message = error.message ?? '';
+  if (!MISSING_DEDUPE_COLUMN.test(message)) return false;
+  const code = error.code == null ? '' : String(error.code);
+  return code === 'PGRST204'
+    || code === '42703'
+    || /schema cache|could not find|does not exist/i.test(message);
 }
 
 export function omitOfficeDedupeColumns<T extends object>(
