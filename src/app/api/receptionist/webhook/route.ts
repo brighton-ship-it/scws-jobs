@@ -12,9 +12,9 @@ import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
 import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
 import { callCustomerPhone, parseVapiServerTools, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
-import { officeRequestFromTool, saveSarahOfficeRequest } from '@/lib/receptionist/office-callback';
+import { OFFICE_ALERT_EMAILS, officeRequestFromTool, saveSarahOfficeRequest } from '@/lib/receptionist/office-callback';
 
-const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com', 'shanicey@scwellservice.com'];
+const OFFICE_EMAILS = OFFICE_ALERT_EMAILS;
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
 
 interface VapiMessage {

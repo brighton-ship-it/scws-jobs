@@ -100,7 +100,7 @@ const OCCUPIED_VISITS_QUERY = `
         startAt
         endAt
         allDay
-        assignedUsers {
+        assignedUsers(first: 5) {
           nodes {
             id
             name { full first last }
