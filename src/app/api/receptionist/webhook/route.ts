@@ -7,6 +7,12 @@ import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
 import { getValidJobberAccessToken } from '@/lib/jobber/auth';
+import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/call-duration';
+import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
+import { getBusinessHours } from '@/lib/receptionist/business-hours';
+import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
+import { callCustomerPhone, parseVapiServerTools, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
+import { officeRequestFromTool, saveSarahOfficeRequest } from '@/lib/receptionist/office-callback';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com', 'shanicey@scwellservice.com'];
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -51,9 +57,9 @@ export async function POST(request: NextRequest) {
     // Handle different Vapi webhook event types
     const eventType = body.message?.type || body.type || 'end-of-call-report';
     
-    // Handle function calls
-    if (eventType === 'function-call') {
-      return await handleFunctionCall(body);
+    // Legacy function-call and current tool-calls (toolCallList) both run tools.
+    if (eventType === 'function-call' || eventType === 'tool-calls') {
+      return await handleVapiTools(body);
     }
     
     // Only process end-of-call-report events (ignore status-update, hang, etc.)
@@ -146,7 +152,7 @@ export async function POST(request: NextRequest) {
     const artifact = message.artifact || body.artifact || {};
     const transcript = message.transcript || call.transcript || body.transcript ||
       artifact.transcript ||
-      artifact.messages?.map((m: any) => `${m.role}: ${m.content}`).join('\n') ||
+      artifact.messages?.map((m: any) => `${m.role}: ${m.content || m.message || ''}`).join('\n') ||
       call.messages?.map(m => `${m.role}: ${m.content}`).join('\n') || 
       'No transcript available';
     const summary = analysis.summary || '';
@@ -167,21 +173,10 @@ export async function POST(request: NextRequest) {
       if (nameMatch) customerName = nameMatch[1];
     }
 
-    // Calculate call duration - prefer direct durationSeconds from Vapi
+    // Vapi sends fractional durationSeconds (e.g. 118.54). duration_sec is an integer.
     const startedAt = body.message?.startedAt || call.startedAt || body.startedAt;
-    const endedAt = body.message?.endedAt || call.endedAt || body.endedAt;
-    
-    // Vapi sends durationSeconds directly in the end-of-call-report
-    let durationSec = body.message?.durationSeconds || call.durationSeconds || body.durationSeconds || 0;
-    
-    // Parse start time (used for email/task templates below)
     const startTime = startedAt ? new Date(startedAt) : new Date();
-    
-    // Fallback to timestamp calculation if direct duration not available
-    if (!durationSec && startedAt && endedAt) {
-      const endTime = new Date(endedAt);
-      durationSec = Math.round((endTime.getTime() - startTime.getTime()) / 1000);
-    }
+    const durationSec = resolveCallDurationSec(body);
 
     // Format phone for display
     const formatPhone = (p: string) => {
@@ -235,9 +230,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Determine priority
-    const isUrgent = urgency === 'urgent' || 
-      /urgent|emergency|no water|no pressure|flooding/i.test(transcript + summary);
+    // Urgency keywords come from the caller's lines, not Sarah's questions.
+    const rawMessages = artifact.messages || message.messages || call.messages || [];
+    const isUrgent = isCallerUrgent({
+      structuredUrgency: urgency,
+      transcript,
+      messages: rawMessages,
+    });
 
     // Update the receptionist call record with full details (we created a placeholder above)
     const { data: callRecord, error: callError } = await supabase
@@ -369,7 +368,7 @@ New call received by Sarah (AI Receptionist)
 
 CALL DETAILS:
 • Time: ${pstTime}
-• Duration: ${durationSec > 0 ? `${Math.floor(durationSec / 60)}m ${durationSec % 60}s` : 'Unknown'}
+• Duration: ${formatDurationLabel(durationSec)}
 • Phone: ${formatPhone(phone)}
 ${customerName ? `• Customer: ${customerName}` : ''}
 ${address ? `• Address: ${address}${city ? `, ${city}` : ''}` : ''}
@@ -459,119 +458,154 @@ export async function GET() {
 }
 
 /**
- * Handle Vapi function calls
+ * Handle Vapi tool calls.
+ * function-call returns { result }. tool-calls returns { results: [{ toolCallId, result }] }.
+ * Callback and emergency tools email the office. They never text the customer.
  */
-async function handleFunctionCall(body: any) {
-  const functionCall = body.message?.functionCall || body.functionCall;
-  const name = functionCall?.name;
-  const params = functionCall?.parameters || {};
-  const phone = body.message?.call?.customer?.number || params.phone || '';
-  
-  const logParams = { ...params };
-  if (logParams.paymentUrl) {
-    logParams.paymentUrl = paymentHostForLog(String(logParams.paymentUrl));
+async function handleVapiTools(body: any) {
+  const parsed = parseVapiServerTools(body);
+  if (parsed.mode === 'none') {
+    return NextResponse.json({ ok: true, skipped: true, reason: 'no-tool-calls' });
   }
-  console.log(`[Receptionist] Function call: ${name}`, JSON.stringify(logParams));
-  
-  try {
-    switch (name) {
-      case 'lookupCustomer':
-        return NextResponse.json(await handleLookupCustomer(phone || params.phone));
-      
-      case 'checkSchedule':
-        // Confirmation lock: canConfirm only when Jobber returned a visit.
-        // With city/intent=book, also returns real Jobber openSlots (never invented).
-        return NextResponse.json(
-          await handleCheckSchedule({
-            phone: phone || params.phone,
-            city: params.city,
-            address: params.address,
-            zip: params.zip || params.postalCode,
-            postalCode: params.postalCode,
-            intent: params.intent,
-            urgency: params.urgency,
-            needNow: params.needNow,
-            thisWeekend: params.thisWeekend,
-            notes: params.notes,
-          })
-        );
 
-      case 'bookJob':
-      case 'book_job':
-        return NextResponse.json(
-          await handleBookServiceCall(
-            {
-              phone: phone || params.phone,
-              name: params.name || params.callerName || params.customerName,
-              firstName: params.firstName,
-              lastName: params.lastName,
-              email: params.email,
-              address: params.address,
-              city: params.city,
-              zip: params.zip || params.postalCode,
-              postalCode: params.postalCode,
-              startAt: params.startAt,
-              urgency: params.urgency,
-              needNow: params.needNow,
-              thisWeekend: params.thisWeekend,
-              notes: params.notes || params.reason,
-            },
-            {
-              notifyOffice: async (flag) => {
-                for (const email of OFFICE_FLAG_EMAILS) {
-                  await sendEmail({
-                    to: email,
-                    subject: flag.subject,
-                    html: textToHtml(flag.text),
-                    text: flag.text,
-                  });
-                }
-              },
-            }
-          )
-        );
-      
-      case 'getServiceInfo':
-        return NextResponse.json(handleGetServiceInfo(params.serviceType));
-      
-      case 'checkServiceArea':
-        return NextResponse.json(handleCheckServiceArea(params.location));
-      
-      case 'getBusinessHours':
-        return NextResponse.json({
-          result: {
-            hours: "Monday through Friday, 7 AM to 4 PM",
-            emergency: "24/7 emergency service available",
-            note: "We're available for emergencies anytime - someone will call back within 15 minutes for urgent issues."
-          }
-        });
-      
-      case 'createCallback':
-      case 'flagEmergency':
-        // These are handled by the main webhook flow when the call ends
-        return NextResponse.json({
-          result: { success: true, message: "Request noted. I'll make sure this is taken care of." }
-        });
+  const calls = parsed.mode === 'function-call' ? [parsed.call] : parsed.calls;
+  const callPhone = callCustomerPhone(body);
+  const executed: Array<{ id: string | null; body: { result: unknown } }> = [];
 
-      case 'sendPayLink':
-        return NextResponse.json(await handleSendPayLink(params));
-
-      case 'sendPayEmail':
-        return NextResponse.json(await handleSendPayEmail(params, {
-          sendEmailFn: sendEmail,
-          textToHtmlFn: textToHtml,
-        }));
-      
-      default:
-        console.warn(`Unknown function: ${name}`);
-        return NextResponse.json({ result: { error: `Unknown function: ${name}` } });
+  for (const call of calls) {
+    const params = call.params || {};
+    const phone = String(params.phone || callPhone || '');
+    const logParams = { ...params };
+    if (logParams.paymentUrl) {
+      logParams.paymentUrl = paymentHostForLog(String(logParams.paymentUrl));
     }
-  } catch (error: any) {
-    console.error(`Function call error (${name}):`, error);
-    return NextResponse.json({
-      result: { error: 'Failed to process request', message: error?.message || 'Unknown error' }
-    });
+    console.log(`[Receptionist] Function call: ${call.name}`, JSON.stringify(logParams));
+
+    try {
+      executed.push({ id: call.id, body: await executeTool(call.name, params, phone) });
+    } catch (error: any) {
+      console.error(`Function call error (${call.name}):`, error);
+      executed.push({
+        id: call.id,
+        body: {
+          result: { error: 'Failed to process request', message: error?.message || 'Unknown error' },
+        },
+      });
+    }
   }
+
+  return NextResponse.json(vapiToolHttpBody(parsed, executed));
+}
+
+async function executeTool(name: string, params: any, phone: string) {
+  switch (name) {
+    case 'lookupCustomer':
+      return handleLookupCustomer(phone || params.phone);
+
+    case 'checkSchedule':
+      // Confirmation lock: canConfirm only when Jobber returned a visit.
+      // With city/intent=book, also returns real Jobber openSlots (never invented).
+      return handleCheckSchedule({
+        phone: phone || params.phone,
+        city: params.city,
+        address: params.address,
+        zip: params.zip || params.postalCode,
+        postalCode: params.postalCode,
+        intent: params.intent,
+        urgency: params.urgency,
+        needNow: params.needNow,
+        thisWeekend: params.thisWeekend,
+        notes: params.notes,
+      });
+
+    case 'bookJob':
+    case 'book_job':
+      return handleBookServiceCall(
+        {
+          phone: phone || params.phone,
+          name: params.name || params.callerName || params.customerName,
+          firstName: params.firstName,
+          lastName: params.lastName,
+          email: params.email,
+          address: params.address,
+          city: params.city,
+          zip: params.zip || params.postalCode,
+          postalCode: params.postalCode,
+          startAt: params.startAt,
+          urgency: params.urgency,
+          needNow: params.needNow,
+          thisWeekend: params.thisWeekend,
+          notes: params.notes || params.reason,
+        },
+        {
+          notifyOffice: async (flag) => {
+            for (const email of OFFICE_FLAG_EMAILS) {
+              await sendEmail({
+                to: email,
+                subject: flag.subject,
+                html: textToHtml(flag.text),
+                text: flag.text,
+              });
+            }
+          },
+        }
+      );
+
+    case 'getServiceInfo':
+      return handleGetServiceInfo(params.serviceType || '');
+
+    case 'checkServiceArea':
+      return checkServiceArea(serviceAreaLocationFromParams(params));
+
+    case 'getBusinessHours':
+      return getBusinessHours();
+
+    case 'createCallback':
+    case 'flagEmergency':
+      return handleOfficeRequest(name, params, phone);
+
+    case 'sendPayLink':
+      return handleSendPayLink(params);
+
+    case 'sendPayEmail':
+      return handleSendPayEmail(params, {
+        sendEmailFn: sendEmail,
+        textToHtmlFn: textToHtml,
+      });
+
+    default:
+      console.warn(`Unknown function: ${name}`);
+      return { result: { error: `Unknown function: ${name}` } };
+  }
+}
+
+async function handleOfficeRequest(name: string, params: any, phone: string) {
+  const request = officeRequestFromTool(name, params || {}, phone);
+  const supabase = createServiceClient();
+  const saved = await saveSarahOfficeRequest(request, {
+    insertBooking: async (row) => {
+      const { data, error } = await supabase
+        .from('booking_requests')
+        .insert(row as any)
+        .select('id')
+        .single();
+      const inserted = data as { id?: string } | null;
+      return { id: inserted?.id ?? null, error: error?.message ?? null };
+    },
+    sendAlert: async (alert) => sendEmail({
+      to: alert.to,
+      subject: alert.subject,
+      text: alert.text,
+      html: textToHtml(alert.text),
+    }),
+  });
+
+  return {
+    result: {
+      success: saved.success,
+      message: saved.message,
+    },
+  };
 }
 
 /**
@@ -659,42 +693,3 @@ function handleGetServiceInfo(serviceType: string) {
   };
 }
 
-/**
- * Check if location is in service area
- */
-function handleCheckServiceArea(location: string) {
-  const loc = location.toLowerCase();
-  
-  const sdCounty = ['san diego', 'ramona', 'valley center', 'escondido', 'poway', 'julian', 'fallbrook', 'bonsall', 'alpine', 'lakeside', 'el cajon', 'santee', 'jamul', 'descanso', 'pine valley', 'campo', 'borrego springs', 'warner springs', 'santa ysabel', 'pauma valley'];
-  const riversideCounty = ['riverside', 'anza', 'temecula', 'murrieta', 'hemet', 'menifee', 'winchester', 'idyllwild', 'aguanga'];
-  const sbCounty = ['san bernardino', 'yucaipa', 'redlands', 'big bear', 'highland', 'victorville', 'hesperia', 'apple valley', 'crestline', 'lake arrowhead', 'running springs'];
-  
-  const allAreas = [...sdCounty, ...riversideCounty, ...sbCounty];
-  const inArea = allAreas.some(area => loc.includes(area));
-  
-  if (inArea) {
-    return {
-      result: {
-        inServiceArea: true,
-        message: `Yes, we service ${location}! We'd be happy to help you.`
-      }
-    };
-  }
-  
-  // Check for county names
-  if (loc.includes('san diego county') || loc.includes('riverside county') || loc.includes('san bernardino county')) {
-    return {
-      result: {
-        inServiceArea: true,
-        message: "Yes, we service that area! We cover San Diego, Riverside, and San Bernardino counties."
-      }
-    };
-  }
-  
-  return {
-    result: {
-      inServiceArea: false,
-      message: "That location might be outside our usual service area, but let me take your information. If we can't help, we might be able to recommend someone who can."
-    }
-  };
-}
