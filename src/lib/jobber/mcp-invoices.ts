@@ -1,6 +1,8 @@
 /**
  * Read-only Jobber invoice lookups for the MCP gateway.
  * Reuses the shared GraphQL client (same OAuth path as quotes).
+ * includeJobs adds the linked job ids and job numbers used to attribute
+ * invoice revenue back to the work.
  *
  * No send, create, edit, or payment mutations live here.
  */
@@ -16,6 +18,8 @@ export const MCP_INVOICE_PAGE_SIZE = 15;
 export const MCP_INVOICE_MAX_PAGE_SIZE = 25;
 export const MCP_INVOICE_MAX_SCAN_PAGES = 6;
 export const MCP_INVOICE_CLIENT_LIMIT = 5;
+/** jobs(first) selected on each invoice when includeJobs is set. */
+export const MCP_INVOICE_JOBS_FIRST = 5;
 
 export const UNPAID_INVOICE_STATUSES = ['awaiting_payment', 'past_due', 'bad_debt'] as const;
 
@@ -48,6 +52,11 @@ export type JobberInvoiceLine = {
   unitPrice?: number | null;
 };
 
+export type JobberInvoiceJobNode = {
+  id?: string | null;
+  jobNumber?: string | number | null;
+};
+
 export type JobberInvoiceDetail = {
   id: string;
   invoiceNumber?: string | number | null;
@@ -61,6 +70,7 @@ export type JobberInvoiceDetail = {
   amounts?: JobberInvoiceAmounts | null;
   client?: JobberInvoiceClient | null;
   lineItems?: { nodes?: Array<JobberInvoiceLine | null> | null } | null;
+  jobs?: { nodes?: Array<JobberInvoiceJobNode | null> | null } | null;
 };
 
 export type JobberInvoicePageInfo = {
@@ -98,6 +108,8 @@ export type JobberInvoiceSummary = {
   } | null;
   unpaid: boolean;
   overdue: boolean;
+  jobIds?: string[];
+  jobNumbers?: Array<string | number>;
   lineItems?: Array<{
     id: string | null;
     name: string | null;
@@ -116,6 +128,7 @@ export type SearchInvoicesInput = {
   first?: number;
   after?: string | null;
   includeLineItems?: boolean;
+  includeJobs?: boolean;
 };
 
 export type SearchInvoicesResult = {
@@ -143,6 +156,8 @@ type QueryShape = {
   clientHubUri: boolean;
   lineDescription: boolean;
   lines: boolean;
+  jobs: boolean;
+  jobNumber: boolean;
   statusUpper: boolean;
 };
 
@@ -323,6 +338,20 @@ function filterIsEmpty(filter: InvoiceServerFilter | null): boolean {
   return !filter?.status && !filter?.invoiceStatus?.length && !filter?.issuedDate;
 }
 
+function mentionsField(message: string, field: string): boolean {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`['"]${escaped}['"]`, 'i').test(message);
+}
+
+function invoiceJobsSelection(shape: QueryShape): string {
+  if (!shape.jobs) return '';
+  const fields = ['id', shape.jobNumber ? 'jobNumber' : ''].filter(Boolean).join(' ');
+  return `
+    jobs(first: ${MCP_INVOICE_JOBS_FIRST}) {
+      nodes { ${fields} }
+    }`;
+}
+
 function invoiceNodeFields(shape: QueryShape): string {
   const amounts = [
     'subtotal',
@@ -360,7 +389,7 @@ function invoiceNodeFields(shape: QueryShape): string {
       lastName
       companyName
       emails { address }
-    }${lines}`;
+    }${lines}${invoiceJobsSelection(shape)}`;
 }
 
 function invoicesConnectionSelection(shape: QueryShape): string {
@@ -407,6 +436,13 @@ function clientInvoicesQuery(shape: QueryShape): string {
 
 function applySchemaFallback(message: string, shape: QueryShape, filter: InvoiceServerFilter | null): boolean {
   let changed = false;
+  if (shape.jobs && mentionsField(message, 'jobs')) {
+    shape.jobs = false;
+    changed = true;
+  } else if (shape.jobs && shape.jobNumber && mentionsField(message, 'jobNumber')) {
+    shape.jobNumber = false;
+    changed = true;
+  }
   if (shape.invoiceBalance && /invoiceBalance/i.test(message)) {
     shape.invoiceBalance = false;
     changed = true;
@@ -523,6 +559,19 @@ function readConnection(connection: {
   };
 }
 
+function linkedJobs(invoice: JobberInvoiceDetail): { jobIds: string[]; jobNumbers: Array<string | number> } {
+  const jobIds: string[] = [];
+  const jobNumbers: Array<string | number> = [];
+  for (const node of invoice.jobs?.nodes || []) {
+    if (!node?.id) continue;
+    jobIds.push(node.id);
+    const number = node.jobNumber;
+    if (typeof number === 'number' && Number.isFinite(number)) jobNumbers.push(number);
+    else if (typeof number === 'string' && number.trim()) jobNumbers.push(number.trim());
+  }
+  return { jobIds, jobNumbers };
+}
+
 function clientDisplayName(client: JobberInvoiceClient | null | undefined): string | null {
   if (!client) return null;
   const name = client.name?.trim();
@@ -533,7 +582,7 @@ function clientDisplayName(client: JobberInvoiceClient | null | undefined): stri
 
 export function summarizeInvoice(
   invoice: JobberInvoiceDetail,
-  options?: { includeLineItems?: boolean; now?: Date }
+  options?: { includeLineItems?: boolean; includeJobs?: boolean; now?: Date }
 ): JobberInvoiceSummary {
   const balance = invoiceBalanceAmount(invoice);
   const total = asNumber(invoice.amounts?.total);
@@ -573,6 +622,11 @@ export function summarizeInvoice(
     unpaid: isUnpaidInvoice(invoice),
     overdue: isOverdueInvoice(invoice, options?.now),
   };
+  if (options?.includeJobs) {
+    const linked = linkedJobs(invoice);
+    summary.jobIds = linked.jobIds;
+    summary.jobNumbers = linked.jobNumbers;
+  }
   if (options?.includeLineItems) {
     summary.lineItems = (invoice.lineItems?.nodes || [])
       .filter((line): line is JobberInvoiceLine => Boolean(line))
@@ -596,6 +650,8 @@ function initialShape(input: SearchInvoicesInput): QueryShape {
     clientHubUri: true,
     lineDescription: true,
     lines: Boolean(input.includeLineItems),
+    jobs: Boolean(input.includeJobs),
+    jobNumber: Boolean(input.includeJobs),
     statusUpper: false,
   };
 }
@@ -663,13 +719,26 @@ async function invoicesFromClients(
   const want = pageSize(input.first);
   const capped = matches.slice(0, want);
   return {
-    invoices: capped.map((invoice) => summarizeInvoice(invoice, { includeLineItems: input.includeLineItems })),
+    invoices: capped.map((invoice) =>
+      summarizeInvoice(invoice, { includeLineItems: input.includeLineItems, includeJobs: input.includeJobs })
+    ),
     pageInfo: { hasNextPage: false, endCursor: null },
-    note:
-      truncated || matches.length > want
-        ? 'Client-name fallback is capped (no invoice search cursor). Narrow the name to see the rest.'
-        : undefined,
+    note: invoiceResultNote(input, shape, truncated || matches.length > want),
   };
+}
+
+function invoiceResultNote(
+  input: SearchInvoicesInput,
+  shape: QueryShape,
+  clientCapped: boolean
+): string | undefined {
+  const parts = [
+    clientCapped
+      ? 'Client-name fallback is capped (no invoice search cursor). Narrow the name to see the rest.'
+      : '',
+    input.includeJobs && !shape.jobs ? 'Jobber did not return linked jobs on this schema.' : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' ') : undefined;
 }
 
 export async function searchInvoices(
@@ -741,13 +810,13 @@ export async function searchInvoices(
 
   const cursors = collected.length === 0 || collected.every((edge) => edge.cursor);
   const invoices = (cursors ? collected.slice(0, want) : collected).map((edge) =>
-    summarizeInvoice(edge.node, { includeLineItems: input.includeLineItems })
+    summarizeInvoice(edge.node, { includeLineItems: input.includeLineItems, includeJobs: input.includeJobs })
   );
+  const note = invoiceResultNote(input, shape, false);
 
-  return {
-    invoices,
-    pageInfo: { hasNextPage, endCursor },
-  };
+  return note
+    ? { invoices, pageInfo: { hasNextPage, endCursor }, note }
+    : { invoices, pageInfo: { hasNextPage, endCursor } };
 }
 
 export function looksLikeJobberEncodedId(value: string): boolean {
@@ -759,9 +828,10 @@ export function looksLikeJobberEncodedId(value: string): boolean {
 async function getInvoiceById(
   invoiceId: string,
   includeLineItems: boolean,
+  includeJobs: boolean,
   deps?: JobberDeps
 ): Promise<JobberInvoiceDetail> {
-  const shape = initialShape({ includeLineItems });
+  const shape = initialShape({ includeLineItems, includeJobs });
   const result = await queryWithFallback(
     invoiceByIdQuery,
     () => ({ id: invoiceId }),
@@ -777,20 +847,26 @@ async function getInvoiceById(
 }
 
 export async function getInvoice(
-  input: { invoiceId?: string | null; invoiceNumber?: string | null; includeLineItems?: boolean },
+  input: {
+    invoiceId?: string | null;
+    invoiceNumber?: string | null;
+    includeLineItems?: boolean;
+    includeJobs?: boolean;
+  },
   deps?: JobberDeps
 ): Promise<JobberInvoiceSummary> {
   const invoiceId = input.invoiceId?.trim() || '';
   const invoiceNumber = input.invoiceNumber?.trim() || '';
   const includeLineItems = input.includeLineItems !== false;
+  const includeJobs = Boolean(input.includeJobs);
   if (!invoiceId && !invoiceNumber) {
     throw new Error('invoiceId or invoiceNumber is required');
   }
 
   if (invoiceId && looksLikeJobberEncodedId(invoiceId)) {
     try {
-      const invoice = await getInvoiceById(invoiceId, includeLineItems, deps);
-      return summarizeInvoice(invoice, { includeLineItems });
+      const invoice = await getInvoiceById(invoiceId, includeLineItems, includeJobs, deps);
+      return summarizeInvoice(invoice, { includeLineItems, includeJobs });
     } catch (error) {
       if (!invoiceNumber) throw error;
     }
@@ -800,7 +876,7 @@ export async function getInvoice(
   const wanted = normalizeInvoiceNumber(number);
   if (!wanted) throw new Error('invoiceNumber is required');
   const page = await searchInvoices(
-    { query: number, first: MCP_INVOICE_PAGE_SIZE, includeLineItems },
+    { query: number, first: MCP_INVOICE_PAGE_SIZE, includeLineItems, includeJobs },
     deps
   );
   const match = page.invoices.find((invoice) => normalizeInvoiceNumber(invoice.invoiceNumber) === wanted);

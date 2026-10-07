@@ -1,11 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { JOBBER_MAX_QUERY_COST } from '../receptionist/jobber-throttle.ts';
 import {
   assertReadOnlyJobQuery,
   buildJobServerFilter,
   getJob,
   isJobPhoto,
+  jobQueryPageSize,
+  MCP_JOB_MAX_PAGE_SIZE,
+  MCP_JOB_VISITS_PAGE_SIZE,
   searchJobs,
+  visitsJobsQueryCost,
   type JobberJobDetail,
   type JobberJobFileNode,
 } from './mcp-jobs.ts';
@@ -131,6 +136,17 @@ describe('job filter helpers', () => {
 
   it('refuses mutation documents', () => {
     assert.throws(() => assertReadOnlyJobQuery('mutation JobComplete { jobComplete(id: "x") { job { id } } }'), /read-only/);
+    assert.throws(() => assertReadOnlyJobQuery('mutation { visitComplete(id: "x") { visit { id } } }'), /read-only/);
+  });
+
+  it('keeps a visits selection under the read-only guard and the cost cap', () => {
+    const selection =
+      'query { jobs(first: 10) { nodes { visits(first: 20) { nodes { id isComplete assignedUsers(first: 10) { nodes { id name { full } } } } } } } }';
+    assert.doesNotThrow(() => assertReadOnlyJobQuery(selection));
+    assert.ok(visitsJobsQueryCost(MCP_JOB_VISITS_PAGE_SIZE) < JOBBER_MAX_QUERY_COST);
+    assert.ok(visitsJobsQueryCost(MCP_JOB_MAX_PAGE_SIZE) > JOBBER_MAX_QUERY_COST);
+    assert.equal(jobQueryPageSize(true), MCP_JOB_VISITS_PAGE_SIZE);
+    assert.equal(jobQueryPageSize(false), MCP_JOB_MAX_PAGE_SIZE);
   });
 });
 
@@ -167,6 +183,9 @@ describe('searchJobs', () => {
     };
     assert.equal(sent.variables?.filter?.completedAt?.after, '2026-09-22T00:00:00.000Z');
     assert.match(sent.query || '', /noteAttachments/);
+    assert.equal(/\bvisits\s*\(/.test(sent.query || ''), false);
+    assert.equal(result.jobs[0].visits, undefined);
+    assert.equal(result.note, undefined);
     assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
     assert.equal(bodies.some((body) => /jobCreate|jobComplete|jobEdit/.test(body)), false);
     assert.equal(bodies.some((body) => /emails\s*\{/.test(body)), false);
@@ -315,6 +334,204 @@ describe('searchJobs', () => {
     const result = await searchJobs({ query: '4401' }, { fetchImpl, token: 'test' });
     assert.deepEqual(result.jobs[0].photoUrls, ['https://files.getjobber.com/well-file.jpg']);
   });
+
+  it('returns visit assignees when includeVisits is set and skips photos', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) =>
+        query.includes('McpJobs')
+          ? jsonResponse({
+              data: {
+                jobs: connection([
+                  {
+                    ...DONE,
+                    visits: {
+                      nodes: [
+                        {
+                          id: 'visit-1',
+                          title: 'Pull pump',
+                          startAt: '2026-09-22T16:00:00.000Z',
+                          endAt: '2026-09-22T18:00:00.000Z',
+                          completedAt: '2026-09-22T18:00:00.000Z',
+                          isComplete: true,
+                          assignedUsers: {
+                            nodes: [
+                              { id: 'user-pat', name: { full: 'Pat Tech' } },
+                              { id: 'user-sam', name: { full: 'Sam Helper' } },
+                            ],
+                          },
+                        },
+                      ],
+                    },
+                  },
+                ]),
+              },
+            })
+          : null,
+    ]);
+
+    const result = await searchJobs(
+      { query: '4401', includeVisits: true, first: 25 },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.jobs.length, 1);
+    assert.deepEqual(result.jobs[0].photoUrls, []);
+    assert.deepEqual(result.jobs[0].photos, []);
+    assert.deepEqual(result.jobs[0].visits, [
+      {
+        id: 'visit-1',
+        title: 'Pull pump',
+        startAt: '2026-09-22T16:00:00.000Z',
+        endAt: '2026-09-22T18:00:00.000Z',
+        completedAt: '2026-09-22T18:00:00.000Z',
+        isComplete: true,
+        assignees: ['Pat Tech', 'Sam Helper'],
+      },
+    ]);
+    const sent = JSON.parse(bodies.find((body) => body.includes('McpJobs')) || '{}') as {
+      query?: string;
+      variables?: { first?: number };
+    };
+    const query = sent.query || '';
+    assertReadOnlyJobQuery(query);
+    assert.match(query, /visits\(first: 20\)/);
+    assert.match(query, /assignedUsers\(first: 10\)/);
+    assert.match(query, /name\s*\{\s*full\s*\}/);
+    assert.match(query, /isComplete/);
+    assert.equal(/noteAttachments/.test(query), false);
+    assert.equal(/\bmutation\b|jobComplete|visitComplete|jobCreate/.test(query), false);
+    assert.equal(sent.variables?.first, MCP_JOB_VISITS_PAGE_SIZE);
+    assert.match(result.note || '', /Photos omitted/);
+  });
+
+  it('drops isComplete when Jobber rejects it and still returns assignees', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) => {
+        if (query.includes('isComplete')) {
+          return jsonResponse({
+            errors: [{ message: 'Cannot query field "isComplete" on type "Visit".' }],
+          });
+        }
+        return jsonResponse({
+          data: {
+            jobs: connection([
+              {
+                ...DONE,
+                visits: {
+                  nodes: [
+                    {
+                      id: 'visit-1',
+                      title: 'Pull pump',
+                      startAt: '2026-09-22T16:00:00.000Z',
+                      endAt: '2026-09-22T18:00:00.000Z',
+                      completedAt: '2026-09-22T18:00:00.000Z',
+                      assignedUsers: { nodes: [{ id: 'user-pat', name: { full: 'Pat Tech' } }] },
+                    },
+                  ],
+                },
+              },
+            ]),
+          },
+        });
+      },
+    ]);
+
+    const result = await searchJobs({ query: '4401', includeVisits: true }, { fetchImpl, token: 'test' });
+    assert.equal(result.jobs[0].visits?.[0].isComplete, null);
+    assert.deepEqual(result.jobs[0].visits?.[0].assignees, ['Pat Tech']);
+    const queries = bodies.map((body) => (JSON.parse(body) as { query?: string }).query || '');
+    assert.ok(queries.some((query) => query.includes('isComplete')));
+    assert.ok(queries.some((query) => query.includes('visits(') && !query.includes('isComplete')));
+    assert.equal(queries.some((query) => /\bmutation\b/.test(query)), false);
+  });
+
+  it('aliases name { full } to first and last when Jobber rejects full', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) => {
+        if (/name\s*\{\s*full\s*\}/.test(query)) {
+          return jsonResponse({
+            errors: [{ message: 'Cannot query field "full" on type "Name".' }],
+          });
+        }
+        return jsonResponse({
+          data: {
+            jobs: connection([
+              {
+                ...DONE,
+                visits: {
+                  nodes: [
+                    {
+                      id: 'visit-1',
+                      title: 'On site',
+                      startAt: '2026-09-22T16:00:00.000Z',
+                      endAt: '2026-09-22T18:00:00.000Z',
+                      completedAt: null,
+                      isComplete: false,
+                      assignedUsers: {
+                        nodes: [{ id: 'user-pat', name: { first: 'Pat', last: 'Tech' } }],
+                      },
+                    },
+                  ],
+                },
+              },
+            ]),
+          },
+        });
+      },
+    ]);
+
+    const result = await searchJobs({ query: '4401', includeVisits: true }, { fetchImpl, token: 'test' });
+    assert.deepEqual(result.jobs[0].visits?.[0].assignees, ['Pat Tech']);
+    assert.equal(result.jobs[0].visits?.[0].isComplete, false);
+    const queries = bodies.map((body) => (JSON.parse(body) as { query?: string }).query || '');
+    assert.ok(queries.some((query) => /name\s*\{\s*full\s*\}/.test(query)));
+    assert.ok(queries.some((query) => /name\s*\{\s*first\s+last\s*\}/.test(query)));
+  });
+
+  it('reads a string name when Jobber rejects a name selection', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) => {
+        if (/name\s*\{/.test(query)) {
+          return jsonResponse({
+            errors: [
+              {
+                message: 'Field "name" must not have a selection since type "String" has no subfields.',
+              },
+            ],
+          });
+        }
+        return jsonResponse({
+          data: {
+            jobs: connection([
+              {
+                ...DONE,
+                visits: {
+                  nodes: [
+                    {
+                      id: 'visit-1',
+                      title: 'On site',
+                      startAt: '2026-09-22T16:00:00.000Z',
+                      endAt: null,
+                      completedAt: null,
+                      isComplete: false,
+                      assignedUsers: { nodes: [{ id: 'user-pat', name: 'Pat Tech' }] },
+                    },
+                  ],
+                },
+              },
+            ]),
+          },
+        });
+      },
+    ]);
+
+    const result = await searchJobs({ query: '4401', includeVisits: true }, { fetchImpl, token: 'test' });
+    assert.deepEqual(result.jobs[0].visits?.[0].assignees, ['Pat Tech']);
+    const queries = bodies.map((body) => (JSON.parse(body) as { query?: string }).query || '');
+    assert.ok(queries.some((query) => /name\s*\{\s*full\s*\}/.test(query)));
+    const retried = queries.find((query) => query.includes('visits(') && !/name\s*\{/.test(query)) || '';
+    assert.match(retried, /assignedUsers\(first: 10\)/);
+    assert.match(retried, /\bname\b/);
+  });
 });
 
 describe('getJob', () => {
@@ -365,6 +582,7 @@ describe('getJob', () => {
     assert.equal(job.jobNumber, 4401);
     assert.equal(job.city, 'Ramona');
     assert.equal(job.client?.firstName, 'Pat');
+    assert.equal(job.visits, undefined);
     assert.deepEqual(job.photoUrls, [
       'https://files.getjobber.com/well.jpg',
       'https://files.getjobber.com/extra-0.jpg',
@@ -393,6 +611,56 @@ describe('getJob', () => {
     const job = await getJob({ jobNumber: '4401' }, { fetchImpl, token: 'test' });
     assert.equal(job.id, 'job-1');
     assert.equal(job.photoUrls[0], 'https://files.getjobber.com/well.jpg');
+    assert.equal(job.visits, undefined);
+  });
+
+  it('loads visit assignees by id and does not page photos', async () => {
+    const { fetchImpl, bodies } = mockFetch([
+      (query) => {
+        if (query.includes('McpJobPhotos')) {
+          return jsonResponse({ errors: [{ message: 'photos should not be requested' }] });
+        }
+        if (query.includes('McpJobById')) {
+          return jsonResponse({
+            data: {
+              job: {
+                ...DONE,
+                visits: {
+                  nodes: [
+                    {
+                      id: 'visit-9',
+                      title: 'Finish',
+                      startAt: '2026-09-22T16:00:00.000Z',
+                      endAt: '2026-09-22T18:00:00.000Z',
+                      completedAt: '2026-09-22T18:05:00.000Z',
+                      isComplete: true,
+                      assignedUsers: { nodes: [{ id: 'user-pat', name: { full: 'Pat Tech' } }] },
+                    },
+                  ],
+                },
+              },
+            },
+          });
+        }
+        return null;
+      },
+    ]);
+
+    const job = await getJob(
+      { jobId: 'Z2lkOi8vSm9iYmVyL0pvYi8x', includeVisits: true },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(job.id, 'job-1');
+    assert.deepEqual(job.photoUrls, []);
+    assert.deepEqual(job.visits?.[0].assignees, ['Pat Tech']);
+    assert.equal(job.visits?.[0].isComplete, true);
+    const query =
+      (JSON.parse(bodies.find((body) => body.includes('McpJobById')) || '{}') as { query?: string }).query || '';
+    assertReadOnlyJobQuery(query);
+    assert.match(query, /visits\(first: 20\)/);
+    assert.equal(/noteAttachments/.test(query), false);
+    assert.equal(bodies.some((body) => body.includes('McpJobPhotos')), false);
+    assert.equal(/\bmutation\b/.test(query), false);
   });
 
   it('errors when neither id nor number is provided', async () => {

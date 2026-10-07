@@ -130,6 +130,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, and visible fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
   'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. Quote reads include salesperson id and name.',
+  'search_jobs and get_job accept includeVisits (default false) for visit times and assigned technician names. That path skips photos and caps the Jobber page at 10. search_invoices and get_invoice accept includeJobs (default false) for linked job ids and job numbers.',
 ].join(' ');
 
 const LINE_ITEM_SCHEMA = {
@@ -392,7 +393,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'search_invoices',
     description:
-      'Search Jobber invoices by invoice number, client name, or status. Read-only. Filter unpaid (balance > 0), overdue, or issued before a date. Paginate with first/after (pageInfo.endCursor). Does not send or create invoices.',
+      'Search Jobber invoices by invoice number, client name, or status. Read-only. Filter unpaid (balance > 0), overdue, or issued before a date. Paginate with first/after (pageInfo.endCursor). Pass includeJobs for linked job ids and job numbers. Does not send or create invoices.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -417,13 +418,18 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           type: 'boolean',
           description: 'Include a short line-item summary. Default false.',
         },
+        includeJobs: {
+          type: 'boolean',
+          description:
+            'Include linked job ids and job numbers (jobs first 5) so invoice revenue can be tied to the job. Default false.',
+        },
       },
     },
   },
   {
     name: 'get_invoice',
     description:
-      'Load one Jobber invoice by encoded id or invoice number. Read-only. Returns client, emails, amounts (total and balance), issued/due dates, status, and the client-hub payment link when Jobber provides one.',
+      'Load one Jobber invoice by encoded id or invoice number. Read-only. Returns client, emails, amounts (total and balance), issued/due dates, status, and the client-hub payment link when Jobber provides one. Pass includeJobs for linked job ids and job numbers.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -433,6 +439,10 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         includeLineItems: {
           type: 'boolean',
           description: 'Include a line-item summary. Default true.',
+        },
+        includeJobs: {
+          type: 'boolean',
+          description: 'Include linked job ids and job numbers. Default false.',
         },
       },
     },
@@ -525,7 +535,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'search_jobs',
     description:
-      'Search Jobber jobs by job number, title, client, or city. Read-only. completedAfter (ISO timestamp) is the GBP daily window of completed field jobs. Optional completedBefore, status (prefer completed), and first/after pagination. Returns client first name, property city, and a short list of https photo URLs. Does not update, complete, or email jobs. Use create_job to add a one-off job.',
+      'Search Jobber jobs by job number, title, client, or city. Read-only. completedAfter (ISO timestamp) is the GBP daily window of completed field jobs. Optional completedBefore, status (prefer completed), and first/after pagination. Returns client first name, property city, and a short list of https photo URLs. Pass includeVisits to attribute the work to assigned technicians (skips photos and caps the Jobber page at 10). Does not update, complete, or email jobs. Use create_job to add a one-off job.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -549,19 +559,29 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         },
         first: { type: 'number', description: 'Page size. Default 15, max 25.' },
         after: { type: 'string', description: 'Cursor from the previous pageInfo.endCursor' },
+        includeVisits: {
+          type: 'boolean',
+          description:
+            'Include visits (id, title, start/end, completedAt, isComplete, assignee full names) so revenue can be attributed to the techs who did the work. Default false. Skips photo URLs and caps the Jobber page at 10 to stay under query cost.',
+        },
       },
     },
   },
   {
     name: 'get_job',
     description:
-      'Load one Jobber job by encoded id or job number. Read-only. Same fields as search_jobs, plus the full https photo list for GBP media. Does not update, complete, or email the job. Use create_visit to add a visit.',
+      'Load one Jobber job by encoded id or job number. Read-only. Same fields as search_jobs, plus the full https photo list for GBP media. Pass includeVisits for visit assignees (photos are omitted on that path). Does not update, complete, or email the job. Use create_visit to add a visit.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         jobId: { type: 'string', description: 'Encoded Jobber job id' },
         jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
+        includeVisits: {
+          type: 'boolean',
+          description:
+            'Include visit times and assigned technician names. Default false. Skips the photo list so the query stays smaller.',
+        },
       },
     },
   },
@@ -1136,6 +1156,7 @@ export async function callJobberMcpTool(
             first: optionalNumber(args, 'first'),
             after: optionalString(args, 'after'),
             includeLineItems: optionalBoolean(args, 'includeLineItems') ?? false,
+            includeJobs: optionalBoolean(args, 'includeJobs') ?? false,
           },
           deps
         );
@@ -1162,6 +1183,7 @@ export async function callJobberMcpTool(
             invoiceId: optionalString(args, 'invoiceId'),
             invoiceNumber: optionalString(args, 'invoiceNumber'),
             includeLineItems: optionalBoolean(args, 'includeLineItems') ?? true,
+            includeJobs: optionalBoolean(args, 'includeJobs') ?? false,
           },
           deps
         );
@@ -1243,6 +1265,7 @@ export async function callJobberMcpTool(
             completedBefore,
             first: optionalNumber(args, 'first'),
             after: optionalString(args, 'after'),
+            includeVisits: optionalBoolean(args, 'includeVisits') ?? false,
           },
           deps
         );
@@ -1267,6 +1290,7 @@ export async function callJobberMcpTool(
           {
             jobId: optionalString(args, 'jobId'),
             jobNumber: optionalString(args, 'jobNumber'),
+            includeVisits: optionalBoolean(args, 'includeVisits') ?? false,
           },
           deps
         );

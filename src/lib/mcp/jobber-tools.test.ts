@@ -52,6 +52,14 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_invoice'));
     assert.ok(names.includes('search_jobs'));
     assert.ok(names.includes('get_job'));
+    const jobSchema = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'search_jobs')?.inputSchema as {
+      properties?: { includeVisits?: { type?: string } };
+    };
+    const invoiceSchema = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'search_invoices')?.inputSchema as {
+      properties?: { includeJobs?: { type?: string } };
+    };
+    assert.equal(jobSchema?.properties?.includeVisits?.type, 'boolean');
+    assert.equal(invoiceSchema?.properties?.includeJobs?.type, 'boolean');
     assert.ok(names.includes('create_quote_draft'));
     assert.ok(names.includes('update_quote_draft'));
     assert.ok(names.includes('edit_invoice'));
@@ -466,6 +474,95 @@ describe('callJobberMcpTool', () => {
     };
     assert.equal(payload.job.id, 'job-1');
     assert.deepEqual(payload.job.photoUrls, ['https://files.getjobber.com/well.jpg']);
+    assert.equal((payload.job as { visits?: unknown }).visits, undefined);
+  });
+
+  it('passes includeVisits and includeJobs through as read-only lookups', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) => {
+        if (query.includes('McpJobs')) {
+          return jsonResponse({
+            data: {
+              jobs: {
+                edges: [
+                  {
+                    cursor: 'c-job-1',
+                    node: {
+                      id: 'job-1',
+                      jobNumber: 4401,
+                      title: 'Pull pump',
+                      jobStatus: 'requires_invoicing',
+                      completedAt: '2026-09-22T18:00:00.000Z',
+                      visits: {
+                        nodes: [
+                          {
+                            id: 'visit-1',
+                            title: 'Pull pump',
+                            startAt: '2026-09-22T16:00:00.000Z',
+                            endAt: '2026-09-22T18:00:00.000Z',
+                            completedAt: '2026-09-22T18:00:00.000Z',
+                            isComplete: true,
+                            assignedUsers: { nodes: [{ id: 'user-pat', name: { full: 'Pat Tech' } }] },
+                          },
+                        ],
+                      },
+                    },
+                  },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: 'c-job-1' },
+              },
+            },
+          });
+        }
+        if (query.includes('McpInvoices')) {
+          return jsonResponse({
+            data: {
+              invoices: {
+                edges: [
+                  {
+                    cursor: 'c-inv-1',
+                    node: {
+                      id: 'inv-1',
+                      invoiceNumber: '1042',
+                      invoiceStatus: 'awaiting_payment',
+                      amounts: { total: 500, invoiceBalance: 500 },
+                      jobs: { nodes: [{ id: 'job-1', jobNumber: 4401 }] },
+                    },
+                  },
+                ],
+                pageInfo: { hasNextPage: false, endCursor: 'c-inv-1' },
+              },
+            },
+          });
+        }
+        return null;
+      },
+    ]);
+
+    const jobs = await callJobberMcpTool(
+      'search_jobs',
+      { query: '4401', includeVisits: true },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(jobs.isError, undefined);
+    const jobPayload = JSON.parse(jobs.content[0].text) as {
+      jobs: Array<{ visits?: Array<{ assignees: string[] }>; photoUrls: string[] }>;
+    };
+    assert.deepEqual(jobPayload.jobs[0].visits?.[0].assignees, ['Pat Tech']);
+    assert.deepEqual(jobPayload.jobs[0].photoUrls, []);
+
+    const invoices = await callJobberMcpTool(
+      'search_invoices',
+      { query: '1042', includeJobs: true },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(invoices.isError, undefined);
+    const invoicePayload = JSON.parse(invoices.content[0].text) as {
+      invoices: Array<{ jobNumbers?: Array<string | number>; jobIds?: string[] }>;
+    };
+    assert.deepEqual(invoicePayload.invoices[0].jobNumbers, [4401]);
+    assert.deepEqual(invoicePayload.invoices[0].jobIds, ['job-1']);
+    assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
   });
 
   it('refuses job update, complete, and send', async () => {
