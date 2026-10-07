@@ -11,8 +11,18 @@ import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/
 import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
 import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
-import { callCustomerPhone, parseVapiServerTools, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
-import { OFFICE_ALERT_EMAILS, officeRequestFromTool, saveSarahOfficeRequest } from '@/lib/receptionist/office-callback';
+import { callCustomerPhone, parseVapiServerTools, vapiCallId, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
+import {
+  OFFICE_ALERT_DEDUPE_MS,
+  OFFICE_ALERT_EMAILS,
+  type OfficeAlertPatch,
+  type OfficeAlertRow,
+  type OfficeRequestIdentity,
+  isMissingOfficeDedupeColumnError,
+  isOfficeAlertTool,
+  omitOfficeDedupeColumns,
+  resolveOfficeToolBatch,
+} from '@/lib/receptionist/office-callback';
 
 const OFFICE_EMAILS = OFFICE_ALERT_EMAILS;
 const WEBHOOK_SECRET = process.env.VAPI_WEBHOOK_SECRET || 'scws-vapi-2024';
@@ -470,31 +480,81 @@ async function handleVapiTools(body: any) {
 
   const calls = parsed.mode === 'function-call' ? [parsed.call] : parsed.calls;
   const callPhone = callCustomerPhone(body);
-  const executed: Array<{ id: string | null; body: { result: unknown } }> = [];
+  const callId = vapiCallId(body) || null;
+  const executed: Array<{ id: string | null; body: { result: unknown } } | undefined> = new Array(calls.length);
+  const officeIndexes: number[] = [];
 
-  for (const call of calls) {
+  for (let i = 0; i < calls.length; i++) {
+    const call = calls[i];
     const params = call.params || {};
-    const phone = String(params.phone || callPhone || '');
     const logParams = { ...params };
     if (logParams.paymentUrl) {
       logParams.paymentUrl = paymentHostForLog(String(logParams.paymentUrl));
     }
     console.log(`[Receptionist] Function call: ${call.name}`, JSON.stringify(logParams));
+    if (isOfficeAlertTool(call.name)) officeIndexes.push(i);
+  }
 
+  if (officeIndexes.length > 0) {
+    const officeCalls = officeIndexes.map((index) => calls[index]);
+    const identity: OfficeRequestIdentity = {
+      vapiCallId: callId,
+      toolCallId: officeCalls.map((call) => call.id).filter((id): id is string => Boolean(id)).join('|') || null,
+    };
     try {
-      executed.push({ id: call.id, body: await executeTool(call.name, params, phone) });
+      const outcomes = await resolveOfficeToolBatch(officeCalls, {
+        callPhone,
+        vapiCallId: callId,
+        deps: {
+          insertBooking: insertOfficeBooking,
+          updateBooking: updateOfficeBooking,
+          loadCandidates: () => loadOfficeAlertCandidates(identity),
+          sendAlert: async (alert) => sendEmail({
+            to: alert.to,
+            subject: alert.subject,
+            text: alert.text,
+            html: textToHtml(alert.text),
+          }),
+        },
+      });
+      officeIndexes.forEach((index, offset) => {
+        executed[index] = outcomes[offset];
+      });
+    } catch (error: any) {
+      console.error('Office alert batch failed:', error);
+      for (const index of officeIndexes) {
+        executed[index] = {
+          id: calls[index].id,
+          body: {
+            result: { error: 'Failed to process request', message: error?.message || 'Unknown error' },
+          },
+        };
+      }
+    }
+  }
+
+  for (let i = 0; i < calls.length; i++) {
+    if (executed[i]) continue;
+    const call = calls[i];
+    const params = call.params || {};
+    const phone = String(params.phone || callPhone || '');
+    try {
+      executed[i] = { id: call.id, body: await executeTool(call.name, params, phone) };
     } catch (error: any) {
       console.error(`Function call error (${call.name}):`, error);
-      executed.push({
+      executed[i] = {
         id: call.id,
         body: {
           result: { error: 'Failed to process request', message: error?.message || 'Unknown error' },
         },
-      });
+      };
     }
   }
 
-  return NextResponse.json(vapiToolHttpBody(parsed, executed));
+  return NextResponse.json(vapiToolHttpBody(
+    parsed,
+    executed as Array<{ id: string | null; body: { result: unknown } }>,
+  ));
 }
 
 async function executeTool(name: string, params: any, phone: string) {
@@ -560,10 +620,6 @@ async function executeTool(name: string, params: any, phone: string) {
     case 'getBusinessHours':
       return getBusinessHours();
 
-    case 'createCallback':
-    case 'flagEmergency':
-      return handleOfficeRequest(name, params, phone);
-
     case 'sendPayLink':
       return handleSendPayLink(params);
 
@@ -579,33 +635,162 @@ async function executeTool(name: string, params: any, phone: string) {
   }
 }
 
-async function handleOfficeRequest(name: string, params: any, phone: string) {
-  const request = officeRequestFromTool(name, params || {}, phone);
-  const supabase = createServiceClient();
-  const saved = await saveSarahOfficeRequest(request, {
-    insertBooking: async (row) => {
-      const { data, error } = await supabase
-        .from('booking_requests')
-        .insert(row as any)
-        .select('id')
-        .single();
-      const inserted = data as { id?: string } | null;
-      return { id: inserted?.id ?? null, error: error?.message ?? null };
-    },
-    sendAlert: async (alert) => sendEmail({
-      to: alert.to,
-      subject: alert.subject,
-      text: alert.text,
-      html: textToHtml(alert.text),
-    }),
-  });
+const OFFICE_ALERT_COLUMNS =
+  'id, service_type, notes, phone, address, city, customer_name, email, vapi_call_id, tool_call_id, created_at';
+const OFFICE_ALERT_COLUMNS_LEGACY =
+  'id, service_type, notes, phone, address, city, customer_name, email, created_at';
 
+const MISSING_DEDUPE_COLUMNS_WARNING =
+  '[Receptionist] booking_requests is missing vapi_call_id/tool_call_id. Same-phone dedupe still applies for 10 minutes. Apply supabase/migrations/20261007_booking_requests_vapi_call_dedupe.sql in the Supabase SQL editor.';
+
+function mapOfficeAlertRow(row: Record<string, unknown>): OfficeAlertRow {
   return {
-    result: {
-      success: saved.success,
-      message: saved.message,
-    },
+    id: String(row.id),
+    serviceType: String(row.service_type || ''),
+    notes: String(row.notes || ''),
+    phone: String(row.phone || ''),
+    address: String(row.address || ''),
+    city: String(row.city || ''),
+    customerName: String(row.customer_name || ''),
+    email: typeof row.email === 'string' ? row.email : null,
+    vapiCallId: typeof row.vapi_call_id === 'string' ? row.vapi_call_id : null,
+    toolCallId: typeof row.tool_call_id === 'string' ? row.tool_call_id : null,
+    createdAt: typeof row.created_at === 'string' ? row.created_at : new Date(0).toISOString(),
   };
+}
+
+function rememberOfficeRows(target: Map<string, OfficeAlertRow>, data: unknown) {
+  if (!Array.isArray(data)) return;
+  for (const row of data) {
+    if (!row || typeof row !== 'object') continue;
+    const mapped = mapOfficeAlertRow(row as Record<string, unknown>);
+    if (mapped.id) target.set(mapped.id, mapped);
+  }
+}
+
+async function loadOfficeAlertCandidates(identity: OfficeRequestIdentity): Promise<OfficeAlertRow[]> {
+  const supabase = createServiceClient();
+  const sinceIso = new Date(Date.now() - OFFICE_ALERT_DEDUPE_MS).toISOString();
+  const found = new Map<string, OfficeAlertRow>();
+
+  const recent = await supabase
+    .from('booking_requests')
+    .select(OFFICE_ALERT_COLUMNS)
+    .in('service_type', ['Emergency', 'Callback'])
+    .gte('created_at', sinceIso)
+    .order('created_at', { ascending: false })
+    .limit(50);
+
+  if (recent.error && isMissingOfficeDedupeColumnError(recent.error)) {
+    console.warn(MISSING_DEDUPE_COLUMNS_WARNING);
+    const legacy = await supabase
+      .from('booking_requests')
+      .select(OFFICE_ALERT_COLUMNS_LEGACY)
+      .in('service_type', ['Emergency', 'Callback'])
+      .gte('created_at', sinceIso)
+      .order('created_at', { ascending: false })
+      .limit(50);
+    if (legacy.error) console.error('[Receptionist] Office alert lookup failed:', legacy.error);
+    rememberOfficeRows(found, legacy.data);
+    return [...found.values()];
+  }
+
+  if (recent.error) {
+    console.error('[Receptionist] Office alert lookup failed:', recent.error);
+  } else {
+    rememberOfficeRows(found, recent.data);
+  }
+
+  if (identity.vapiCallId) {
+    const byCall = await supabase
+      .from('booking_requests')
+      .select(OFFICE_ALERT_COLUMNS)
+      .in('service_type', ['Emergency', 'Callback'])
+      .eq('vapi_call_id', identity.vapiCallId)
+      .order('created_at', { ascending: false })
+      .limit(10);
+    if (byCall.error) console.error('[Receptionist] Office alert call lookup failed:', byCall.error);
+    else rememberOfficeRows(found, byCall.data);
+  }
+
+  for (const toolId of (identity.toolCallId || '').split('|').map((id) => id.trim()).filter(Boolean)) {
+    const exact = await supabase
+      .from('booking_requests')
+      .select(OFFICE_ALERT_COLUMNS)
+      .in('service_type', ['Emergency', 'Callback'])
+      .eq('tool_call_id', toolId)
+      .limit(5);
+    if (!exact.error) rememberOfficeRows(found, exact.data);
+
+    const pattern = `%${toolId.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    const combined = await supabase
+      .from('booking_requests')
+      .select(OFFICE_ALERT_COLUMNS)
+      .in('service_type', ['Emergency', 'Callback'])
+      .like('tool_call_id', pattern)
+      .limit(10);
+    if (!combined.error) rememberOfficeRows(found, combined.data);
+  }
+
+  return [...found.values()];
+}
+
+async function insertOfficeBooking(row: {
+  service_type: string;
+  customer_name: string;
+  phone: string;
+  email: string | null;
+  address: string;
+  city: string;
+  notes: string;
+  status: 'pending';
+  source: 'phone';
+  vapi_call_id?: string | null;
+  tool_call_id?: string | null;
+}) {
+  const supabase = createServiceClient();
+  let { data, error } = await supabase
+    .from('booking_requests')
+    .insert(row as any)
+    .select('id')
+    .single();
+  if (error && isMissingOfficeDedupeColumnError(error)) {
+    console.warn(MISSING_DEDUPE_COLUMNS_WARNING);
+    const retry = await supabase
+      .from('booking_requests')
+      .insert(omitOfficeDedupeColumns(row) as any)
+      .select('id')
+      .single();
+    data = retry.data;
+    error = retry.error;
+  }
+  const inserted = data as { id?: string } | null;
+  return { id: inserted?.id ?? null, error: error?.message ?? null };
+}
+
+async function updateOfficeBooking(id: string, patch: OfficeAlertPatch) {
+  const supabase = createServiceClient();
+  const full: Record<string, unknown> = {
+    notes: patch.notes,
+    service_type: patch.serviceType,
+    address: patch.address,
+    city: patch.city,
+    customer_name: patch.customerName.slice(0, 255),
+    email: patch.email,
+  };
+  if (patch.vapiCallId) full.vapi_call_id = patch.vapiCallId;
+  if (patch.toolCallId) full.tool_call_id = patch.toolCallId;
+
+  let { error } = await supabase.from('booking_requests').update(full).eq('id', id);
+  if (error && isMissingOfficeDedupeColumnError(error)) {
+    console.warn(MISSING_DEDUPE_COLUMNS_WARNING);
+    const retry = await supabase
+      .from('booking_requests')
+      .update(omitOfficeDedupeColumns(full))
+      .eq('id', id);
+    error = retry.error;
+  }
+  return { error: error?.message ?? null };
 }
 
 /**
