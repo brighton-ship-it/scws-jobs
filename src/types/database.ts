@@ -772,6 +772,10 @@ export interface BookingRequest {
   wbraid?: string | null;
   ga_client_id?: string | null;
   ga_session_id?: string | null;
+  /** Vapi call id for Sarah emergency/callback alerts. Null on website bookings. */
+  vapi_call_id?: string | null;
+  /** Vapi tool call id(s) already handled for this office alert. */
+  tool_call_id?: string | null;
   created_at: string;
   updated_at: string;
 }

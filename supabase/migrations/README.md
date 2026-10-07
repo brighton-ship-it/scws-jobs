@@ -4,6 +4,12 @@ SQL in this folder is **not** applied automatically from the app or from Vercel.
 
 If a migration is not in the production schema, open the **Supabase SQL Editor** for the project, paste the file, and run it.
 
+## `20261007_booking_requests_vapi_call_dedupe.sql`
+
+Adds nullable `vapi_call_id` and `tool_call_id` on `booking_requests` so Sarah emergency/callback alerts can be deduped per Vapi call. Existing rows are not rewritten.
+
+Until this is applied, the webhook still saves the lead (it retries the insert without those columns) and still dedupes by phone for 10 minutes when the call id was not stored. Apply it in the SQL Editor. Deploy does not run it.
+
 ## `20260827_book_job_click_ids_and_conversions.sql`
 
 Adds `gclid` / `gbraid` / `wbraid` / `ga_client_id` / `ga_session_id` on `booking_requests` and `customers`, plus `book_job_conversions` and `jobber_job_schedule_state`.

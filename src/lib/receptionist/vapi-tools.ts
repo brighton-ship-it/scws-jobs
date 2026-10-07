@@ -113,6 +113,21 @@ function extractToolCalls(message: Record<string, unknown>): ToolInvocation[] {
   );
 }
 
+/** Vapi call id: message.call.id, then body.call.id. */
+export function vapiCallId(body: unknown): string {
+  const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const message = (root.message && typeof root.message === 'object' ? root.message : {}) as Record<string, unknown>;
+  const messageCall = message.call && typeof message.call === 'object'
+    ? message.call as Record<string, unknown>
+    : null;
+  const rootCall = root.call && typeof root.call === 'object'
+    ? root.call as Record<string, unknown>
+    : null;
+  if (messageCall && typeof messageCall.id === 'string' && messageCall.id) return messageCall.id;
+  if (rootCall && typeof rootCall.id === 'string' && rootCall.id) return rootCall.id;
+  return '';
+}
+
 export function callCustomerPhone(body: unknown): string {
   const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   const message = (root.message && typeof root.message === 'object' ? root.message : {}) as Record<string, unknown>;
