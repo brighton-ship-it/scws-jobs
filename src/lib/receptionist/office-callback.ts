@@ -4,7 +4,12 @@
  * The string returned to Sarah must not include a phone number or a clock-time promise.
  */
 
-export const SARAH_ALERT_EMAIL = 'brighton@scwellservice.com';
+/** Same three inboxes as end-of-call OFFICE_EMAILS on the receptionist webhook. */
+export const OFFICE_ALERT_EMAILS = [
+  'brighton@scwellservice.com',
+  'lizbeth@scwellservice.com',
+  'shanicey@scwellservice.com',
+] as const;
 
 export const CALLBACK_SPOKEN_MESSAGE =
   "I've passed this to the office and someone will call you back as soon as they can.";
@@ -188,16 +193,15 @@ export async function saveSarahOfficeRequest(
   }
 
   let emailSent = false;
-  try {
-    const sent = await deps.sendAlert({
-      to: SARAH_ALERT_EMAIL,
-      subject: alertSubject(request),
-      text: alertText(request, bookingId),
-    });
-    emailSent = !!sent?.success;
-  } catch (error) {
-    console.error('[Receptionist] Office request email failed:', error);
-    emailSent = false;
+  const subject = alertSubject(request);
+  const text = alertText(request, bookingId);
+  for (const to of OFFICE_ALERT_EMAILS) {
+    try {
+      const sent = await deps.sendAlert({ to, subject, text });
+      if (sent?.success) emailSent = true;
+    } catch (error) {
+      console.error(`[Receptionist] Office request email to ${to} failed:`, error);
+    }
   }
 
   const success = saved || emailSent;

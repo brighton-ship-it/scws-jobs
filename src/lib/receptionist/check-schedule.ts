@@ -6,6 +6,15 @@
  */
 
 import { getValidJobberAccessToken } from '../jobber/auth.ts';
+import {
+  ASSIGNED_USERS_PAGE,
+  THROTTLE_MAX_ATTEMPTS,
+  UPCOMING_JOBS_PAGE,
+  UPCOMING_VISITS_PAGE,
+  isJobberThrottled,
+  throttleBackoffMs,
+  type JobberGraphqlPayload,
+} from './jobber-throttle.ts';
 
 export const JOBBER_GRAPHQL_URL = 'https://api.getjobber.com/api/graphql';
 export const DEFAULT_JOBBER_GRAPHQL_VERSION = '2026-02-17';
@@ -83,6 +92,7 @@ export type CheckScheduleDeps = {
   accessToken?: string | null;
   graphqlVersion?: string;
   env?: NodeJS.ProcessEnv;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type CheckScheduleResponse = {
@@ -101,11 +111,20 @@ const SEARCH_CLIENTS_QUERY = `
   }
 `;
 
+/** How far ahead checkSchedule asks Jobber for this client's visits. */
+export const UPCOMING_WINDOW_DAYS = 60;
+
+/**
+ * Nested jobs → visits → assignedUsers. Every connection has an explicit
+ * `first`. assignedUsers used to omit it, so Jobber priced 100 users per
+ * visit and the whole query exceeded maximumAvailable (always "Throttled").
+ * The startAt filter does not change cost; it keeps the small visit page
+ * inside the upcoming window instead of old history.
+ */
 const UPCOMING_VISITS_QUERY = `
-  query GetUpcomingVisits($clientId: EncodedId!) {
+  query GetUpcomingVisits($clientId: EncodedId!, $startAfter: ISO8601DateTime!, $startBefore: ISO8601DateTime!) {
     client(id: $clientId) {
-      name
-      jobs(first: 20) {
+      jobs(first: ${UPCOMING_JOBS_PAGE}) {
         nodes {
           title
           property {
@@ -114,13 +133,12 @@ const UPCOMING_VISITS_QUERY = `
               city
             }
           }
-          visits(first: 10) {
+          visits(first: ${UPCOMING_VISITS_PAGE}, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
             nodes {
-              id
               startAt
               endAt
               allDay
-              assignedUsers {
+              assignedUsers(first: ${ASSIGNED_USERS_PAGE}) {
                 nodes {
                   name {
                     full
@@ -134,6 +152,17 @@ const UPCOMING_VISITS_QUERY = `
     }
   }
 `;
+
+export function upcomingVisitWindow(now: Date): { startAfter: string; startBefore: string } {
+  return {
+    startAfter: new Date(now.getTime() - 36 * 60 * 60 * 1000).toISOString(),
+    startBefore: new Date(now.getTime() + UPCOMING_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString(),
+  };
+}
+
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 export const NO_VISIT_CONFIRMATION_RULE =
   'Do not confirm any date, time, or technician. Say you do not see that appointment. Offer an office callback. Matching this customer by phone is not proof of a visit.';
@@ -243,30 +272,54 @@ async function jobberGraphql(
   query: string,
   variables: Record<string, unknown>,
   fetchFn: typeof fetch,
-  version: string
+  version: string,
+  sleep: (ms: number) => Promise<void>
 ): Promise<{ data?: any; errors?: Array<{ message?: string }> }> {
-  const response = await fetchFn(JOBBER_GRAPHQL_URL, {
-    method: 'POST',
-    headers: jobberHeaders(token, version),
-    body: JSON.stringify({ query, variables }),
-  });
+  let lastMessage = 'Jobber GraphQL error';
 
-  let json: { data?: any; errors?: Array<{ message?: string }> };
-  try {
-    json = (await response.json()) as typeof json;
-  } catch {
-    throw new Error(`Jobber GraphQL HTTP ${response.status}`);
+  for (let attempt = 1; attempt <= THROTTLE_MAX_ATTEMPTS; attempt++) {
+    const response = await fetchFn(JOBBER_GRAPHQL_URL, {
+      method: 'POST',
+      headers: jobberHeaders(token, version),
+      body: JSON.stringify({ query, variables }),
+    });
+
+    let json: JobberGraphqlPayload;
+    try {
+      json = (await response.json()) as JobberGraphqlPayload;
+    } catch {
+      throw new Error(`Jobber GraphQL HTTP ${response.status}`);
+    }
+
+    const throttled = isJobberThrottled(json) || response.status === 429;
+    if (!response.ok && !throttled) {
+      throw new Error(`Jobber GraphQL HTTP ${response.status}`);
+    }
+
+    if (!json.errors?.length && response.ok) {
+      return json;
+    }
+
+    lastMessage = json.errors?.[0]?.message || (throttled ? 'Throttled' : 'Jobber GraphQL error');
+    if (!throttled) {
+      throw new Error(lastMessage);
+    }
+
+    const waitMs = throttleBackoffMs(json.extensions?.cost);
+    const gaveUp = waitMs < 0 || attempt === THROTTLE_MAX_ATTEMPTS;
+    console.warn(
+      `[Receptionist] Jobber throttled checkSchedule (attempt ${attempt}/${THROTTLE_MAX_ATTEMPTS}, ` +
+        `requested=${json.extensions?.cost?.requestedQueryCost ?? '?'}, ` +
+        `available=${json.extensions?.cost?.throttleStatus?.currentlyAvailable ?? '?'}, ` +
+        `waitMs=${gaveUp ? 'none' : waitMs})`
+    );
+    if (gaveUp) {
+      throw new Error(lastMessage);
+    }
+    await sleep(waitMs);
   }
 
-  if (!response.ok) {
-    throw new Error(`Jobber GraphQL HTTP ${response.status}`);
-  }
-
-  if (json.errors?.length) {
-    throw new Error(json.errors[0]?.message || 'Jobber GraphQL error');
-  }
-
-  return json;
+  throw new Error(lastMessage);
 }
 
 function noAccountResult(): ScheduleLookupResult {
@@ -409,6 +462,7 @@ export async function lookupUpcomingVisits(
 
   const fetchFn = deps.fetchFn ?? fetch;
   const now = deps.now ?? new Date();
+  const sleep = deps.sleep ?? defaultSleep;
   const version =
     deps.graphqlVersion ??
     process.env.JOBBER_GRAPHQL_VERSION?.trim() ??
@@ -420,7 +474,8 @@ export async function lookupUpcomingVisits(
     SEARCH_CLIENTS_QUERY,
     { searchTerm },
     fetchFn,
-    version
+    version,
+    sleep
   );
 
   const clients = clientData?.data?.clients?.nodes || [];
@@ -446,9 +501,10 @@ export async function lookupUpcomingVisits(
   const scheduleData = await jobberGraphql(
     token,
     UPCOMING_VISITS_QUERY,
-    { clientId },
+    { clientId, ...upcomingVisitWindow(now) },
     fetchFn,
-    version
+    version,
+    sleep
   );
 
   const jobs = scheduleData?.data?.client?.jobs?.nodes || [];

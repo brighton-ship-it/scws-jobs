@@ -205,6 +205,28 @@ function mockUsersAndVisits(
 }
 
 describe('lookupOpenSlots — Brighton allowlist', () => {
+  it('limits assignedUsers so the occupied-visits query stays under Jobber max cost', async () => {
+    let visitsQuery = '';
+    await lookupOpenSlots(
+      { city: 'Ramona' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body || '{}')) as { query?: string };
+          const query = body.query || '';
+          if (query.includes('ShopUsers')) {
+            return jsonResponse({ data: { users: { nodes: [BRIAN] } } });
+          }
+          visitsQuery = query;
+          return jsonResponse({ data: { visits: { nodes: [] } } });
+        },
+      }
+    );
+    assert.match(visitsQuery, /assignedUsers\(first: 5\)/);
+    assert.equal(/assignedUsers\s*\{/.test(visitsQuery), false);
+  });
+
   it('Anza: Doug open and Cowin booked → Doug only, never Travis', async () => {
     const friday = computeOpenSlots({
       occupied: [],

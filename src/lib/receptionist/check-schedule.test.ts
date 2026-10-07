@@ -5,8 +5,15 @@ import {
   isOnOrAfterTodayPt,
   scheduleLookupError,
   technicianNamesFromAssignedUsers,
+  upcomingVisitWindow,
   type ScheduleLookupResult,
 } from './check-schedule.ts';
+import {
+  JOBBER_MAX_QUERY_COST,
+  legacyUpcomingVisitsQueryCost,
+  throttleBackoffMs,
+  upcomingVisitsQueryCost,
+} from './jobber-throttle.ts';
 import { speechConfirmsAppointment } from './appointment-confirmation.ts';
 
 const INCIDENT_NOW = new Date('2026-08-31T22:00:00.000Z');
@@ -214,6 +221,154 @@ describe('handleCheckSchedule', () => {
 
     assert.equal(result.lookupStatus, 'error');
     assert.equal(result.canConfirm, false);
+  });
+});
+
+describe('Jobber query cost', () => {
+  it('prices the old nested assignedUsers query above the bucket maximum', () => {
+    assert.ok(legacyUpcomingVisitsQueryCost() > JOBBER_MAX_QUERY_COST);
+    assert.ok(upcomingVisitsQueryCost() < JOBBER_MAX_QUERY_COST);
+    assert.ok(upcomingVisitsQueryCost() < 1_000);
+  });
+
+  it('waits for restoreRate and refuses a query that can never fit', () => {
+    assert.equal(
+      throttleBackoffMs({
+        requestedQueryCost: 200,
+        throttleStatus: { maximumAvailable: 10_000, currentlyAvailable: 0, restoreRate: 500 },
+      }),
+      1_000
+    );
+    assert.equal(
+      throttleBackoffMs({
+        requestedQueryCost: 10_001,
+        throttleStatus: { maximumAvailable: 10_000, currentlyAvailable: 10_000, restoreRate: 500 },
+      }),
+      -1
+    );
+  });
+});
+
+describe('handleCheckSchedule throttling', () => {
+  it('asks for a small dated page and retries a recoverable Throttled response', async () => {
+    const sleeps: number[] = [];
+    let visitAttempts = 0;
+    let visitsQuery = '';
+    let visitsVariables: Record<string, unknown> = {};
+
+    const { result } = await handleCheckSchedule(GUY_PHONE, {
+      accessToken: 'test-token',
+      now: INCIDENT_NOW,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      fetchFn: async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}')) as GraphqlBody;
+        const query = body.query || '';
+        if (query.includes('SearchClients')) {
+          return jsonResponse({ data: { clients: { nodes: [guyClient] } } });
+        }
+        if (query.includes('GetUpcomingVisits')) {
+          visitAttempts += 1;
+          visitsQuery = query;
+          visitsVariables = body.variables || {};
+          if (visitAttempts === 1) {
+            return jsonResponse({
+              errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+              extensions: {
+                cost: {
+                  requestedQueryCost: 200,
+                  actualQueryCost: 0,
+                  throttleStatus: {
+                    maximumAvailable: 10_000,
+                    currentlyAvailable: 0,
+                    restoreRate: 500,
+                  },
+                },
+              },
+            });
+          }
+          return jsonResponse({
+            data: {
+              client: {
+                jobs: {
+                  nodes: [
+                    {
+                      title: 'Service Call',
+                      property: { address: { street1: '123 Well Rd', city: 'Ramona' } },
+                      visits: {
+                        nodes: [
+                          {
+                            startAt: '2026-08-31T18:00:00.000Z',
+                            endAt: '2026-08-31T19:00:00.000Z',
+                            allDay: false,
+                            assignedUsers: { nodes: [{ name: { full: 'Travis C Sego' } }] },
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          });
+        }
+        return jsonResponse({ errors: [{ message: 'unexpected query' }] });
+      },
+    });
+
+    assert.match(visitsQuery, /jobs\(first: 8\)/);
+    assert.match(visitsQuery, /visits\(first: 5, filter: \{ startAt: \{ after: \$startAfter, before: \$startBefore \} \}/);
+    assert.match(visitsQuery, /assignedUsers\(first: 3\)/);
+    assert.equal(visitsQuery.includes('assignedUsers {'), false);
+    const window = upcomingVisitWindow(INCIDENT_NOW);
+    assert.equal(visitsVariables.startAfter, window.startAfter);
+    assert.equal(visitsVariables.startBefore, window.startBefore);
+    assert.deepEqual(sleeps, [1_000]);
+    assert.equal(visitAttempts, 2);
+    assert.equal(result.lookupStatus, 'ok');
+    assert.equal(result.canConfirm, true);
+    assert.match(result.message, /Travis C Sego/);
+  });
+
+  it('does not retry a query Jobber can never run, and falls back to the office', async () => {
+    let visitAttempts = 0;
+    const { result } = await handleCheckSchedule(GUY_PHONE, {
+      accessToken: 'test-token',
+      now: INCIDENT_NOW,
+      sleep: async () => {
+        throw new Error('should not sleep');
+      },
+      fetchFn: async (_url, init) => {
+        const body = JSON.parse(String(init?.body || '{}')) as GraphqlBody;
+        const query = body.query || '';
+        if (query.includes('SearchClients')) {
+          return jsonResponse({ data: { clients: { nodes: [guyClient] } } });
+        }
+        visitAttempts += 1;
+        return jsonResponse({
+          errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+          extensions: {
+            cost: {
+              requestedQueryCost: 10_001,
+              actualQueryCost: 0,
+              throttleStatus: {
+                maximumAvailable: 10_000,
+                currentlyAvailable: 10_000,
+                restoreRate: 500,
+              },
+            },
+          },
+        });
+      },
+    });
+
+    assert.equal(visitAttempts, 1);
+    assert.equal(result.lookupStatus, 'error');
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.hasAppointments, false);
+    assert.match(result.message, /office verify/i);
+    assert.equal(speechConfirmsAppointment(result.message), false);
   });
 });
 
