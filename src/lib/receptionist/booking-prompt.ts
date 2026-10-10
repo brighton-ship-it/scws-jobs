@@ -8,7 +8,7 @@ export const BOOK_JOB_TOOL_NAME = 'bookJob';
 export const BOOK_JOB_TOOL = {
   name: BOOK_JOB_TOOL_NAME,
   description:
-    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit.  Weekday daytime (Mon-Fri 7am-5pm PT) no-water callers in the service area may be booked too. A no-water caller on a weekend may be offered the next weekday (Monday) morning slot from checkSchedule; never Saturday or Sunday. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
+    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, or a drill crew. Chris Glass, Haze Tarbell, Colton Hagler or Sergio may appear only when an openSlots entry names them (earlier open fallback). Never create a drill, pump, or quote visit.  Weekday daytime (Mon-Fri 7am-5pm PT) no-water callers in the service area may be booked too. A no-water caller on a weekend may be offered the next weekday (Monday) morning slot from checkSchedule; never Saturday or Sunday. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
   parameters: {
     type: 'object',
     properties: {
@@ -47,7 +47,7 @@ To offer a time: call checkSchedule with the caller's phone, city, and intent "b
 
 To book: call bookJob (alias book_job) with a startAt copied from openSlots. You may say they are booked ONLY if the book result has booked: true, canConfirm: true, and that exact visit. If the API fails, say you cannot confirm and the office will call. Never invent Travis or anyone else.
 
-Assign only: Brian Eads for Ramona / west / central SD; Doug Pollack or Cowin for Anza / high-desert (whichever openSlots lists). Never assign Travis, Brighton, Haze, Chris, a drill crew, or anyone else. If openSlots is empty, do not invent a time and do not book a different technician.
+Assign only: Brian Eads for Ramona / west / central SD; Doug Pollack or Cowin for Anza / high-desert (whichever openSlots lists). Fallback techs (Chris Glass, Haze Tarbell, Colton Hagler, Sergio) are fine ONLY when openSlots names them. Never assign Travis, Brighton, a drill crew, or anyone not listed in openSlots. If openSlots is empty, do not invent a time and do not book a different technician.
 
 Title is Service Call only. Never create a drill, pump, or quote visit. Price is $200. Do not tell the customer the $200 is a credit toward later pump or repair work — it is not.
 

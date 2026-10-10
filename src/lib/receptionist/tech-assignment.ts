@@ -11,7 +11,13 @@
  * also has no Jobber user GIDs. His identity is Brighton's exact name,
  * then the Jobber users query id for that person. Never guess Travis.
  *
- * Never assign Travis, Brighton, Haze, Chris, a drill crew, or anyone else.
+ * Fallback service techs (Oct 10 2026, Brighton): Chris Glass, Haze Tarbell, Colton
+ * Hagler, Sergio Valdovinos Mendez. They are offered only when their Jobber calendar is
+ * empty for the window AND the slot is strictly earlier than the primary pool's first
+ * slot (or the primary pool has none). They apply to every territory.
+ *
+ * Never assign Travis, Brighton, a drill crew, or anyone else outside the primary pool
+ * and the fallback roster above.
  */
 
 export const TECH_COWIN = 'Cowin';
@@ -54,14 +60,11 @@ export const BLOCKED_SERVICE_EMAILS = new Set([
   'roger@scwellservice.com',
   'shanicey@scwellservice.com',
   'austin@scwellservice.com',
-  'christopher@scwellservice.com',
   'dakota@scwellservice.com',
   'damian@scwellservice.com',
   'dylan@scwellservice.com',
-  'hazemtarbell@gmail.com',
   'jeff@scwellservice.com',
   'marshall@scwellservice.com',
-  'sergio@scwellservice.com',
 ]);
 
 const BLOCKED_NAME_EXACT = new Set([
@@ -70,21 +73,57 @@ const BLOCKED_NAME_EXACT = new Set([
   'travis',
   'brighton scala',
   'brighton',
-  'haze tarbell',
   'haze',
-  'chris glass',
-  'christopher glass',
   'chris',
+  'colton',
+  'sergio',
   'brian schroeder',
   'brian schroder',
 ]);
 
+/**
+ * Fallback service techs. Jobber users (list_users, Oct 10 2026):
+ *   Chris Glass (christopher@), Haze Tarbell (hazemtarbell@gmail.com),
+ *   Colton Hagler (colton@), Sergio Valdovinos Mendez (sergio@).
+ * Matched by exact email (or exact full name when Jobber returns no email).
+ */
+export const FALLBACK_TECH_ROSTER = {
+  chris: {
+    key: 'chris' as const,
+    name: 'Chris Glass',
+    email: 'christopher@scwellservice.com',
+    altNames: ['Christopher Glass'] as string[],
+    envIdKey: 'JOBBER_TECH_CHRIS_GLASS_ID' as const,
+  },
+  haze: {
+    key: 'haze' as const,
+    name: 'Haze Tarbell',
+    email: 'hazemtarbell@gmail.com',
+    altNames: [] as string[],
+    envIdKey: 'JOBBER_TECH_HAZE_TARBELL_ID' as const,
+  },
+  colton: {
+    key: 'colton' as const,
+    name: 'Colton Hagler',
+    email: 'colton@scwellservice.com',
+    altNames: [] as string[],
+    envIdKey: 'JOBBER_TECH_COLTON_HAGLER_ID' as const,
+  },
+  sergio: {
+    key: 'sergio' as const,
+    name: 'Sergio Valdovinos Mendez',
+    email: 'sergio@scwellservice.com',
+    altNames: ['Sergio Valdovinos'] as string[],
+    envIdKey: 'JOBBER_TECH_SERGIO_VALDOVINOS_ID' as const,
+  },
+};
+
 export type ShopTech = {
-  key: 'cowin' | 'brian' | 'doug';
+  key: 'cowin' | 'brian' | 'doug' | 'chris' | 'haze' | 'colton' | 'sergio';
   name: string;
   email: string;
   altNames: string[];
-  envIdKey: 'JOBBER_TECH_COWIN_ID' | 'JOBBER_TECH_BRIAN_EADS_ID' | 'JOBBER_TECH_DOUG_POLLACK_ID';
+  envIdKey: string;
 };
 
 const COWIN_CITIES = [
@@ -242,6 +281,16 @@ export function allowedTechsForLocation(input: {
   return [{ ...SERVICE_TECH_ROSTER.brian }];
 }
 
+/** Fallback techs: same for every territory. Order is the tie-break order. */
+export function fallbackTechs(): ShopTech[] {
+  return [
+    { ...FALLBACK_TECH_ROSTER.chris },
+    { ...FALLBACK_TECH_ROSTER.haze },
+    { ...FALLBACK_TECH_ROSTER.colton },
+    { ...FALLBACK_TECH_ROSTER.sergio },
+  ];
+}
+
 export function assignShopTech(input: {
   city?: string | null;
   address?: string | null;
@@ -335,6 +384,21 @@ export function resolveTechsForLocation(
   const resolved: { id: string; name: string }[] = [];
   const seen = new Set<string>();
   for (const tech of allowedTechsForLocation(location)) {
+    const match = resolveTechUserId(tech, users, env);
+    if (!match || seen.has(match.id)) continue;
+    seen.add(match.id);
+    resolved.push(match);
+  }
+  return resolved;
+}
+
+export function resolveFallbackTechs(
+  users: JobberUser[],
+  env: NodeJS.ProcessEnv = process.env
+): { id: string; name: string }[] {
+  const resolved: { id: string; name: string }[] = [];
+  const seen = new Set<string>();
+  for (const tech of fallbackTechs()) {
     const match = resolveTechUserId(tech, users, env);
     if (!match || seen.has(match.id)) continue;
     seen.add(match.id);

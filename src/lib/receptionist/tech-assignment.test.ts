@@ -13,6 +13,8 @@ import {
   formatTechNames,
   isAllowlistedTechId,
   isBlockedAssignee,
+  fallbackTechs,
+  resolveFallbackTechs,
   resolveTechUserId,
   resolveTechsForLocation,
   userMatchesTech,
@@ -118,11 +120,11 @@ describe('service tech identity — roster emails / Brighton name, not guesses',
     assert.deepEqual(resolveTechsForLocation({ city: 'Anza' }, [TRAVIS], {}), []);
   });
 
-  it('never matches Travis, Brighton, Haze, Chris, or Brian Schroeder', () => {
+  it('never matches Travis, Brighton, or Brian Schroeder to any service tech', () => {
     const brian = SERVICE_TECH_ROSTER.brian;
     const cowin = SERVICE_TECH_ROSTER.cowin;
     const doug = SERVICE_TECH_ROSTER.doug;
-    for (const blocked of [TRAVIS, BRIGHTON, HAZE, CHRIS, SCHROEDER]) {
+    for (const blocked of [TRAVIS, BRIGHTON, SCHROEDER]) {
       assert.equal(userMatchesTech(blocked, brian), false);
       assert.equal(userMatchesTech(blocked, cowin), false);
       assert.equal(userMatchesTech(blocked, doug), false);
@@ -130,6 +132,7 @@ describe('service tech identity — roster emails / Brighton name, not guesses',
     }
     assert.equal(resolveTechUserId(brian, [TRAVIS, SCHROEDER], {}), null);
     assert.equal(resolveTechUserId(cowin, [TRAVIS, HAZE, CHRIS], {}), null);
+    assert.equal(userMatchesTech(HAZE, cowin), false);
     assert.equal(resolveTechUserId(doug, [TRAVIS], {}), null);
   });
 
@@ -191,5 +194,33 @@ describe('Anza-side desert towns (Borrego Springs)', () => {
   it('resolves all three allowlisted users and never Travis', () => {
     const ids = resolveTechsForLocation({ city: 'Borrego Springs' }, [TRAVIS, BRIAN, COWIN, DOUG]).map((t) => t.id);
     assert.deepEqual(ids, ['user-doug', 'user-cowin', 'user-brian']);
+  });
+});
+
+describe('fallback service techs', () => {
+  const COLTON = { id: 'user-colton', name: { full: 'Colton Hagler ' }, email: { raw: 'colton@scwellservice.com' } };
+  const SERGIO = { id: 'user-sergio', name: { full: 'Sergio Valdovinos Mendez' }, email: { raw: 'sergio@scwellservice.com' } };
+
+  it('lists Chris, Haze, Colton, Sergio and resolves them by exact email', () => {
+    assert.deepEqual(fallbackTechs().map((t) => t.name), [
+      'Chris Glass',
+      'Haze Tarbell',
+      'Colton Hagler',
+      'Sergio Valdovinos Mendez',
+    ]);
+    const ids = resolveFallbackTechs([TRAVIS, BRIGHTON, SCHROEDER, CHRIS, HAZE, COLTON, SERGIO], {}).map((t) => t.id);
+    assert.deepEqual(ids, ['user-chris', 'user-haze', 'user-colton', 'user-sergio']);
+  });
+
+  it('never resolves Travis, Brighton or Brian Schroeder as fallback', () => {
+    assert.deepEqual(resolveFallbackTechs([TRAVIS, BRIGHTON, SCHROEDER], {}), []);
+  });
+
+  it('does not match first names alone and keeps fallbacks out of the primary pool', () => {
+    assert.deepEqual(resolveFallbackTechs([{ id: 'x', name: { full: 'Chris' } }, { id: 'y', name: { full: 'Haze' } }], {}), []);
+    for (const city of ['Ramona', 'Anza', 'Borrego Springs']) {
+      const ids = resolveTechsForLocation({ city }, [CHRIS, HAZE, COLTON, SERGIO], {});
+      assert.deepEqual(ids, []);
+    }
   });
 });

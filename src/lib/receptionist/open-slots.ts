@@ -4,7 +4,8 @@
  * Candidate windows are shop service-call hours on weekdays only
  * (Monday–Friday Pacific). Never Saturday or Sunday. A slot is returned
  * only when it does not overlap a Jobber visit for an allowlisted tech
- * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin). After-hours callers
+ * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin; plus fallback techs
+ * Chris/Haze/Colton/Sergio only when strictly earlier and fully open). After-hours callers
  * (including Friday night) are offered the next weekday window. If neither
  * allowed tech has a window, return no slots. If Jobber is down, return no
  * slots — never invent times or assign Travis.
@@ -24,6 +25,7 @@ import {
   assignShopTech,
   formatTechNames,
   isAllowlistedTechId,
+  resolveFallbackTechs,
   resolveTechsForLocation,
   type JobberUser,
   type ShopTech,
@@ -34,6 +36,7 @@ export const SLOT_HOURS_PT = [8, 10, 13] as const;
 export const SLOT_DURATION_MINUTES = 120;
 export const MAX_OPEN_SLOTS = 6;
 export const SLOT_LOOKAHEAD_DAYS = 14;
+const MAX_VISIT_PAGES = 6;
 
 export type OccupiedVisit = {
   startAt: string;
@@ -93,8 +96,9 @@ const USERS_QUERY_BARE = `
 `;
 
 const OCCUPIED_VISITS_QUERY = `
-  query OccupiedVisits($startAfter: ISO8601DateTime!, $startBefore: ISO8601DateTime!) {
-    visits(first: 100, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
+  query OccupiedVisits($startAfter: ISO8601DateTime!, $startBefore: ISO8601DateTime!, $cursor: String) {
+    visits(first: 100, after: $cursor, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
+      pageInfo { hasNextPage endCursor }
       nodes {
         id
         startAt
@@ -281,6 +285,24 @@ export function mergeOpenSlots(slotsByTech: OpenSlot[][], maxSlots = MAX_OPEN_SL
     .slice(0, maxSlots);
 }
 
+/**
+ * Primary pool wins. A fallback slot is kept only when it starts strictly before the
+ * primary pool's first slot (or the primary pool has no slots at all).
+ */
+export function mergeWithFallbackSlots(
+  primary: OpenSlot[],
+  fallback: OpenSlot[],
+  maxSlots = MAX_OPEN_SLOTS
+): OpenSlot[] {
+  const firstPrimary = primary.length
+    ? primary.reduce((min, slot) => (slot.startAt < min ? slot.startAt : min), primary[0].startAt)
+    : null;
+  const earlier = fallback.filter(
+    (slot) => firstPrimary === null || slot.startAt < firstPrimary
+  );
+  return mergeOpenSlots([primary, earlier], Math.max(maxSlots, 1));
+}
+
 export function slotMatchesRequest(slot: OpenSlot, requestedStartAt: string): boolean {
   if (!requestedStartAt) return false;
   if (slot.startAt === requestedStartAt) return true;
@@ -355,12 +377,16 @@ export async function lookupOpenSlots(
     }
     const users = (usersData?.data?.users?.nodes || []) as JobberUser[];
     const resolved = resolveTechsForLocation(location, users, deps.env ?? process.env);
+    const primaryIds = new Set(resolved.map((tech) => tech.id));
+    const fallbackResolved = resolveFallbackTechs(users, deps.env ?? process.env).filter(
+      (tech) => !primaryIds.has(tech.id)
+    );
     const assignedTechName = resolved.length
       ? formatTechNames(resolved.map((tech) => tech.name))
       : spokenAllowed;
     const allowlistedTechIds = resolved.map((tech) => tech.id);
 
-    if (resolved.length === 0) {
+    if (resolved.length === 0 && fallbackResolved.length === 0) {
       return emptyOpenSlots(assignedTechName, {
         lookupStatus: 'ok',
         error: `Allowlisted service tech not found in Jobber users (${spokenAllowed})`,
@@ -369,15 +395,26 @@ export async function lookupOpenSlots(
 
     const startAfter = now.toISOString();
     const startBefore = new Date(now.getTime() + (SLOT_LOOKAHEAD_DAYS + 1) * 24 * 60 * 60 * 1000).toISOString();
-    const visitsData = await jobberGraphql(
-      token,
-      OCCUPIED_VISITS_QUERY,
-      { startAfter, startBefore },
-      fetchFn,
-      version
-    );
+    const occupied: OccupiedVisit[] = [];
+    let cursor: string | null = null;
+    let complete = false;
+    for (let page = 0; page < MAX_VISIT_PAGES; page++) {
+      const visitsData = await jobberGraphql(
+        token,
+        OCCUPIED_VISITS_QUERY,
+        { startAfter, startBefore, cursor },
+        fetchFn,
+        version
+      );
+      occupied.push(...(visitsData?.data?.visits?.nodes || []).map(mapVisitNode));
+      const pageInfo = visitsData?.data?.visits?.pageInfo;
+      if (!pageInfo?.hasNextPage || !pageInfo?.endCursor) {
+        complete = true;
+        break;
+      }
+      cursor = pageInfo.endCursor as string;
+    }
 
-    const occupied = (visitsData?.data?.visits?.nodes || []).map(mapVisitNode);
     const perTechMax = SLOT_LOOKAHEAD_DAYS * SLOT_HOURS_PT.length;
     const slotsByTech = resolved.map((tech) =>
       computeOpenSlots({
@@ -388,14 +425,33 @@ export async function lookupOpenSlots(
         maxSlots: perTechMax,
       }).filter((slot) => isAllowlistedTechId(slot.technicianId, allowlistedTechIds))
     );
-    const openSlots = mergeOpenSlots(slotsByTech).filter((slot) => isWeekdayVisitStart(slot.startAt));
+    const primarySlots = mergeOpenSlots(slotsByTech, perTechMax * Math.max(resolved.length, 1));
+    // Fallback techs need a COMPLETE view of the board; if visits were truncated, skip them.
+    const fallbackSlots = complete
+      ? mergeOpenSlots(
+          fallbackResolved.map((tech) =>
+            computeOpenSlots({
+              occupied,
+              now,
+              technicianId: tech.id,
+              technicianName: tech.name,
+              maxSlots: perTechMax,
+            })
+          ),
+          perTechMax * Math.max(fallbackResolved.length, 1)
+        )
+      : [];
+    const openSlots = mergeWithFallbackSlots(primarySlots, fallbackSlots).filter((slot) =>
+      isWeekdayVisitStart(slot.startAt)
+    );
+    const allIds = [...allowlistedTechIds, ...(complete ? fallbackResolved.map((tech) => tech.id) : [])];
 
     return {
       lookupStatus: 'ok',
       openSlots,
       assignedTechName,
-      assignedTechId: resolved[0].id,
-      allowlistedTechIds,
+      assignedTechId: (resolved[0] ?? fallbackResolved[0]).id,
+      allowlistedTechIds: allIds,
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
