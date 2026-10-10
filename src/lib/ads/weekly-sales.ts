@@ -148,6 +148,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
 
   const gaps: string[] = [];
   if (!input.invoices) gaps.push('Weekly invoiced/paid unavailable (Jobber invoices query failed).');
+  if (input.payments && (input.payments as { truncated?: boolean }).truncated) gaps.push('Weekly cash collected is incomplete: Jobber payment history hit the page cap, so the oldest weeks may be low.');
   if (!input.payments) gaps.push('Weekly cash collected unavailable (Jobber payments query failed).');
   if (!input.quotes) gaps.push('Weekly quotes unavailable (Jobber quotes query failed).');
   if (!input.jobsCreated) gaps.push('Weekly jobs booked unavailable (Jobber jobs query failed).');

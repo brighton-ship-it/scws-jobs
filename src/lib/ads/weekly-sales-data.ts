@@ -4,15 +4,18 @@ import type { WeeklyInvoice, WeeklyQuote, WeeklyJob, WeeklyPayment } from './wee
 
 const TTL_MS = 10 * 60_000;
 const MAX_PAGES = 12;
+/** Payment records include one INVOICE-type row per invoice, so ~100/week: 9 weeks needs ~20 pages; newest come first. */
+const PAYMENT_MAX_PAGES = 40;
 const cache = new Map<string, { at: number; rows: unknown[] | null }>();
 
-async function paged<T>(key: string, query: string, field: string, variables: Record<string, unknown>): Promise<T[] | null> {
+async function paged<T>(key: string, query: string, field: string, variables: Record<string, unknown>, maxPages = MAX_PAGES): Promise<T[] | null> {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.rows as T[] | null;
   try {
     const rows: T[] = [];
     let after: string | null = null;
-    for (let page = 0; page < MAX_PAGES; page++) {
+    let capped = false;
+    for (let page = 0; page < maxPages; page++) {
       let res: JobberGraphqlResult | null = null;
       for (let attempt = 0; attempt < 4; attempt++) {
         try {
@@ -30,7 +33,9 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
       rows.push(...((conn?.nodes ?? []) as T[]));
       if (!conn?.pageInfo?.hasNextPage) break;
       after = conn.pageInfo.endCursor ?? null;
+      if (page === maxPages - 1) capped = true;
     }
+    if (capped) { (rows as any).truncated = true; console.warn(`[weekly-sales] ${field} hit page cap ${maxPages}`); }
     cache.set(key, { at: Date.now(), rows });
     return rows;
   } catch (error) {
@@ -79,4 +84,4 @@ export const loadWeeklyJobsCompleted = (after: string, before: string) =>
   paged<WeeklyJob>(`jd|${after}`, JOBS, 'jobs', { filter: { completedAt: { after, before } } });
 /** Payment records by payment received (entry) date, regardless of which week the invoice was issued. */
 export const loadWeeklyPayments = (after: string, before: string) =>
-  paged<WeeklyPayment>(`pay|${after}`, PAYMENTS, 'paymentRecords', { filter: { entryDate: { after, before } } });
+  paged<WeeklyPayment>(`pay|${after}`, PAYMENTS, 'paymentRecords', { filter: { entryDate: { after, before } } }, PAYMENT_MAX_PAGES);
