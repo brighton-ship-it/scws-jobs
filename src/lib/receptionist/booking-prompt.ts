@@ -8,7 +8,7 @@ export const BOOK_JOB_TOOL_NAME = 'bookJob';
 export const BOOK_JOB_TOOL = {
   name: BOOK_JOB_TOOL_NAME,
   description:
-    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit. Call only after hours. Never book a daytime weekday visit (Liz). Never auto-book Monday for a weekend emergency. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
+    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit.  Weekday daytime (Mon-Fri 7am-5pm PT) no-water callers in the service area may be booked too. Never auto-book Monday for a weekend emergency. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
   parameters: {
     type: 'object',
     properties: {
@@ -34,10 +34,8 @@ export const BOOK_JOB_TOOL = {
   },
 } as const;
 
-export const SARAH_AFTER_HOURS_BOOKING = `## After-hours $200 service call (HARD RULE)
-You may BOOK only after hours: weeknights Monday–Thursday after 5pm Pacific, plus Friday 5pm through Monday 7am Pacific.
-
-Daytime weekday service calls stay with Liz. Do not book those. Take a message and say the office will call back.
+export const SARAH_AFTER_HOURS_BOOKING = `## $200 service call booking (HARD RULE)
+You may BOOK a $200 service call on weekdays during office hours (Monday–Friday 7am–5pm Pacific) and after hours (weeknights, Friday night through Monday 7am). Quotes, new wells, inspections and water tests are never booked: take a message.
 
 A caller who needs someone NOW this weekend (emergency, no water, Airbnb/STR guests) is NOT a yes to a Monday $200 visit. Do not book Monday. Flag the shop and say the office will call.
 

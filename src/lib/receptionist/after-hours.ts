@@ -73,8 +73,19 @@ export function ptClock(date: Date, timeZone = PACIFIC_TZ): {
   };
 }
 
+/**
+ * Weekday daytime booking (Oct 9 2026): Brighton wants Sarah to book $200 service
+ * calls Mon-Fri 7am-5pm too, not only after hours. Kill switch: set env
+ * SARAH_BLOCK_DAYTIME_BOOKING=1 to restore the old "daytime stays with Liz" block.
+ * Weekend-emergency handling is unchanged.
+ */
+export function daytimeBookingAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !/^(1|true|yes)$/i.test(String(env.SARAH_BLOCK_DAYTIME_BOOKING || '').trim());
+}
+
 /** Sarah may create a Jobber visit only during this window. */
 export function isSarahBookingHours(now: Date): boolean {
+  if (daytimeBookingAllowed()) return true;
   const { weekday, minutes } = ptClock(now);
   const afterFive = minutes >= SARAH_BOOKING_CUTOFF_HOUR_PT * 60;
   const beforeMondaySeven = minutes < WEEKEND_WINDOW_ENDS_MONDAY_HOUR_PT * 60;
