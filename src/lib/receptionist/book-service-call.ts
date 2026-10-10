@@ -6,6 +6,7 @@
  * Do not send customer SMS/email.
  */
 
+import { buildScheduledItemAttributes } from '../jobber/mcp-schedule.ts';
 import { resolveSlotFromPreference } from './tool-params.ts';
 import {
   decideSarahBooking,
@@ -174,17 +175,25 @@ const JOB_CREATE = `
         id
         title
         jobNumber
-        visits(first: 5) {
+      }
+      userErrors { message path }
+    }
+  }
+`;
+
+// Jobber 2025-04-16: jobCreate cannot take a visit datetime or assignees.
+// Create the job with createVisits:false, then visitCreate with the schedule.
+const VISIT_CREATE = `
+  mutation VisitCreate($jobId: EncodedId!, $input: VisitCreateInput!) {
+    visitCreate(jobId: $jobId, input: $input) {
+      createdVisits {
+        id
+        startAt
+        endAt
+        assignedUsers {
           nodes {
             id
-            startAt
-            endAt
-            assignedUsers {
-              nodes {
-                id
-                name { full }
-              }
-            }
+            name { full }
           }
         }
       }
@@ -719,8 +728,7 @@ export async function bookServiceCall(
         input: {
           propertyId,
           title: SERVICE_CALL_TITLE,
-          startAt: chosen.startAt,
-          endAt: chosen.endAt,
+          allowReviewRequest: false,
           lineItems: [
             {
               name: SERVICE_CALL_TITLE,
@@ -735,9 +743,8 @@ export async function bookServiceCall(
             invoicingSchedule: 'ON_COMPLETION',
           },
           scheduling: {
-            createVisits: true,
+            createVisits: false,
             notifyTeam: false,
-            assignedUserIds: [chosen.technicianId],
           },
         },
       },
@@ -754,7 +761,40 @@ export async function bookServiceCall(
       });
     }
 
-    const job = jobData?.data?.jobCreate?.job;
+    const createdJob = jobData?.data?.jobCreate?.job;
+    let job: any = createdJob;
+    if (createdJob?.id) {
+      const visitData = await jobberGraphql(
+        token,
+        VISIT_CREATE,
+        {
+          jobId: createdJob.id,
+          input: {
+            visits: [
+              {
+                title: SERVICE_CALL_TITLE,
+                schedule: buildScheduledItemAttributes({
+                  startAt: chosen.startAt,
+                  endAt: chosen.endAt,
+                  assigneeIds: [chosen.technicianId],
+                }),
+              },
+            ],
+          },
+        },
+        fetchFn,
+        version
+      );
+      const visitErrors = visitData?.data?.visitCreate?.userErrors || [];
+      if (visitErrors.length) {
+        return errorResult(visitErrors[0].message || 'visitCreate failed', {
+          assignedTechName: chosen.technician,
+          clientId: client.id,
+          clientCreated: created,
+        });
+      }
+      job = { ...createdJob, visits: { nodes: visitData?.data?.visitCreate?.createdVisits || [] } };
+    }
     if (job?.title && !isSarahServiceCallTitle(job.title)) {
       return {
         booked: false,
