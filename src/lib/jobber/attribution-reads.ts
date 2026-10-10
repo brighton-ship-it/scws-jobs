@@ -7,7 +7,7 @@
 import { assertNoJobberErrors, jobberGraphql, type JobberGraphqlOptions } from './client.ts';
 import type { InvoiceAmountInput } from '../ads/invoice-value.ts';
 import type { WonInvoiceInput } from '../ads/offline-import.ts';
-import type { BookedJobInput } from '../ads/booked-jobs.ts';
+import type { BookedJobInput, ClientQuoteInput } from '../ads/booked-jobs.ts';
 
 export const ATTRIBUTION_INVOICES_QUERY = `
   query AttributionInvoices($first: Int!, $after: String) {
@@ -133,6 +133,7 @@ export function mapJobInvoiceNodes(payload: unknown): InvoiceAmountInput[] {
     const record = asRecord(node);
     if (!record) continue;
     mapped.push({
+      id: firstString(record, 'id'),
       invoiceStatus: firstString(record, 'invoiceStatus'),
       issuedDate: firstString(record, 'issuedDate'),
       amounts: amountsOf(record),
@@ -221,6 +222,12 @@ export const ATTRIBUTION_BOOKED_JOB_VALUE_QUERY = `
       id
       total
       quote { id amounts { subtotal } }
+      client {
+        id
+        quotes(first: 25) {
+          nodes { id quoteStatus createdAt amounts { subtotal } }
+        }
+      }
       invoices(first: 5) {
         nodes {
           id
@@ -267,7 +274,28 @@ export function mapBookedJobNode(node: unknown): BookedJobInput | null {
   };
 }
 
-export function mapBookedJobValue(payload: unknown): Pick<BookedJobInput, 'quoteSubtotal' | 'jobTotal' | 'invoices'> {
+function mapClientQuotes(job: Record<string, unknown> | null): ClientQuoteInput[] {
+  const nodes = asRecord(asRecord(asRecord(job?.client)?.quotes))?.nodes;
+  if (!Array.isArray(nodes)) return [];
+  const out: ClientQuoteInput[] = [];
+  for (const node of nodes) {
+    const record = asRecord(node);
+    const id = firstString(record, 'id');
+    if (!record || !id) continue;
+    const subtotal = asRecord(record.amounts)?.subtotal;
+    out.push({
+      id,
+      status: firstString(record, 'quoteStatus'),
+      createdAt: firstString(record, 'createdAt'),
+      subtotal: typeof subtotal === 'number' ? subtotal : null,
+    });
+  }
+  return out;
+}
+
+export function mapBookedJobValue(
+  payload: unknown
+): Pick<BookedJobInput, 'quoteSubtotal' | 'jobTotal' | 'invoices' | 'clientQuotes'> {
   const job = asRecord(asRecord(payload)?.job);
   const quoteSubtotal = asRecord(asRecord(job?.quote)?.amounts)?.subtotal;
   const total = job?.total;
@@ -275,6 +303,7 @@ export function mapBookedJobValue(payload: unknown): Pick<BookedJobInput, 'quote
     quoteSubtotal: typeof quoteSubtotal === 'number' ? quoteSubtotal : null,
     jobTotal: typeof total === 'number' ? total : null,
     invoices: mapJobInvoiceNodes(payload),
+    clientQuotes: mapClientQuotes(job),
   };
 }
 

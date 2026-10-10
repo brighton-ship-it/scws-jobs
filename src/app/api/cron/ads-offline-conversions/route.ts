@@ -5,6 +5,7 @@ import {
   googleAdsConfig,
   refreshGoogleAccessToken,
   uploadClickConversions,
+  uploadConversionAdjustments,
 } from '@/lib/ads/google-ads-api';
 import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
@@ -13,6 +14,13 @@ import {
   type AttributedLead,
 } from '@/lib/ads/offline-import';
 import { fetchBookedJobs } from '@/lib/jobber/attribution-reads';
+import { hashEmail, hashPhoneE164 } from '@/lib/ads/offline-conversion';
+import {
+  buildRestatement,
+  nextRestatement,
+  sentStateOf,
+  type SentState,
+} from '@/lib/ads/conversion-stages';
 import { selectLeadRows } from '@/lib/ads/lead-query';
 
 export const dynamic = 'force-dynamic';
@@ -55,7 +63,7 @@ export async function POST(request: NextRequest) {
       selectLeadRows(db.from('customers'), leadColumns, since),
       db.from('ads_calls').select('caller_phone, campaign_name, started_at').not('caller_phone', 'is', null).limit(5000),
       fetchBookedJobs(),
-      db.from('ads_offline_conversions').select('jobber_job_id, status').limit(5000),
+      db.from('ads_offline_conversions').select('jobber_job_id, status, value_usd, payload').limit(5000),
     ]);
 
     const leads: AttributedLead[] = [
@@ -78,9 +86,12 @@ export async function POST(request: NextRequest) {
     });
 
     const config = googleAdsConfig();
+    const stagesByJob = new Map(candidates.map((c) => [c.jobberJobId, c.stages]));
+    const existingRows: Array<{ jobber_job_id: string; status: string; value_usd: number | null; payload: unknown }> =
+      existing.data ?? [];
     const result = await runOfflineImport({
       candidates,
-      existing: existing.data ?? [],
+      existing: existingRows,
       mode,
       conversionAction: config?.conversionAction ?? null,
       save: async (row) => {
@@ -96,7 +107,14 @@ export async function POST(request: NextRequest) {
             signal: row.signal,
             status: row.status,
             mode: row.mode,
-            payload: row.payload,
+            // payload = { conversion, stages, sent_stage, sent_value }. Stage state lives
+            // here so no schema change is needed. Nothing is "sent" in dry run.
+            payload: {
+              conversion: row.payload,
+              stages: stagesByJob.get(row.jobber_job_id) ?? null,
+              sent_stage: row.status === 'uploaded' ? 1 : null,
+              sent_value: row.status === 'uploaded' ? row.value_usd : null,
+            },
             google_response: row.google_response ?? null,
             error: row.error,
             updated_at: new Date().toISOString(),
@@ -114,8 +132,87 @@ export async function POST(request: NextRequest) {
           : undefined,
     });
 
+    // Stages 2 and 3: restate upward only. Dry run assumes the booking value was sent.
+    const existingById = new Map(existingRows.map((r) => [r.jobber_job_id, r]));
+    const stageRows: Array<Record<string, unknown>> = [];
+    const toAdjust: Array<{ jobId: string; step: NonNullable<ReturnType<typeof nextRestatement>>; adjustment: unknown; payload: Record<string, unknown> }> = [];
+    for (const c of candidates) {
+      const row = existingById.get(c.jobberJobId);
+      const uploaded = row?.status === 'uploaded';
+      const sent: SentState | null =
+        mode === 'live' ? (uploaded ? sentStateOf(row) : null) : { stage: 1, value: c.stages.booking };
+      const step = sent ? nextRestatement(c.stages, sent) : null;
+      stageRows.push({
+        job_id: c.jobberJobId,
+        client: c.clientName,
+        booking_value_usd: c.stages.booking,
+        approved_value_usd: c.stages.approved,
+        invoiced_value_usd: c.stages.invoiced,
+        next_restatement: step ? { stage: step.stage, value_usd: step.value, from_usd: sent?.value } : null,
+        restatable: Boolean(c.gclid || c.gbraid || c.wbraid || c.email || c.phone),
+      });
+      if (mode === 'live' && config?.conversionAction && step && uploaded) {
+        const adjustment = buildRestatement(config.conversionAction, {
+          jobberJobId: c.jobberJobId,
+          value: step.value,
+          nowIso: new Date().toISOString(),
+          hashedEmail: hashEmail(c.email),
+          hashedPhone: hashPhoneE164(c.phone),
+        });
+        toAdjust.push({ jobId: c.jobberJobId, step, adjustment, payload: (row?.payload as Record<string, unknown>) ?? {} });
+      }
+    }
+    const adjustErrors: string[] = [];
+    let restated = 0;
+    if (toAdjust.length && config) {
+      const token = await refreshGoogleAccessToken(config);
+      const res = await uploadConversionAdjustments(
+        config,
+        toAdjust.map((a) => a.adjustment),
+        fetch,
+        token
+      );
+      const partial =
+        res.body && typeof res.body === 'object' && 'partialFailureError' in (res.body as Record<string, unknown>);
+      const ok = res.ok && !partial;
+      for (const a of toAdjust) {
+        const patch = ok
+          ? {
+              value_usd: a.step.value,
+              payload: { ...a.payload, stages: stagesByJob.get(a.jobId) ?? null, sent_stage: a.step.stage, sent_value: a.step.value },
+              google_response: res.body,
+              error: null,
+            }
+          : { error: `Restatement HTTP ${res.status}`, google_response: res.body };
+        const { error } = await db
+          .from('ads_offline_conversions')
+          .update({ ...patch, updated_at: new Date().toISOString() })
+          .eq('jobber_job_id', a.jobId);
+        if (error) adjustErrors.push(`${a.jobId}: ${error.message}`);
+        if (ok) restated += 1;
+        else adjustErrors.push(`${a.jobId}: restatement failed (${res.status})`);
+      }
+    }
+    const sum = (key: string) =>
+      Math.round(stageRows.reduce((t, r) => t + (Number(r[key]) || 0), 0) * 100) / 100;
+
     return NextResponse.json({
-      success: result.errors.length === 0,
+      stages: {
+        rows: stageRows,
+        totals: {
+          booking_usd: sum('booking_value_usd'),
+          // Cumulative view: a job with no approved/invoiced value yet carries its prior stage.
+          approved_usd:
+            Math.round(candidates.reduce((t, c) => t + (c.stages.approved ?? c.stages.booking), 0) * 100) / 100,
+          invoiced_usd:
+            Math.round(
+              candidates.reduce((t, c) => t + (c.stages.invoiced ?? c.stages.approved ?? c.stages.booking), 0) * 100
+            ) / 100,
+        },
+        restated,
+        errors: adjustErrors,
+      },
+      success: result.errors.length === 0 && adjustErrors.length === 0,
       mode,
       trigger: 'booked_job',
       jobs_seen: invoices.length,
