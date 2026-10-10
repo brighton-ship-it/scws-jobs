@@ -16,6 +16,7 @@ import { fetchBookedJobs } from '@/lib/jobber/attribution-reads';
 import { selectLeadRows } from '@/lib/ads/lead-query';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 function unauthorized() {
   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
