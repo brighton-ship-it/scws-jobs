@@ -37,6 +37,7 @@ export interface SpendDay {
   date: string; // YYYY-MM-DD (account time zone, PT)
   campaign: string;
   costUsd: number;
+  clicks?: number;
 }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -198,6 +199,8 @@ export interface Dashboard {
   funnel?: { calls: number; booked: number; invoiced: number; paid: number | null };
   /** Additive. All inbound calls from the Voice audit log (phone_call_log). Null until the table exists. */
   callLog?: CallLogView | null;
+  /** Additive. Ad spend/return split: pump (Search-1 etc.) vs drilling, fixed windows (independent of range). */
+  adSplit?: AdSplit;
   /** Additive. Weekly sales rollup (current week-to-date + prior 8 weeks). */
   weekly?: import('./weekly-sales.ts').WeeklySales | null;
 }
@@ -227,6 +230,46 @@ export function buildCallLogView(rows: Array<Record<string, any>>, now: Date): C
     today: { total: today.length, answered: n('answered') + n('answered_unknown'), missed: n('missed'), forwardedAi: n('forwarded_ai') },
     latestSyncAt: sorted.reduce<string | null>((m, r) => (r.synced_at && (!m || r.synced_at > m) ? r.synced_at : m), null),
   };
+}
+
+export type AdCategory = 'pump' | 'drilling';
+export interface AdSplitRow {
+  category: AdCategory; spend: number | null; clicks: number | null; calls: number; booked: number;
+  invoiced: number; multiple: number | null;
+}
+export interface AdSplitWindow { label: string; from: string; rows: AdSplitRow[] }
+export interface AdSplit { since: AdSplitWindow; week: AdSplitWindow }
+
+/** Drilling = any campaign with "drilling" in its name; every other Google Ads campaign is pump/service. */
+export function adCategory(campaign: string | null | undefined): AdCategory | null {
+  const n = (campaign ?? '').trim();
+  if (!n || n.startsWith('(')) return null; // (Mike live call), (unknown)
+  return /drilling/i.test(n) ? 'drilling' : 'pump';
+}
+
+export function buildAdSplit(input: {
+  calls: DashCall[];
+  spend: SpendDay[] | null;
+  convs: Array<{ conv: DashConversion; call: DashCall }>;
+  now: Date;
+}): AdSplit {
+  const { now } = input;
+  const floor = new Date(DASH_FLOOR_ISO);
+  const weekStart = ptWeekStart(now) < floor ? floor : ptWeekStart(now);
+  const mk = (from: Date, label: string): AdSplitWindow => {
+    const a = ptDateKey(from), b = ptDateKey(now), t0 = from.getTime();
+    const rows = (['pump', 'drilling'] as AdCategory[]).map((category): AdSplitRow => {
+      const sp = input.spend ? input.spend.filter((d) => adCategory(d.campaign) === category && d.date >= a && d.date <= b) : null;
+      const spend = sp ? round(sp.reduce((x, d) => x + d.costUsd, 0)) : null;
+      const clicks = sp ? sp.reduce((x, d) => x + (d.clicks ?? 0), 0) : null;
+      const calls = input.calls.filter((c) => !c.live && adCategory(c.campaign_name) === category && c.started_at && Date.parse(c.started_at) >= t0).length;
+      const won = input.convs.filter((x) => adCategory(x.call.campaign_name) === category && x.conv.conversion_at && Date.parse(x.conv.conversion_at) >= t0);
+      const invoiced = round(won.reduce((x, w) => x + (stagesOf(w.conv).invoiced ?? 0), 0));
+      return { category, spend, clicks, calls, booked: won.length, invoiced, multiple: spend && spend > 0 ? round(invoiced / spend) : null };
+    });
+    return { label, from: from.toISOString(), rows };
+  };
+  return { since: mk(floor, 'Since Sep 18'), week: mk(weekStart, 'This week') };
 }
 
 export interface SeriesDay {
@@ -430,7 +473,13 @@ export function buildDashboard(input: {
     paid: input.paidByJob ? convWindow.filter((c) => (input.paidByJob!.get(c.jobber_job_id) ?? 0) > 0).length : null,
   };
 
+  const adSplit = buildAdSplit({
+    calls: input.calls, spend: input.spend, now,
+    convs: Array.from(creditedCall.entries()).map(([conv, call]) => ({ conv, call })),
+  });
+
   return {
+    adSplit,
     series, previous, funnel,
     range: input.range,
     start: start.toISOString(),

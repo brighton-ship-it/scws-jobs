@@ -183,6 +183,45 @@ function DashboardSkeleton() {
 
 const pct = (n: number | null | undefined) => (n == null ? '—' : `${Math.round(n * 100)}%`);
 
+
+const CAT_LABEL = { pump: 'Pump / service (Search-1)', drilling: 'Drilling' } as const;
+function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['adSplit']>; dark?: boolean }) {
+  const ink = dark ? 'text-slate-100' : 'text-slate-900';
+  const mut = dark ? 'text-slate-500' : 'text-slate-500';
+  const box = dark ? 'border-slate-800 bg-slate-950/50' : 'border-slate-200 bg-slate-50/60';
+  return (
+    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+      {([split.since, split.week] as const).map((win) => (
+        <div key={win.label} className="min-w-0 space-y-2">
+          <p className={`text-[10px] font-semibold uppercase tracking-wider ${mut} ${dark ? 'xl:text-base' : ''}`}>{win.label}</p>
+          {win.rows.map((r) => (
+            <div key={r.category} className={`min-w-0 rounded-xl border p-3 ${box}`}>
+              <div className="flex items-baseline justify-between gap-2">
+                <p className={`truncate text-xs font-semibold ${ink} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
+                <p className={`shrink-0 text-sm font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`} title={r.category === 'drilling' ? 'Early read: drilling revenue is long-tail and arrives over months' : 'invoiced ÷ spend'}>{mult(r.multiple)}{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
+              </div>
+              <dl className="mt-2 grid grid-cols-3 gap-x-2 gap-y-1.5">
+                {([['Spend', usd(r.spend)], ['Clicks', r.clicks == null ? '—' : String(r.clicks)], ['Calls', String(r.calls)], ['Booked', String(r.booked)], ['Invoiced', usd(r.invoiced)], ['Return', mult(r.multiple)]] as const).map(([k, v]) => (
+                  <div key={k} className="min-w-0"><dt className={`truncate text-[10px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-sm font-semibold tabular-nums ${ink} ${dark ? 'xl:text-2xl' : ''}`}>{v}</dd></div>
+                ))}
+              </dl>
+            </div>
+          ))}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AdSplitCard({ split }: { split: NonNullable<Dashboard['adSplit']> }) {
+  return (
+    <Card title="Ad spend: pump vs drilling" subtitle="Google Ads campaigns · calls, bookings and invoiced revenue credited to the campaign that rang · return = invoiced ÷ spend" delay={100}>
+      <AdSplitBlocks split={split} />
+      <p className="mt-3 text-[11px] text-amber-600">Drilling return is early: drilling jobs invoice weeks to months after the call, so expect it to rise. Spend and clicks come straight from Google Ads; calls are Google Ads calls only.</p>
+    </Card>
+  );
+}
+
 function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> }) {
   const w = weekly.weeks[weekly.weeks.length - 1];
   const prev = weekly.weeks[weekly.weeks.length - 2];
@@ -254,6 +293,8 @@ export function CallDashboardPage() {
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
           {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Weekly sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+
+          {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
 
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
@@ -434,6 +475,12 @@ export function CallDashboardTv() {
           </div>
         );
       })() : null}
+      {data?.adSplit ? (
+        <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Ad spend pump vs drilling">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Ad spend · pump vs drilling · drilling return is early (long-tail)</p>
+          <AdSplitBlocks dark split={data.adSplit} />
+        </div>
+      ) : null}
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
         <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Activity</p>
         <div className="space-y-1.5 overflow-hidden text-[13px] sm:text-sm lg:h-[5.5rem] lg:space-y-1 xl:h-36 xl:text-2xl">
