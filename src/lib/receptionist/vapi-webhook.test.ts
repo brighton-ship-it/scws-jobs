@@ -319,7 +319,7 @@ describe('createCallback and flagEmergency', () => {
     assert.match(row.notes, /Repeat caller: yes/);
 
     assert.deepEqual(emails.map((message) => message.to), [...OFFICE_ALERT_EMAILS]);
-    assert.equal(emails[0].subject, '📞 Sarah callback: Maria Lopez / (760) 555-0199');
+    assert.equal(emails[0].subject, '📞 Mike callback: Maria Lopez / (760) 555-0199');
     assert.ok(emails.every((message) => message.subject === emails[0].subject));
     assert.match(emails[0].text, /12 Sage Rd/);
     assert.match(emails[0].text, /Do not text the customer/);
@@ -372,7 +372,7 @@ describe('createCallback and flagEmergency', () => {
     });
 
     assert.deepEqual(emails.map((message) => message.to), [...OFFICE_ALERT_EMAILS]);
-    assert.equal(emails[0].subject, '🚨 Sarah EMERGENCY: Jon Reed / (760) 555-1212 – No water at the house');
+    assert.equal(emails[0].subject, '🚨 Mike EMERGENCY: Jon Reed / (760) 555-1212 – No water at the house');
     assert.ok(emails.every((message) => message.subject === emails[0].subject));
     assert.equal(alertSubject(request), emails[0].subject);
     assert.equal(saved.message, EMERGENCY_SPOKEN_MESSAGE);

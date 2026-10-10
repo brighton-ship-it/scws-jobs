@@ -90,7 +90,7 @@ export async function notifyNewCall({
   const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app';
   
   const embed: DiscordEmbed = {
-    title: isUrgent ? '🚨 URGENT: New Call from Sarah' : '📞 New Call from Sarah',
+    title: isUrgent ? '🚨 URGENT: New Call from Mike' : '📞 New Call from Mike',
     description: summary || 'New phone inquiry received',
     color: isUrgent ? 0xff0000 : 0x4e9271, // Red for urgent, SCWS green otherwise
     fields: [
@@ -116,7 +116,7 @@ export async function notifyNewCall({
   return sendDiscord({
     content: isUrgent ? '<@300130744045535234> Urgent call!' : undefined, // Ping Brighton for urgent
     embeds: [embed],
-    username: 'Sarah AI',
+    username: 'Mike',
   });
 }
 

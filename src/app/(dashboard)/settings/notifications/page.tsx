@@ -234,7 +234,7 @@ export default function NotificationSettingsPage() {
               <li>• New booking requests from customers</li>
               <li>• Jobs assigned to you</li>
               <li>• Quote approvals and responses</li>
-              <li>• Sarah AI receptionist call summaries</li>
+              <li>• Mike (phone assistant) call summaries</li>
               <li>• Important system alerts</li>
             </ul>
           </div>

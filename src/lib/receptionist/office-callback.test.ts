@@ -138,7 +138,7 @@ describe('Sarah office alert dedupe', () => {
 
     assert.equal(store.emails.length, OFFICE_ALERT_EMAILS.length);
     assert.deepEqual(store.emails.map((message) => message.to), [...OFFICE_ALERT_EMAILS]);
-    assert.match(store.emails[0].subject, /🚨 Sarah EMERGENCY/);
+    assert.match(store.emails[0].subject, /🚨 Mike EMERGENCY/);
     assert.match(store.emails[0].text, /No water/);
     assert.match(store.emails[0].text, /Address: California 92225/);
     assert.ok(store.emails.every((message) => message.subject === store.emails[0].subject));
@@ -194,8 +194,8 @@ describe('Sarah office alert dedupe', () => {
     assert.match(store.rows[0].notes, /No water at all/);
     assert.match(store.rows[0].notes, /upgraded this callback to an emergency/i);
     assert.equal(store.emails.length, OFFICE_ALERT_EMAILS.length * 2);
-    assert.match(store.emails[0].subject, /Sarah callback/);
-    assert.match(store.emails[OFFICE_ALERT_EMAILS.length].subject, /Sarah EMERGENCY/);
+    assert.match(store.emails[0].subject, /Mike callback/);
+    assert.match(store.emails[OFFICE_ALERT_EMAILS.length].subject, /Mike EMERGENCY/);
     assert.match(store.emails[OFFICE_ALERT_EMAILS.length].text, /No water at all/);
   });
 
@@ -291,7 +291,7 @@ describe('Sarah office alert dedupe', () => {
     const existing: OfficeAlertRow = {
       id: 'booking-1',
       serviceType: 'Callback',
-      notes: 'Sarah requested a callback.',
+      notes: 'Mike requested a callback.',
       phone: '17605550199',
       address: '',
       city: '',
@@ -315,7 +315,7 @@ describe('Sarah office alert dedupe', () => {
     const existing: OfficeAlertRow = {
       id: 'booking-1',
       serviceType: 'Emergency',
-      notes: 'Sarah flagged an emergency.',
+      notes: 'Mike flagged an emergency.',
       phone: '17605550199',
       address: '',
       city: '',

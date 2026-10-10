@@ -419,7 +419,7 @@ export function weekendEmergencyFlag(input: BookServiceCallInput): OfficeFlag {
   const where = [input.address, input.city].filter(Boolean).join(', ');
   return {
     kind: 'weekend_emergency',
-    subject: `Sarah: weekend emergency — do not book Monday — ${name}`,
+    subject: `Mike: weekend emergency — do not book Monday — ${name}`,
     text: [
       'Sarah did NOT book a Monday $200 service call.',
       'Caller needs someone this weekend (emergency / STR / now). Surface for the shop — do not treat this as scheduled.',
