@@ -77,6 +77,8 @@ export type ScheduleLookupResult = {
 };
 
 export type CheckScheduleInput = {
+  /** Read-only diagnostics: include each tech's board (times/kind, no customer info). */
+  debugBoard?: boolean;
   phone: string;
   city?: string;
   address?: string;
@@ -611,7 +613,7 @@ export async function handleCheckSchedule(
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
         allowlistedTechIds: slots.allowlistedTechIds,
-        ...((input as { debugBoard?: boolean }).debugBoard ? { board: slots.board } : {}),
+        ...(input.debugBoard ? { board: slots.board } : {}),
         bookingMessage:
           slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`
