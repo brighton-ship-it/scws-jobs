@@ -284,7 +284,7 @@ export async function POST(request: NextRequest) {
     if (phone.length >= 10) {
       // Just include summary - full transcript is in receptionist_calls table
       const notesText = summary 
-        ? `📞 Sarah AI: ${summary}` 
+        ? `📞 Mike: ${summary}` 
         : `📞 Call from ${customerName || formatPhone(phone)} - ${serviceNeeded || 'Phone inquiry'}`;
       
       await supabase.from('booking_requests').insert({
@@ -323,7 +323,7 @@ export async function POST(request: NextRequest) {
         : `📞 Follow up: ${customerName || formatPhone(phone)}`;
       
       const taskDescription = [
-        `Sarah received call at ${startTime.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`,
+        `Mike received call at ${startTime.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`,
         '',
         `Phone: ${formatPhone(phone)}`,
         customerName ? `Customer: ${customerName}` : '',
@@ -378,9 +378,9 @@ export async function POST(request: NextRequest) {
           hour12: true,
         });
 
-    const emailSubject = `📞 Sarah: ${customerName || formatPhone(phone)}${isUrgent ? ' ⚠️ URGENT' : ''}`;
+    const emailSubject = `📞 Mike: ${customerName || formatPhone(phone)}${isUrgent ? ' ⚠️ URGENT' : ''}`;
     const emailContent = `
-New call received by Sarah (AI Receptionist)
+New call received by Mike (phone assistant)
 
 CALL DETAILS:
 • Time: ${pstTime}

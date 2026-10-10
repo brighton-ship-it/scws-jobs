@@ -170,9 +170,9 @@ export function alertSubject(request: OfficeRequest): string {
   const who = whoLabel(request);
   if (request.kind === 'emergency') {
     const issue = (request.reason || 'emergency').replace(/\s+/g, ' ').slice(0, 80);
-    return `🚨 Sarah EMERGENCY: ${who} – ${issue}`;
+    return `🚨 Mike EMERGENCY: ${who} – ${issue}`;
   }
-  return `📞 Sarah callback: ${who}`;
+  return `📞 Mike callback: ${who}`;
 }
 
 export function storedPhoneFor(phone: string): string {
@@ -186,7 +186,7 @@ export function bookingRowForOfficeRequest(
 ): BookingRequestInsert {
   const storedPhone = storedPhoneFor(request.phone);
   const notes = [
-    request.kind === 'emergency' ? 'Sarah flagged an emergency.' : 'Sarah requested a callback.',
+    request.kind === 'emergency' ? 'Mike flagged an emergency.' : 'Mike requested a callback.',
     `Emergency: ${request.kind === 'emergency' ? 'yes' : 'no'}`,
     request.reason ? `Reason: ${request.reason}` : 'Reason: (not given)',
     request.address ? `Address: ${request.address}` : '',
@@ -264,7 +264,7 @@ function notesContain(notes: string, text: string): boolean {
 
 export function appendOfficeNotes(existingNotes: string, request: OfficeRequest, upgrade: boolean): string {
   const lines: string[] = [];
-  if (upgrade) lines.push('Sarah upgraded this callback to an emergency.');
+  if (upgrade) lines.push('Mike upgraded this callback to an emergency.');
   if (request.reason && !notesContain(existingNotes, request.reason)) lines.push(`Reason: ${request.reason}`);
   if (request.address && !notesContain(existingNotes, request.address)) lines.push(`Address: ${request.address}`);
   if (request.city && !notesContain(existingNotes, request.city)) lines.push(`City: ${request.city}`);
@@ -369,8 +369,8 @@ export function omitOfficeDedupeColumns<T extends object>(
 export function alertText(request: OfficeRequest, bookingId?: string | null): string {
   return [
     request.kind === 'emergency'
-      ? 'Sarah flagged an emergency during a live call.'
-      : 'Sarah asked the office to call this person back.',
+      ? 'Mike flagged an emergency during a live call.'
+      : 'Mike asked the office to call this person back.',
     '',
     `Name: ${request.name || 'Unknown'}`,
     `Phone: ${request.phone ? formatPhoneDisplay(request.phone) : 'Unknown'}`,
