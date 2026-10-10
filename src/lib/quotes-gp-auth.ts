@@ -12,6 +12,7 @@
 
 export const QUOTES_GP_KEY_ENV = 'QUOTES_GP_KEY';
 export const QUOTES_GP_KEY_FALLBACK_ENV = 'ADMIN_SECRET';
+export const OPS_DASH_KEY_ENV = 'OPS_DASH_KEY';
 export const QUOTES_GP_KEY_HEADER = 'x-quotes-gp-key';
 export const QUOTES_GP_KEY_COOKIE = 'quotes_gp_key';
 export const QUOTES_GP_KEY_QUERY = 'key';
@@ -54,13 +55,36 @@ export function readQuotesGpKey(
   return cookie || null;
 }
 
+// Pure-JS constant-time compare (this module is also imported by client components).
+function safeEqual(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
+/** Accepted secrets: QUOTES_GP_KEY (or ADMIN_SECRET fallback) and OPS_DASH_KEY. */
+export function getAcceptedKeys(env: NodeJS.ProcessEnv = process.env): string[] {
+  const keys: string[] = [];
+  const primary = getQuotesGpSecret(env);
+  if (primary) keys.push(primary);
+  const dash = env[OPS_DASH_KEY_ENV]?.trim();
+  if (dash) keys.push(dash);
+  return keys;
+}
+
 export function keyMatchesQuotesGpSecret(
   provided: string | null | undefined,
   env: NodeJS.ProcessEnv = process.env
 ): boolean {
-  const secret = getQuotesGpSecret(env);
-  if (!secret || !provided) return false;
-  return provided === secret;
+  if (!provided) return false;
+  let ok = false;
+  for (const k of getAcceptedKeys(env)) {
+    if (safeEqual(provided, k)) ok = true;
+  }
+  return ok;
 }
 
 export function authorizeQuotesGpKey(
