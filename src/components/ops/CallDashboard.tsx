@@ -188,8 +188,6 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
   const prev = weekly.weeks[weekly.weeks.length - 2];
   const first = weekly.weeks[0];
   const rows: Array<[string, string, string?]> = [
-    ['Invoiced', usd(w.invoiced), `${w.invoiceCount ?? 0} invoices`],
-    ['Paid', usd(w.paid), 'on this week\'s invoices'],
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent this week`],
@@ -199,6 +197,10 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
   ];
   return (
     <Card title="Weekly sales" subtitle={`This week to date: ${w.label} · last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid']]} />} delay={90}>
+      <div className="mb-4 grid grid-cols-2 gap-3">
+        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced this week</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{w.label} · {w.invoiceCount ?? 0} invoices, pre-tax</p></div>
+        <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid this week</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.paid)}</p><p className="text-xs text-slate-500">collected on those invoices</p></div>
+      </div>
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
           {rows.map(([label, value, sub]) => (
@@ -250,6 +252,8 @@ export function CallDashboardPage() {
 
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
+          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Weekly sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
@@ -260,8 +264,6 @@ export function CallDashboardPage() {
             <Kpi delay={240} color={palette.revenue} label="Invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
             <Kpi delay={280} color={palette.paid} label="Paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
           </div>
-
-          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : null}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card title="Calls per day" subtitle={rangeLabel} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short']]} />} delay={60}>
