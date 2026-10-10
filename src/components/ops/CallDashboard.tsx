@@ -105,8 +105,8 @@ function Delta({ cur, prev, goodWhenUp = true, dark = false }: { cur: number | n
 
 function Card({ title, subtitle, right, children, className = '', delay = 0 }: { title: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode; className?: string; delay?: number }) {
   return (
-    <section className={`cd-rise rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04),0_4px_16px_-8px_rgba(15,23,42,.08)] ${className}`} style={{ animationDelay: `${delay}ms` }}>
-      <header className="flex items-start justify-between gap-3 px-5 pb-1 pt-4">
+    <section className={`cd-rise min-w-0 rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04),0_4px_16px_-8px_rgba(15,23,42,.08)] ${className}`} style={{ animationDelay: `${delay}ms` }}>
+      <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 px-5 pb-1 pt-4">
         <div><h2 className="text-sm font-semibold text-slate-900">{title}</h2>{subtitle ? <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p> : null}</div>
         {right}
       </header>
