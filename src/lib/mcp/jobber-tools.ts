@@ -450,7 +450,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'list_quotes_approved',
     description:
-      'List Jobber quotes approved (or converted) in a date window, by approval time (Jobber transitionedAt), regardless of when sent. Returns quote number, client, sent/approved timestamps, pre-tax subtotal and total, with totals. Read-only. Pass ISO timestamps; paginates internally.',
+      'List Jobber quotes approved (or converted) in a date window, by approval time (Jobber transitionedAt), regardless of when sent. Returns quote number, client, sent/approved timestamps, pre-tax subtotal and total, with totals. Read-only. Pass ISO timestamps; scans one status per call (approved or converted) and returns nextCursor when it stops early; call again with cursor to continue.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -458,7 +458,9 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
       properties: {
         after: { type: 'string', description: 'ISO timestamp, start of window (inclusive)' },
         before: { type: 'string', description: 'ISO timestamp, end of window (exclusive)' },
-        maxPages: { type: 'number', description: 'Pages of 50 per status to scan. Default 20, max 40.' },
+        maxPages: { type: 'number', description: 'Pages of 50 to scan per call. Default 20, max 40.' },
+        status: { type: 'string', description: 'approved (default) or converted. Call once per status.' },
+        cursor: { type: 'string', description: 'nextCursor from a previous truncated call to resume the scan.' },
       },
     },
   },
@@ -1270,7 +1272,7 @@ export async function callJobberMcpTool(
         const after = optionalString(args, 'after');
         const before = optionalString(args, 'before');
         if (!after || !before) return errorResult('after and before (ISO timestamps) are required.');
-        const result = await listApprovedQuotes({ after, before, maxPages: optionalNumber(args, 'maxPages') }, deps);
+        const result = await listApprovedQuotes({ after, before, maxPages: optionalNumber(args, 'maxPages'), status: optionalString(args, 'status') === 'converted' ? 'converted' : 'approved', cursor: optionalString(args, 'cursor') || null }, deps);
         return textResult({ after, before, ...result, note: 'Read-only. Approval time is Jobber transitionedAt (time the quote entered its current status).' });
       }
       case 'list_payment_records': {
