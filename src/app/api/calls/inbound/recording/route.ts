@@ -1,4 +1,4 @@
-/** Twilio recordingStatusCallback (completed). Transcribes + summarizes, stores in phone_call_log. */
+/** Twilio recordingStatusCallback (completed). Transcribes + summarizes, stores in inbound_call_recordings. */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { handleRecording } from '@/lib/phone-calls/handle-recording';

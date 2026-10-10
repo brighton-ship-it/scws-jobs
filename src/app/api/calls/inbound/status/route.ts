@@ -13,7 +13,7 @@ export async function POST(req: NextRequest) {
   if (db && params.CallSid) {
     const dur = parseInt(params.DialCallDuration || '', 10);
     try {
-      await db.from('phone_call_log').upsert({
+      await db.from('inbound_call_recordings').upsert({
         call_sid: params.CallSid, dial_status: params.DialCallStatus || null,
         duration_seconds: Number.isFinite(dur) ? dur : null, answered: params.DialCallStatus === 'completed',
         updated_at: new Date().toISOString(),

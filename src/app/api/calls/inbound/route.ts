@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
   if (db && params.CallSid) {
     // Best effort: never block ringing the shop on logging (table may not exist yet).
     try {
-      await db.from('phone_call_log').upsert({
+      await db.from('inbound_call_recordings').upsert({
         call_sid: params.CallSid, caller_number: params.From, tracking_number: to,
         source: TRACKING_SOURCES[to] ?? 'main_line', caller_city: params.CallerCity || null, caller_state: params.CallerState || null,
         started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
