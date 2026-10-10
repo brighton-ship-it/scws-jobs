@@ -21,7 +21,7 @@ export const BOOKED_FLOOR_ISO = '2026-09-18T07:00:00.000Z';
 
 export interface BookedJobInput {
   id: string;
-  createdAt: string | null;
+  createdAt?: string | null;
   jobStatus?: string | null;
   clientId?: string | null;
   clientName?: string | null;
