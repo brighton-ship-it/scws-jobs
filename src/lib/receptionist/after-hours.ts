@@ -137,11 +137,21 @@ export const DAYTIME_WEEKDAY_RULE =
 export const WEEKEND_EMERGENCY_RULE =
   'Do not book a Monday $200 visit. Do not tell the caller they are scheduled. Flag the shop. Say the office will call back.';
 
+/**
+ * Oct 9 2026: after-hours and weekend callers (including no-water) are booked into the
+ * earliest open WEEKDAY slot; the prompt also calls flagEmergency for no-water so the
+ * on-call team is alerted. Set env SARAH_BLOCK_WEEKEND_BOOKING=1 to restore the old
+ * "weekend emergency is not a Monday booking" block.
+ */
+export function weekendBookingBlocked(env: NodeJS.ProcessEnv = process.env): boolean {
+  return /^(1|true|yes)$/i.test(String(env.SARAH_BLOCK_WEEKEND_BOOKING || '').trim());
+}
+
 export function decideSarahBooking(
   now: Date,
   need: WeekendNeedInput = {}
 ): SarahBookingDecision {
-  if (isWeekendEmergencyWindow(now) && callerWantsSomeoneNow(need)) {
+  if (weekendBookingBlocked() && isWeekendEmergencyWindow(now) && callerWantsSomeoneNow(need)) {
     return {
       mayBook: false,
       reason: 'weekend_emergency',
