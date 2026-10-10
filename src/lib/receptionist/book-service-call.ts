@@ -559,14 +559,19 @@ async function findOrCreateProperty(
     PROPERTY_CREATE,
     {
       clientId: client.id,
+      // Jobber API 2025-04-16: PropertyCreateInput is { properties: [{ address }] }.
       input: {
-        address: {
-          street1: input.address,
-          city: input.city || '',
-          province: 'CA',
-          postalCode: input.zip || input.postalCode || '',
-          country: 'US',
-        },
+        properties: [
+          {
+            address: {
+              street1: input.address,
+              city: input.city || '',
+              province: 'CA',
+              postalCode: input.zip || input.postalCode || '',
+              country: 'US',
+            },
+          },
+        ],
       },
     },
     fetchFn,
