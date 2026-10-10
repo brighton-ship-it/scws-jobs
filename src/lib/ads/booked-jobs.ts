@@ -15,9 +15,17 @@
 
 import { hasStoredClickId, normalizeEmail, normalizePhone } from './book-job.ts';
 import { sumIssuedInvoicePretax, type InvoiceAmountInput } from './invoice-value.ts';
+import { stageValues, type StageValues } from './conversion-stages.ts';
 import type { AdsPhoneHit, AttributedLead, OfflineCandidate, OfflineSignal } from './offline-import.ts';
 
 export const BOOKED_FLOOR_ISO = '2026-09-18T07:00:00.000Z';
+
+export interface ClientQuoteInput {
+  id: string;
+  status?: string | null;
+  createdAt?: string | null;
+  subtotal?: number | null;
+}
 
 export interface BookedJobInput {
   id: string;
@@ -30,12 +38,15 @@ export interface BookedJobInput {
   quoteSubtotal?: number | null;
   jobTotal?: number | null;
   invoices?: InvoiceAmountInput[] | null;
+  /** All of the client's quotes (any status). Used for the approved-quote stage. */
+  clientQuotes?: ClientQuoteInput[] | null;
 }
 
 export type ValueSource = 'quote_subtotal' | 'invoice_pretax' | 'job_total';
 
 export interface BookedCandidate extends OfflineCandidate {
   clientName: string | null;
+  stages: StageValues;
   valueSource: ValueSource;
 }
 
@@ -180,6 +191,16 @@ export function candidatesFromBookedJobs(input: {
     }
     firstBookedByClient.push({ keys, anchor });
 
+    // Stages 2 and 3 look at the whole client, not just this job: the big
+    // quote is usually a separate quote/job created after the service call.
+    const clientJobs = jobs.filter((o) => o.job.id === job.id || sharesKey(keys, o.keys)).map((o) => o.job);
+    const stages = stageValues({
+      bookingValue: priced.valueUsd,
+      anchorMs: anchor,
+      quotes: job.clientQuotes ?? [],
+      invoices: clientJobs.flatMap((j) => j.invoices ?? []),
+    });
+
     const pick = before.find((s) => s.lead && hasStoredClickId(s.lead)) ?? before[0];
     const lead = pick.lead ?? before.find((s) => s.lead)?.lead ?? null;
     const phone = (job.phones ?? []).map(normalizePhone).find(Boolean) ?? null;
@@ -190,6 +211,7 @@ export function candidatesFromBookedJobs(input: {
       conversionAt: new Date(at).toISOString(),
       valueUsd: priced.valueUsd,
       valueSource: priced.valueSource,
+      stages,
       clientName: job.clientName ?? null,
       gclid: lead?.gclid ?? null,
       gbraid: lead?.gbraid ?? null,

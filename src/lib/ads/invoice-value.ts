@@ -3,6 +3,7 @@
 const EXCLUDED_STATUS = new Set(['draft', 'void', 'bad_debt']);
 
 export interface InvoiceAmountInput {
+  id?: string | null;
   invoiceStatus?: string | null;
   issuedDate?: string | null;
   amounts?: {

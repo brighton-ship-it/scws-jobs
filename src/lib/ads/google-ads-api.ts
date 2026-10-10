@@ -277,3 +277,25 @@ export async function uploadClickConversions(
   }
   return { ok: response.ok, status: response.status, body };
 }
+
+/** Restates the value of an already-uploaded conversion (upward only, enforced by the caller). */
+export async function uploadConversionAdjustments(
+  config: GoogleAdsConfig,
+  adjustments: unknown[],
+  fetchImpl: typeof fetch,
+  accessToken: string
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const url = `${ADS_HOST}/${config.apiVersion}/customers/${config.customerId}:uploadConversionAdjustments`;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: adsHeaders(config, accessToken),
+    body: JSON.stringify({ conversionAdjustments: adjustments, partialFailure: true }),
+  });
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  return { ok: response.ok, status: response.status, body };
+}
