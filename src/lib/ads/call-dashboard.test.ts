@@ -141,6 +141,9 @@ test('weekly cash collected buckets by payment received date, not invoice week',
   assert.equal(w.weeks[7].cash, 300);
   assert.equal(w.weeks[8].paid, 0); assert.equal(w.weeks[7].paid, 1000);
   assert.ok(!w.gaps.some((g) => /cash/.test(g)));
+  const capped = Object.assign([], { truncated: true });
+  const w2 = buildWeeklySales({ now: wnow, invoices: [], quotes: [], jobsCreated: [], jobsCompleted: [], callTimes: [], bookedAt: [], payments: capped });
+  assert.ok(w2.gaps.some((g) => /incomplete/.test(g)));
 });
 
 test('compactUsd formats large values compactly', async () => {
