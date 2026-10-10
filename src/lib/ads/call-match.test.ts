@@ -4,6 +4,7 @@ import {
   importAdsCalls,
   matchAdsCallToVoice,
   matchPhoneToParty,
+  parseAdsDateTime,
   parseVoiceActivities,
   type StoredAdsCall,
 } from './call-match.ts';
@@ -107,5 +108,34 @@ describe('ads call matching', () => {
     assert.equal(saved[0].duration_seconds, 83);
     assert.equal(saved[0].jobber_client_id, 'jobber-9');
     assert.equal(saved[0].keyword, null);
+  });
+});
+
+describe('real Voice audit log shape', () => {
+  it('reads PARAM_SOURCE, ms PARAM_DURATION and matches PT Ads times', () => {
+    const voice = parseVoiceActivities({
+      items: [
+        {
+          id: { time: '2026-10-07T22:33:22.100Z', uniqueQualifier: 'q' },
+          events: [
+            {
+              parameters: [
+                { name: 'PARAM_SOURCE', value: '+18587359149' },
+                { name: 'PARAM_DURATION', intValue: '63000' },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    assert.equal(voice[0].callerPhone, '+18587359149');
+    assert.equal(voice[0].durationSeconds, 63);
+    assert.equal(parseAdsDateTime('2026-10-07 15:33:23'), Date.parse('2026-10-07T22:33:23Z'));
+    assert.equal(parseAdsDateTime('2026-01-07 15:33:23'), Date.parse('2026-01-07T23:33:23Z'));
+    const m = matchAdsCallToVoice(
+      { ...draft, startedAt: '2026-10-07 15:33:23', durationSeconds: 63 },
+      voice
+    );
+    assert.equal(m?.callerPhone, '+18587359149');
   });
 });
