@@ -7,6 +7,7 @@
 import { assertNoJobberErrors, jobberGraphql, type JobberGraphqlOptions } from './client.ts';
 import type { InvoiceAmountInput } from '../ads/invoice-value.ts';
 import type { WonInvoiceInput } from '../ads/offline-import.ts';
+import type { BookedJobInput } from '../ads/booked-jobs.ts';
 
 export const ATTRIBUTION_INVOICES_QUERY = `
   query AttributionInvoices($first: Int!, $after: String) {
@@ -193,4 +194,90 @@ export async function fetchJobInvoiceAmounts(
   const result = await jobberGraphql(ATTRIBUTION_JOB_INVOICES_QUERY, { id: jobId }, options);
   assertNoJobberErrors(result, 'job invoices');
   return mapJobInvoiceNodes(result.data);
+}
+
+export const ATTRIBUTION_BOOKED_JOBS_QUERY = `
+  query AttributionBookedJobs($first: Int!, $after: String) {
+    jobs(first: $first, after: $after) {
+      nodes {
+        id
+        jobStatus
+        createdAt
+        total
+        client {
+          id
+          name
+          emails { address }
+          phones { number }
+        }
+        quote { id amounts { subtotal } }
+        invoices(first: 5) {
+          nodes {
+            id
+            invoiceStatus
+            issuedDate
+            amounts { subtotal total taxAmount }
+          }
+        }
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+export function mapBookedJobNode(node: unknown): BookedJobInput | null {
+  const record = asRecord(node);
+  const id = firstString(record, 'id');
+  if (!record || !id) return null;
+  const client = asRecord(record.client);
+  const phones = Array.isArray(client?.phones) ? client.phones : [];
+  const emails = Array.isArray(client?.emails) ? client.emails : [];
+  const quote = asRecord(record.quote);
+  const quoteSubtotal = asRecord(quote?.amounts)?.subtotal;
+  const invoiceNodes = Array.isArray(asRecord(record.invoices)?.nodes) ? (asRecord(record.invoices)!.nodes as unknown[]) : [];
+  const total = record.total;
+  return {
+    id,
+    createdAt: firstString(record, 'createdAt'),
+    jobStatus: firstString(record, 'jobStatus'),
+    clientId: firstString(client, 'id'),
+    clientName: firstString(client, 'name'),
+    phones: phones.map((p) => firstString(asRecord(p), 'number')),
+    emails: emails.map((e) => firstString(asRecord(e), 'address')),
+    quoteSubtotal: typeof quoteSubtotal === 'number' ? quoteSubtotal : null,
+    jobTotal: typeof total === 'number' ? total : null,
+    invoices: invoiceNodes
+      .map((n) => asRecord(n))
+      .filter((n): n is Record<string, unknown> => Boolean(n))
+      .map((n) => ({
+        invoiceStatus: firstString(n, 'invoiceStatus'),
+        issuedDate: firstString(n, 'issuedDate'),
+        amounts: amountsOf(n),
+      })),
+  };
+}
+
+/** All jobs (history is needed to tell new clients from existing ones). */
+export async function fetchBookedJobs(
+  options?: JobberGraphqlOptions & { pageSize?: number; maxPages?: number }
+): Promise<BookedJobInput[]> {
+  assertAttributionQueryIsReadOnly(ATTRIBUTION_BOOKED_JOBS_QUERY);
+  const pageSize = options?.pageSize ?? 30;
+  const maxPages = options?.maxPages ?? 60;
+  const jobs: BookedJobInput[] = [];
+  let after: string | null = null;
+  for (let page = 0; page < maxPages; page++) {
+    const result = await jobberGraphql(ATTRIBUTION_BOOKED_JOBS_QUERY, { first: pageSize, after }, options);
+    assertNoJobberErrors(result, 'attribution booked jobs');
+    const connection = asRecord(result.data?.jobs);
+    const nodes = Array.isArray(connection?.nodes) ? connection.nodes : [];
+    for (const node of nodes) {
+      const mapped = mapBookedJobNode(node);
+      if (mapped) jobs.push(mapped);
+    }
+    const pageInfo = asRecord(connection?.pageInfo);
+    if (!pageInfo?.hasNextPage || typeof pageInfo.endCursor !== 'string') break;
+    after = pageInfo.endCursor;
+  }
+  return jobs;
 }
