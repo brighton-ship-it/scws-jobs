@@ -3,21 +3,26 @@
 import { useCallback, useEffect, useState } from 'react';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
+import {
+  CallsPerDayChart, Funnel, Gauge, Sparkline, SpendRevenueChart, compactUsd, mult, palette, usd,
+} from './call-dash/charts';
 
 const KEY_STORAGE = 'quotes_gp_key';
 const RANGES = [
   { v: '7', label: '7 days' }, { v: '30', label: '30 days' }, { v: '90', label: '90 days' }, { v: 'since', label: 'Since Sep 18' },
 ] as const;
 
-const usd = (n: number | null | undefined, d = 0) =>
-  n == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: d }).format(n);
-const mult = (n: number | null | undefined) => (n == null ? '—' : `${n.toFixed(1)}x`);
 const when = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+const clock = (iso: string | null | undefined) =>
+  iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '—';
+
+type Live = { generatedAt?: string };
 
 function useDashboard(range: string, refreshMs: number | null) {
   const [data, setData] = useState<Dashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const load = useCallback(async () => {
     try {
       const url = new URL(window.location.href);
@@ -30,43 +35,128 @@ function useDashboard(range: string, refreshMs: number | null) {
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
       setData(await res.json()); setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); }
+    finally { setLoading(false); }
   }, [range]);
   useEffect(() => {
+    setLoading(true);
     load();
     if (!refreshMs) return;
     const t = setInterval(load, refreshMs);
     return () => clearInterval(t);
   }, [load, refreshMs]);
-  return { data, error, reload: load };
+  return { data, error, loading, reload: load };
 }
 
-function Tile({ label, value, sub, tone = 'default' }: { label: string; value: string; sub?: string; tone?: 'default' | 'good' | 'bad' }) {
-  const color = tone === 'good' ? 'text-emerald-600' : tone === 'bad' ? 'text-red-600' : 'text-slate-900';
+function useNow(ms = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), ms); return () => clearInterval(t); }, [ms]);
+  return now;
+}
+
+const STYLES = `
+@keyframes cd-pulse{0%{box-shadow:0 0 0 0 rgba(16,185,129,.55)}70%{box-shadow:0 0 0 8px rgba(16,185,129,0)}100%{box-shadow:0 0 0 0 rgba(16,185,129,0)}}
+@keyframes cd-rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes cd-grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+@keyframes cd-draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+@keyframes cd-shimmer{0%{background-position:-200px 0}100%{background-position:200px 0}}
+.cd-live{animation:cd-pulse 2s infinite}
+.cd-rise{animation:cd-rise .45s ease-out both}
+.cd-bar rect{transform-box:fill-box;transform-origin:bottom;animation:cd-grow .5s ease-out both}
+.cd-line{stroke-dasharray:1;stroke-dashoffset:0;animation:cd-draw .9s ease-out both}
+.cd-gauge{transition:stroke .4s}
+.cd-skel{background:linear-gradient(90deg,#e2e8f0 0,#f1f5f9 100px,#e2e8f0 200px);background-size:400px 100%;animation:cd-shimmer 1.4s linear infinite;border-radius:8px}
+.cd-skel-dark{background:linear-gradient(90deg,#1e293b 0,#334155 100px,#1e293b 200px);background-size:400px 100%;animation:cd-shimmer 1.4s linear infinite;border-radius:12px}
+@media (prefers-reduced-motion:reduce){.cd-live,.cd-rise,.cd-bar rect,.cd-line,.cd-skel,.cd-skel-dark{animation:none!important}}
+`;
+
+function LiveBadge({ at, refreshMs, error, dark = false }: { at?: string; refreshMs: number; error: string | null; dark?: boolean }) {
+  const now = useNow(1000);
+  const age = at ? Math.max(0, Math.round((now - Date.parse(at)) / 1000)) : null;
+  const stale = !!error || (age != null && age * 1000 > refreshMs * 2.5);
+  const dot = error ? 'bg-rose-500' : stale ? 'bg-amber-500' : 'bg-emerald-500 cd-live';
+  const text = dark ? 'text-slate-300' : 'text-slate-600';
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-      <p className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</p>
-      <p className={`mt-1 text-2xl font-bold ${color}`}>{value}</p>
-      {sub ? <p className="text-xs text-slate-500">{sub}</p> : null}
+    <div className={`inline-flex items-center gap-2 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium tabular-nums ${dark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'} ${text}`} role="status">
+      <span className={`h-2 w-2 rounded-full ${dot}`} />
+      <span className="font-semibold">{error ? 'Offline' : stale ? 'Delayed' : 'Live'}</span>
+      <span className={dark ? 'text-slate-500' : 'text-slate-400'}>{at ? `Updated ${clock(at)} PT${age != null ? ` · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} ago` : ''}` : 'Connecting…'}</span>
     </div>
   );
 }
 
-function GroupTable({ title, rows }: { title: string; rows: GroupRow[] }) {
+function Delta({ cur, prev, goodWhenUp = true, dark = false }: { cur: number | null; prev: number | null | undefined; goodWhenUp?: boolean; dark?: boolean }) {
+  if (cur == null || prev == null) return <span className="text-xs text-slate-400">no prior period</span>;
+  if (prev === 0) return <span className="text-xs text-slate-400">{cur === 0 ? 'flat vs prior' : 'new vs prior'}</span>;
+  const pct = ((cur - prev) / prev) * 100;
+  const up = pct > 0.5, down = pct < -0.5;
+  const good = (up && goodWhenUp) || (down && !goodWhenUp);
+  const bad = (up && !goodWhenUp) || (down && goodWhenUp);
+  const cls = good ? (dark ? 'bg-emerald-500/15 text-emerald-300' : 'bg-emerald-50 text-emerald-700') : bad ? (dark ? 'bg-rose-500/15 text-rose-300' : 'bg-rose-50 text-rose-700') : (dark ? 'bg-slate-700 text-slate-300' : 'bg-slate-100 text-slate-600');
   return (
-    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-      <h2 className="border-b border-slate-200 px-3 py-2 text-sm font-semibold">{title}</h2>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-xs sm:text-sm">
-          <thead className="text-slate-500"><tr>
-            <th className="px-3 py-1">Name</th><th className="px-2">Calls</th><th className="px-2">Ans.</th>
-            <th className="px-2">Short</th><th className="px-2">Booked</th><th className="px-2">$/call</th><th className="px-2">Invoiced</th>
-          </tr></thead>
-          <tbody>
-            {rows.length === 0 ? <tr><td className="px-3 py-2 text-slate-400" colSpan={7}>No calls</td></tr> : rows.slice(0, 15).map((r) => (
-              <tr key={r.key} className="border-t border-slate-100">
-                <td className="max-w-[10rem] truncate px-3 py-1" title={r.key}>{r.key}</td>
-                <td className="px-2">{r.calls}</td><td className="px-2">{r.answered}</td><td className="px-2">{r.short}</td>
-                <td className="px-2">{r.booked}</td><td className="px-2">{usd(r.costPerCall, 2)}</td><td className="px-2">{usd(r.invoiced)}</td>
+    <span className="inline-flex items-center gap-1.5 text-xs">
+      <span className={`inline-flex items-center gap-0.5 rounded-md px-1.5 py-0.5 font-semibold tabular-nums ${cls}`}>{up ? '▲' : down ? '▼' : '■'} {Math.abs(pct).toFixed(0)}%</span>
+      <span className="text-slate-400">vs prior</span>
+    </span>
+  );
+}
+
+function Card({ title, subtitle, right, children, className = '', delay = 0 }: { title: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode; className?: string; delay?: number }) {
+  return (
+    <section className={`cd-rise rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04),0_4px_16px_-8px_rgba(15,23,42,.08)] ${className}`} style={{ animationDelay: `${delay}ms` }}>
+      <header className="flex items-start justify-between gap-3 px-5 pb-1 pt-4">
+        <div><h2 className="text-sm font-semibold text-slate-900">{title}</h2>{subtitle ? <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p> : null}</div>
+        {right}
+      </header>
+      <div className="px-5 pb-5 pt-3">{children}</div>
+    </section>
+  );
+}
+
+function Legend({ items }: { items: Array<[string, string]> }) {
+  return <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">{items.map(([c, l]) => <span key={l} className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-sm" style={{ background: c }} />{l}</span>)}</div>;
+}
+
+function Kpi({ label, value, sub, spark, color, delta, delay }: { label: string; value: string; sub?: string; spark?: number[]; color: string; delta?: React.ReactNode; delay: number }) {
+  return (
+    <div className="cd-rise flex min-h-[148px] flex-col rounded-2xl border border-slate-200/80 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,.04),0_4px_16px_-8px_rgba(15,23,42,.08)]" style={{ animationDelay: `${delay}ms` }}>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="mt-1 text-[1.75rem] font-bold leading-tight tracking-tight tabular-nums text-slate-900">{value}</p>
+      <div className="mt-1 min-h-[20px]">{delta}</div>
+      <p className="mt-0.5 min-h-[16px] truncate text-xs text-slate-500">{sub}</p>
+      <div className="mt-auto pt-2">{spark ? <Sparkline values={spark} color={color} /> : <div className="h-9" />}</div>
+    </div>
+  );
+}
+
+function Badge({ outcome }: { outcome: string }) {
+  const o = outcome.toLowerCase();
+  const [cls, dot] = o.startsWith('booked') ? ['bg-emerald-50 text-emerald-700 ring-emerald-200', 'bg-emerald-500']
+    : o.includes('booking request') ? ['bg-sky-50 text-sky-700 ring-sky-200', 'bg-sky-500']
+    : o.includes('short') || o.includes('missed') ? ['bg-rose-50 text-rose-700 ring-rose-200', 'bg-rose-500']
+    : o.includes('existing') ? ['bg-violet-50 text-violet-700 ring-violet-200', 'bg-violet-500']
+    : ['bg-slate-50 text-slate-700 ring-slate-200', 'bg-slate-400'];
+  return <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${cls}`}><span className={`h-1.5 w-1.5 rounded-full ${dot}`} />{outcome}</span>;
+}
+
+const th = 'sticky top-0 z-10 bg-slate-50/95 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 backdrop-blur';
+
+function GroupTable({ title, rows, delay }: { title: string; rows: GroupRow[]; delay: number }) {
+  const maxCalls = Math.max(...rows.map((r) => r.calls), 1);
+  return (
+    <section className="cd-rise overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04)]" style={{ animationDelay: `${delay}ms` }}>
+      <h2 className="px-5 pb-2 pt-4 text-sm font-semibold text-slate-900">{title}</h2>
+      <div className="max-h-[340px] overflow-auto">
+        <table className="w-full text-left text-sm">
+          <thead><tr><th className={th}>Name</th><th className={`${th} text-right`}>Calls</th><th className={`${th} text-right`}>Booked</th><th className={`${th} text-right`}>Invoiced</th></tr></thead>
+          <tbody className="divide-y divide-slate-100">
+            {rows.length === 0 ? <tr><td colSpan={4} className="px-5 py-8 text-center text-sm text-slate-400">No calls in this range</td></tr> : rows.slice(0, 15).map((r) => (
+              <tr key={r.key} className="transition-colors hover:bg-slate-50/80">
+                <td className="max-w-[9rem] px-3 py-2 xl:max-w-[11rem]"><div className="truncate font-medium text-slate-800" title={r.key}>{r.key}</div>
+                  <div className="mt-1 h-1 w-full rounded bg-slate-100"><div className="h-1 rounded" style={{ width: `${(r.calls / maxCalls) * 100}%`, background: palette.revenue, opacity: 0.7 }} /></div></td>
+                <td className="px-3 py-2 text-right tabular-nums" title={`${r.answered} answered · ${r.short} short · ${usd(r.costPerCall, 2)}/call`}>{r.calls}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{r.booked ? <span className="font-semibold text-emerald-700">{r.booked}</span> : <span className="text-slate-300">0</span>}</td>
+                
+                <td className="px-3 py-2 text-right tabular-nums text-slate-900">{usd(r.invoiced)}</td>
               </tr>
             ))}
           </tbody>
@@ -76,66 +166,123 @@ function GroupTable({ title, rows }: { title: string; rows: GroupRow[] }) {
   );
 }
 
+function DashboardSkeleton() {
+  return (
+    <div className="space-y-5" aria-busy="true" aria-label="Loading dashboard">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel h-[148px]" />)}</div>
+      <div className="grid gap-4 lg:grid-cols-2"><div className="cd-skel h-72" /><div className="cd-skel h-72" /></div>
+      <div className="grid gap-4 lg:grid-cols-3"><div className="cd-skel h-64" /><div className="cd-skel h-64" /><div className="cd-skel h-64" /></div>
+    </div>
+  );
+}
+
 export function CallDashboardPage() {
   const [range, setRange] = useState<string>('since');
-  const { data, error, reload } = useDashboard(range, 30_000);
+  const { data, error, loading, reload } = useDashboard(range, 30_000);
   const t = data?.totals;
+  const s = data?.series ?? [];
+  const prev = data?.previous;
+  const rangeLabel = RANGES.find((r) => r.v === range)?.label ?? '';
+  const calls = s.map((d) => d.answered + d.missed);
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-2">
-        {RANGES.map((r) => (
-          <button key={r.v} onClick={() => setRange(r.v)}
-            className={`rounded-full border px-3 py-1 text-sm ${range === r.v ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-300 bg-white'}`}>{r.label}</button>
-        ))}
-        <button onClick={reload} className="rounded-full border border-slate-300 bg-white px-3 py-1 text-sm">Refresh</button>
-        <a href="/ops/calls/tv" className="ml-auto text-sm text-blue-600 underline">TV mode</a>
+    <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased">
+      <style>{STYLES}</style>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+        <div className="mr-auto">
+          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Call performance</h1>
+          <p className="text-xs text-slate-500">Google Ads calls, AI receptionist and closed-loop revenue · Pacific time</p>
+        </div>
+        <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
+        <div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Date range">
+          {RANGES.map((r) => (
+            <button key={r.v} role="tab" aria-selected={range === r.v} onClick={() => setRange(r.v)}
+              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors sm:text-sm ${range === r.v ? 'bg-slate-900 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}>{r.label}</button>
+          ))}
+        </div>
+        <button onClick={reload} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 sm:text-sm">Refresh</button>
+        <a href="/ops/calls/tv" className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white shadow-sm transition-colors hover:bg-slate-700 sm:text-sm">TV mode ↗</a>
       </div>
-      {error ? <p className="rounded bg-red-50 p-3 text-sm text-red-700">{error}</p> : null}
-      {!data && !error ? <p className="text-sm text-slate-500">Loading…</p> : null}
+
+      {error ? <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"><span aria-hidden>⚠</span><span>{error}{data ? ' Showing the last data received.' : ''}</span></div> : null}
+      {!data && !error ? <DashboardSkeleton /> : null}
+
       {data && t ? (
-        <>
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-            <Tile label="Calls" value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short (<15s)`} />
-            <Tile label="Booked (new customers)" value={String(t.bookedNew)} sub={`${t.knownExisting} existing/known · ${t.unmatched} other`} />
-            <Tile label="Ad spend" value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} />
-            <Tile label="Return (invoiced / paid)" value={`${mult(t.multipleInvoiced)} / ${mult(t.multiplePaid)}`} tone="good" />
-            <Tile label="Booked value" value={usd(t.bookedValue)} sub={`${usd(t.perCall.booked, 2)}/call`} />
-            <Tile label="Quote value" value={usd(t.quoteValue)} sub={`${usd(t.perCall.quote, 2)}/call`} />
-            <Tile label="Invoiced" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} />
-            <Tile label="Paid" value={usd(t.paidValue)} />
+        <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Kpi delay={0} color={palette.answered} label="Calls" value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
+            <Kpi delay={40} color={palette.booked} label="Booked (new customers)" value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
+            <Kpi delay={80} color={palette.spend} label="Ad spend" value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
+            <Kpi delay={120} color={palette.revenue} label="Return (invoiced / paid)" value={`${mult(t.multipleInvoiced)} / ${mult(t.multiplePaid)}`} sub="revenue ÷ ad spend" />
+            <Kpi delay={160} color={palette.booked} label="Booked value" value={usd(t.bookedValue)} sub={`${usd(t.perCall.booked, 2)}/call`} />
+            <Kpi delay={200} color={palette.revenue} label="Quote value" value={usd(t.quoteValue)} sub={`${usd(t.perCall.quote, 2)}/call`} />
+            <Kpi delay={240} color={palette.revenue} label="Invoiced" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
+            <Kpi delay={280} color={palette.paid} label="Paid" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
           </div>
-          <div className="grid gap-3 lg:grid-cols-3">
-            <GroupTable title="By campaign" rows={data.byCampaign} />
-            <GroupTable title="By keyword / ad group" rows={data.byKeyword} />
-            <GroupTable title="By tracking number / source" rows={data.byTrackingNumber} />
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card title="Calls per day" subtitle={rangeLabel} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short']]} />} delay={60}>
+              {s.length ? <CallsPerDayChart series={s} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
+            </Card>
+            <Card title="Ad spend vs revenue" subtitle="Daily spend and invoiced revenue from new-customer bookings" right={<Legend items={[[palette.spend, 'Spend'], [palette.revenue, 'Invoiced']]} />} delay={100}>
+              {s.length ? <SpendRevenueChart series={s} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
+            </Card>
           </div>
-          <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
-            <h2 className="border-b border-slate-200 px-3 py-2 text-sm font-semibold">Recent calls</h2>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs sm:text-sm">
-                <thead className="text-slate-500"><tr><th className="px-3 py-1">Time (PT)</th><th className="px-2">Caller</th><th className="px-2">Dur.</th><th className="px-2">Campaign</th><th className="px-2">Outcome</th><th className="px-2">Value</th></tr></thead>
-                <tbody>{data.recent.map((r, i) => (
-                  <tr key={i} className="border-t border-slate-100">
-                    <td className="whitespace-nowrap px-3 py-1">{when(r.at)}</td><td className="whitespace-nowrap px-2">{r.phone}</td>
-                    <td className="px-2">{r.durationSeconds ?? '—'}s</td><td className="max-w-[9rem] truncate px-2">{r.campaign}</td>
-                    <td className="whitespace-nowrap px-2">{r.outcome}</td><td className="px-2">{r.value ? usd(r.value) : ''}</td>
-                  </tr>))}</tbody>
-              </table>
-            </div>
-          </section>
-          <details className="text-xs text-slate-500"><summary>Data notes</summary><ul className="list-disc pl-5">{data.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul></details>
-        </>
+
+          <div className="grid gap-4 lg:grid-cols-5">
+            <Card title="Conversion funnel" subtitle="Calls → booked → invoiced → paid" delay={140}>
+              <Funnel stages={[
+                { label: 'Calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
+                { label: 'Booked', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
+                { label: 'Invoiced', value: data.funnel?.invoiced ?? null, color: palette.revenue },
+                { label: 'Paid', value: data.funnel?.paid ?? null, color: palette.paid },
+              ]} />
+            </Card>
+            <Card title="Return on ad spend" subtitle="Invoiced revenue ÷ spend" delay={180} className="lg:col-span-1">
+              <Gauge value={t.multipleInvoiced} label="Invoiced" />
+              <div className="mt-2 flex justify-center gap-6 text-center text-xs text-slate-500">
+                <div><div className="text-base font-bold tabular-nums text-slate-900">{mult(t.multiplePaid)}</div>paid</div>
+                <div><div className="text-base font-bold tabular-nums text-slate-900">{compactUsd(t.invoicedValue)}</div>invoiced</div>
+                <div><div className="text-base font-bold tabular-nums text-slate-900">{compactUsd(t.spend)}</div>spend</div>
+              </div>
+            </Card>
+            <Card title="Recent calls" subtitle="Latest 25" delay={220} className="lg:col-span-3 !p-0">
+              <div className="-mx-5 -mb-5 max-h-[300px] overflow-auto">
+                <table className="w-full text-left text-sm">
+                  <thead><tr><th className={th}>Time</th><th className={th}>Outcome</th><th className={`${th} text-right`}>Value</th></tr></thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {data.recent.length === 0 ? <tr><td colSpan={3} className="px-5 py-8 text-center text-slate-400">No calls yet</td></tr> : data.recent.map((r, i) => (
+                      <tr key={i} className="hover:bg-slate-50/80"><td className="whitespace-nowrap px-3 py-2 text-xs text-slate-600"><div className="font-medium text-slate-800">{when(r.at)}</div><div className="text-slate-400">{r.phone} · {r.durationSeconds ?? '—'}s</div></td>
+                        <td className="px-3 py-2"><Badge outcome={r.outcome} /></td><td className="px-3 py-2 text-right tabular-nums">{r.value ? usd(r.value) : ''}</td></tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            <GroupTable title="By campaign" rows={data.byCampaign} delay={240} />
+            <GroupTable title="By keyword / ad group" rows={data.byKeyword} delay={270} />
+            <GroupTable title="By tracking number / source" rows={data.byTrackingNumber} delay={300} />
+          </div>
+
+          <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-slate-600">Data notes</summary><ul className="mt-2 list-disc space-y-1 pl-5">{data.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul></details>
+        </div>
       ) : null}
     </div>
   );
 }
 
-function BigTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function BigTile({ label, value, sub, accent, spark, delta, delay }: { label: string; value: string; sub?: string; accent: string; spark?: number[]; delta?: React.ReactNode; delay: number }) {
   return (
-    <div className="flex flex-col justify-center rounded-2xl border-2 border-slate-700 bg-slate-900 p-4 text-center">
-      <p className="text-lg font-semibold uppercase tracking-widest text-slate-400 xl:text-2xl">{label}</p>
-      <p className="mt-2 text-5xl font-extrabold text-white xl:text-7xl">{value}</p>
-      {sub ? <p className="mt-2 text-lg text-emerald-400 xl:text-2xl">{sub}</p> : null}
+    <div className="cd-rise relative flex min-h-0 flex-col justify-between overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-4 xl:p-6" style={{ animationDelay: `${delay}ms` }}>
+      <span className="absolute inset-x-0 top-0 h-0.5" style={{ background: accent }} />
+      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 xl:text-base">{label}</p>
+      <div>
+        <p className="font-extrabold leading-none tracking-tight tabular-nums text-white" style={{ fontSize: 'clamp(2.25rem, 5.2vw, 6rem)' }}>{value}</p>
+        <div className="mt-2 min-h-[1.5rem] text-sm text-emerald-400 xl:text-xl">{sub}</div>
+      </div>
+      <div className="min-h-[28px]">{spark ? <Sparkline values={spark} color={accent} dark height={40} /> : delta}</div>
     </div>
   );
 }
@@ -143,29 +290,51 @@ function BigTile({ label, value, sub }: { label: string; value: string; sub?: st
 export function CallDashboardTv() {
   const { data, error } = useDashboard('since', 60_000);
   const tv = data?.tv;
+  const s = data?.series ?? [];
+  const last7 = s.slice(-14);
+  const now = useNow(1000);
+  const clockStr = new Date(now).toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
+  const dateStr = new Date(now).toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'long', month: 'long', day: 'numeric' });
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-black p-4 text-white">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold xl:text-4xl">SCWS Calls &amp; Ads</h1>
-        <p className="text-sm text-slate-400 xl:text-xl">{error ? error : data ? `Updated ${when((data as any).generatedAt)} · refreshes every minute` : 'Loading…'}</p>
-      </div>
-      {tv ? (
-        <div className="mt-4 grid flex-1 grid-cols-2 gap-4 lg:grid-cols-4">
-          <BigTile label="Calls today" value={String(tv.callsToday)} />
-          <BigTile label="Answered" value={String(tv.answeredToday)} />
-          <BigTile label="Missed / short" value={String(tv.missedToday)} />
-          <BigTile label="Booked today / week" value={`${tv.bookedToday} / ${tv.bookedWeek}`} />
-          <BigTile label="New-cust. revenue week" value={usd(tv.revenueWeek.invoiced)} sub={`paid ${usd(tv.revenueWeek.paid)}`} />
-          <BigTile label="New-cust. revenue month" value={usd(tv.revenueMonth.invoiced)} sub={`paid ${usd(tv.revenueMonth.paid)}`} />
-          <BigTile label="Ad spend month" value={usd(tv.spendMonth)} />
-          <BigTile label="Ad return month" value={mult(tv.multipleMonth)} sub="invoiced ÷ spend" />
+    <div className="fixed inset-0 z-50 flex flex-col gap-4 overflow-hidden bg-slate-950 p-4 text-white antialiased xl:gap-6 xl:p-8">
+      <style>{STYLES}</style>
+      <div className="flex shrink-0 items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 text-lg font-black xl:h-14 xl:w-14 xl:text-2xl">S</div>
+          <div><h1 className="text-xl font-bold tracking-tight xl:text-4xl">SCWS Calls &amp; Ads</h1><p className="text-xs text-slate-400 xl:text-lg">{dateStr}</p></div>
         </div>
+        <div className="flex items-center gap-3 xl:gap-5">
+          <LiveBadge dark at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={60_000} error={error} />
+          <p className="text-2xl font-bold tabular-nums xl:text-5xl">{clockStr}</p>
+        </div>
+      </div>
+      {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
+      {tv ? (
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-3 lg:grid-cols-4 lg:grid-rows-2 xl:gap-5">
+          <BigTile delay={0} accent={palette.answered} label="Calls today" value={String(tv.callsToday)} spark={last7.map((d) => d.answered + d.missed)} />
+          <BigTile delay={40} accent={palette.answered} label="Answered" value={String(tv.answeredToday)} spark={last7.map((d) => d.answered)} />
+          <BigTile delay={80} accent={palette.missed} label="Missed / short" value={String(tv.missedToday)} spark={last7.map((d) => d.missed)} />
+          <BigTile delay={120} accent={palette.booked} label="Booked today / week" value={`${tv.bookedToday} / ${tv.bookedWeek}`} spark={last7.map((d) => d.booked)} />
+          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue · week" value={usd(tv.revenueWeek.invoiced)} sub={`paid ${usd(tv.revenueWeek.paid)}`} />
+          <BigTile delay={200} accent={palette.revenue} label="New-cust. revenue · month" value={usd(tv.revenueMonth.invoiced)} sub={`paid ${usd(tv.revenueMonth.paid)}`} />
+          <BigTile delay={240} accent={palette.spend} label="Ad spend · month" value={usd(tv.spendMonth)} spark={last7.map((d) => d.spend ?? 0)} />
+          <div className="cd-rise relative flex min-h-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '280ms' }}>
+            <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
+            <p className="self-start text-xs font-semibold uppercase tracking-[0.18em] text-slate-400 xl:text-base">Ad return · month</p>
+            <div className="w-full max-w-[420px] flex-1"><Gauge dark value={tv.multipleMonth} label="invoiced ÷ spend" /></div>
+          </div>
+        </div>
+      ) : !error ? (
+        <div className="grid min-h-0 flex-1 grid-cols-2 gap-3 lg:grid-cols-4 lg:grid-rows-2 xl:gap-5" aria-busy="true">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel-dark" />)}</div>
       ) : <div className="flex-1" />}
-      <div className="mt-4 h-24 overflow-hidden rounded-xl bg-slate-900 p-3 xl:h-32">
-        <div className="space-y-1 text-lg xl:text-2xl">
+      <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-4 py-3 xl:px-6 xl:py-4">
+        <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Activity</p>
+        <div className="h-[5.5rem] space-y-1 overflow-hidden text-sm xl:h-36 xl:text-2xl">
+          {(tv?.ticker ?? []).length === 0 ? <p className="text-slate-500">{tv ? 'No recent activity' : ' '}</p> : null}
           {(tv?.ticker ?? []).slice(0, 4).map((t, i) => (
-            <p key={i} className={t.kind === 'booking' ? 'font-bold text-emerald-400' : 'text-slate-200'}>
-              <span className="text-slate-500">{when(t.at)} </span>{t.kind === 'booking' ? '✅ ' : '📞 '}{t.text}
+            <p key={i} className={`flex items-center gap-3 truncate ${t.kind === 'booking' ? 'font-bold text-emerald-400' : 'text-slate-200'}`}>
+              <span className={`h-2 w-2 shrink-0 rounded-full ${t.kind === 'booking' ? 'bg-emerald-400' : 'bg-sky-400'}`} />
+              <span className="shrink-0 tabular-nums text-slate-500">{when(t.at)}</span><span className="truncate">{t.text}</span>
             </p>
           ))}
         </div>

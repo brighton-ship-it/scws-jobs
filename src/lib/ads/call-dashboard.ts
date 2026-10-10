@@ -190,6 +190,20 @@ export interface Dashboard {
     ticker: Array<{ at: string | null; kind: 'call' | 'booking'; text: string }>;
   };
   gaps: string[];
+  /** Additive (chart data). Daily PT series across the selected range. */
+  series?: SeriesDay[];
+  /** Additive. Same-length window immediately before the selected range (null = not measurable). */
+  previous?: PreviousTotals;
+  /** Additive. Counts for the calls -> booked -> invoiced -> paid funnel. */
+  funnel?: { calls: number; booked: number; invoiced: number; paid: number | null };
+}
+
+export interface SeriesDay {
+  date: string; answered: number; missed: number; booked: number;
+  spend: number | null; invoiced: number;
+}
+export interface PreviousTotals {
+  calls: number; answered: number; missed: number; spend: number | null;
 }
 
 function group(
@@ -333,7 +347,39 @@ export function buildDashboard(input: {
     .sort((a, b) => Date.parse(b.at || '') - Date.parse(a.at || ''))
     .slice(0, 20);
 
+  // Chart series (additive)
+  const dayCount = Math.min(95, Math.max(1, Math.ceil((now.getTime() - start.getTime()) / 86400_000) + 1));
+  const dayKeys: string[] = [];
+  for (let i = dayCount - 1; i >= 0; i--) dayKeys.push(ptDateKey(ptStartOfDay(now, -i)));
+  const series: SeriesDay[] = dayKeys.map((date) => ({ date, answered: 0, missed: 0, booked: 0, spend: input.spend ? 0 : null, invoiced: 0 }));
+  const byDate = new Map(series.map((d) => [d.date, d]));
+  for (const c of callsAll) {
+    const d = c.started_at ? byDate.get(ptDateKey(new Date(c.started_at))) : undefined;
+    if (d) { if (isAnswered(c)) d.answered += 1; else d.missed += 1; }
+  }
+  for (const c of convWindow) {
+    const d = c.conversion_at ? byDate.get(ptDateKey(new Date(c.conversion_at))) : undefined;
+    if (d) { d.booked += 1; d.invoiced = round(d.invoiced + invoicedOf(stagesOf(c))); }
+  }
+  if (input.spend) for (const sd of input.spend) { const d = byDate.get(sd.date); if (d && d.spend != null) d.spend = round(d.spend + sd.costUsd); }
+  const lenMs = now.getTime() - start.getTime();
+  const prevStart = new Date(start.getTime() - lenMs);
+  const prevCalls = input.calls.filter((c) => c.started_at && Date.parse(c.started_at) >= prevStart.getTime() && Date.parse(c.started_at) < start.getTime());
+  const previous: PreviousTotals = {
+    calls: prevCalls.length,
+    answered: prevCalls.filter(isAnswered).length,
+    missed: prevCalls.filter((c) => !isAnswered(c)).length,
+    spend: input.spend ? round(input.spend.filter((d) => d.date >= ptDateKey(prevStart) && d.date < ptDateKey(start)).reduce((x, d) => x + d.costUsd, 0)) : null,
+  };
+  const funnel = {
+    calls: callsN,
+    booked: bookedCalls,
+    invoiced: convWindow.filter((c) => (stagesOf(c).invoiced ?? 0) > 0).length,
+    paid: input.paidByJob ? convWindow.filter((c) => (input.paidByJob!.get(c.jobber_job_id) ?? 0) > 0).length : null,
+  };
+
   return {
+    series, previous, funnel,
     range: input.range,
     start: start.toISOString(),
     revenueStart: revStart.toISOString(),
