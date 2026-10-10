@@ -122,6 +122,11 @@ function mockJobber(options: {
       });
     }
 
+    if (query.includes('VisitCreate')) {
+      const nodes = options.createdJob?.visits?.nodes || [];
+      return jsonResponse({ data: { visitCreate: { createdVisits: nodes, userErrors: [] } } });
+    }
+
     if (query.includes('JobCreate')) {
       if (options.jobUserErrors) {
         return jsonResponse({
