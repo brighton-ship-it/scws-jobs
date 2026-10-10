@@ -103,7 +103,7 @@ test('weekly sales buckets by PT Monday week, paid share and closing rate', () =
       { invoiceStatus: 'draft', issuedDate: '2026-10-06', amounts: { subtotal: 999, total: 999 } },
       { invoiceStatus: 'awaiting_payment', issuedDate: '2026-09-30', amounts: { subtotal: 200, total: 200, taxAmount: 0, paymentsTotal: 0 } },
     ],
-    quotes: [{ quoteStatus: 'approved', sentAt: '2026-10-07T18:00:00Z', amounts: { subtotal: 500 } }, { quoteStatus: 'awaiting_response', sentAt: '2026-10-07T18:00:00Z', amounts: { subtotal: 300 } }],
+    quotes: [{ quoteStatus: 'approved', sentAt: '2026-10-07T18:00:00Z', transitionedAt: '2026-10-08T18:00:00Z', amounts: { subtotal: 500 } }, { quoteStatus: 'awaiting_response', sentAt: '2026-10-07T18:00:00Z', amounts: { subtotal: 300 } }],
     jobsCreated: [{ createdAt: '2026-10-08T18:00:00Z' }], jobsCompleted: [],
     callTimes: ['2026-10-06T18:00:00Z', '2026-10-07T18:00:00Z', '2026-10-08T18:00:00Z', '2026-10-08T19:00:00Z'],
     bookedAt: ['2026-10-07T20:00:00Z'],
@@ -156,4 +156,23 @@ test('compactUsd formats large values compactly', async () => {
   assert.equal(compactUsd(999600), '$1.00M');
   assert.equal(compactUsd(1234567), '$1.23M');
   assert.equal(compactUsd(12345678), '$12.3M');
+});
+
+test('quotes approved counts by approval date, not sent date', () => {
+  const wnow = new Date('2026-10-09T20:00:00Z');
+  const w = buildWeeklySales({
+    now: wnow, invoices: [], jobsCreated: [], jobsCompleted: [], callTimes: [], bookedAt: [],
+    quotes: [
+      // sent last week, approved this week: counts as approved THIS week
+      { quoteStatus: 'approved', sentAt: '2026-09-30T18:00:00Z', transitionedAt: '2026-10-06T18:00:00Z', amounts: { subtotal: 1000 } },
+      // sent this week, approved next week (future/now outside): counts as sent only
+      { quoteStatus: 'awaiting_response', sentAt: '2026-10-06T18:00:00Z', transitionedAt: '2026-10-06T18:00:00Z', amounts: { subtotal: 400 } },
+      // converted quote sent and approved this week
+      { quoteStatus: 'converted', sentAt: '2026-10-07T18:00:00Z', transitionedAt: '2026-10-08T18:00:00Z', amounts: { subtotal: 250 } },
+    ],
+  });
+  const cur = w.weeks[8], prev = w.weeks[7];
+  assert.equal(cur.quotesApproved, 2); assert.equal(cur.quotesApprovedValue, 1250);
+  assert.equal(cur.quotesSent, 2); assert.equal(cur.quotesSentValue, 650);
+  assert.equal(prev.quotesSent, 1); assert.equal(prev.quotesApproved, 0);
 });

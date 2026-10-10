@@ -1482,3 +1482,22 @@ describe('list_payment_records', () => {
     assert.equal(p.totals.net, 80); assert.equal(p.count, 2); assert.equal(p.records, undefined);
   });
 });
+
+describe('list_quotes_approved', () => {
+  it('filters by approval time, not sent time, and is read-only', async () => {
+    const fetchImpl = async (_u: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      assert.match(body.query, /transitionedAt/);
+      assert.doesNotMatch(body.query, /mutation/);
+      const nodes = body.variables.filter.status === 'approved' ? [
+        { quoteNumber: '1', title: 'a', quoteStatus: 'APPROVED', sentAt: '2026-09-30T18:00:00Z', transitionedAt: '2026-10-06T18:00:00Z', amounts: { subtotal: 100, total: 110 }, client: { name: 'A' } },
+        { quoteNumber: '2', title: 'b', quoteStatus: 'APPROVED', sentAt: '2026-10-06T18:00:00Z', transitionedAt: '2026-10-12T18:00:00Z', amounts: { subtotal: 900, total: 900 }, client: { name: 'B' } },
+      ] : [];
+      return new Response(JSON.stringify({ data: { quotes: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 });
+    };
+    const r = await callJobberMcpTool('list_quotes_approved', { after: '2026-10-05T07:00:00Z', before: '2026-10-11T07:00:00Z' }, { fetchImpl: fetchImpl as any, token: 't' });
+    assert.equal(r.isError, undefined);
+    const p = JSON.parse(r.content[0].text);
+    assert.equal(p.count, 1); assert.equal(p.subtotal, 100); assert.equal(p.quotes[0].quoteNumber, '1');
+  });
+});

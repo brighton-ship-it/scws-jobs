@@ -7,7 +7,7 @@ export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
 export interface WeeklyInvoice extends InvoiceAmountInput {
   amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; paymentsTotal?: number | null } | null;
 }
-export interface WeeklyQuote { quoteStatus?: string | null; sentAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
+export interface WeeklyQuote { quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
 export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null }
 export interface WeeklyJob { createdAt?: string | null; completedAt?: string | null }
 
@@ -38,6 +38,7 @@ export interface WeeklySales {
   gaps: string[];
 }
 
+export const isApprovedStatus = (st: string | null | undefined) => ['approved', 'converted'].includes((st || '').toLowerCase());
 const round = (n: number) => Math.round(n * 100) / 100;
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const md = (key: string) => { const [, m, d] = key.split('-').map(Number); return `${MON[m - 1]} ${d}`; };
@@ -116,14 +117,19 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
     w.cashCount = (w.cashCount ?? 0) + 1;
   }
   for (const q of input.quotes ?? []) {
-    const w = at(jobberDateKey(q.sentAt));
-    if (!w) continue;
     const val = q.amounts?.subtotal ?? q.amounts?.total ?? 0;
-    w.quotesSent = (w.quotesSent ?? 0) + 1;
-    w.quotesSentValue = round((w.quotesSentValue ?? 0) + val);
-    if ((q.quoteStatus || '').toLowerCase() === 'approved' || (q.quoteStatus || '').toLowerCase() === 'converted') {
-      w.quotesApproved = (w.quotesApproved ?? 0) + 1;
-      w.quotesApprovedValue = round((w.quotesApprovedValue ?? 0) + val);
+    const sent = at(jobberDateKey(q.sentAt));
+    if (sent) {
+      sent.quotesSent = (sent.quotesSent ?? 0) + 1;
+      sent.quotesSentValue = round((sent.quotesSentValue ?? 0) + val);
+    }
+    // Approved is bucketed by APPROVAL date (transitionedAt), independent of the week the quote was sent.
+    if (isApprovedStatus(q.quoteStatus)) {
+      const appr = at(jobberDateKey(q.transitionedAt));
+      if (appr) {
+        appr.quotesApproved = (appr.quotesApproved ?? 0) + 1;
+        appr.quotesApprovedValue = round((appr.quotesApprovedValue ?? 0) + val);
+      }
     }
   }
   for (const j of input.jobsCreated ?? []) { const w = at(jobberDateKey(j.createdAt)); if (w) w.jobsBooked = (w.jobsBooked ?? 0) + 1; }
@@ -150,6 +156,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
   if (!input.invoices) gaps.push('Weekly invoiced/paid unavailable (Jobber invoices query failed).');
   if (input.payments && (input.payments as { truncated?: boolean }).truncated) gaps.push('Weekly cash collected is incomplete: Jobber payment history hit the page cap, so the oldest weeks may be low.');
   if (!input.payments) gaps.push('Weekly cash collected unavailable (Jobber payments query failed).');
+  if (input.quotes && (input.quotes as { truncated?: boolean }).truncated) gaps.push('Weekly quotes may be incomplete: Jobber quote history hit the page cap.');
   if (!input.quotes) gaps.push('Weekly quotes unavailable (Jobber quotes query failed).');
   if (!input.jobsCreated) gaps.push('Weekly jobs booked unavailable (Jobber jobs query failed).');
   if (!input.jobsCompleted) gaps.push('Weekly jobs completed unavailable (Jobber jobs query failed).');
@@ -159,7 +166,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
       'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share), so it follows the invoice week, not the day the money arrived.',
       'Cash collected = Jobber payment records by the date the payment was received (payments and deposits, less refunds and failed ACH), whichever week the invoice was issued.',
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
-      'Quotes = Jobber quotes sent that week (status as of now); approved = those now approved.',
+      'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes now approved/converted, counted in the week they were approved (Jobber status-change time), whenever they were sent.',
       `Closing rate = new-customer bookings credited to a call ÷ all calls, weeks since ${md(floorKey)} (tracking start). Weeks are Mon–Sun, Pacific.`,
     ],
   };
