@@ -75,6 +75,8 @@ export async function updateSession(request: NextRequest) {
     pathname.startsWith('/tech') ||  // Tech PWA - handles own auth
     pathname.startsWith('/portal') ||
     pathname.startsWith('/book') ||
+    pathname === '/ads-attribution.js' ||  // marketing-site cookie script
+    pathname.startsWith('/embed/') ||
     pathname.startsWith('/pay') ||
     pathname.startsWith('/unsubscribe') ||
     isOpsPagePath(pathname); // Office key or CRM session checked on the page/API
