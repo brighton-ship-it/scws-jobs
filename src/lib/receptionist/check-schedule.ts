@@ -611,6 +611,7 @@ export async function handleCheckSchedule(
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
         allowlistedTechIds: slots.allowlistedTechIds,
+        ...((input as { debugBoard?: boolean }).debugBoard ? { board: slots.board } : {}),
         bookingMessage:
           slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`

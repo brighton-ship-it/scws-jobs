@@ -9,6 +9,12 @@
  * (including Friday night) are offered the next weekday window. If neither
  * allowed tech has a window, return no slots. If Jobber is down, return no
  * slots — never invent times or assign Travis.
+ *
+ * Availability is computed from the CONTENTS of each tech's board, not from "any
+ * visit on the day": a short service call leaves the other windows open, an all-day
+ * drill/install (or any all-day visit we cannot identify as a short stop) closes the
+ * day, travel time between sites is added, and a tech is capped at N service stops
+ * per day (default 4, RECEPTIONIST_MAX_STOPS_PER_DAY).
  */
 
 import {
@@ -27,6 +33,7 @@ import {
   isAllowlistedTechId,
   resolveFallbackTechs,
   resolveTechsForLocation,
+  normalizePlace,
   type JobberUser,
   type ShopTech,
   userDisplayName,
@@ -36,7 +43,15 @@ export const SLOT_HOURS_PT = [8, 10, 13] as const;
 export const SLOT_DURATION_MINUTES = 120;
 export const MAX_OPEN_SLOTS = 6;
 export const SLOT_LOOKAHEAD_DAYS = 14;
-const MAX_VISIT_PAGES = 6;
+const MAX_VISIT_PAGES = 10;
+/** Expected on-site time for the $200 service call we are placing. */
+export const SERVICE_WORK_MINUTES = 90;
+/** The tech may arrive up to this long after the window opens. */
+export const ARRIVAL_SLACK_MINUTES = 30;
+/** Default cap of scheduled stops per tech per day (override with RECEPTIONIST_MAX_STOPS_PER_DAY). */
+export const DEFAULT_MAX_STOPS_PER_DAY = 4;
+/** Visits seen this far before "now" are loaded so multi-day jobs already under way still block. */
+const LOOKBACK_DAYS = 3;
 
 export type OccupiedVisit = {
   startAt: string;
@@ -44,7 +59,51 @@ export type OccupiedVisit = {
   allDay?: boolean;
   technicianIds?: string[];
   technicianNames?: string[];
+  /** Visit title, e.g. "Service Call". */
+  title?: string | null;
+  jobTitle?: string | null;
+  jobType?: string | null;
+  /** Property city, used for travel-time estimates. */
+  city?: string | null;
 };
+
+export type VisitKind = 'drill_install' | 'service' | 'assessment' | 'other';
+
+const DRILL_INSTALL_RE =
+  /\b(drill\w*|new well|well install\w*|install\w*|rig|casing|hydro-?\s?frac\w*|frac\w*|abandon\w*|trench\w*|tank|pump (?:pull|replace\w*|swap)|pull(?:ing)? (?:the )?pump|well (?:rehab|development)|rehab\w*|well (?:cap|head))\b/i;
+const ASSESSMENT_RE = /\b(assess\w*|inspect\w*|estimate|quote|walk-?through|site visit|water test|consult\w*)\b/i;
+const SERVICE_RE =
+  /\b(service call|service|repair\w*|troubleshoot\w*|diagnos\w*|no water|low pressure|pressure|leak\w*|maintenance|check)\b/i;
+
+export function classifyVisit(visit: Pick<OccupiedVisit, 'title' | 'jobTitle' | 'jobType'>): VisitKind {
+  const text = [visit.title, visit.jobTitle].filter(Boolean).join(' | ');
+  if (text && DRILL_INSTALL_RE.test(text)) return 'drill_install';
+  if (text && ASSESSMENT_RE.test(text)) return 'assessment';
+  if (text && SERVICE_RE.test(text)) return 'service';
+  return 'other';
+}
+
+const DESERT_CITIES = new Set([
+  'anza', 'aguanga', 'borrego springs', 'borrego', 'ocotillo wells', 'salton city', 'thermal',
+  'indio', 'palm desert', 'coachella', 'mountain center', 'idyllwild', 'warner springs',
+  'julian', 'santa ysabel',
+]);
+
+/** Rough drive-time estimate (minutes) between two sites by city / zone. */
+export function estimateTravelMinutes(a?: string | null, b?: string | null): number {
+  const ca = normalizePlace(a || '');
+  const cb = normalizePlace(b || '');
+  if (!ca || !cb) return 30;
+  if (ca === cb) return 20;
+  const za = DESERT_CITIES.has(ca) ? 'desert' : 'west';
+  const zb = DESERT_CITIES.has(cb) ? 'desert' : 'west';
+  return za === zb ? 40 : 60;
+}
+
+export function maxStopsPerDay(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.RECEPTIONIST_MAX_STOPS_PER_DAY);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : DEFAULT_MAX_STOPS_PER_DAY;
+}
 
 export type OpenSlot = {
   startAt: string;
@@ -70,6 +129,8 @@ export type OpenSlotsResult = {
   assignedTechId: string | null;
   allowlistedTechIds: string[];
   error?: string;
+  /** Per-tech board (times/kind only, no customer info). Surfaced only when debugBoard is requested. */
+  board?: Array<{ technician: string; visits: Array<{ startAt: string; endAt: string | null; allDay: boolean; kind: VisitKind; title: string | null; city: string | null }> }>;
 };
 
 const USERS_QUERY = `
@@ -95,15 +156,26 @@ const USERS_QUERY_BARE = `
   }
 `;
 
-const OCCUPIED_VISITS_QUERY = `
+function occupiedVisitsQuery(detail: 'rich' | 'mid' | 'base'): string {
+  const extra =
+    detail === 'base'
+      ? ''
+      : detail === 'mid'
+        ? `
+        title
+        job { title jobType }`
+        : `
+        title
+        job { title jobType property { address { city } } }`;
+  return `
   query OccupiedVisits($startAfter: ISO8601DateTime!, $startBefore: ISO8601DateTime!, $cursor: String) {
-    visits(first: 100, after: $cursor, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
+    visits(first: ${detail === 'base' ? 100 : 50}, after: $cursor, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
       pageInfo { hasNextPage endCursor }
       nodes {
         id
         startAt
         endAt
-        allDay
+        allDay${extra}
         assignedUsers(first: 5) {
           nodes {
             id
@@ -114,6 +186,7 @@ const OCCUPIED_VISITS_QUERY = `
     }
   }
 `;
+}
 
 function jobberHeaders(token: string, version: string): HeadersInit {
   return {
@@ -207,11 +280,61 @@ export function visitsOverlapSlot(
   if (Number.isNaN(visitStart.getTime())) return false;
 
   if (visit.allDay) {
-    return ptCalendarDate(visitStart) === ptCalendarDate(slotStart);
+    return visitCoversPtDay(visit, ptCalendarDate(slotStart));
   }
 
   const visitEnd = visit.endAt ? new Date(visit.endAt) : new Date(visitStart.getTime() + SLOT_DURATION_MINUTES * 60_000);
   return visitStart < slotEnd && visitEnd > slotStart;
+}
+
+/** PT calendar days (inclusive) an all-day / multi-day visit spans. */
+function visitCoversPtDay(visit: OccupiedVisit, dateStr: string): boolean {
+  const start = new Date(visit.startAt);
+  if (Number.isNaN(start.getTime())) return false;
+  const first = ptCalendarDate(start);
+  let last = first;
+  if (visit.endAt) {
+    const end = new Date(visit.endAt);
+    if (!Number.isNaN(end.getTime()) && end > start) {
+      // An end exactly at local midnight does not touch the next day.
+      last = ptCalendarDate(new Date(end.getTime() - 1));
+    }
+  }
+  return dateStr >= first && dateStr <= last;
+}
+
+/**
+ * An all-day visit closes the whole day unless we can positively identify it as a
+ * short stop (service call / assessment) — those only count toward the stop cap.
+ */
+function allDayVisitBlocksDay(visit: OccupiedVisit): boolean {
+  if (!visit.allDay) return false;
+  const kind = classifyVisit(visit);
+  if (kind === 'service' || kind === 'assessment') {
+    // Multi-day all-day entries are projects, not stops.
+    const start = new Date(visit.startAt);
+    const end = visit.endAt ? new Date(visit.endAt) : null;
+    if (end && !Number.isNaN(end.getTime()) && end.getTime() - start.getTime() > 36 * 3_600_000) return true;
+    return false;
+  }
+  return true;
+}
+
+/** Can this timed visit coexist with a service call at slotStart (work + travel)? */
+function timedVisitAllowsSlot(visit: OccupiedVisit, slotStart: Date, siteCity?: string | null): boolean {
+  const visitStart = new Date(visit.startAt);
+  if (Number.isNaN(visitStart.getTime())) return true;
+  const visitEnd = visit.endAt
+    ? new Date(visit.endAt)
+    : new Date(visitStart.getTime() + SLOT_DURATION_MINUTES * 60_000);
+  const travelMs = estimateTravelMinutes(visit.city, siteCity) * 60_000;
+  if (visitEnd <= slotStart) {
+    return visitEnd.getTime() + travelMs <= slotStart.getTime() + ARRIVAL_SLACK_MINUTES * 60_000;
+  }
+  if (visitStart >= slotStart) {
+    return slotStart.getTime() + SERVICE_WORK_MINUTES * 60_000 + travelMs <= visitStart.getTime();
+  }
+  return false; // visit spans the window start
 }
 
 export function visitBelongsToTech(
@@ -233,8 +356,13 @@ export function computeOpenSlots(options: {
   technicianId: string;
   technicianName: string;
   maxSlots?: number;
+  /** Caller's city, for travel-time estimates. */
+  siteCity?: string | null;
+  /** Cap of scheduled stops per tech per day. */
+  maxStops?: number;
 }): OpenSlot[] {
   const maxSlots = options.maxSlots ?? MAX_OPEN_SLOTS;
+  const maxStops = options.maxStops ?? maxStopsPerDay();
   const slots: OpenSlot[] = [];
   const techOccupied = options.occupied.filter((visit) =>
     visitBelongsToTech(visit, options.technicianId, options.technicianName)
@@ -245,13 +373,34 @@ export function computeOpenSlots(options: {
     const weekdayDate = zonedDate(dateStr, 12, 0);
     if (!isWeekdayVisitStart(weekdayDate)) continue;
 
+    // Whole-day closers: all-day drill/install (or unidentified all-day) visits.
+    if (techOccupied.some((visit) => allDayVisitBlocksDay(visit) && visitCoversPtDay(visit, dateStr))) {
+      continue;
+    }
+    // Stop cap: every visit that starts today (timed or anytime) is one stop.
+    const stops = techOccupied.filter(
+      (visit) => visit.startAt && ptCalendarDate(new Date(visit.startAt)) === dateStr
+    ).length;
+    if (stops >= maxStops) continue;
+
+    const timedToday = techOccupied.filter((visit) => !visit.allDay);
+
     for (const hour of SLOT_HOURS_PT) {
       const start = zonedDate(dateStr, hour, 0);
       const end = new Date(start.getTime() + SLOT_DURATION_MINUTES * 60_000);
       if (start <= options.now) continue;
       if (!isWeekdayVisitStart(start)) continue;
 
-      const blocked = techOccupied.some((visit) => visitsOverlapSlot(visit, start, end));
+      const blocked = timedToday.some((visit) => {
+        const vs = new Date(visit.startAt);
+        if (Number.isNaN(vs.getTime())) return false;
+        // Only visits near this window matter (same day, or a multi-day visit crossing it).
+        const ve = visit.endAt ? new Date(visit.endAt) : new Date(vs.getTime() + SLOT_DURATION_MINUTES * 60_000);
+        const nearStart = start.getTime() - 3 * 3_600_000;
+        const nearEnd = end.getTime() + 3 * 3_600_000;
+        if (ve.getTime() < nearStart || vs.getTime() > nearEnd) return false;
+        return !timedVisitAllowsSlot(visit, start, options.siteCity);
+      });
       if (blocked) continue;
 
       slots.push({
@@ -323,6 +472,10 @@ function mapVisitNode(node: any): OccupiedVisit {
     startAt: node?.startAt,
     endAt: node?.endAt || null,
     allDay: Boolean(node?.allDay),
+    title: node?.title ?? null,
+    jobTitle: node?.job?.title ?? null,
+    jobType: node?.job?.jobType ?? null,
+    city: node?.job?.property?.address?.city ?? node?.property?.address?.city ?? null,
     technicianIds: users.map((user: { id?: string }) => user?.id).filter(Boolean),
     technicianNames: users.map((user: JobberUser) => userDisplayName(user)).filter(Boolean),
   };
@@ -393,19 +546,30 @@ export async function lookupOpenSlots(
       });
     }
 
-    const startAfter = now.toISOString();
+    const startAfter = new Date(now.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const startBefore = new Date(now.getTime() + (SLOT_LOOKAHEAD_DAYS + 1) * 24 * 60 * 60 * 1000).toISOString();
     const occupied: OccupiedVisit[] = [];
     let cursor: string | null = null;
     let complete = false;
+    // Richest query first; if Jobber rejects a field or the cost, step down so slots still load.
+    const ladder: Array<'rich' | 'mid' | 'base'> = ['rich', 'mid', 'base'];
+    let level = 0;
     for (let page = 0; page < MAX_VISIT_PAGES; page++) {
-      const visitsData = await jobberGraphql(
-        token,
-        OCCUPIED_VISITS_QUERY,
-        { startAfter, startBefore, cursor },
-        fetchFn,
-        version
-      );
+      let visitsData: { data?: any } | null = null;
+      while (!visitsData) {
+        try {
+          visitsData = await jobberGraphql(
+            token,
+            occupiedVisitsQuery(ladder[level]),
+            { startAfter, startBefore, cursor },
+            fetchFn,
+            version
+          );
+        } catch (error) {
+          if (level >= ladder.length - 1 || cursor) throw error;
+          level += 1;
+        }
+      }
       occupied.push(...(visitsData?.data?.visits?.nodes || []).map(mapVisitNode));
       const pageInfo = visitsData?.data?.visits?.pageInfo;
       if (!pageInfo?.hasNextPage || !pageInfo?.endCursor) {
@@ -414,6 +578,7 @@ export async function lookupOpenSlots(
       }
       cursor = pageInfo.endCursor as string;
     }
+    const siteCity = location.city || null;
 
     const perTechMax = SLOT_LOOKAHEAD_DAYS * SLOT_HOURS_PT.length;
     const slotsByTech = resolved.map((tech) =>
@@ -423,6 +588,7 @@ export async function lookupOpenSlots(
         technicianId: tech.id,
         technicianName: tech.name,
         maxSlots: perTechMax,
+        siteCity,
       }).filter((slot) => isAllowlistedTechId(slot.technicianId, allowlistedTechIds))
     );
     const primarySlots = mergeOpenSlots(slotsByTech, perTechMax * Math.max(resolved.length, 1));
@@ -436,6 +602,7 @@ export async function lookupOpenSlots(
               technicianId: tech.id,
               technicianName: tech.name,
               maxSlots: perTechMax,
+              siteCity,
             })
           ),
           perTechMax * Math.max(fallbackResolved.length, 1)
@@ -452,6 +619,19 @@ export async function lookupOpenSlots(
       assignedTechName,
       assignedTechId: (resolved[0] ?? fallbackResolved[0]).id,
       allowlistedTechIds: allIds,
+      board: [...resolved, ...(complete ? fallbackResolved : [])].map((tech) => ({
+        technician: tech.name,
+        visits: occupied
+          .filter((visit) => visitBelongsToTech(visit, tech.id, tech.name))
+          .map((visit) => ({
+            startAt: visit.startAt,
+            endAt: visit.endAt ?? null,
+            allDay: Boolean(visit.allDay),
+            kind: classifyVisit(visit),
+            title: visit.title ?? null,
+            city: visit.city ?? null,
+          })),
+      })),
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';

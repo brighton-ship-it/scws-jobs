@@ -566,3 +566,77 @@ describe('fallback techs', () => {
     assert.deepEqual(result.openSlots, []);
   });
 });
+
+describe('board-aware availability', () => {
+  // Monday Oct 12 2026 6:00 AM PT; Tue Oct 13 is the day under test.
+  const NOW = new Date('2026-10-12T13:00:00.000Z');
+  const pt = (day: number, h: number, m = 0) => new Date(Date.UTC(2026, 9, day, h + 7, m)).toISOString();
+  const brian = { technicianIds: ['user-brian'], technicianNames: ['Brian Eads'] };
+  const run = (occupied: any[], extra: Record<string, unknown> = {}) =>
+    computeOpenSlots({
+      occupied,
+      now: NOW,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 40,
+      siteCity: 'Ramona',
+      ...extra,
+    }).filter((s) => s.date.includes('October 13'));
+
+  it('one short timed service call leaves the other windows open', () => {
+    const slots = run([
+      { startAt: pt(13, 8), endAt: pt(13, 9, 30), city: 'Ramona', title: 'Service Call', ...brian },
+    ]);
+    const times = slots.map((s) => s.time);
+    assert.equal(slots.some((s) => s.startAt === pt(13, 8)), false);
+    assert.ok(times.some((t) => /10:00 AM and 12:00 PM/.test(t)));
+    assert.ok(times.some((t) => /1:00 PM and 3:00 PM/.test(t)));
+  });
+
+  it('one anytime (all-day) service call does not close the day', () => {
+    const slots = run([
+      { startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title: 'Service Call', ...brian },
+    ]);
+    assert.equal(slots.length, 3);
+  });
+
+  it('all-day drilling / install job closes the whole day', () => {
+    assert.equal(
+      run([{ startAt: pt(13, 7), endAt: pt(13, 17), allDay: true, title: 'New well drilling', ...brian }]).length,
+      0
+    );
+  });
+
+  it('an unidentified all-day visit stays conservative and blocks the day', () => {
+    assert.equal(run([{ startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title: 'Misc', ...brian }]).length, 0);
+  });
+
+  it('a long timed job spanning windows blocks only what it overlaps (plus travel)', () => {
+    const slots = run([{ startAt: pt(13, 9), endAt: pt(13, 14), title: 'Pump install', city: 'Ramona', ...brian }]);
+    assert.equal(slots.length, 0); // 8 slot can't finish before 9, 10/13 overlap
+    const morningOnly = run([{ startAt: pt(13, 7), endAt: pt(13, 11), title: 'Pump install', city: 'Ramona', ...brian }]);
+    assert.deepEqual(morningOnly.map((s) => s.startAt), [pt(13, 13)]);
+  });
+
+  it('travel time: a far-away visit ending at 10 pushes out the next window; a same-city one does not', () => {
+    const far = run([{ startAt: pt(13, 8), endAt: pt(13, 10), city: 'Anza', ...brian }]);
+    assert.equal(far.some((s) => s.startAt === pt(13, 10)), false);
+    const near = run([{ startAt: pt(13, 8), endAt: pt(13, 10), city: 'Ramona', ...brian }]);
+    assert.equal(near.some((s) => s.startAt === pt(13, 10)), true);
+  });
+
+  it('stop cap: 4 stops closes the day, 3 does not', () => {
+    const stop = (h: number) => ({ startAt: pt(13, h), endAt: pt(13, h + 1), city: 'Ramona', ...brian });
+    assert.equal(run([stop(8), stop(15), stop(16), stop(17)]).length, 0);
+    assert.ok(run([stop(8), stop(15), stop(16)], { maxStops: 4 }).length >= 1);
+    assert.equal(run([stop(8), stop(15), stop(16)], { maxStops: 3 }).length, 0);
+  });
+
+  it("another tech's visits never block Brian", () => {
+    assert.equal(
+      run([{ startAt: pt(13, 8), endAt: pt(13, 17), allDay: true, title: 'Drilling', technicianIds: ['x'], technicianNames: ['Someone'] }])
+        .length,
+      3
+    );
+  });
+});
