@@ -23,6 +23,44 @@
   var height = config.height || '520px';
   var baseUrl = config.baseUrl || 'https://jobs.scwellservice.com';
 
+  var ADS_KEYS = ['gclid', 'gbraid', 'wbraid', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content'];
+
+  function landingParams() {
+    var params = new URLSearchParams(window.location.search);
+    var out = new URLSearchParams();
+    ADS_KEYS.forEach(function (key) {
+      var value = params.get(key);
+      if (value) out.set(key, value);
+    });
+    return out;
+  }
+
+  function withAttribution(done) {
+    var fromUrl = landingParams();
+    function finish(extra) {
+      if (extra) {
+        ADS_KEYS.concat(['ga_client_id', 'ga_session_id']).forEach(function (key) {
+          if (extra[key] && !fromUrl.get(key)) fromUrl.set(key, extra[key]);
+        });
+      }
+      done(fromUrl);
+    }
+    if (window.scwsAdsAttribution && window.scwsAdsAttribution.read) {
+      finish(window.scwsAdsAttribution.read());
+      return;
+    }
+    var script = document.createElement('script');
+    script.src = baseUrl + '/ads-attribution.js';
+    script.onload = function () {
+      var api = window.scwsAdsAttribution;
+      finish(api && api.read ? api.read() : null);
+    };
+    script.onerror = function () {
+      finish(null);
+    };
+    document.head.appendChild(script);
+  }
+
   function init() {
     var container = document.getElementById(containerId);
     
@@ -31,9 +69,11 @@
       return;
     }
 
+    withAttribution(function (params) {
     // Create iframe
     var iframe = document.createElement('iframe');
-    iframe.src = baseUrl + '/book/embed';
+    var query = params.toString();
+    iframe.src = baseUrl + '/book/embed' + (query ? '?' + query : '');
     iframe.style.width = '100%';
     iframe.style.height = height;
     iframe.style.border = 'none';
@@ -57,6 +97,7 @@
     });
 
     container.appendChild(iframe);
+    });
   }
 
   // Initialize when DOM is ready

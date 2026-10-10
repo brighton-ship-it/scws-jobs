@@ -318,3 +318,56 @@ export function clickIdsFromLead(lead: WebsiteLead | null | undefined): AdsClick
     ga_session_id: lead?.ga_session_id ?? null,
   };
 }
+
+export function isRealGaClientId(value: string | null | undefined): boolean {
+  const trimmed = value?.trim() || '';
+  if (!trimmed || trimmed.startsWith('last-resort.')) return false;
+  return true;
+}
+
+export function hasStoredClickId(
+  lead: Pick<WebsiteLead, 'gclid' | 'gbraid' | 'wbraid'> | null | undefined
+): boolean {
+  return Boolean(lead?.gclid?.trim() || lead?.gbraid?.trim() || lead?.wbraid?.trim());
+}
+
+export type BookJobDelivery =
+  | { send: true; reason: 'ga_client_id' }
+  | { send: false; reason: 'no_match' | 'click_id_only_offline' | 'no_click_or_client_id' };
+
+/**
+ * Measurement Protocol needs a real browser client_id. A last_resort id is
+ * logged and not sent. A click id without a client id is left for the offline
+ * upload, which can match the gclid directly.
+ */
+export function bookJobDeliveryPlan(lead: WebsiteLead | null | undefined): BookJobDelivery {
+  if (!lead) return { send: false, reason: 'no_match' };
+  if (isRealGaClientId(lead.ga_client_id)) return { send: true, reason: 'ga_client_id' };
+  if (hasStoredClickId(lead)) return { send: false, reason: 'click_id_only_offline' };
+  return { send: false, reason: 'no_click_or_client_id' };
+}
+
+/** Null when the payload would use a last_resort client id. */
+export function measurementPayloadForGoogle(
+  input: Parameters<typeof buildBookJobPayload>[0]
+): BookJobMeasurementPayload | null {
+  const plan = bookJobDeliveryPlan(
+    input.lead
+      ? {
+          id: 'payload',
+          source: 'booking_requests',
+          phone: input.lead.phone ?? null,
+          email: input.lead.email ?? null,
+          created_at: new Date(0).toISOString(),
+          gclid: input.lead.gclid,
+          ga_client_id: input.lead.ga_client_id,
+          ga_session_id: input.lead.ga_session_id,
+        }
+      : null
+  );
+  if (!plan.send) return null;
+  const payload = buildBookJobPayload(input);
+  if (payload.events[0]?.params.client_id_source !== 'ga_client_id') return null;
+  if (!isRealGaClientId(payload.client_id)) return null;
+  return payload;
+}

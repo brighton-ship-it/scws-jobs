@@ -2,19 +2,23 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import {
   BOOK_JOB_EVENT_NAME,
-  buildBookJobPayload,
+  bookJobDeliveryPlan,
   clientContactFromJob,
   decideBookJob,
   isJobScheduled,
   jobCreatedRecently,
   jobValueUsd,
   matchWebsiteLead,
+  measurementPayloadForGoogle,
   normalizeEmail,
   normalizePhone,
   type WebsiteLead,
 } from '@/lib/ads/book-job';
+import { bookJobValueUsd } from '@/lib/ads/invoice-value';
+import { missingColumnName, withoutColumn } from '@/lib/ads/optional-column';
 import { sendBookJobEvent } from '@/lib/ads/ga4-measurement-protocol';
 import { fetchRecentlyUpdatedJobs } from '@/lib/jobber/recent-jobs';
+import { fetchJobInvoiceAmounts } from '@/lib/jobber/attribution-reads';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 
 // GET/POST from Vercel Cron: x-vercel-cron + Authorization Bearer CRON_SECRET.
@@ -82,6 +86,8 @@ export async function POST(request: NextRequest) {
     skippedAlreadyOnSchedule: 0,
     skippedBootstrap: 0,
     skippedMissingSecret: 0,
+    skippedNotSent: 0,
+    logged: 0,
     errors: [] as string[],
   };
 
@@ -139,22 +145,49 @@ export async function POST(request: NextRequest) {
 
       const contact = clientContactFromJob(job);
       const match = matchWebsiteLead(leads, contact);
-      const payload = buildBookJobPayload({
+      const plan = bookJobDeliveryPlan(match?.lead ?? null);
+      let priced = bookJobValueUsd({ jobTotal: jobValueUsd(job) });
+      if (plan.send) {
+        try {
+          const invoices = await fetchJobInvoiceAmounts(job.id);
+          priced = bookJobValueUsd({ invoices, jobTotal: jobValueUsd(job) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'invoice lookup failed';
+          console.warn('[book_job] Invoice lookup failed:', message);
+        }
+      }
+      const payload = measurementPayloadForGoogle({
         jobberJobId: job.id,
         lead: match?.lead ?? null,
         jobberEmail: contact.emails?.map(normalizeEmail).find(Boolean) ?? null,
         jobberPhone: contact.phones?.map(normalizePhone).find(Boolean) ?? null,
-        valueUsd: jobValueUsd(job),
+        valueUsd: priced.valueUsd,
       });
+      const send = Boolean(plan.send && payload);
 
-      const { error: insertError } = await supabase.from('book_job_conversions').insert({
+      const logRow: Record<string, unknown> = {
         jobber_job_id: job.id,
         booking_request_id: match?.lead.source === 'booking_requests' ? match.lead.id : null,
         customer_id: match?.lead.source === 'customers' ? match.lead.id : null,
-        client_id: payload.client_id,
-        client_id_source: payload.events[0].params.client_id_source,
+        client_id: send ? payload!.client_id : null,
+        client_id_source: send ? 'ga_client_id' : 'not_sent',
         matched_by: match?.matchedBy ?? null,
-      });
+        sent_to_google: send,
+        skip_reason: send ? null : plan.send ? 'payload_blocked' : plan.reason,
+        value_usd: priced.valueUsd,
+        value_source: priced.valueSource,
+        gclid: match?.lead.gclid ?? null,
+      };
+
+      const conversions = supabase as any;
+      let insertRow = logRow;
+      let insertError = (await conversions.from('book_job_conversions').insert(insertRow)).error;
+      for (let attempt = 0; attempt < 12 && insertError; attempt += 1) {
+        const column = missingColumnName(insertError);
+        if (!column || !(column in insertRow)) break;
+        insertRow = withoutColumn(insertRow, column);
+        insertError = (await conversions.from('book_job_conversions').insert(insertRow)).error;
+      }
 
       if (insertError) {
         if (insertError.code === '23505') {
@@ -166,6 +199,17 @@ export async function POST(request: NextRequest) {
       }
 
       converted.add(job.id);
+      results.logged += 1;
+
+      if (!send || !payload) {
+        results.skippedNotSent += 1;
+        console.log('[book_job] Logged without sending to Google', {
+          jobber_job_id: job.id,
+          reason: plan.send ? 'payload_blocked' : plan.reason,
+          matched_by: match?.matchedBy ?? null,
+        });
+        continue;
+      }
 
       const sent = await sendBookJobEvent(payload);
       if (sent.skipped === 'missing_secret') {

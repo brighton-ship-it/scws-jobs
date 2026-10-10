@@ -1,12 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
-import {
-  extractAdsClickIds,
-  isMissingClickIdColumnError,
-  MISSING_CLICK_ID_COLUMNS_WARNING,
-  omitClickIdColumns,
-} from '@/lib/ads/click-ids';
+import { InboundBodyError, inboundAdsFields, readInboundRecord } from '@/lib/ads/inbound-body';
+import { customerAdsPatch } from '@/lib/ads/lead-tag';
+import { missingColumnName, withoutColumn } from '@/lib/ads/optional-column';
 import type { LeadSource } from '@/types/database';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
@@ -74,7 +71,17 @@ function detectLeadSource(
 export async function POST(request: NextRequest) {
   try {
     const supabase = createServiceClient();
-    const body = await request.json();
+    let rawBody: Record<string, unknown>;
+    try {
+      rawBody = await readInboundRecord(request);
+    } catch (error) {
+      if (error instanceof InboundBodyError) {
+        return NextResponse.json({ error: error.message }, { status: error.status, headers: corsHeaders });
+      }
+      throw error;
+    }
+    const inbound = inboundAdsFields(rawBody, request.headers.get('cookie'), request.url);
+    const body = inbound.body as Record<string, any>;
 
     // Honeypot — bots that fill a hidden field get a fake success
     if (body.website_url || body.honeypot) {
@@ -128,10 +135,13 @@ export async function POST(request: NextRequest) {
     // Get IP address for tracking
     const forwardedFor = request.headers.get('x-forwarded-for');
     const ip_address = forwardedFor ? forwardedFor.split(',')[0].trim() : null;
-    const clickIds = extractAdsClickIds(body);
+    const clickIds = inbound.clickIds;
 
-    // Auto-detect lead source from UTM params
-    const detected_lead_source = manual_lead_source || detectLeadSource(utm_source, utm_medium, referrer_url);
+    // Click id or cpc wins over a generic website_form guess.
+    const detected_lead_source: LeadSource =
+      inbound.lead_source === 'google_ads'
+        ? 'google_ads'
+        : manual_lead_source || detectLeadSource(utm_source, utm_medium, referrer_url);
     
     // Build lead source detail string
     const utmDetail = [
@@ -173,24 +183,35 @@ export async function POST(request: NextRequest) {
           ga_session_id?: string | null;
         } | null };
       
-      // Update existing customer with lead tracking if not already set
-      const updateFields: Record<string, string | null> = {};
-      if (!currentData?.lead_source) updateFields.lead_source = detected_lead_source;
+      const updateFields: Record<string, string | null> = {
+        ...customerAdsPatch(currentData, {
+          lead_source: detected_lead_source === 'google_ads' ? 'google_ads' : null,
+          campaign: inbound.campaign,
+          keyword: inbound.keyword,
+          utms: inbound.utms,
+          clickIds,
+        }),
+      };
+      if (!currentData?.lead_source && detected_lead_source !== 'google_ads') {
+        updateFields.lead_source = detected_lead_source;
+      }
       if (!currentData?.utm_source && utm_source) updateFields.utm_source = utm_source;
       if (!currentData?.utm_medium && utm_medium) updateFields.utm_medium = utm_medium;
       if (!currentData?.utm_campaign && utm_campaign) updateFields.utm_campaign = utm_campaign;
-      if (!currentData?.gclid && clickIds.gclid) updateFields.gclid = clickIds.gclid;
-      if (!currentData?.gbraid && clickIds.gbraid) updateFields.gbraid = clickIds.gbraid;
-      if (!currentData?.wbraid && clickIds.wbraid) updateFields.wbraid = clickIds.wbraid;
-      if (!currentData?.ga_client_id && clickIds.ga_client_id) updateFields.ga_client_id = clickIds.ga_client_id;
-      if (!currentData?.ga_session_id && clickIds.ga_session_id) updateFields.ga_session_id = clickIds.ga_session_id;
       
       if (Object.keys(updateFields).length > 0) {
-        const { error: updateError } = await (supabase
-          .from('customers') as any)
-          .update(updateFields)
-          .eq('id', existingId);
-          
+        let currentUpdate: Record<string, unknown> = { ...updateFields };
+        let updateError = (
+          await (supabase.from('customers') as any).update(currentUpdate).eq('id', existingId)
+        ).error;
+        for (let attempt = 0; attempt < 12 && updateError; attempt += 1) {
+          const column = missingColumnName(updateError);
+          if (!column || !(column in currentUpdate)) break;
+          currentUpdate = withoutColumn(currentUpdate, column);
+          updateError = (
+            await (supabase.from('customers') as any).update(currentUpdate).eq('id', existingId)
+          ).error;
+        }
         if (updateError) {
           console.warn('Could not update lead tracking on existing customer:', updateError);
         }
@@ -218,22 +239,11 @@ export async function POST(request: NextRequest) {
         ga_session_id: clickIds.ga_session_id,
       };
 
-      let { data: newCustomer, error: customerError } = await supabase
-        .from('customers')
-        .insert(customerRow as any)
-        .select()
-        .single();
-
-      if (customerError && isMissingClickIdColumnError(customerError)) {
-        console.warn(MISSING_CLICK_ID_COLUMNS_WARNING.replace('booking_requests', 'customers'), customerError.message);
-        const retry = await supabase
-          .from('customers')
-          .insert(omitClickIdColumns(customerRow) as any)
-          .select()
-          .single();
-        newCustomer = retry.data;
-        customerError = retry.error;
-      }
+      let { data: newCustomer, error: customerError } = await insertStrippingMissingColumns(
+        supabase,
+        'customers',
+        customerRow as Record<string, unknown>
+      );
 
       if (customerError) {
         console.error('Error creating customer:', customerError);
@@ -266,31 +276,35 @@ export async function POST(request: NextRequest) {
 
     // Create a booking request for service tracking
     if (service_type) {
-      const { error: bookingError } = await supabase
-        .from('booking_requests')
-        .insert({
-          service_type,
-          customer_name: customer_name.trim(),
-          phone: cleanPhone,
-          email: email?.toLowerCase()?.trim() || null,
-          address: address?.trim() || '',
-          city: city?.trim() || '',
-          preferred_date: preferred_date || null,
-          preferred_time: preferred_time || null,
-          notes: notes?.trim() || null,
-          status: 'pending',
-          customer_id: customerId,
-          source: 'website',
-          ip_address,
-          gclid: clickIds.gclid,
-          gbraid: clickIds.gbraid,
-          wbraid: clickIds.wbraid,
-          ga_client_id: clickIds.ga_client_id,
-          ga_session_id: clickIds.ga_session_id,
-        } as any);
+      const bookingInsert = await insertStrippingMissingColumns(supabase, 'booking_requests', {
+        service_type,
+        customer_name: customer_name.trim(),
+        phone: cleanPhone,
+        email: email?.toLowerCase()?.trim() || null,
+        address: address?.trim() || '',
+        city: city?.trim() || '',
+        preferred_date: preferred_date || null,
+        preferred_time: preferred_time || null,
+        notes: notes?.trim() || null,
+        status: 'pending',
+        customer_id: customerId,
+        source: 'website',
+        ip_address,
+        lead_source: detected_lead_source === 'google_ads' ? 'google_ads' : null,
+        utm_source: utm_source?.trim() || null,
+        utm_medium: utm_medium?.trim() || null,
+        utm_campaign: utm_campaign?.trim() || null,
+        utm_term: utm_term?.trim() || null,
+        utm_content: utm_content?.trim() || null,
+        gclid: clickIds.gclid,
+        gbraid: clickIds.gbraid,
+        wbraid: clickIds.wbraid,
+        ga_client_id: clickIds.ga_client_id,
+        ga_session_id: clickIds.ga_session_id,
+      });
 
-      if (bookingError) {
-        console.warn('Could not create booking request:', bookingError);
+      if (bookingInsert.error) {
+        console.warn('Could not create booking request:', bookingInsert.error);
       }
     }
 
@@ -344,6 +358,24 @@ View in Jobs App: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel
       { status: 500, headers: corsHeaders }
     );
   }
+}
+
+async function insertStrippingMissingColumns(
+  supabase: ReturnType<typeof createServiceClient>,
+  table: string,
+  row: Record<string, unknown>
+) {
+  const db = supabase as any;
+  let current = { ...row };
+  let result = await db.from(table).insert(current).select().single();
+  for (let attempt = 0; attempt < 12 && result.error; attempt += 1) {
+    const column = missingColumnName(result.error);
+    if (!column || !(column in current)) break;
+    console.warn(`[Lead] ${table} is missing column ${column}; saving without it`);
+    current = withoutColumn(current, column);
+    result = await db.from(table).insert(current).select().single();
+  }
+  return result;
 }
 
 // Helper functions

@@ -1,5 +1,11 @@
 # Supabase migrations
 
+## `20261010_paid_ads_attribution.sql`
+
+Adds `lead_source` and UTM columns on `booking_requests` (campaign is `utm_campaign`, keyword is `utm_term`), log columns on `book_job_conversions`, and tables `ads_calls`, `ads_offline_conversions`, and `ads_closed_loop_reports`.
+
+Until this is applied, forms still save, but `lead_source` is dropped on insert, offline conversion rows cannot be stored, and the weekly report cannot save. Apply it in the SQL Editor. Undo with `20261010_paid_ads_attribution_rollback.sql`. See `docs/ADS_ATTRIBUTION.md`.
+
 SQL in this folder is **not** applied automatically from the app or from Vercel.
 
 If a migration is not in the production schema, open the **Supabase SQL Editor** for the project, paste the file, and run it.

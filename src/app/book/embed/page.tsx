@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { attributionPostFields, collectPageAttribution } from '@/lib/ads/attribution-browser'
 import { 
   Calendar,
   Clock,
@@ -56,6 +57,10 @@ export default function EmbedBookingPage() {
   })
 
   const availableSlots = generateTimeSlots()
+
+  useEffect(() => {
+    collectPageAttribution()
+  }, [])
   const timeSlots = ['8:00 AM', '10:00 AM', '12:00 PM', '2:00 PM', '4:00 PM']
 
   const handleSubmit = async () => {
@@ -79,6 +84,7 @@ export default function EmbedBookingPage() {
           preferred_time: selectedTime,
           notes: formData.notes || null,
           source: 'embed',
+          ...attributionPostFields(collectPageAttribution()),
         }),
       })
 

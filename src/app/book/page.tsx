@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { attributionPostFields, collectPageAttribution } from '@/lib/ads/attribution-browser'
 import { 
   Calendar,
   Clock,
@@ -79,6 +80,10 @@ export default function BookingPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
 
+  useEffect(() => {
+    collectPageAttribution()
+  }, [])
+
   const handleSubmit = async () => {
     setIsSubmitting(true)
     setSubmitError(null)
@@ -100,6 +105,7 @@ export default function BookingPage() {
           preferred_time: selectedTime,
           notes: formData.description || null,
           source: 'website',
+          ...attributionPostFields(collectPageAttribution()),
         }),
       })
 
