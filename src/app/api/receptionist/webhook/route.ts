@@ -7,8 +7,9 @@ import { notifyCall } from '@/lib/notifications';
 import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/receptionist/pay-link';
 import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
-import { handleBookServiceCall, OFFICE_FLAG_EMAILS } from '@/lib/receptionist/book-service-call';
+import { handleBookServiceCall } from '@/lib/receptionist/book-service-call';
 import { getValidJobberAccessToken } from '@/lib/jobber/auth';
+import { buildCallEmail, extractCallOutcome } from '@/lib/receptionist/call-email';
 import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/call-duration';
 import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
@@ -378,32 +379,48 @@ export async function POST(request: NextRequest) {
           hour12: true,
         });
 
-    const emailSubject = `📞 Mike: ${customerName || formatPhone(phone)}${isUrgent ? ' ⚠️ URGENT' : ''}`;
-    const emailContent = `
-New call received by Mike (phone assistant)
-
-CALL DETAILS:
-• Time: ${pstTime}
-• Duration: ${formatDurationLabel(durationSec)}
-• Phone: ${formatPhone(phone)}
-${customerName ? `• Customer: ${customerName}` : ''}
-${address ? `• Address: ${address}${city ? `, ${city}` : ''}` : ''}
-${serviceNeeded ? `• Service Needed: ${serviceNeeded}` : ''}
-${isUrgent ? '\n⚠️ MARKED AS URGENT\n' : ''}
-
-SUMMARY:
-${summary || 'No summary available'}
-
-FULL TRANSCRIPT:
-${transcript}
-
----
-${isNewCustomer ? '⚡ NEW CUSTOMER CREATED' : customerId ? '✓ Existing customer matched' : '⚪ Customer not matched (incomplete info)'}
-${taskCreated ? '✅ Task created and assigned to Brighton' : ''}
-${customerId ? `\nView Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/customers/${customerId}` : ''}
-View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/tasks
-View Requests: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/requests
-    `.trim();
+    // Exactly one email per call. Outcome comes from Mike's tool calls on this call.
+    const outcome = extractCallOutcome(rawMessages, {
+      name: customerName,
+      phone,
+      address,
+      city,
+      issue: serviceNeeded,
+    });
+    // Backup source: the row Mike's flag/callback tool saved for this call.
+    if (outcome.kind === 'none' || (!outcome.booked && !outcome.emergency)) {
+      try {
+        const { data: toolRows } = await supabase
+          .from('booking_requests')
+          .select('service_type, notes')
+          .eq('vapi_call_id', call.id);
+        for (const row of (toolRows || []) as Array<{ service_type?: string | null }>) {
+          if (row.service_type === 'Emergency') outcome.emergency = true;
+          else if (row.service_type === 'Callback') outcome.callback = true;
+        }
+        if (!outcome.booked) {
+          outcome.kind = outcome.emergency ? 'emergency' : outcome.callback ? 'callback' : 'none';
+        }
+      } catch (rowErr) {
+        console.log('[Receptionist] Tool-row outcome lookup skipped:', rowErr);
+      }
+    }
+    const built = buildCallEmail({
+      outcome,
+      fallbackName: customerName || formatPhone(phone),
+      fallbackPhone: phone,
+      fallbackAddress: address,
+      fallbackIssue: serviceNeeded,
+      urgent: isUrgent,
+      summary,
+      transcript,
+      timeLabel: pstTime,
+      durationLabel: formatDurationLabel(durationSec),
+      appUrl: process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app',
+      customerId,
+    });
+    const emailSubject = built.subject;
+    const emailContent = built.text;
 
     // Send to all office emails as separate messages (no CC)
     let emailResult: { success?: boolean; error?: string } = {};
@@ -524,12 +541,10 @@ async function handleVapiTools(body: any) {
           insertBooking: insertOfficeBooking,
           updateBooking: updateOfficeBooking,
           loadCandidates: () => loadOfficeAlertCandidates(identity),
-          sendAlert: async (alert) => sendEmail({
-            to: alert.to,
-            subject: alert.subject,
-            text: alert.text,
-            html: textToHtml(alert.text),
-          }),
+          // One email per call: the end-of-call report sends it, with the final
+          // outcome. The booking_requests row saved here is the fallback source
+          // (see /api/cron/receptionist-alert-fallback).
+          sendAlert: async () => ({ success: true }),
         },
       });
       officeIndexes.forEach((index, offset) => {
@@ -618,15 +633,10 @@ async function executeTool(name: string, params: any, phone: string) {
           notes: params.notes || params.reason,
         },
         {
+          // The weekend-emergency flag is folded into the end-of-call email
+          // (bookServiceCall's weekendEmergency result). No mid-call email.
           notifyOffice: async (flag) => {
-            for (const email of OFFICE_FLAG_EMAILS) {
-              await sendEmail({
-                to: email,
-                subject: flag.subject,
-                html: textToHtml(flag.text),
-                text: flag.text,
-              });
-            }
+            console.log(`[Receptionist] Office flag deferred to end-of-call email: ${flag.kind}`);
           },
         }
       );
