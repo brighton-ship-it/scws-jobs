@@ -6,13 +6,13 @@ import {
   refreshGoogleAccessToken,
   uploadClickConversions,
 } from '@/lib/ads/google-ads-api';
+import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
-  candidatesFromInvoices,
   offlineUploadMode,
   runOfflineImport,
   type AttributedLead,
 } from '@/lib/ads/offline-import';
-import { fetchRecentInvoices } from '@/lib/jobber/attribution-reads';
+import { fetchBookedJobs } from '@/lib/jobber/attribution-reads';
 import { selectLeadRows } from '@/lib/ads/lead-query';
 
 export const dynamic = 'force-dynamic';
@@ -52,8 +52,8 @@ export async function POST(request: NextRequest) {
     const [bookings, customers, calls, invoices, existing] = await Promise.all([
       selectLeadRows(db.from('booking_requests'), leadColumns, since),
       selectLeadRows(db.from('customers'), leadColumns, since),
-      db.from('ads_calls').select('caller_phone, campaign_name').not('caller_phone', 'is', null).limit(2000),
-      fetchRecentInvoices(),
+      db.from('ads_calls').select('caller_phone, campaign_name, started_at').not('caller_phone', 'is', null).limit(5000),
+      fetchBookedJobs(),
       db.from('ads_offline_conversions').select('jobber_job_id, status').limit(5000),
     ]);
 
@@ -64,13 +64,16 @@ export async function POST(request: NextRequest) {
     if (bookings.error) console.warn('[ads_offline] booking_requests:', bookings.error.message);
     if (customers.error) console.warn('[ads_offline] customers:', customers.error.message);
 
-    const candidates = candidatesFromInvoices({
-      invoices,
+    const { candidates, excluded } = candidatesFromBookedJobs({
+      jobs: invoices,
       leads,
-      adsPhones: (calls.data ?? []).map((row: { caller_phone: string | null; campaign_name: string | null }) => ({
-        phone: row.caller_phone,
-        campaign: row.campaign_name,
-      })),
+      adsCalls: (calls.data ?? []).map(
+        (row: { caller_phone: string | null; campaign_name: string | null; started_at: string | null }) => ({
+          phone: row.caller_phone,
+          campaign: row.campaign_name,
+          startedAt: row.started_at,
+        })
+      ),
     });
 
     const config = googleAdsConfig();
@@ -113,8 +116,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: result.errors.length === 0,
       mode,
-      invoices: invoices.length,
+      trigger: 'booked_job',
+      jobs_seen: invoices.length,
       candidates: candidates.length,
+      total_value_usd: Math.round(candidates.reduce((sum, c) => sum + c.valueUsd, 0) * 100) / 100,
+      rows: candidates.map((c) => ({
+        job_id: c.jobberJobId,
+        client: c.clientName,
+        booked_at: c.conversionAt,
+        value_usd: c.valueUsd,
+        value_source: c.valueSource,
+        signal: c.signal,
+      })),
+      excluded,
       ...result,
       duration_ms: Date.now() - started,
     });
