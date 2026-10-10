@@ -113,10 +113,10 @@ export function parsePhoneCallLog(payload: unknown): PhoneLogRow[] {
     rows.push(build(e, id, legsById.get(id) ?? [], e.p.get('PARAM_RING_GROUP_NAME') ?? null));
   }
   // Direct calls to a person's own Voice number (not part of a ring group call)
-  for (const [id, legs] of legsById) {
+  for (const [id, legs] of Array.from(legsById.entries())) {
     if (consumed.has(id)) continue;
     consumed.add(id);
-    const first = legs.sort((a, b) => b.time.localeCompare(a.time))[0];
+    const first = legs.sort((a: Ev, b: Ev) => b.time.localeCompare(a.time))[0];
     const row = build(first, id, legs, null);
     rows.push(row);
   }
