@@ -10,8 +10,6 @@
  * quote titles or messages.
  */
 
-import { createHash, timingSafeEqual } from 'node:crypto';
-
 export const QUOTES_GP_KEY_ENV = 'QUOTES_GP_KEY';
 export const QUOTES_GP_KEY_FALLBACK_ENV = 'ADMIN_SECRET';
 export const OPS_DASH_KEY_ENV = 'OPS_DASH_KEY';
@@ -57,10 +55,14 @@ export function readQuotesGpKey(
   return cookie || null;
 }
 
+// Pure-JS constant-time compare (this module is also imported by client components).
 function safeEqual(a: string, b: string): boolean {
-  const ha = createHash('sha256').update(a).digest();
-  const hb = createHash('sha256').update(b).digest();
-  return timingSafeEqual(ha, hb);
+  let diff = a.length ^ b.length;
+  const n = Math.max(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
 }
 
 /** Accepted secrets: QUOTES_GP_KEY (or ADMIN_SECRET fallback) and OPS_DASH_KEY. */
