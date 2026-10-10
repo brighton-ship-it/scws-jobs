@@ -170,3 +170,26 @@ describe('service tech identity — roster emails / Brighton name, not guesses',
     assert.equal(formatTechNames(['Doug Pollack', 'Cowin']), 'Doug Pollack or Cowin');
   });
 });
+
+describe('Anza-side desert towns (Borrego Springs)', () => {
+  it('assigns Doug, Cowin and Brian so the earliest slot wins across techs', () => {
+    for (const city of ['Borrego Springs', 'Ocotillo Wells', 'Shelter Valley']) {
+      assert.equal(assignShopTerritory({ city }), 'desert');
+      assert.deepEqual(
+        allowedTechsForLocation({ city }).map((t) => t.name),
+        [TECH_DOUG_POLLACK, TECH_COWIN, TECH_BRIAN_EADS]
+      );
+    }
+    assert.equal(assignShopTerritory({ zip: '92004' }), 'desert');
+  });
+
+  it('leaves Ramona and Anza territories unchanged', () => {
+    assert.deepEqual(allowedTechsForLocation({ city: 'Ramona' }).map((t) => t.name), [TECH_BRIAN_EADS]);
+    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), [TECH_DOUG_POLLACK, TECH_COWIN]);
+  });
+
+  it('resolves all three allowlisted users and never Travis', () => {
+    const ids = resolveTechsForLocation({ city: 'Borrego Springs' }, [TRAVIS, BRIAN, COWIN, DOUG]).map((t) => t.id);
+    assert.deepEqual(ids, ['user-doug', 'user-cowin', 'user-brian']);
+  });
+});

@@ -4,6 +4,7 @@
  * Territories (Brighton, authoritative):
  *   Ramona / west / central SD → Brian Eads only
  *   Anza / high-desert         → Doug Pollack or Cowin (whoever has an open slot)
+ *   Borrego / Anza-side desert → Doug, Cowin AND Brian (earliest open slot across all three)
  *
  * Brian and Cowin are identified from this repo's team roster emails
  * (scripts/seed-team.ts). Doug Pollack is not in that seed file; this repo
@@ -17,7 +18,7 @@ export const TECH_COWIN = 'Cowin';
 export const TECH_BRIAN_EADS = 'Brian Eads';
 export const TECH_DOUG_POLLACK = 'Doug Pollack';
 
-export type ShopTerritory = 'ramona' | 'anza';
+export type ShopTerritory = 'ramona' | 'anza' | 'desert';
 
 /** Exact identities — roster emails where this repo has them; Doug by Brighton’s name. */
 export const SERVICE_TECH_ROSTER = {
@@ -116,6 +117,26 @@ const COWIN_ZIPS = new Set([
   '92583',
 ]);
 
+/**
+ * Anza-side desert towns (Oct 10 2026): far from every shop, so the earliest slot
+ * across Brian AND the Anza techs wins instead of Brian's calendar alone.
+ */
+const DESERT_CITIES = [
+  'borrego springs',
+  'borrego',
+  'anza borrego',
+  'anza-borrego',
+  'ocotillo wells',
+  'shelter valley',
+  'salton city',
+];
+
+const DESERT_ZIPS = new Set([
+  '92004', // Borrego Springs
+  '92259', // Ocotillo Wells
+  '92275', // Salton City
+]);
+
 const BRIAN_CITIES = [
   'ramona',
   'escondido',
@@ -186,6 +207,9 @@ export function assignShopTerritory(input: {
   zip?: string | null;
 }): ShopTerritory {
   const zip = extractZip(input.zip) || extractZip(input.address) || extractZip(input.city);
+  if (zip && DESERT_ZIPS.has(zip)) return 'desert';
+  const desertPlace = normalizePlace([input.city, input.address].filter(Boolean).join(' '));
+  if (cityMatches(desertPlace, DESERT_CITIES)) return 'desert';
   if (zip && COWIN_ZIPS.has(zip)) return 'anza';
   if (zip && BRIAN_ZIPS.has(zip)) return 'ramona';
 
@@ -204,6 +228,14 @@ export function allowedTechsForLocation(input: {
   zip?: string | null;
 }): ShopTech[] {
   const territory = assignShopTerritory(input);
+  if (territory === 'desert') {
+    // Anza techs first so ties go to them; Brian is merged in so the earliest slot wins.
+    return [
+      { ...SERVICE_TECH_ROSTER.doug },
+      { ...SERVICE_TECH_ROSTER.cowin },
+      { ...SERVICE_TECH_ROSTER.brian },
+    ];
+  }
   if (territory === 'anza') {
     return [{ ...SERVICE_TECH_ROSTER.doug }, { ...SERVICE_TECH_ROSTER.cowin }];
   }

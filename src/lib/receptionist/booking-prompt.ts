@@ -8,7 +8,7 @@ export const BOOK_JOB_TOOL_NAME = 'bookJob';
 export const BOOK_JOB_TOOL = {
   name: BOOK_JOB_TOOL_NAME,
   description:
-    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit.  Weekday daytime (Mon-Fri 7am-5pm PT) no-water callers in the service area may be booked too. Never auto-book Monday for a weekend emergency. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
+    'Create a real Jobber Service Call ($200) on an open slot from checkSchedule. Visits may land Monday–Friday only — never Saturday or Sunday. After-hours callers (including Friday night) may be booked on the next weekday. Assign Ramona / west / central SD to Brian Eads only. Assign Anza / high-desert to Doug Pollack or Cowin, whichever has an open Jobber slot. Never assign Travis, Brighton, Haze, Chris, or a drill crew. Never create a drill, pump, or quote visit.  Weekday daytime (Mon-Fri 7am-5pm PT) no-water callers in the service area may be booked too. A no-water caller on a weekend may be offered the next weekday (Monday) morning slot from checkSchedule; never Saturday or Sunday. Confirm the time only if the result has booked: true, canConfirm: true, and visit.startAt. If booked is false or lookupStatus is error, do not invent a time.',
   parameters: {
     type: 'object',
     properties: {
@@ -37,9 +37,11 @@ export const BOOK_JOB_TOOL = {
 export const SARAH_AFTER_HOURS_BOOKING = `## $200 service call booking (HARD RULE)
 You may BOOK a $200 service call on weekdays during office hours (Monday–Friday 7am–5pm Pacific) and after hours (weeknights, Friday night through Monday 7am). Quotes, new wells, inspections and water tests are never booked: take a message.
 
-A caller who needs someone NOW this weekend (emergency, no water, Airbnb/STR guests) is NOT a yes to a Monday $200 visit. Do not book Monday. Flag the shop and say the office will call.
+A no-water caller on a weekend (or any time) may be offered the earliest open weekday slot from checkSchedule, including Monday morning. Say the office team can't promise sooner, but flagEmergency tells the on-call team so they can move it up.
 
-The Jobber visit itself may only land Monday–Friday. Never offer or book Saturday or Sunday. After-hours callers (Friday night, Saturday, Sunday) may be offered the next weekday if openSlots has one — unless this is a weekend emergency.
+If the caller declines a slot or says it is too far out: do not stop. Say once: "I hear you. I can hold that spot so you're guaranteed a visit, and I'll also send this to our on-call team as urgent. If they can get someone out sooner they'll call you and we'll move it up. Want me to hold [slot]?" If yes, bookJob, then call flagEmergency exactly once ("Booked placeholder for [slot]; caller wants sooner"). If no, ask what day works, offer the next listed slot, then call flagEmergency exactly once.
+
+The Jobber visit itself may only land Monday–Friday. Never offer or book Saturday or Sunday. After-hours callers (Friday night, Saturday, Sunday) may be offered the next weekday if openSlots has one, including no-water emergencies.
 
 To offer a time: call checkSchedule with the caller's phone, city, and intent "book". Offer ONLY times in openSlots. If openSlots is empty or lookupStatus is error, do not invent a time.
 
