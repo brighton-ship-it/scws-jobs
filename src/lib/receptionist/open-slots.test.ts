@@ -99,6 +99,7 @@ describe('computeOpenSlots', () => {
         {
           startAt: day.startAt,
           allDay: true,
+          title: 'Install new pump',
           technicianIds: ['user-brian'],
           technicianNames: ['Brian Eads'],
         },
@@ -607,8 +608,16 @@ describe('board-aware availability', () => {
     );
   });
 
-  it('an unidentified all-day visit stays conservative and blocks the day', () => {
-    assert.equal(run([{ startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title: 'Misc', ...brian }]).length, 0);
+  it('an unidentified all-day visit counts as a double stop but leaves windows open; two of them hit the cap', () => {
+    const misc = { startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title: 'Clean Up Plumbing & Electric', ...brian };
+    assert.equal(run([misc]).length, 3);
+    assert.equal(run([misc, { ...misc, title: 'Other cleanup' }]).length, 0);
+  });
+
+  it('all-day pump pull / fishing / booster job closes the day', () => {
+    for (const title of ['Fish out pump', 'Pull & Replace Pump & Motor', 'Booster Upgrade', 'City Water Tie-in']) {
+      assert.equal(run([{ startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title, ...brian }]).length, 0, title);
+    }
   });
 
   it('a long timed job spanning windows blocks only what it overlaps (plus travel)', () => {

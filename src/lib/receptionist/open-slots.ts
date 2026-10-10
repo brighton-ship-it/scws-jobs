@@ -70,7 +70,7 @@ export type OccupiedVisit = {
 export type VisitKind = 'drill_install' | 'service' | 'assessment' | 'other';
 
 const DRILL_INSTALL_RE =
-  /\b(drill\w*|new well|well install\w*|install\w*|rig|casing|hydro-?\s?frac\w*|frac\w*|abandon\w*|trench\w*|tank|pump (?:pull|replace\w*|swap)|pull(?:ing)? (?:the )?pump|well (?:rehab|development)|rehab\w*|well (?:cap|head))\b/i;
+  /\b(drill\w*|new well|well install\w*|install\w*|rig|casing|hydro-?\s?frac\w*|frac\w*|abandon\w*|trench\w*|tank install\w*|pull(?:ing)?|fish(?:ing)?|tie-?\s?in|booster|upgrade|replace\w*|rehab\w*|well (?:cap|head|development)|pump (?:&|and) motor|conversion)\b/i;
 const ASSESSMENT_RE = /\b(assess\w*|inspect\w*|estimate|quote|walk-?through|site visit|water test|consult\w*)\b/i;
 const SERVICE_RE =
   /\b(service call|service|repair\w*|troubleshoot\w*|diagnos\w*|no water|low pressure|pressure|leak\w*|maintenance|check)\b/i;
@@ -304,14 +304,21 @@ function visitCoversPtDay(visit: OccupiedVisit, dateStr: string): boolean {
 }
 
 /**
- * An all-day visit closes the whole day unless we can positively identify it as a
- * short stop (service call / assessment) — those only count toward the stop cap.
+ * An all-day ("anytime") visit closes the whole day only when it is heavy field work
+ * (drilling, install, pump pull, fishing, tie-in, …) or spans several days. Service
+ * calls and assessments count as one stop; other all-day jobs count as two.
  */
+function stopWeight(visit: OccupiedVisit): number {
+  if (!visit.allDay) return 1;
+  return classifyVisit(visit) === 'other' ? 2 : 1;
+}
+
 function allDayVisitBlocksDay(visit: OccupiedVisit): boolean {
   if (!visit.allDay) return false;
   const kind = classifyVisit(visit);
-  if (kind === 'service' || kind === 'assessment') {
-    // Multi-day all-day entries are projects, not stops.
+  if (kind === 'service' || kind === 'assessment' || kind === 'other') {
+    // Only heavy field work (drill/install/pull/fish/…) closes the day. Anything else
+    // all-day is counted as a (heavier) stop. Multi-day entries are projects.
     const start = new Date(visit.startAt);
     const end = visit.endAt ? new Date(visit.endAt) : null;
     if (end && !Number.isNaN(end.getTime()) && end.getTime() - start.getTime() > 36 * 3_600_000) return true;
@@ -378,9 +385,9 @@ export function computeOpenSlots(options: {
       continue;
     }
     // Stop cap: every visit that starts today (timed or anytime) is one stop.
-    const stops = techOccupied.filter(
-      (visit) => visit.startAt && ptCalendarDate(new Date(visit.startAt)) === dateStr
-    ).length;
+    const stops = techOccupied
+      .filter((visit) => visit.startAt && ptCalendarDate(new Date(visit.startAt)) === dateStr)
+      .reduce((sum, visit) => sum + stopWeight(visit), 0);
     if (stops >= maxStops) continue;
 
     const timedToday = techOccupied.filter((visit) => !visit.allDay);
