@@ -176,3 +176,29 @@ test('quotes approved counts by approval date, not sent date', () => {
   assert.equal(cur.quotesSent, 2); assert.equal(cur.quotesSentValue, 650);
   assert.equal(prev.quotesSent, 1); assert.equal(prev.quotesApproved, 0);
 });
+
+test('adSplit separates pump and drilling by campaign', () => {
+  const h = hashPhone('9515551234')!;
+  const d = buildDashboard({
+    now, range: 'since',
+    calls: [
+      call({ caller_phone: '9515551234', campaign_name: 'Leads-Search-Drilling' }),
+      call({ campaign_name: 'Leads-Search-1' }),
+      call({ campaign_name: '(Mike live call)', live: true }),
+    ],
+    conversions: [{
+      jobber_job_id: 'j1', conversion_at: '2026-10-09T19:00:00Z', value_usd: 200,
+      payload: { conversion: { user_identifiers: [{ hashed_phone_number: h }] }, stages: { booking: 200, invoiced: 900 } },
+    }],
+    spend: [
+      { date: '2026-10-08', campaign: 'Leads-Search-Drilling', costUsd: 300, clicks: 20 },
+      { date: '2026-10-08', campaign: 'Leads-Search-1', costUsd: 100, clicks: 10 },
+    ],
+    paidByJob: null,
+  });
+  const [pump, drill] = d.adSplit!.since.rows;
+  assert.equal(drill.category, 'drilling');
+  assert.deepEqual([drill.spend, drill.clicks, drill.calls, drill.booked, drill.invoiced, drill.multiple], [300, 20, 1, 1, 900, 3]);
+  assert.deepEqual([pump.spend, pump.clicks, pump.calls, pump.booked, pump.invoiced, pump.multiple], [100, 10, 1, 0, 0, 0]);
+  assert.equal(d.adSplit!.week.rows[1].booked, 1);
+});

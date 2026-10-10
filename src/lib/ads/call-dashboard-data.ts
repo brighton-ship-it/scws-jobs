@@ -12,7 +12,7 @@ let spendCache: { at: number; key: string; rows: SpendDay[] } | null = null;
 const paidCache = new Map<string, { at: number; paid: number }>();
 
 export function dailySpendGaql(from: string, to: string): string {
-  return `SELECT campaign.name, segments.date, metrics.cost_micros FROM campaign WHERE segments.date BETWEEN '${from}' AND '${to}' AND campaign.status != 'REMOVED'`;
+  return `SELECT campaign.name, segments.date, metrics.cost_micros, metrics.clicks FROM campaign WHERE segments.date BETWEEN '${from}' AND '${to}' AND campaign.status != 'REMOVED'`;
 }
 
 /** Daily campaign cost since the tracking floor (or 90 days, whichever is earlier). Cached 30 min. */
@@ -30,9 +30,9 @@ export async function loadDailySpend(now = new Date()): Promise<SpendDay[] | nul
     for (const r of searchResultRows(payload)) {
       const campaign = (r.campaign as { name?: string } | undefined)?.name;
       const date = (r.segments as { date?: string } | undefined)?.date;
-      const m = r.metrics as { costMicros?: unknown; cost_micros?: unknown } | undefined;
+      const m = r.metrics as { costMicros?: unknown; cost_micros?: unknown; clicks?: unknown } | undefined;
       const costUsd = costMicrosToUsd(m?.costMicros ?? m?.cost_micros);
-      if (campaign && date) rows.push({ date, campaign, costUsd });
+      if (campaign && date) rows.push({ date, campaign, costUsd, clicks: Number(m?.clicks ?? 0) || 0 });
     }
     spendCache = { at: Date.now(), key, rows };
     return rows;
