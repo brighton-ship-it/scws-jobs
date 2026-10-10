@@ -247,13 +247,32 @@ export function buildDashboard(input: {
   const inRange = (iso: string | null, from: Date) => !!iso && Date.parse(iso) >= from.getTime();
   const callsAll = input.calls.filter((c) => inRange(c.started_at, start));
 
-  const convs = input.conversions;
-  const convByHash = new Map<string, DashConversion>();
-  for (const c of convs) for (const h of convPhoneHashes(c)) if (!convByHash.has(h)) convByHash.set(h, c);
+  // Credit each booked job to at most ONE call: the matching-phone call nearest before booked_at.
+  // Later/repeat calls from the same number never count as bookings; if no call precedes the
+  // booking (job existed before the caller's first call), the caller is an existing client.
+  const creditedCall = new Map<DashConversion, DashCall>();
+  const convs: DashConversion[] = [];
+  const usedCalls = new Set<DashCall>();
+  const convsSorted = [...input.conversions].sort((a, b) => Date.parse(a.conversion_at || '') - Date.parse(b.conversion_at || ''));
+  for (const cv of convsSorted) {
+    const hashes = convPhoneHashes(cv);
+    const at = Date.parse(cv.conversion_at || '');
+    if (!hashes.length || !Number.isFinite(at)) { convs.push(cv); continue; } // cannot judge; keep as-is
+    let best: DashCall | null = null;
+    for (const c of input.calls) {
+      const t = Date.parse(c.started_at || '');
+      if (!Number.isFinite(t) || t > at || usedCalls.has(c)) continue;
+      const h = hashPhone(c.caller_phone);
+      if (!h || !hashes.includes(h)) continue;
+      if (!best || t > Date.parse(best.started_at || '')) best = c;
+    }
+    if (best) { usedCalls.add(best); creditedCall.set(cv, best); convs.push(cv); }
+  }
+  const convOfCall = new Map<DashCall, DashConversion>();
+  creditedCall.forEach((c, cv) => convOfCall.set(c, cv));
 
   const decorated = callsAll.map((c) => {
-    const h = hashPhone(c.caller_phone);
-    const conv = h ? convByHash.get(h) : undefined;
+    const conv = convOfCall.get(c);
     const st = conv ? stagesOf(conv) : null;
     return Object.assign({}, c, { _booked: !!conv, _inv: st ? (st.invoiced ?? 0) : 0, _conv: conv ?? null });
   });
@@ -282,7 +301,9 @@ export function buildDashboard(input: {
   }
 
   const bookedCalls = decorated.filter((c) => c._booked).length;
-  const known = decorated.filter((c) => !c._booked && (c.customer_id || c.jobber_client_id)).length;
+  const existingHashes = new Set<string>();
+  for (const cv of input.conversions) if (!creditedCall.has(cv)) for (const h of convPhoneHashes(cv)) existingHashes.add(h);
+  const known = decorated.filter((c) => !c._booked && (c.customer_id || c.jobber_client_id || existingHashes.has(hashPhone(c.caller_phone) ?? ''))).length;
   const matched = decorated.filter((c) => c.caller_phone).length;
   const invoicedValue = sum(convWindow, invoicedOf);
   const paidValue = paidSum(convWindow);
@@ -299,7 +320,7 @@ export function buildDashboard(input: {
   const outcome = (c: (typeof decorated)[number]): string => {
     if (c._booked) return 'Booked (new)';
     if (c.live) return c.live_booking_request ? 'Mike: booking request taken' : isShort(c) ? 'Mike: short / hang-up' : 'Mike: answered';
-    if (c.customer_id || c.jobber_client_id) return 'Existing/known client';
+    if (c.customer_id || c.jobber_client_id || existingHashes.has(hashPhone(c.caller_phone) ?? '')) return 'Existing client';
     if (isShort(c)) return 'Short / missed';
     return 'Answered';
   };
