@@ -75,3 +75,24 @@ describe('authorizeQuotesGpKey', () => {
     );
   });
 });
+
+describe('OPS_DASH_KEY', () => {
+  it('is accepted in addition to QUOTES_GP_KEY / ADMIN_SECRET', () => {
+    const env = { QUOTES_GP_KEY: 'office', OPS_DASH_KEY: ' dash ' } as NodeJS.ProcessEnv;
+    assert.equal(keyMatchesQuotesGpSecret('dash', env), true);
+    assert.equal(keyMatchesQuotesGpSecret('office', env), true);
+    assert.equal(keyMatchesQuotesGpSecret('other', env), false);
+    assert.equal(keyMatchesQuotesGpSecret('dash', { ADMIN_SECRET: 'a' } as NodeJS.ProcessEnv), false);
+    assert.equal(keyMatchesQuotesGpSecret('dash', { OPS_DASH_KEY: 'dash' } as NodeJS.ProcessEnv), true);
+    assert.equal(keyMatchesQuotesGpSecret('', env), false);
+    assert.deepEqual(
+      authorizeQuotesGpKey({ headers: headers({ [QUOTES_GP_KEY_HEADER]: 'dash' }) }, { env }),
+      { ok: true, via: 'key' }
+    );
+    assert.deepEqual(
+      authorizeQuotesGpKey(
+        { headers: headers(), url: 'https://x.test/ops/calls?key=dash' }, { env }),
+      { ok: true, via: 'key' }
+    );
+  });
+});
