@@ -21,6 +21,9 @@ export interface DashCall {
   call_source: string | null;
   customer_id: string | null;
   jobber_client_id: string | null;
+  /** Live Mike/Vapi receptionist call (real time) */
+  live?: boolean;
+  live_booking_request?: boolean;
 }
 
 export interface DashConversion {
@@ -276,10 +279,12 @@ export function buildDashboard(input: {
   if (noKeyword) gaps.push('Keyword is not returned by Google Ads call_view, so the keyword table shows ad group instead.');
   gaps.push('Tracking number is not stored; the table shows the call source/area code reported by Google Ads.');
   gaps.push('New vs existing: booked = new customer (offline-conversion rules); "known" = phone matches a CRM/Jobber client with no new-customer booking.');
+  gaps.push('Live vs delayed: calls answered by Mike (AI receptionist) appear within about a minute of hang-up. Google Ads call data (campaign, ad source) is synced every 15 minutes, but Google itself can report calls hours late, so ad-attributed counts and today\'s ad calls may lag. Jobber bookings/payments refresh about every 10-15 minutes. Spend is daily.');
   gaps.push('Revenue, spend and multiples count from Sep 18, 2026 (when closed-loop tracking began).');
 
   const outcome = (c: (typeof decorated)[number]): string => {
     if (c._booked) return 'Booked (new)';
+    if (c.live) return c.live_booking_request ? 'Mike: booking request taken' : isShort(c) ? 'Mike: short / hang-up' : 'Mike: answered';
     if (c.customer_id || c.jobber_client_id) return 'Existing/known client';
     if (isShort(c)) return 'Short / missed';
     return 'Answered';
@@ -373,4 +378,44 @@ export function buildDashboard(input: {
     },
     gaps,
   };
+}
+
+
+export interface LiveCallRow {
+  vapi_call_id: string;
+  phone: string | null;
+  duration_sec: number | null;
+  called_at: string | null;
+}
+
+/**
+ * Convert receptionist (Mike/Vapi) calls into DashCalls, dropping any that already appear in
+ * ads_calls (same phone within 15 minutes) so a call is never counted twice.
+ */
+export function mergeLiveCalls(adsCalls: DashCall[], rows: LiveCallRow[]): Array<DashCall & { _vapi: string }> {
+  const out: Array<DashCall & { _vapi: string }> = [];
+  for (const r of rows) {
+    const d = digits10(r.phone);
+    const t = Date.parse(r.called_at || '');
+    if (!d || !Number.isFinite(t)) continue;
+    const dup = adsCalls.some(
+      (a) => digits10(a.caller_phone) === d && Math.abs(Date.parse(a.started_at || '') - t) < 15 * 60_000
+    );
+    if (dup) continue;
+    out.push({
+      started_at: r.called_at,
+      duration_seconds: r.duration_sec,
+      campaign_name: '(Mike live call)',
+      keyword: null,
+      caller_area_code: d.slice(0, 3),
+      caller_phone: d,
+      call_status: null,
+      call_source: 'Mike (AI receptionist)',
+      customer_id: null,
+      jobber_client_id: null,
+      live: true,
+      _vapi: r.vapi_call_id,
+    });
+  }
+  return out;
 }

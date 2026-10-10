@@ -28,6 +28,17 @@ FROM call_view
 WHERE call_view.start_call_date_time DURING LAST_30_DAYS
 `.trim();
 
+/** Same query, but with an explicit date window that includes today (LAST_30_DAYS excludes today). */
+export function callViewGaql(now: Date = new Date(), days = 30): string {
+  const fmt = (d: Date) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' }).format(d);
+  const from = fmt(new Date(now.getTime() - days * 86400_000));
+  const to = fmt(new Date(now.getTime() + 86400_000));
+  return CALL_VIEW_GAQL.replace(
+    'DURING LAST_30_DAYS',
+    `BETWEEN '${from}' AND '${to}'`
+  );
+}
+
 export const KEYWORD_COST_GAQL = `
 SELECT
   campaign.name,

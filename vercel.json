@@ -10,7 +10,7 @@
     },
     {
       "path": "/api/cron/ads-calls",
-      "schedule": "45 8 * * *"
+      "schedule": "*/15 * * * *"
     },
     {
       "path": "/api/cron/ads-offline-conversions",

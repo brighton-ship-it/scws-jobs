@@ -4,7 +4,7 @@ import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 import { importAdsCalls, parseVoiceActivities } from '@/lib/ads/call-match';
 import { customerAdsPatch } from '@/lib/ads/lead-tag';
 import {
-  CALL_VIEW_GAQL,
+  callViewGaql,
   googleAdsConfig,
   googleAdsSearch,
   parseCallViewRow,
@@ -29,7 +29,7 @@ async function searchCallViews(env: NodeJS.ProcessEnv = process.env) {
   const drafts: AdsCallDraft[] = [];
   let pageToken: string | null = null;
   for (let page = 0; page < 10; page += 1) {
-    const payload = await googleAdsSearch(config, CALL_VIEW_GAQL, fetch, token, pageToken);
+    const payload = await googleAdsSearch(config, callViewGaql(), fetch, token, pageToken);
     for (const row of searchResultRows(payload)) {
       const parsed = parseCallViewRow(row);
       if (parsed) drafts.push(parsed);

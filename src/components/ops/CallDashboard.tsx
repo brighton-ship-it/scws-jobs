@@ -78,7 +78,7 @@ function GroupTable({ title, rows }: { title: string; rows: GroupRow[] }) {
 
 export function CallDashboardPage() {
   const [range, setRange] = useState<string>('since');
-  const { data, error, reload } = useDashboard(range, 5 * 60_000);
+  const { data, error, reload } = useDashboard(range, 30_000);
   const t = data?.totals;
   return (
     <div className="space-y-4">
