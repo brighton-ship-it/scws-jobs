@@ -6,6 +6,8 @@ const TTL_MS = 10 * 60_000;
 const MAX_PAGES = 12;
 /** Payment records include one INVOICE-type row per invoice, so ~100/week: 9 weeks needs ~20 pages; newest come first. */
 const PAYMENT_MAX_PAGES = 40;
+/** ~125 days of created quotes (9 weeks + 60d slack) at ~75/week needs well over 12 pages. */
+const QUOTE_MAX_PAGES = 30;
 const cache = new Map<string, { at: number; rows: unknown[] | null }>();
 
 async function paged<T>(key: string, query: string, field: string, variables: Record<string, unknown>, maxPages = MAX_PAGES): Promise<T[] | null> {
@@ -54,7 +56,7 @@ const INVOICES = `
 const QUOTES = `
   query WeeklyQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) {
     quotes(first: $first, after: $after, filter: $filter) {
-      nodes { id quoteStatus sentAt amounts { subtotal total } }
+      nodes { id quoteStatus sentAt transitionedAt amounts { subtotal total } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
@@ -77,7 +79,7 @@ export const loadWeeklyInvoices = (after: string, before: string) =>
   paged<WeeklyInvoice>(`inv|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } });
 /** Quotes sent in the window may have been created earlier, so filter by created date with slack. */
 export const loadWeeklyQuotes = (createdAfter: string, createdBefore: string) =>
-  paged<WeeklyQuote>(`q|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } });
+  paged<WeeklyQuote>(`q|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES);
 export const loadWeeklyJobsCreated = (after: string, before: string) =>
   paged<WeeklyJob>(`jc|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } });
 export const loadWeeklyJobsCompleted = (after: string, before: string) =>

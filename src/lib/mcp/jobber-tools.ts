@@ -34,6 +34,7 @@ import {
 } from '../jobber/mcp-quotes.ts';
 import { getInvoice, searchInvoices } from '../jobber/mcp-invoices.ts';
 import { listPaymentRecords } from '../jobber/mcp-payments.ts';
+import { listApprovedQuotes } from '../jobber/mcp-quotes-approved.ts';
 import { getJob, searchJobs } from '../jobber/mcp-jobs.ts';
 import {
   assertNoInvoicePaymentOptions,
@@ -443,6 +444,21 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           description:
             'Include linked job ids and job numbers (jobs first 5) so invoice revenue can be tied to the job. Default false.',
         },
+      },
+    },
+  },
+  {
+    name: 'list_quotes_approved',
+    description:
+      'List Jobber quotes approved (or converted) in a date window, by approval time (Jobber transitionedAt), regardless of when sent. Returns quote number, client, sent/approved timestamps, pre-tax subtotal and total, with totals. Read-only. Pass ISO timestamps; paginates internally.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['after', 'before'],
+      properties: {
+        after: { type: 'string', description: 'ISO timestamp, start of window (inclusive)' },
+        before: { type: 'string', description: 'ISO timestamp, end of window (exclusive)' },
+        maxPages: { type: 'number', description: 'Pages of 50 per status to scan. Default 20, max 40.' },
       },
     },
   },
@@ -1249,6 +1265,13 @@ export async function callJobberMcpTool(
             .filter(Boolean)
             .join(' '),
         });
+      }
+      case 'list_quotes_approved': {
+        const after = optionalString(args, 'after');
+        const before = optionalString(args, 'before');
+        if (!after || !before) return errorResult('after and before (ISO timestamps) are required.');
+        const result = await listApprovedQuotes({ after, before, maxPages: optionalNumber(args, 'maxPages') }, deps);
+        return textResult({ after, before, ...result, note: 'Read-only. Approval time is Jobber transitionedAt (time the quote entered its current status).' });
       }
       case 'list_payment_records': {
         const after = optionalString(args, 'after');
