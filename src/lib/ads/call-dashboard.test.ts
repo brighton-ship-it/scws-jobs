@@ -60,3 +60,31 @@ test('missing spend/paid yields nulls and gaps, not crashes', () => {
   assert.equal(d.totals.multipleInvoiced, null);
   assert.ok(d.gaps.length >= 2);
 });
+
+test('a booked job is credited to one call only; repeat/later calls are Existing client', () => {
+  const phone = '7602712106';
+  const h = hashPhone(phone)!;
+  const mk = (iso: string) => call({ started_at: iso, duration_seconds: 2, caller_phone: phone, customer_id: 'c9' });
+  const conv = (id: string, at: string, v: number) => ({
+    jobber_job_id: id, conversion_at: at, value_usd: v,
+    payload: { conversion: { user_identifiers: [{ hashed_phone_number: h }] }, stages: { booking: v } },
+  });
+  // Existing customer: job booked before all four Oct 10 calls
+  let d = buildDashboard({
+    now, range: '30', spend: null, paidByJob: null,
+    calls: ['2026-10-09T16:00:00Z', '2026-10-09T16:01:00Z', '2026-10-09T16:02:00Z', '2026-10-09T16:03:00Z'].map(mk),
+    conversions: [conv('j1', '2026-10-08T00:00:00Z', 5776)],
+  });
+  assert.equal(d.totals.bookedNew, 0);
+  assert.equal(d.totals.bookedValue, 0);
+  assert.ok(d.recent.every((r) => r.outcome === 'Existing client'));
+  // New customer: only the call nearest before booking is credited; later calls are not
+  d = buildDashboard({
+    now, range: '30', spend: null, paidByJob: null,
+    calls: ['2026-10-09T15:00:00Z', '2026-10-09T16:00:00Z', '2026-10-09T18:00:00Z'].map(mk),
+    conversions: [conv('j2', '2026-10-09T17:00:00Z', 5776)],
+  });
+  assert.equal(d.totals.bookedNew, 1);
+  assert.equal(d.totals.bookedValue, 5776);
+  assert.equal(d.recent.filter((r) => r.outcome === 'Booked (new)').length, 1);
+});
