@@ -259,7 +259,47 @@ describe('handleBookServiceCall', () => {
     }
   });
 
-  it('weekend emergency does not auto-book Monday and flags the shop', async () => {
+  it('weekend no-water caller books the earliest weekday slot by default', async () => {
+    const monday = firstOpenSlot(SAT_10AM, 'user-brian', 'Brian Eads');
+    assert.match(monday.date, /Monday/i);
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: monday.startAt,
+        urgency: 'emergency',
+        needNow: true,
+        notes: 'no water at all',
+      },
+      {
+        now: SAT_10AM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          createdJob: {
+            id: 'job-sat',
+            title: SERVICE_CALL_TITLE,
+            visits: {
+              nodes: [
+                {
+                  id: 'visit-sat',
+                  startAt: monday.startAt,
+                  endAt: monday.endAt,
+                  assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+                },
+              ],
+            },
+          },
+        }),
+      }
+    );
+    assert.equal(result.booked, true, JSON.stringify(result));
+    assert.match(result.visit?.date || '', /Monday/i);
+  });
+
+  it('weekend emergency does not auto-book Monday and flags the shop (SARAH_BLOCK_WEEKEND_BOOKING=1)', async () => {
+    process.env.SARAH_BLOCK_WEEKEND_BOOKING = '1';
     const flags: string[] = [];
     const { result } = await handleBookServiceCall(
       {
@@ -284,6 +324,7 @@ describe('handleBookServiceCall', () => {
       }
     );
 
+    delete process.env.SARAH_BLOCK_WEEKEND_BOOKING;
     assert.equal(result.booked, false);
     assert.equal(result.canConfirm, false);
     assert.equal(result.weekendEmergency, true);

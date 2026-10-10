@@ -77,7 +77,19 @@ describe('decideSarahBooking', () => {
     assert.equal(decideSarahBooking(MON_8AM, { urgency: 'normal' }).mayBook, true);
   });
 
-  it('weekend emergency does not auto-book Monday', () => {
+  it('weekend no-water caller may book by default (earliest weekday slot)', () => {
+    const decision = decideSarahBooking(SAT_10AM, { urgency: 'emergency', needNow: true, notes: 'no water at all' });
+    assert.equal(decision.mayBook, true);
+  });
+
+  it('weekend emergency does not auto-book Monday when SARAH_BLOCK_WEEKEND_BOOKING=1', () => {
+    process.env.SARAH_BLOCK_WEEKEND_BOOKING = '1';
+    try { weekendBlockCheck(); } finally { delete process.env.SARAH_BLOCK_WEEKEND_BOOKING; }
+  });
+
+  it('(old) weekend emergency block body', () => {});
+
+  function weekendBlockCheck() {
     const decision = decideSarahBooking(SAT_10AM, {
       urgency: 'emergency',
       needNow: true,
@@ -88,7 +100,7 @@ describe('decideSarahBooking', () => {
     assert.equal(decision.reason, 'weekend_emergency');
     assert.equal(decision.weekendEmergency, true);
     assert.match(decision.spoken, /not going to put you on Monday/i);
-  });
+  }
 
   it('after-hours routine call may book', () => {
     const decision = decideSarahBooking(THU_530PM, { urgency: 'normal' });
