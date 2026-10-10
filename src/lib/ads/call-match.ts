@@ -23,8 +23,42 @@ export interface PhoneParty {
   kind: 'customer' | 'jobber_client';
 }
 
+const ADS_ACCOUNT_TIME_ZONE = process.env.GOOGLE_ADS_TIME_ZONE?.trim() || 'America/Los_Angeles';
+
+/**
+ * Google Ads call_view times look like "2026-10-07 15:33:23" in the ad
+ * account time zone with no offset. Date.parse would read that as server
+ * local time (UTC on Vercel), 7 to 8 hours off from the Voice log's UTC times.
+ */
+export function parseAdsDateTime(value: string | null | undefined, timeZone = ADS_ACCOUNT_TIME_ZONE): number {
+  const text = (value || '').trim();
+  if (!text) return Number.NaN;
+  if (/(Z|[+-]\d{2}:?\d{2})$/.test(text)) return Date.parse(text);
+  const m = text.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/);
+  if (!m) return Date.parse(text);
+  const asUtc = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  // Find the zone offset at that wall-clock moment.
+  let guess = asUtc;
+  for (let i = 0; i < 2; i += 1) {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).formatToParts(new Date(guess));
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value);
+    const wall = Date.UTC(get('year'), get('month') - 1, get('day'), get('hour'), get('minute'), get('second'));
+    guess += asUtc - wall;
+  }
+  return guess;
+}
+
 export function matchAdsCallToVoice(call: AdsCallDraft, voiceCalls: VoiceCall[]): VoiceCall | null {
-  const start = Date.parse(call.startedAt || '');
+  const start = parseAdsDateTime(call.startedAt);
   if (!Number.isFinite(start)) return null;
 
   const ranked = voiceCalls
@@ -54,6 +88,8 @@ export function matchPhoneToParty(phone: string | null | undefined, parties: Pho
 }
 
 const PHONE_PARAMS = [
+  // Real Workspace Voice audit log field names (verified against live logs).
+  'param_source',
   'caller_phone_number',
   'calling_party_number',
   'calling_number',
@@ -63,7 +99,8 @@ const PHONE_PARAMS = [
   'caller_number',
 ];
 
-const DURATION_PARAMS = ['duration_seconds', 'duration', 'call_duration_seconds', 'billable_seconds'];
+const DURATION_PARAMS = [
+  'param_duration','duration_seconds', 'duration', 'call_duration_seconds', 'billable_seconds'];
 
 function parameterValue(parameter: Record<string, unknown>): string | null {
   for (const key of ['value', 'intValue', 'int_value', 'multiValue']) {
@@ -115,7 +152,10 @@ export function parseVoiceActivities(payload: unknown): VoiceCall[] {
       const params = parametersOf(event as Record<string, unknown>);
       const phone = firstParam(params, PHONE_PARAMS);
       const durationRaw = firstParam(params, DURATION_PARAMS);
-      const duration = durationRaw != null ? Number(durationRaw) : null;
+      // PARAM_DURATION is milliseconds; the legacy names are seconds.
+      const durationName = DURATION_PARAMS.find((name) => params.get(name));
+      const durationScale = durationName === 'param_duration' ? 1000 : 1;
+      const duration = durationRaw != null ? Number(durationRaw) / durationScale : null;
       calls.push({
         id: qualifier ? `${qualifier}:${index}` : `${startedAt}:${index}`,
         startedAt,
