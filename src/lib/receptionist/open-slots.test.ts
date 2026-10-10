@@ -367,6 +367,64 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     );
   });
 
+  it('Borrego Springs: Brian booked Mon–Wed, Anza tech open → earliest slot is the Anza tech, not Thursday', async () => {
+    // THU_530PM → first candidate is Fri Sep 4 8 AM. Block Brian for the next 4 weekdays.
+    const brianWindows = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 6,
+    });
+    const occupied = brianWindows.map((slot) => ({
+      startAt: slot.startAt,
+      endAt: slot.endAt,
+      assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+    }));
+    const result = await lookupOpenSlots(
+      { city: 'Borrego Springs' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS, BRIAN], occupied),
+      }
+    );
+
+    assert.ok(result.openSlots.length > 0);
+    assert.equal(result.openSlots[0].startAt, brianWindows[0].startAt);
+    assert.equal(result.openSlots[0].technicianId, 'user-doug');
+    assert.deepEqual(result.allowlistedTechIds, ['user-doug', 'user-cowin', 'user-brian']);
+    assert.equal(result.openSlots.some((slot) => slot.technicianId === 'user-travis'), false);
+  });
+
+  it('Borrego Springs: Anza techs booked, Brian open → Brian still bookable', async () => {
+    const windows = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-doug',
+      technicianName: 'Doug Pollack',
+      maxSlots: 50,
+    });
+    const occupied = windows.flatMap((slot) => [
+      { startAt: slot.startAt, endAt: slot.endAt, assignedUsers: { nodes: [{ id: 'user-doug', name: { full: 'Doug Pollack' } }] } },
+      { startAt: slot.startAt, endAt: slot.endAt, assignedUsers: { nodes: [{ id: 'user-cowin', name: { full: 'Cowin' } }] } },
+    ]);
+    const result = await lookupOpenSlots(
+      { city: 'Borrego Springs' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS, BRIAN], occupied) }
+    );
+    assert.ok(result.openSlots.length > 0);
+    assert.equal(result.openSlots[0].technicianId, 'user-brian');
+  });
+
+  it('Borrego Springs: all three open → Doug wins the tie', async () => {
+    const result = await lookupOpenSlots(
+      { city: 'Borrego Springs' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS, BRIAN]) }
+    );
+    assert.equal(result.openSlots[0].technicianId, 'user-doug');
+  });
+
   it('returns no slots when Jobber only has Travis', async () => {
     const result = await lookupOpenSlots(
       { city: 'Anza' },
