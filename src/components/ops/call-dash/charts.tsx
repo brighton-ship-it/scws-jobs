@@ -11,8 +11,8 @@ export const palette = {
 
 export const usd = (n: number | null | undefined, d = 0) =>
   n == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: d }).format(n);
-export const compactUsd = (n: number | null | undefined) =>
-  n == null ? '—' : Math.abs(n) >= 10_000 ? `$${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k` : usd(n);
+import { compactUsd } from '@/lib/ads/format-usd';
+export { compactUsd };
 export const mult = (n: number | null | undefined) => (n == null ? '—' : `${n.toFixed(1)}x`);
 export const shortDay = (iso: string) => {
   const [, m, d] = iso.split('-').map(Number);

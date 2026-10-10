@@ -120,3 +120,15 @@ test('weekly sales buckets by PT Monday week, paid share and closing rate', () =
   const none = buildWeeklySales({ now: wnow, invoices: null, quotes: null, jobsCreated: null, jobsCompleted: null, callTimes: [], bookedAt: [] });
   assert.equal(none.weeks[8].invoiced, null); assert.equal(none.gaps.length, 4);
 });
+
+test('compactUsd formats large values compactly', async () => {
+  const { compactUsd } = await import('./format-usd.ts');
+  assert.equal(compactUsd(null), '—');
+  assert.equal(compactUsd(950), '$950');
+  assert.equal(compactUsd(9876), '$9,876');
+  assert.equal(compactUsd(12400), '$12.4k');
+  assert.equal(compactUsd(456000), '$456k');
+  assert.equal(compactUsd(999600), '$1.00M');
+  assert.equal(compactUsd(1234567), '$1.23M');
+  assert.equal(compactUsd(12345678), '$12.3M');
+});

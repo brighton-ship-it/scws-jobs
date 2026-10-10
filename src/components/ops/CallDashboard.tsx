@@ -188,23 +188,25 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
   const prev = weekly.weeks[weekly.weeks.length - 2];
   const first = weekly.weeks[0];
   const rows: Array<[string, string, string?]> = [
-    ['Invoiced', usd(w.invoiced), `${w.invoiceCount ?? 0} invoices`],
-    ['Paid', usd(w.paid), 'on this week\'s invoices'],
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
-    ['Quotes sent', w.quotesSent == null ? '—' : `${w.quotesSent} · ${compactUsd(w.quotesSentValue)}`, 'count · value'],
-    ['Quotes approved', w.quotesApproved == null ? '—' : `${w.quotesApproved} · ${compactUsd(w.quotesApprovedValue)}`, 'of those sent'],
+    ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent this week`],
+    ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} of those sent`],
     ['Closing rate', pct(w.closingRate), `${w.bookedCalls ?? 0} booked / ${w.calls} calls`],
     ['Last full week', usd(prev?.invoiced), prev?.label],
   ];
   return (
     <Card title="Weekly sales" subtitle={`This week to date: ${w.label} · last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid']]} />} delay={90}>
+      <div className="mb-4 grid grid-cols-2 gap-3">
+        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced this week</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{w.label} · {w.invoiceCount ?? 0} invoices, pre-tax</p></div>
+        <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid this week</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.paid)}</p><p className="text-xs text-slate-500">collected on those invoices</p></div>
+      </div>
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
           {rows.map(([label, value, sub]) => (
             <div key={label} className="min-w-0">
               <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-              <p className="truncate text-lg font-bold tabular-nums text-slate-900">{value}</p>
+              <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900">{value}</p>
               <p className="truncate text-[11px] text-slate-400">{sub}</p>
             </div>
           ))}
@@ -250,6 +252,8 @@ export function CallDashboardPage() {
 
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
+          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Weekly sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
@@ -260,8 +264,6 @@ export function CallDashboardPage() {
             <Kpi delay={240} color={palette.revenue} label="Invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
             <Kpi delay={280} color={palette.paid} label="Paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
           </div>
-
-          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : null}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card title="Calls per day" subtitle={rangeLabel} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short']]} />} delay={60}>
@@ -415,7 +417,7 @@ export function CallDashboardTv() {
       ) : <div className="flex-1" />}
       {data?.weekly ? (() => {
         const ws = data.weekly.weeks; const w = ws[ws.length - 1];
-        const cell = (l: string, v: string) => (<div className="min-w-0"><p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500 xl:text-base">{l}</p><p className="truncate text-base font-bold tabular-nums sm:text-lg xl:text-3xl">{v}</p></div>);
+        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-base font-bold tabular-nums sm:text-lg xl:text-3xl">{v}</p>{sub ? <p className="truncate text-[10px] text-slate-500 xl:text-base">{sub}</p> : null}</div>);
         return (
           <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(7,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Weekly sales">
             <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-8 xl:text-sm">Weekly sales · this week to date {w.label} · bars: last 9 weeks, Mon–Sun</p>
@@ -423,8 +425,8 @@ export function CallDashboardTv() {
             {cell('Paid', usd(w.paid))}
             {cell('Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked))}
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
-            {cell('Quotes sent', w.quotesSent == null ? '—' : `${w.quotesSent} · ${compactUsd(w.quotesSentValue)}`)}
-            {cell('Approved', w.quotesApproved == null ? '—' : `${w.quotesApproved} · ${compactUsd(w.quotesApprovedValue)}`)}
+            {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
+            {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
             {cell('Closing rate', pct(w.closingRate))}
             <div className="col-span-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /></div>
           </div>
