@@ -1,0 +1,62 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {
+  buildDashboard, hashPhone, maskPhone, parseRange, ptStartOfDay, isAnswered, rangeStart, type DashCall,
+} from './call-dashboard.ts';
+
+const now = new Date('2026-10-09T20:00:00Z'); // 1pm PT Fri
+const call = (o: Partial<DashCall>): DashCall => ({
+  started_at: '2026-10-09T18:00:00Z', duration_seconds: 60, campaign_name: 'Search-1', keyword: null,
+  caller_area_code: '951', caller_phone: null, call_status: 'RECEIVED', call_source: 'WEBSITE',
+  customer_id: null, jobber_client_id: null, ad_group_name: null, ...o,
+});
+
+test('mask and range helpers', () => {
+  assert.equal(maskPhone('(951) 555-1234'), '(•••) •••-1234');
+  assert.equal(maskPhone(null, '951'), '(951) •••-••••');
+  assert.equal(parseRange('bogus'), 'since');
+  assert.equal(ptStartOfDay(now).toISOString(), '2026-10-09T07:00:00.000Z');
+  assert.equal(rangeStart('since', now).toISOString(), '2026-09-18T07:00:00.000Z');
+  assert.equal(isAnswered({ duration_seconds: 10, call_status: 'RECEIVED' }), false);
+  assert.equal(isAnswered({ duration_seconds: 40, call_status: 'MISSED' }), false);
+});
+
+test('aggregates calls, bookings, spend and multiples', () => {
+  const h = hashPhone('9515551234')!;
+  const d = buildDashboard({
+    now, range: '7',
+    calls: [
+      call({ caller_phone: '9515551234' }),
+      call({ duration_seconds: 5 }),
+      call({ customer_id: 'c1', caller_phone: '9515559999' }),
+      call({ started_at: '2026-08-01T00:00:00Z' }),
+    ],
+    conversions: [{
+      jobber_job_id: 'j1', conversion_at: '2026-10-09T19:00:00Z', value_usd: 200,
+      payload: { conversion: { user_identifiers: [{ hashed_phone_number: h }] }, stages: { booking: 200, approved: 1000, invoiced: 900 } },
+    }],
+    spend: [{ date: '2026-10-08', campaign: 'Search-1', costUsd: 100 }],
+    paidByJob: new Map([['j1', 450]]),
+  });
+  assert.equal(d.totals.calls, 3);
+  assert.equal(d.totals.answered, 2);
+  assert.equal(d.totals.missedOrShort, 1);
+  assert.equal(d.totals.bookedNew, 1);
+  assert.equal(d.totals.knownExisting, 1);
+  assert.equal(d.totals.invoicedValue, 900);
+  assert.equal(d.totals.paidValue, 450);
+  assert.equal(d.totals.multipleInvoiced, 9);
+  assert.equal(d.totals.multiplePaid, 4.5);
+  assert.equal(d.totals.costPerBooked, 100);
+  assert.equal(d.tv.callsToday, 3);
+  assert.equal(d.tv.bookedToday, 1);
+  assert.equal(d.recent.some((r) => r.phone.endsWith('-1234')), true);
+  assert.equal(JSON.stringify(d).includes('9515551234'), false);
+});
+
+test('missing spend/paid yields nulls and gaps, not crashes', () => {
+  const d = buildDashboard({ now, range: '30', calls: [], conversions: [], spend: null, paidByJob: null });
+  assert.equal(d.totals.spend, null);
+  assert.equal(d.totals.multipleInvoiced, null);
+  assert.ok(d.gaps.length >= 2);
+});
