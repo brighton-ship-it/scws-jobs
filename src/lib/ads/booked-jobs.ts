@@ -45,8 +45,7 @@ export type ExclusionReason =
   | 'signal_after_job'
   | 'existing_client'
   | 'repeat_job'
-  | 'no_value'
-  | 'archived';
+  | 'no_value';
 
 export interface BookedExclusion {
   jobId: string;
@@ -144,10 +143,6 @@ export function candidatesFromBookedJobs(input: {
     if (!Number.isFinite(at) || at < floor) continue; // pre-floor jobs are not reported one by one
     const ex = (reason: ExclusionReason) =>
       excluded.push({ jobId: job.id, clientName: job.clientName ?? null, bookedAt: job.createdAt ?? null, reason });
-    if ((job.jobStatus || '').toLowerCase() === 'archived') {
-      ex('archived');
-      continue;
-    }
     const signals = signalsFor(keys, input.leads, input.adsCalls);
     if (!signals.length) {
       ex('no_ads_signal');
