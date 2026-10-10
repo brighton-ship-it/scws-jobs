@@ -288,7 +288,7 @@ export async function fetchBookedJobs(
   assertAttributionQueryIsReadOnly(ATTRIBUTION_BOOKED_JOBS_QUERY);
   assertAttributionQueryIsReadOnly(ATTRIBUTION_BOOKED_JOB_VALUE_QUERY);
   const pageSize = options?.pageSize ?? 50;
-  const maxPages = options?.maxPages ?? 60;
+  const maxPages = options?.maxPages ?? 200;
   const since = Date.parse(options?.since ?? '2026-09-18T07:00:00.000Z');
   const jobs: BookedJobInput[] = [];
   let after: string | null = null;
