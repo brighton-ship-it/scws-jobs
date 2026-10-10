@@ -5,6 +5,7 @@ import {
   isWeekdayVisitStart,
   lookupOpenSlots,
   mergeOpenSlots,
+  mergeWithFallbackSlots,
   ptWeekday,
   slotMatchesRequest,
   visitsOverlapSlot,
@@ -438,5 +439,130 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     assert.deepEqual(result.openSlots, []);
     assert.deepEqual(result.allowlistedTechIds, []);
     assert.equal(result.assignedTechId, null);
+  });
+});
+
+const CHRIS = { id: 'user-chris', name: { full: 'Chris Glass' }, email: { raw: 'christopher@scwellservice.com' } };
+const HAZE = { id: 'user-haze', name: { full: 'Haze Tarbell' }, email: { raw: 'hazemtarbell@gmail.com' } };
+const SERGIO = { id: 'user-sergio', name: { full: 'Sergio Valdovinos Mendez' }, email: { raw: 'sergio@scwellservice.com' } };
+
+function visitFor(slot: { startAt: string; endAt: string }, id: string, name: string) {
+  return { startAt: slot.startAt, endAt: slot.endAt, assignedUsers: { nodes: [{ id, name: { full: name } }] } };
+}
+
+describe('fallback techs', () => {
+  const windows = computeOpenSlots({
+    occupied: [],
+    now: THU_530PM,
+    technicianId: 'user-brian',
+    technicianName: 'Brian Eads',
+    maxSlots: 60,
+  });
+  const ALL = [BRIAN, COWIN, DOUG, TRAVIS, CHRIS, HAZE, SERGIO];
+
+  it('mergeWithFallbackSlots: keeps only fallback slots strictly earlier than the first primary slot', () => {
+    const mk = (i: number, id: string) => ({ ...windows[i], technician: id, technicianId: id });
+    const merged = mergeWithFallbackSlots(
+      [mk(2, 'user-brian'), mk(3, 'user-brian')],
+      [mk(0, 'user-chris'), mk(2, 'user-haze'), mk(4, 'user-haze')]
+    );
+    assert.deepEqual(merged.map((s) => [s.startAt, s.technicianId]), [
+      [windows[0].startAt, 'user-chris'],
+      [windows[2].startAt, 'user-brian'],
+      [windows[3].startAt, 'user-brian'],
+    ]);
+  });
+
+  it('mergeWithFallbackSlots: primary empty → fallback used', () => {
+    const merged = mergeWithFallbackSlots([], [{ ...windows[0], technicianId: 'user-chris' }]);
+    assert.equal(merged.length, 1);
+  });
+
+  it('primary has an equally early slot → primary only, fallback never offered', async () => {
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits(ALL) }
+    );
+    assert.equal(result.openSlots[0].technicianId, 'user-brian');
+    assert.equal(result.openSlots.some((s) => s.technicianId !== 'user-brian'), false);
+  });
+
+  it('Ramona: Brian booked first two windows, Chris open → Chris offered first, then Brian', async () => {
+    const occupied = [visitFor(windows[0], 'user-brian', 'Brian Eads'), visitFor(windows[1], 'user-brian', 'Brian Eads')];
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits(ALL, occupied) }
+    );
+    assert.equal(result.openSlots[0].startAt, windows[0].startAt);
+    assert.equal(result.openSlots[0].technicianId, 'user-chris');
+    assert.equal(result.openSlots[1].startAt, windows[1].startAt);
+    assert.equal(result.openSlots[1].technicianId, 'user-chris');
+    assert.equal(result.openSlots[2].technicianId, 'user-brian');
+    assert.ok(result.allowlistedTechIds.includes('user-chris'));
+    assert.equal(result.openSlots.some((s) => s.technicianId === 'user-travis'), false);
+  });
+
+  it('fallback tech with a visit on the board is not offered', async () => {
+    const occupied = [
+      visitFor(windows[0], 'user-brian', 'Brian Eads'),
+      visitFor(windows[0], 'user-chris', 'Chris Glass'),
+      visitFor(windows[0], 'user-haze', 'Haze Tarbell'),
+      visitFor(windows[0], 'user-sergio', 'Sergio Valdovinos Mendez'),
+    ];
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits(ALL, occupied) }
+    );
+    assert.equal(result.openSlots[0].startAt, windows[1].startAt);
+  });
+
+  it('Anza and Borrego also use fallback when the primary pool has nothing earlier', async () => {
+    for (const city of ['Anza', 'Borrego Springs']) {
+      const occupied = ['user-doug|Doug Pollack', 'user-cowin|Cowin', 'user-brian|Brian Eads'].flatMap((x) => {
+        const [id, name] = x.split('|');
+        return [visitFor(windows[0], id, name)];
+      });
+      const result = await lookupOpenSlots(
+        { city },
+        { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits(ALL, occupied) }
+      );
+      // Chris is first fallback and open at windows[0]
+      assert.equal(result.openSlots[0].startAt, windows[0].startAt, city);
+      assert.equal(result.openSlots[0].technicianId, 'user-chris', city);
+    }
+  });
+
+  it('primary pool completely absent from Jobber still allows fallback', async () => {
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits([TRAVIS, HAZE]) }
+    );
+    assert.equal(result.openSlots[0].technicianId, 'user-haze');
+  });
+
+  it('truncated visit list (more pages than we read) → no fallback offered', async () => {
+    const fetchFn = async (_u: string | URL | Request, init?: RequestInit) => {
+      const q = JSON.parse(String(init?.body || '{}')).query || '';
+      if (q.includes('ShopUsers')) return jsonResponse({ data: { users: { nodes: ALL } } });
+      return jsonResponse({
+        data: {
+          visits: {
+            pageInfo: { hasNextPage: true, endCursor: 'c' },
+            nodes: [visitFor(windows[0], 'user-brian', 'Brian Eads')],
+          },
+        },
+      });
+    };
+    const result = await lookupOpenSlots({ city: 'Ramona' }, { now: THU_530PM, accessToken: 'test-token', fetchFn });
+    assert.equal(result.openSlots.some((s) => s.technicianId !== 'user-brian'), false);
+    assert.equal(result.allowlistedTechIds.includes('user-chris'), false);
+  });
+
+  it('Travis only in Jobber → still no slots', async () => {
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits([TRAVIS]) }
+    );
+    assert.deepEqual(result.openSlots, []);
   });
 });
