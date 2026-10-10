@@ -1498,6 +1498,6 @@ describe('list_quotes_approved', () => {
     const r = await callJobberMcpTool('list_quotes_approved', { after: '2026-10-05T07:00:00Z', before: '2026-10-11T07:00:00Z' }, { fetchImpl: fetchImpl as any, token: 't' });
     assert.equal(r.isError, undefined);
     const p = JSON.parse(r.content[0].text);
-    assert.equal(p.count, 1); assert.equal(p.subtotal, 100); assert.equal(p.quotes[0].quoteNumber, '1');
+    assert.equal(p.count, 1); assert.equal(p.subtotal, 100); assert.equal(p.quotes[0].quoteNumber, '1'); assert.equal(p.nextCursor, null);
   });
 });
