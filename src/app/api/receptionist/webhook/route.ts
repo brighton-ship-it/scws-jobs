@@ -607,6 +607,7 @@ async function executeTool(name: string, params: any, phone: string) {
         needNow: params.needNow,
         thisWeekend: params.thisWeekend,
         notes: params.notes,
+        debugBoard: params.debugBoard === true,
       });
 
     case 'bookJob':
