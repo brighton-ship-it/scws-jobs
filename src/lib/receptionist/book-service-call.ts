@@ -6,6 +6,7 @@
  * Do not send customer SMS/email.
  */
 
+import { resolveSlotFromPreference } from './tool-params.ts';
 import {
   decideSarahBooking,
   WEEKEND_EMERGENCY_SPOKEN,
@@ -59,6 +60,8 @@ export type BookServiceCallInput = WeekendNeedInput & {
   zip?: string | null;
   postalCode?: string | null;
   startAt?: string | null;
+  preferredDate?: string | null;
+  preferredTime?: string | null;
   title?: string | null;
   serviceType?: string | null;
 };
@@ -613,7 +616,8 @@ export async function bookServiceCall(
     );
   }
 
-  if (!input.startAt) {
+  const hasPreference = Boolean(input.preferredDate || input.preferredTime);
+  if (!input.startAt && !hasPreference) {
     return blockedResult(
       'missing_slot',
       "I need a time from the open Jobber slots before I can book. I won't invent one.",
@@ -621,7 +625,7 @@ export async function bookServiceCall(
     );
   }
 
-  if (!isWeekdayVisitStart(input.startAt)) {
+  if (input.startAt && !isWeekdayVisitStart(input.startAt)) {
     return blockedResult(
       'weekend_visit',
       "I can only schedule a service call Monday through Friday. I won't put a Saturday or Sunday visit on the calendar. I'll have the office call you back.",
@@ -652,7 +656,9 @@ export async function bookServiceCall(
     : slots.assignedTechId
       ? [slots.assignedTechId]
       : [];
-  const chosen = slots.openSlots.find((slot) => slotMatchesRequest(slot, input.startAt || ''));
+  const requestedStartAt =
+    input.startAt || resolveSlotFromPreference(slots.openSlots, input.preferredDate, input.preferredTime);
+  const chosen = slots.openSlots.find((slot) => slotMatchesRequest(slot, requestedStartAt));
   if (chosen && !isAllowlistedTechId(chosen.technicianId, allowlistedIds)) {
     return blockedResult(
       'wrong_tech',

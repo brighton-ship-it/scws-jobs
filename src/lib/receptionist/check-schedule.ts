@@ -48,6 +48,7 @@ export type OpenSlotSummary = {
   time: string;
   technician: string;
   technicianId: string;
+  slotId?: string;
 };
 
 export type ScheduleLookupResult = {
@@ -67,6 +68,8 @@ export type ScheduleLookupResult = {
   bookingBlockReason?: string;
   bookingMessage?: string;
   openSlots?: OpenSlotSummary[];
+  /** Alias of openSlots for older Vapi prompts/tools that say availableSlots. */
+  availableSlots?: OpenSlotSummary[];
   assignedTechName?: string;
   assignedTechId?: string | null;
   allowlistedTechIds?: string[];
@@ -521,6 +524,11 @@ function asCheckScheduleInput(phoneOrInput: string | CheckScheduleInput): CheckS
   return typeof phoneOrInput === 'string' ? { phone: phoneOrInput } : phoneOrInput;
 }
 
+/** Add slotId (= startAt) so prompts that say slotId can copy it back to book_job. */
+export function withSlotIds<T extends { startAt: string }>(slots: T[]): Array<T & { slotId: string }> {
+  return slots.map((slot) => ({ ...slot, slotId: slot.startAt }));
+}
+
 export function wantsOpenSlots(input: CheckScheduleInput): boolean {
   const intent = String(input.intent || '').toLowerCase();
   return intent === 'book' || Boolean(input.city || input.address || input.zip || input.postalCode);
@@ -598,7 +606,8 @@ export async function handleCheckSchedule(
       result: {
         ...result,
         mayBook: slots.openSlots.length > 0,
-        openSlots: slots.openSlots,
+        openSlots: withSlotIds(slots.openSlots),
+        availableSlots: withSlotIds(slots.openSlots),
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
         allowlistedTechIds: slots.allowlistedTechIds,

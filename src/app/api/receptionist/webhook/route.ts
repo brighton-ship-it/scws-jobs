@@ -1,3 +1,4 @@
+import { normalizeBookJobParams, normalizeCheckScheduleParams } from '@/lib/receptionist/tool-params';
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
@@ -579,6 +580,7 @@ async function executeTool(name: string, params: any, phone: string) {
     case 'checkSchedule':
       // Confirmation lock: canConfirm only when Jobber returned a visit.
       // With city/intent=book, also returns real Jobber openSlots (never invented).
+      params = normalizeCheckScheduleParams(params);
       return handleCheckSchedule({
         phone: phone || params.phone,
         city: params.city,
@@ -594,6 +596,8 @@ async function executeTool(name: string, params: any, phone: string) {
 
     case 'bookJob':
     case 'book_job':
+    case 'bookServiceCall':
+      params = normalizeBookJobParams(params, phone);
       return handleBookServiceCall(
         {
           phone: phone || params.phone,
@@ -606,6 +610,8 @@ async function executeTool(name: string, params: any, phone: string) {
           zip: params.zip || params.postalCode,
           postalCode: params.postalCode,
           startAt: params.startAt,
+          preferredDate: params.preferredDate,
+          preferredTime: params.preferredTime,
           urgency: params.urgency,
           needNow: params.needNow,
           thisWeekend: params.thisWeekend,

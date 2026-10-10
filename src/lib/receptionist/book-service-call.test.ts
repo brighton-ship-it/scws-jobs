@@ -189,7 +189,8 @@ describe('splitCallerName', () => {
 });
 
 describe('handleBookServiceCall', () => {
-  it('daytime weekday path does not book', async () => {
+  it('daytime weekday path does not book when SARAH_BLOCK_DAYTIME_BOOKING=1', async () => {
+    process.env.SARAH_BLOCK_DAYTIME_BOOKING = '1';
     const { result } = await handleBookServiceCall(
       {
         phone: '7605550100',
@@ -210,8 +211,47 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.booked, false);
     assert.equal(result.canConfirm, false);
     assert.equal(result.mayBook, false);
+    delete process.env.SARAH_BLOCK_DAYTIME_BOOKING;
     assert.equal(result.bookingBlockReason, 'daytime_weekday');
     assert.match(result.message, /Liz|office/i);
+  });
+
+  it('weekday daytime books a no-water caller on an open slot (startAt and date/time preference both work)', async () => {
+    const slot = firstOpenSlot(THU_4PM, 'user-brian', 'Brian Eads');
+    const job = {
+      id: 'job-day',
+      title: SERVICE_CALL_TITLE,
+      visits: {
+        nodes: [
+          {
+            id: 'visit-day',
+            startAt: slot.startAt,
+            endAt: slot.endAt,
+            assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+          },
+        ],
+      },
+    };
+    for (const input of [
+      { startAt: slot.startAt },
+      { preferredDate: slot.startAt.slice(0, 10), preferredTime: slot.time },
+    ]) {
+      const { result } = await handleBookServiceCall(
+        {
+          phone: '7605550100',
+          name: 'Pat Wells',
+          address: '100 Well Rd',
+          city: 'Ramona',
+          urgency: 'urgent',
+          notes: 'no water at all',
+          ...input,
+        },
+        { now: THU_4PM, accessToken: 'test-token', fetchFn: mockJobber({ createdJob: job }) }
+      );
+      assert.equal(result.booked, true, JSON.stringify(result));
+      assert.equal(result.canConfirm, true);
+      assert.equal(result.visit?.startAt, slot.startAt);
+    }
   });
 
   it('weekend emergency does not auto-book Monday and flags the shop', async () => {
@@ -710,7 +750,23 @@ describe('checkSchedule booking attach — confirm-lock still holds', () => {
     );
   });
 
-  it('daytime weekday checkSchedule does not offer bookable slots', async () => {
+  it('daytime weekday checkSchedule offers slots by default and exposes slotId/availableSlots aliases', async () => {
+    const { result } = await handleCheckSchedule(
+      { phone: '9499039486', city: 'Ramona', intent: 'book' },
+      {
+        now: THU_4PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({ clients: [guyClient] }),
+      }
+    );
+    assert.equal(result.mayBook, true);
+    assert.ok((result.openSlots || []).length > 0);
+    assert.deepEqual(result.availableSlots, result.openSlots);
+    assert.equal(result.openSlots?.[0]?.slotId, result.openSlots?.[0]?.startAt);
+  });
+
+  it('daytime weekday checkSchedule does not offer bookable slots when SARAH_BLOCK_DAYTIME_BOOKING=1', async () => {
+    process.env.SARAH_BLOCK_DAYTIME_BOOKING = '1';
     const { result } = await handleCheckSchedule(
       { phone: '9499039486', city: 'Ramona', intent: 'book' },
       {
@@ -722,6 +778,7 @@ describe('checkSchedule booking attach — confirm-lock still holds', () => {
 
     assert.equal(result.mayBook, false);
     assert.deepEqual(result.openSlots, []);
+    delete process.env.SARAH_BLOCK_DAYTIME_BOOKING;
     assert.equal(result.bookingBlockReason, 'daytime_weekday');
     assert.equal(result.canConfirm, false);
   });

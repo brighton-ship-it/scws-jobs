@@ -23,10 +23,24 @@ const MON_630AM = new Date('2026-09-07T13:30:00.000Z');
 const MON_8AM = new Date('2026-09-07T15:00:00.000Z');
 
 describe('isSarahBookingHours', () => {
-  it('blocks weekday daytime and Friday before 5pm PT', () => {
-    assert.equal(isSarahBookingHours(THU_4PM), false);
-    assert.equal(isSarahBookingHours(FRI_4PM), false);
-    assert.equal(isSarahBookingHours(MON_8AM), false);
+  it('allows weekday daytime by default (Oct 9 2026 change)', () => {
+    assert.equal(isSarahBookingHours(THU_4PM), true);
+    assert.equal(isSarahBookingHours(FRI_4PM), true);
+    assert.equal(isSarahBookingHours(MON_8AM), true);
+  });
+
+  it('kill switch SARAH_BLOCK_DAYTIME_BOOKING=1 restores the daytime block', () => {
+    const prev = process.env.SARAH_BLOCK_DAYTIME_BOOKING;
+    process.env.SARAH_BLOCK_DAYTIME_BOOKING = '1';
+    try {
+      assert.equal(isSarahBookingHours(THU_4PM), false);
+      assert.equal(isSarahBookingHours(FRI_4PM), false);
+      assert.equal(isSarahBookingHours(MON_8AM), false);
+      assert.equal(decideSarahBooking(THU_4PM, { urgency: 'normal' }).mayBook, false);
+    } finally {
+      if (prev === undefined) delete process.env.SARAH_BLOCK_DAYTIME_BOOKING;
+      else process.env.SARAH_BLOCK_DAYTIME_BOOKING = prev;
+    }
   });
 
   it('allows Mon–Thu after 5pm and Friday 5pm through Monday 7am PT', () => {
@@ -58,12 +72,9 @@ describe('callerWantsSomeoneNow', () => {
 });
 
 describe('decideSarahBooking', () => {
-  it('daytime weekday path does not book — Liz keeps those calls', () => {
-    const decision = decideSarahBooking(THU_4PM, { urgency: 'normal' });
-    assert.equal(decision.mayBook, false);
-    if (decision.mayBook) throw new Error('expected block');
-    assert.equal(decision.reason, 'daytime_weekday');
-    assert.match(decision.spoken, /Liz|office/i);
+  it('daytime weekday no-water caller may book', () => {
+    assert.equal(decideSarahBooking(THU_4PM, { urgency: 'urgent', notes: 'no water at all' }).mayBook, true);
+    assert.equal(decideSarahBooking(MON_8AM, { urgency: 'normal' }).mayBook, true);
   });
 
   it('weekend emergency does not auto-book Monday', () => {
