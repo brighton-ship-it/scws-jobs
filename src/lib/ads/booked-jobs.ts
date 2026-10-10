@@ -162,9 +162,7 @@ export function candidatesFromBookedJobs(input: {
 
     const existing = jobs.some((other) => {
       if (other.job.id === job.id || !sharesKey(keys, other.keys)) return false;
-      if (Number.isFinite(other.at) && other.at < anchor) {
-        return (other.job.jobStatus || '').toLowerCase() !== 'archived' || Boolean(sumIssuedInvoicePretax(other.job.invoices));
-      }
+      if (Number.isFinite(other.at) && other.at < anchor) return true;
       return (other.job.invoices ?? []).some((inv) => {
         const issued = ms(inv.issuedDate);
         return Number.isFinite(issued) && issued < anchor && sumIssuedInvoicePretax([inv]) != null;
