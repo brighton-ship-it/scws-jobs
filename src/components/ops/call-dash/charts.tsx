@@ -178,7 +178,7 @@ export function Gauge({ value, label, dark = false }: { value: number | null; la
 export function WeeklyBars({ weeks, dark = false, height = 96 }: { weeks: WeekRow[]; dark?: boolean; height?: number }) {
   const max = Math.max(1, ...weeks.map((w) => w.invoiced ?? 0));
   return (
-    <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 16 }} role="img" aria-label="Weekly invoiced sales, oldest to newest">
+    <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 30 }} role="img" aria-label="Weekly invoiced sales, oldest to newest">
       {weeks.map((w) => {
         const h = Math.max(2, Math.round(((w.invoiced ?? 0) / max) * height));
         const ph = Math.round(((w.paid ?? 0) / max) * height);
@@ -200,7 +200,7 @@ export function WeeklyBars({ weeks, dark = false, height = 96 }: { weeks: WeekRo
 export function WeeklyCashBars({ weeks, dark = false, height = 56 }: { weeks: WeekRow[]; dark?: boolean; height?: number }) {
   const max = Math.max(1, ...weeks.map((w) => w.cash ?? 0));
   return (
-    <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 16 }} role="img" aria-label="Weekly cash collected by payment date, oldest to newest">
+    <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 30 }} role="img" aria-label="Weekly cash collected by payment date, oldest to newest">
       {weeks.map((w) => {
         const h = Math.max(2, Math.round((Math.max(0, w.cash ?? 0) / max) * height));
         return (
