@@ -195,3 +195,22 @@ export function WeeklyBars({ weeks, dark = false, height = 96 }: { weeks: WeekRo
     </div>
   );
 }
+
+/** Weekly cash collected (by payment received date), one bar per week. */
+export function WeeklyCashBars({ weeks, dark = false, height = 56 }: { weeks: WeekRow[]; dark?: boolean; height?: number }) {
+  const max = Math.max(1, ...weeks.map((w) => w.cash ?? 0));
+  return (
+    <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 16 }} role="img" aria-label="Weekly cash collected by payment date, oldest to newest">
+      {weeks.map((w) => {
+        const h = Math.max(2, Math.round((Math.max(0, w.cash ?? 0) / max) * height));
+        return (
+          <div key={w.weekStart} className="flex min-w-0 flex-1 flex-col items-center justify-end" title={`${w.label}: cash collected ${usd(w.cash)}`}>
+            <span className={`mb-0.5 max-w-full truncate text-[9px] tabular-nums ${dark ? 'text-slate-400' : 'text-slate-500'}`}>{compactUsd(w.cash)}</span>
+            <div className="cd-bar w-full rounded-t" style={{ height: h, background: w.current ? palette.paid : dark ? '#475569' : '#99f6e4' }} />
+            <span className={`mt-0.5 text-[9px] ${w.current ? 'font-bold' : ''} ${dark ? 'text-slate-500' : 'text-slate-400'}`}>{shortDay(w.weekStart)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}

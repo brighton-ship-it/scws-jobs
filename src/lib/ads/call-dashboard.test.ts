@@ -118,7 +118,29 @@ test('weekly sales buckets by PT Monday week, paid share and closing rate', () =
   assert.equal(cur.label, 'Oct 5–Oct 9');
   assert.equal(w.weeks[0].closingRate, null);
   const none = buildWeeklySales({ now: wnow, invoices: null, quotes: null, jobsCreated: null, jobsCompleted: null, callTimes: [], bookedAt: [] });
-  assert.equal(none.weeks[8].invoiced, null); assert.equal(none.gaps.length, 4);
+  assert.equal(none.weeks[8].invoiced, null); assert.equal(none.gaps.length, 5); assert.equal(none.weeks[8].cash, null);
+});
+
+test('weekly cash collected buckets by payment received date, not invoice week', () => {
+  const wnow = new Date('2026-10-09T20:00:00Z');
+  const w = buildWeeklySales({
+    now: wnow, invoices: [
+      // invoice issued last week, paid this week: counts as Paid on LAST week's invoices, cash THIS week
+      { invoiceStatus: 'paid', issuedDate: '2026-09-30', amounts: { subtotal: 1000, total: 1000, taxAmount: 0, paymentsTotal: 1000 } },
+    ], quotes: [], jobsCreated: [], jobsCompleted: [], callTimes: [], bookedAt: [],
+    payments: [
+      { id: 'a', amount: 1000, entryDate: '2026-10-06T17:00:00Z', adjustmentType: 'PAYMENT' },
+      { id: 'b', amount: 250.5, entryDate: '2026-10-08T01:00:00Z', adjustmentType: 'DEPOSIT' }, // Oct 7 PT
+      { id: 'c', amount: 100, entryDate: '2026-10-07T17:00:00Z', adjustmentType: 'REFUND' },
+      { id: 'd', amount: 500, entryDate: '2026-10-07T17:00:00Z', adjustmentType: 'BAD_DEBT' }, // ignored
+      { id: 'e', amount: 300, entryDate: '2026-10-05T06:30:00Z', adjustmentType: 'PAYMENT' }, // Sun Oct 4 PT -> prior week
+      { id: 'f', amount: 40, entryDate: '2026-10-12T20:00:00Z', adjustmentType: 'PAYMENT' }, // outside range
+    ],
+  });
+  assert.equal(w.weeks[8].cash, 1150.5); assert.equal(w.weeks[8].cashCount, 3);
+  assert.equal(w.weeks[7].cash, 300);
+  assert.equal(w.weeks[8].paid, 0); assert.equal(w.weeks[7].paid, 1000);
+  assert.ok(!w.gaps.some((g) => /cash/.test(g)));
 });
 
 test('compactUsd formats large values compactly', async () => {

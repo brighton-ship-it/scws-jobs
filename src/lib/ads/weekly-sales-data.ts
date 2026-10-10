@@ -1,6 +1,6 @@
 /** Jobber loaders for the weekly sales strip. Each loader fails independently (null) and is cached 10 min. */
 import { assertNoJobberErrors, jobberGraphql, type JobberGraphqlResult } from '../jobber/client.ts';
-import type { WeeklyInvoice, WeeklyQuote, WeeklyJob } from './weekly-sales.ts';
+import type { WeeklyInvoice, WeeklyQuote, WeeklyJob, WeeklyPayment } from './weekly-sales.ts';
 
 const TTL_MS = 10 * 60_000;
 const MAX_PAGES = 12;
@@ -53,6 +53,13 @@ const QUOTES = `
       pageInfo { hasNextPage endCursor }
     }
   }`;
+const PAYMENTS = `
+  query WeeklyPayments($first: Int!, $after: String, $filter: PaymentRecordFilterAttributes) {
+    paymentRecords(first: $first, after: $after, filter: $filter) {
+      nodes { id amount entryDate adjustmentType }
+      pageInfo { hasNextPage endCursor }
+    }
+  }`;
 const JOBS = `
   query WeeklyJobs($first: Int!, $after: String, $filter: JobFilterAttributes) {
     jobs(first: $first, after: $after, filter: $filter) {
@@ -70,3 +77,6 @@ export const loadWeeklyJobsCreated = (after: string, before: string) =>
   paged<WeeklyJob>(`jc|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } });
 export const loadWeeklyJobsCompleted = (after: string, before: string) =>
   paged<WeeklyJob>(`jd|${after}`, JOBS, 'jobs', { filter: { completedAt: { after, before } } });
+/** Payment records by payment received (entry) date, regardless of which week the invoice was issued. */
+export const loadWeeklyPayments = (after: string, before: string) =>
+  paged<WeeklyPayment>(`pay|${after}`, PAYMENTS, 'paymentRecords', { filter: { entryDate: { after, before } } });
