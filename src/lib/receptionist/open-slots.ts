@@ -129,7 +129,7 @@ export type OpenSlotsResult = {
   assignedTechId: string | null;
   allowlistedTechIds: string[];
   error?: string;
-  /** Per-tech board (times/kind only, no customer info). Surfaced only when debugBoard is requested. */
+  /** Per-tech board (times/kind only, no customer info). Internal only; never returned by the public webhook (contains visit titles). */
   board?: Array<{ technician: string; visits: Array<{ startAt: string; endAt: string | null; allDay: boolean; kind: VisitKind; title: string | null; city: string | null }> }>;
 };
 

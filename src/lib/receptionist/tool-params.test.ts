@@ -44,3 +44,19 @@ describe('tool param aliases', () => {
     assert.equal(resolveSlotFromPreference(slots, '2026-10-14', '8 AM'), '');
   });
 });
+
+import { readFileSync } from 'node:fs';
+
+describe('debugBoard is not public', () => {
+  it('normalizeCheckScheduleParams strips debugBoard', () => {
+    const out = normalizeCheckScheduleParams({ phone: '1', city: 'Ramona', debugBoard: true });
+    assert.equal('debugBoard' in out, false);
+    assert.equal(out.intent, 'book');
+  });
+  it('webhook and checkSchedule no longer reference debugBoard or return board', () => {
+    const route = readFileSync(new URL('../../app/api/receptionist/webhook/route.ts', import.meta.url), 'utf8');
+    const cs = readFileSync(new URL('./check-schedule.ts', import.meta.url), 'utf8');
+    assert.equal(/params\.debugBoard/.test(route), false);
+    assert.equal(/debugBoard|board:/.test(cs), false);
+  });
+});

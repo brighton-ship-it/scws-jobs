@@ -36,8 +36,10 @@ export function normalizeBookJobParams(params: Params, callPhone = ''): Params {
 
 export function normalizeCheckScheduleParams(params: Params): Params {
   const intent = str(params.intent).toLowerCase();
+  // Public webhook: never accept diagnostic flags (debugBoard exposed visit titles/customer names).
+  const { debugBoard: _debugBoard, ...safe } = params as Params & { debugBoard?: unknown };
   return {
-    ...params,
+    ...safe,
     intent: intent || (str(params.city) || str(params.address) || str(params.zip) ? 'book' : ''),
   };
 }
