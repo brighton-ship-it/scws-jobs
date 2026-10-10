@@ -88,3 +88,35 @@ test('a booked job is credited to one call only; repeat/later calls are Existing
   assert.equal(d.totals.bookedValue, 5776);
   assert.equal(d.recent.filter((r) => r.outcome === 'Booked (new)').length, 1);
 });
+
+import { buildWeeklySales, weekBounds } from './weekly-sales.ts';
+test('weekly sales buckets by PT Monday week, paid share and closing rate', () => {
+  const wnow = new Date('2026-10-09T20:00:00Z'); // Fri Oct 9 PT
+  const b = weekBounds(wnow);
+  assert.equal(b.length, 9);
+  assert.equal(b[8].startKey, '2026-10-05');
+  assert.equal(b[7].startKey, '2026-09-28');
+  const w = buildWeeklySales({
+    now: wnow,
+    invoices: [
+      { invoiceStatus: 'paid', issuedDate: '2026-10-06', amounts: { subtotal: 100, total: 110, taxAmount: 10, paymentsTotal: 110 } },
+      { invoiceStatus: 'draft', issuedDate: '2026-10-06', amounts: { subtotal: 999, total: 999 } },
+      { invoiceStatus: 'awaiting_payment', issuedDate: '2026-09-30', amounts: { subtotal: 200, total: 200, taxAmount: 0, paymentsTotal: 0 } },
+    ],
+    quotes: [{ quoteStatus: 'approved', sentAt: '2026-10-07T18:00:00Z', amounts: { subtotal: 500 } }, { quoteStatus: 'awaiting_response', sentAt: '2026-10-07T18:00:00Z', amounts: { subtotal: 300 } }],
+    jobsCreated: [{ createdAt: '2026-10-08T18:00:00Z' }], jobsCompleted: [],
+    callTimes: ['2026-10-06T18:00:00Z', '2026-10-07T18:00:00Z', '2026-10-08T18:00:00Z', '2026-10-08T19:00:00Z'],
+    bookedAt: ['2026-10-07T20:00:00Z'],
+  });
+  const cur = w.weeks[8];
+  assert.equal(cur.invoiced, 100); assert.equal(cur.paid, 100);
+  assert.equal(w.weeks[7].invoiced, 200); assert.equal(w.weeks[7].paid, 0);
+  assert.equal(cur.quotesSent, 2); assert.equal(cur.quotesSentValue, 800);
+  assert.equal(cur.quotesApproved, 1); assert.equal(cur.quotesApprovedValue, 500);
+  assert.equal(cur.jobsBooked, 1);
+  assert.equal(cur.closingRate, 0.25);
+  assert.equal(cur.label, 'Oct 5–Oct 9');
+  assert.equal(w.weeks[0].closingRate, null);
+  const none = buildWeeklySales({ now: wnow, invoices: null, quotes: null, jobsCreated: null, jobsCompleted: null, callTimes: [], bookedAt: [] });
+  assert.equal(none.weeks[8].invoiced, null); assert.equal(none.gaps.length, 4);
+});

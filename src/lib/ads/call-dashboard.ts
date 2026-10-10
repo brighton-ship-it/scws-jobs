@@ -198,6 +198,8 @@ export interface Dashboard {
   funnel?: { calls: number; booked: number; invoiced: number; paid: number | null };
   /** Additive. All inbound calls from the Voice audit log (phone_call_log). Null until the table exists. */
   callLog?: CallLogView | null;
+  /** Additive. Weekly sales rollup (current week-to-date + prior 8 weeks). */
+  weekly?: import('./weekly-sales.ts').WeeklySales | null;
 }
 
 export interface CallLogRow {

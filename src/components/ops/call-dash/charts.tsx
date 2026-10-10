@@ -1,6 +1,7 @@
 'use client';
 
 import type { SeriesDay } from '@/lib/ads/call-dashboard';
+import type { WeekRow } from '@/lib/ads/weekly-sales';
 
 /** Design tokens shared by the call dashboard (light) and TV wall (dark). */
 export const palette = {
@@ -170,5 +171,27 @@ export function Gauge({ value, label, dark = false }: { value: number | null; la
       <text x={cx} y={cy - 8} textAnchor="middle" fontSize="30" fontWeight="800" fill={dark ? '#fff' : palette.ink}>{mult(value)}</text>
       <text x={cx} y={cy + 10} textAnchor="middle" fontSize="9" fill={dark ? '#94a3b8' : palette.muted} letterSpacing="1">{(label ?? 'RETURN').toUpperCase()}</text>
     </svg>
+  );
+}
+
+/** Weekly invoiced (bar) with paid (inner bar). Flex layout, so it never overflows horizontally. */
+export function WeeklyBars({ weeks, dark = false, height = 96 }: { weeks: WeekRow[]; dark?: boolean; height?: number }) {
+  const max = Math.max(1, ...weeks.map((w) => w.invoiced ?? 0));
+  return (
+    <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 16 }} role="img" aria-label="Weekly invoiced sales, oldest to newest">
+      {weeks.map((w) => {
+        const h = Math.max(2, Math.round(((w.invoiced ?? 0) / max) * height));
+        const ph = Math.round(((w.paid ?? 0) / max) * height);
+        return (
+          <div key={w.weekStart} className="flex min-w-0 flex-1 flex-col items-center justify-end" title={`${w.label}: invoiced ${usd(w.invoiced)} · paid ${usd(w.paid)}`}>
+            <span className={`mb-0.5 max-w-full truncate text-[9px] tabular-nums ${dark ? 'text-slate-400' : 'text-slate-500'}`}>{compactUsd(w.invoiced)}</span>
+            <div className="cd-bar relative w-full overflow-hidden rounded-t" style={{ height: h, background: w.current ? palette.revenue : dark ? '#475569' : '#c7d2fe' }}>
+              <div className="absolute inset-x-0 bottom-0" style={{ height: ph, background: palette.paid, opacity: 0.9 }} />
+            </div>
+            <span className={`mt-0.5 text-[9px] ${w.current ? 'font-bold' : ''} ${dark ? 'text-slate-500' : 'text-slate-400'}`}>{shortDay(w.weekStart)}</span>
+          </div>
+        );
+      })}
+    </div>
   );
 }
