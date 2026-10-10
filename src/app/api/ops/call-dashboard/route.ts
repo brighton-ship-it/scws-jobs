@@ -5,7 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
-import { buildDashboard, mergeLiveCalls, type DashCall, parseRange, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
+import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { loadDailySpend, loadPaidByJob } from '@/lib/ads/call-dashboard-data';
 
 export const dynamic = 'force-dynamic';
@@ -55,6 +55,11 @@ export async function GET(request: NextRequest) {
     }
     for (const c of liveCalls) c.live_booking_request = bookingIds.has((c as any)._vapi);
     const dash = buildDashboard({ calls: [...adsCalls, ...liveCalls], conversions, spend, paidByJob, range });
+    const log = await db.from('phone_call_log')
+      .select('started_at, caller_phone, called_number, outcome, answered_by, duration_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at')
+      .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);
+    if (log.error) notes.push(`call log: ${log.error.message}`);
+    else dash.callLog = buildCallLogView(log.data ?? [], new Date());
     dash.gaps.push(...notes);
     return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString() }));
   } catch (error) {

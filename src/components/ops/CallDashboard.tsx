@@ -262,6 +262,28 @@ export function CallDashboardPage() {
                 </table>
               </div>
             </Card>
+            {data.callLog ? (
+              <Card title="Call log: all incoming" subtitle={`Today ${data.callLog.today.total} · ${data.callLog.today.answered} answered · ${data.callLog.today.forwardedAi} to Mike · ${data.callLog.today.missed} missed${data.callLog.today.missed ? ' ⚠' : ''}`} delay={230} className="lg:col-span-3 !p-0">
+                <div className="-mx-5 -mb-5 max-h-[360px] overflow-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead><tr><th className={th}>Time</th><th className={th}>Caller</th><th className={th}>Outcome</th></tr></thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {data.callLog.rows.map((r, i) => {
+                        const missed = r.outcome === 'missed';
+                        const label = missed ? 'Missed' : r.outcome === 'forwarded_ai' ? 'Mike (AI)' : r.outcome === 'voicemail' ? 'Voicemail' : r.answeredBy ? `Answered by ${r.answeredBy}` : 'Answered';
+                        return (
+                          <tr key={i} className={missed ? 'bg-rose-50 hover:bg-rose-100/70' : 'hover:bg-slate-50/80'}>
+                            <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-600"><div className="font-medium text-slate-800">{when(r.at)}</div><div className="text-slate-400">{r.durationSeconds ?? '—'}s</div></td>
+                            <td className="px-3 py-2 text-xs text-slate-600"><div className={missed ? 'font-semibold text-rose-700' : 'font-medium text-slate-800'}>{missed ? <a href={`tel:${r.phone}`}>{r.phone}</a> : r.phone.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) •••-$3')}</div><div className="text-slate-400">{[r.client, r.campaign].filter(Boolean).join(' · ') || ' '}</div></td>
+                            <td className="px-3 py-2"><Badge outcome={label} /></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </Card>
+            ) : null}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">

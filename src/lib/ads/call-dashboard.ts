@@ -196,6 +196,35 @@ export interface Dashboard {
   previous?: PreviousTotals;
   /** Additive. Counts for the calls -> booked -> invoiced -> paid funnel. */
   funnel?: { calls: number; booked: number; invoiced: number; paid: number | null };
+  /** Additive. All inbound calls from the Voice audit log (phone_call_log). Null until the table exists. */
+  callLog?: CallLogView | null;
+}
+
+export interface CallLogRow {
+  at: string; phone: string; calledNumber: string | null; outcome: 'answered' | 'missed' | 'forwarded_ai' | 'voicemail' | 'answered_unknown';
+  answeredBy: string | null; durationSeconds: number | null; client: string | null; campaign: string | null; mike: boolean;
+}
+export interface CallLogView {
+  rows: CallLogRow[];
+  today: { total: number; answered: number; missed: number; forwardedAi: number };
+  latestSyncAt: string | null;
+}
+
+export function buildCallLogView(rows: Array<Record<string, any>>, now: Date): CallLogView {
+  const todayStart = ptStartOfDay(now).getTime();
+  const sorted = [...rows].sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at));
+  const today = sorted.filter((r) => Date.parse(r.started_at) >= todayStart);
+  const n = (o: string) => today.filter((r) => r.outcome === o).length;
+  return {
+    rows: sorted.slice(0, 40).map((r) => ({
+      at: r.started_at, phone: r.caller_phone ?? '', calledNumber: r.called_number ?? null, outcome: r.outcome,
+      answeredBy: r.answered_by ? String(r.answered_by).split('@')[0] : null,
+      durationSeconds: r.duration_seconds ?? null, client: r.client_name ?? (r.jobber_client_id || r.customer_id ? 'Existing client' : null),
+      campaign: r.campaign_name ?? null, mike: Boolean(r.receptionist_call_id),
+    })),
+    today: { total: today.length, answered: n('answered') + n('answered_unknown'), missed: n('missed'), forwardedAi: n('forwarded_ai') },
+    latestSyncAt: sorted.reduce<string | null>((m, r) => (r.synced_at && (!m || r.synced_at > m) ? r.synced_at : m), null),
+  };
 }
 
 export interface SeriesDay {
