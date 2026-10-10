@@ -406,6 +406,12 @@ describe('handleBookServiceCall', () => {
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
     assert.equal(/properties\s*\{\s*nodes/.test(query), false);
     assert.match(query, /properties\s*\{\s*id/);
+    const propBody = bodies.find((body) => body.includes('PropertyCreate'));
+    if (propBody) {
+      const input = (JSON.parse(propBody) as { variables?: { input?: Record<string, unknown> } }).variables?.input;
+      assert.ok(Array.isArray(input?.properties), 'PropertyCreateInput must be { properties: [{ address }] }');
+      assert.equal('address' in (input || {}), false);
+    }
   });
 
   it('creates an Anza Service Call visit assigned to Doug Pollack when both have a slot', async () => {
