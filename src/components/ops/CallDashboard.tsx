@@ -79,7 +79,7 @@ function LiveBadge({ at, refreshMs, error, dark = false }: { at?: string; refres
   const dot = error ? 'bg-rose-500' : stale ? 'bg-amber-500' : 'bg-emerald-500 cd-live';
   const text = dark ? 'text-slate-300' : 'text-slate-600';
   return (
-    <div className={`inline-flex min-w-0 max-w-full items-center gap-2 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-medium tabular-nums ${dark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'} ${text}`} role="status">
+    <div className={`inline-flex max-w-full shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 py-1 text-xs xl:px-5 xl:py-2 xl:text-xl font-medium tabular-nums ${dark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'} ${text}`} role="status">
       <span className={`h-2 w-2 rounded-full ${dot}`} />
       <span className="font-semibold">{error ? 'Offline' : stale ? 'Delayed' : 'Live'}</span>
       <span className={`truncate ${dark ? 'text-slate-500' : 'text-slate-400'}`}>{at ? `Updated ${clock(at)} PT${age != null ? ` · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} ago` : ''}` : 'Connecting…'}</span>
@@ -319,14 +319,14 @@ export function CallDashboardTv() {
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-sky-500 to-indigo-600 text-lg font-black xl:h-14 xl:w-14 xl:text-2xl">S</div>
           <div className="min-w-0"><h1 className="text-lg font-bold leading-tight tracking-tight sm:text-xl xl:text-4xl">SCWS Calls &amp; Ads</h1><p className="text-xs text-slate-400 xl:text-lg">{dateStr}</p></div>
         </div>
-        <div className="flex w-full flex-row-reverse items-center justify-between gap-3 sm:w-auto sm:flex-row xl:gap-5">
+        <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:w-auto sm:flex-nowrap xl:gap-5">
           <div className="inline-flex rounded-full border border-slate-700 bg-slate-900 p-0.5 text-xs font-medium xl:text-xl" role="tablist" aria-label="Revenue range">
             {([['since', 'Since Sep 18'], ['month', 'This month']] as const).map(([v, l]) => (
               <button key={v} role="tab" aria-selected={view === v} onClick={() => setView(v)} className={`whitespace-nowrap rounded-full px-2.5 py-1 xl:px-4 xl:py-1.5 ${view === v ? 'bg-slate-100 text-slate-900' : 'text-slate-400'}`}>{l}</button>
             ))}
           </div>
           <LiveBadge dark at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={60_000} error={error} />
-          <p className="shrink-0 text-2xl font-bold tabular-nums xl:text-5xl">{clockStr}</p>
+          <p className="order-first shrink-0 text-2xl font-bold tabular-nums sm:order-last xl:text-5xl">{clockStr}</p>
         </div>
       </div>
       {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
