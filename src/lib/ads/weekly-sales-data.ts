@@ -13,8 +13,19 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
     const rows: T[] = [];
     let after: string | null = null;
     for (let page = 0; page < MAX_PAGES; page++) {
-      const res: JobberGraphqlResult = await jobberGraphql(query, { ...variables, first: 50, after });
-      assertNoJobberErrors(res, `weekly ${field}`);
+      let res: JobberGraphqlResult | null = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try {
+          res = await jobberGraphql(query, { ...variables, first: 50, after });
+          assertNoJobberErrors(res, `weekly ${field}`);
+          break;
+        } catch (e) {
+          // Jobber rate-limits by query cost; the main page and TV load together, so back off and retry.
+          if (attempt === 3 || !/throttl|rate|cost|429/i.test(e instanceof Error ? e.message : '')) throw e;
+          await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+        }
+      }
+      if (!res) throw new Error(`weekly ${field}: no response`);
       const conn: any = res.data?.[field];
       rows.push(...((conn?.nodes ?? []) as T[]));
       if (!conn?.pageInfo?.hasNextPage) break;
