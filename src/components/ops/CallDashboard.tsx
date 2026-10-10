@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { PhoneCallTranscripts } from './PhoneCallTranscripts';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
 import {
@@ -291,6 +292,8 @@ export function CallDashboardPage() {
             <GroupTable title="By keyword / ad group" rows={data.byKeyword} delay={270} />
             <GroupTable title="By tracking number / source" rows={data.byTrackingNumber} delay={300} />
           </div>
+
+          <PhoneCallTranscripts />
 
           <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-slate-600">Data notes</summary><ul className="mt-2 list-disc space-y-1 pl-5">{data.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul></details>
         </div>
