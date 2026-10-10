@@ -423,14 +423,14 @@ export function CallDashboardTv() {
           <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(8,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Weekly sales">
             <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-9 xl:text-sm">Weekly sales · this week to date {w.label} · bars: invoiced, last 9 weeks, Mon–Sun</p>
             {cell('Invoiced', usd(w.invoiced))}
-            {cell('Paid on wk invoices', usd(w.paid), 'by issue week')}
-            {cell('Cash collected', usd(w.cash), `received ${w.label}`)}
+            {cell('Paid on invoices', usd(w.paid), 'issued this week')}
+            {cell('Cash collected', usd(w.cash), 'received this week')}
             {cell('Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked))}
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
             {cell('Closing rate', pct(w.closingRate))}
-            <div className="col-span-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
+            <div className="col-span-2 mt-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>
         );
       })() : null}
