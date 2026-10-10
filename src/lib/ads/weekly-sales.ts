@@ -8,6 +8,7 @@ export interface WeeklyInvoice extends InvoiceAmountInput {
   amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; paymentsTotal?: number | null } | null;
 }
 export interface WeeklyQuote { quoteStatus?: string | null; sentAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
+export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null }
 export interface WeeklyJob { createdAt?: string | null; completedAt?: string | null }
 
 export interface WeekRow {
@@ -17,6 +18,9 @@ export interface WeekRow {
   current: boolean;
   invoiced: number | null;
   paid: number | null;
+  /** Cash actually received that week by payment date (payments + deposits − refunds/failed ACH). */
+  cash: number | null;
+  cashCount: number | null;
   invoiceCount: number | null;
   jobsBooked: number | null;
   jobsCompleted: number | null;
@@ -65,6 +69,8 @@ export interface WeeklyInput {
   quotes: WeeklyQuote[] | null;
   jobsCreated: WeeklyJob[] | null;
   jobsCompleted: WeeklyJob[] | null;
+  /** Jobber payment records by entry date; omit/null = unavailable */
+  payments?: WeeklyPayment[] | null;
   /** all inbound calls (started_at ISO) */
   callTimes: string[];
   /** booked-call conversion timestamps (new-customer bookings credited to a call) */
@@ -79,7 +85,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
     for (let d = 0; d < 7; d++) idx.set(ptDateKey(ptStartOfDay(b.start, d)), i);
     return {
       weekStart: b.startKey, weekEnd: b.endKey, label: `${md(b.startKey)}–${md(b.endKey)}`, current: b.current,
-      invoiced: input.invoices ? 0 : null, paid: input.invoices ? 0 : null, invoiceCount: input.invoices ? 0 : null,
+      invoiced: input.invoices ? 0 : null, paid: input.invoices ? 0 : null, cash: input.payments ? 0 : null, cashCount: input.payments ? 0 : null, invoiceCount: input.invoices ? 0 : null,
       jobsBooked: input.jobsCreated ? 0 : null, jobsCompleted: input.jobsCompleted ? 0 : null,
       quotesSent: input.quotes ? 0 : null, quotesSentValue: input.quotes ? 0 : null,
       quotesApproved: input.quotes ? 0 : null, quotesApprovedValue: input.quotes ? 0 : null,
@@ -98,6 +104,16 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
     if (typeof total === 'number' && total > 0 && typeof pay === 'number' && pay > 0) {
       w.paid = round((w.paid ?? 0) + Math.min(pay, total) * (pre / total));
     }
+  }
+  for (const p of input.payments ?? []) {
+    const w = at(jobberDateKey(p.entryDate));
+    const amt = p.amount;
+    if (!w || typeof amt !== 'number' || !Number.isFinite(amt)) continue;
+    const kind = (p.adjustmentType || '').toUpperCase();
+    if (kind === 'PAYMENT' || kind === 'DEPOSIT') w.cash = round((w.cash ?? 0) + amt);
+    else if (kind === 'REFUND' || kind === 'FAILED_ACH_PAYMENT') w.cash = round((w.cash ?? 0) - Math.abs(amt));
+    else continue;
+    w.cashCount = (w.cashCount ?? 0) + 1;
   }
   for (const q of input.quotes ?? []) {
     const w = at(jobberDateKey(q.sentAt));
@@ -132,13 +148,15 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
 
   const gaps: string[] = [];
   if (!input.invoices) gaps.push('Weekly invoiced/paid unavailable (Jobber invoices query failed).');
+  if (!input.payments) gaps.push('Weekly cash collected unavailable (Jobber payments query failed).');
   if (!input.quotes) gaps.push('Weekly quotes unavailable (Jobber quotes query failed).');
   if (!input.jobsCreated) gaps.push('Weekly jobs booked unavailable (Jobber jobs query failed).');
   if (!input.jobsCompleted) gaps.push('Weekly jobs completed unavailable (Jobber jobs query failed).');
   return {
     weeks, gaps,
     sources: [
-      'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share).',
+      'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share), so it follows the invoice week, not the day the money arrived.',
+      'Cash collected = Jobber payment records by the date the payment was received (payments and deposits, less refunds and failed ACH), whichever week the invoice was issued.',
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
       'Quotes = Jobber quotes sent that week (status as of now); approved = those now approved.',
       `Closing rate = new-customer bookings credited to a call ÷ all calls, weeks since ${md(floorKey)} (tracking start). Weeks are Mon–Sun, Pacific.`,

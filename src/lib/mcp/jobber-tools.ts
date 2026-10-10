@@ -33,6 +33,7 @@ import {
   type JobberQuoteDetail,
 } from '../jobber/mcp-quotes.ts';
 import { getInvoice, searchInvoices } from '../jobber/mcp-invoices.ts';
+import { listPaymentRecords } from '../jobber/mcp-payments.ts';
 import { getJob, searchJobs } from '../jobber/mcp-jobs.ts';
 import {
   assertNoInvoicePaymentOptions,
@@ -442,6 +443,22 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           description:
             'Include linked job ids and job numbers (jobs first 5) so invoice revenue can be tied to the job. Default false.',
         },
+      },
+    },
+  },
+  {
+    name: 'list_payment_records',
+    description:
+      'List Jobber payment records received in a date window (by payment entry date, any invoice) with totals for payments, deposits, refunds, and net. Read-only. Cannot record, collect, or refund a payment. Pass ISO timestamps; paginates internally up to maxPages.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['after', 'before'],
+      properties: {
+        after: { type: 'string', description: 'ISO timestamp, start of window (inclusive-ish)' },
+        before: { type: 'string', description: 'ISO timestamp, end of window' },
+        maxPages: { type: 'number', description: 'Pages of 50 to scan. Default 20, max 40.' },
+        includeRecords: { type: 'boolean', description: 'Include the records (id, amount, entryDate, type). Default false: totals only.' },
       },
     },
   },
@@ -1231,6 +1248,18 @@ export async function callJobberMcpTool(
           ]
             .filter(Boolean)
             .join(' '),
+        });
+      }
+      case 'list_payment_records': {
+        const after = optionalString(args, 'after');
+        const before = optionalString(args, 'before');
+        if (!after || !before) return errorResult('after and before (ISO timestamps) are required.');
+        const result = await listPaymentRecords({ after, before, maxPages: optionalNumber(args, 'maxPages') }, deps);
+        const includeRecords = optionalBoolean(args, 'includeRecords') ?? false;
+        return textResult({
+          after, before, count: result.count, totals: result.totals, truncated: result.truncated,
+          records: includeRecords ? result.records : undefined,
+          note: 'Read-only. Cash received by payment date; net = payments + deposits − refunds/failed ACH.',
         });
       }
       case 'get_invoice': {

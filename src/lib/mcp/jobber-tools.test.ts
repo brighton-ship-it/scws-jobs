@@ -1463,3 +1463,22 @@ describe('handleJobberMcpRequest auth gate', () => {
     );
   });
 });
+
+describe('list_payment_records', () => {
+  it('returns net totals by type and is read-only', async () => {
+    const fetchImpl = async (_u: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body));
+      assert.match(body.query, /paymentRecords/);
+      assert.doesNotMatch(body.query, /mutation/);
+      assert.ok(body.variables.filter.entryDate.after);
+      return new Response(JSON.stringify({ data: { paymentRecords: { nodes: [
+        { id: '1', amount: 100, entryDate: '2026-10-06T17:00:00Z', adjustmentType: 'PAYMENT' },
+        { id: '2', amount: 20, entryDate: '2026-10-06T17:00:00Z', adjustmentType: 'REFUND' },
+      ], pageInfo: { hasNextPage: false, endCursor: null } } } }), { status: 200 });
+    };
+    const r = await callJobberMcpTool('list_payment_records', { after: '2026-10-05T07:00:00Z', before: '2026-10-11T07:00:00Z' }, { fetchImpl: fetchImpl as any, token: 't' });
+    assert.equal(r.isError, undefined);
+    const p = JSON.parse(r.content[0].text);
+    assert.equal(p.totals.net, 80); assert.equal(p.count, 2); assert.equal(p.records, undefined);
+  });
+});
