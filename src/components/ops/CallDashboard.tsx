@@ -5,7 +5,7 @@ import { PhoneCallTranscripts } from './PhoneCallTranscripts';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
 import {
-  CallsPerDayChart, Funnel, Gauge, Sparkline, SpendRevenueChart, compactUsd, mult, palette, usd,
+  CallsPerDayChart, Funnel, Gauge, Sparkline, SpendRevenueChart, WeeklyBars, compactUsd, mult, palette, usd,
 } from './call-dash/charts';
 
 const KEY_STORAGE = 'quotes_gp_key';
@@ -181,6 +181,43 @@ function DashboardSkeleton() {
   );
 }
 
+const pct = (n: number | null | undefined) => (n == null ? '—' : `${Math.round(n * 100)}%`);
+
+function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> }) {
+  const w = weekly.weeks[weekly.weeks.length - 1];
+  const prev = weekly.weeks[weekly.weeks.length - 2];
+  const first = weekly.weeks[0];
+  const rows: Array<[string, string, string?]> = [
+    ['Invoiced', usd(w.invoiced), `${w.invoiceCount ?? 0} invoices`],
+    ['Paid', usd(w.paid), 'on this week\'s invoices'],
+    ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
+    ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
+    ['Quotes sent', w.quotesSent == null ? '—' : `${w.quotesSent} · ${compactUsd(w.quotesSentValue)}`, 'count · value'],
+    ['Quotes approved', w.quotesApproved == null ? '—' : `${w.quotesApproved} · ${compactUsd(w.quotesApprovedValue)}`, 'of those sent'],
+    ['Closing rate', pct(w.closingRate), `${w.bookedCalls ?? 0} booked / ${w.calls} calls`],
+    ['Last full week', usd(prev?.invoiced), prev?.label],
+  ];
+  return (
+    <Card title="Weekly sales" subtitle={`This week to date: ${w.label} · last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid']]} />} delay={90}>
+      <div className="grid gap-4 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
+          {rows.map(([label, value, sub]) => (
+            <div key={label} className="min-w-0">
+              <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+              <p className="truncate text-lg font-bold tabular-nums text-slate-900">{value}</p>
+              <p className="truncate text-[11px] text-slate-400">{sub}</p>
+            </div>
+          ))}
+        </div>
+        <div className="min-w-0 lg:col-span-2"><WeeklyBars weeks={weekly.weeks} /></div>
+      </div>
+      <details className="mt-3 text-[11px] text-slate-400"><summary className="cursor-pointer">Sources &amp; definitions</summary>
+        <ul className="mt-1 list-disc space-y-0.5 pl-4">{weekly.sources.map((x) => <li key={x}>{x}</li>)}{weekly.gaps.map((x) => <li key={x} className="text-amber-600">{x}</li>)}</ul>
+      </details>
+    </Card>
+  );
+}
+
 export function CallDashboardPage() {
   const [range, setRange] = useState<string>('since');
   const { data, error, loading, reload } = useDashboard(range, 30_000);
@@ -223,6 +260,8 @@ export function CallDashboardPage() {
             <Kpi delay={240} color={palette.revenue} label="Invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
             <Kpi delay={280} color={palette.paid} label="Paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
           </div>
+
+          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : null}
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card title="Calls per day" subtitle={rangeLabel} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short']]} />} delay={60}>
@@ -374,6 +413,23 @@ export function CallDashboardTv() {
       ) : !error ? (
         <div className="grid auto-rows-[150px] grid-cols-2 gap-2.5 sm:gap-3 lg:min-h-0 lg:flex-1 lg:auto-rows-fr lg:grid-cols-4 lg:grid-rows-2 xl:gap-5" aria-busy="true">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel-dark" />)}</div>
       ) : <div className="flex-1" />}
+      {data?.weekly ? (() => {
+        const ws = data.weekly.weeks; const w = ws[ws.length - 1];
+        const cell = (l: string, v: string) => (<div className="min-w-0"><p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500 xl:text-base">{l}</p><p className="truncate text-base font-bold tabular-nums sm:text-lg xl:text-3xl">{v}</p></div>);
+        return (
+          <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(7,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Weekly sales">
+            <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-8 xl:text-sm">Weekly sales · this week to date {w.label} · bars: last 9 weeks, Mon–Sun</p>
+            {cell('Invoiced', usd(w.invoiced))}
+            {cell('Paid', usd(w.paid))}
+            {cell('Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked))}
+            {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
+            {cell('Quotes sent', w.quotesSent == null ? '—' : `${w.quotesSent} · ${compactUsd(w.quotesSentValue)}`)}
+            {cell('Approved', w.quotesApproved == null ? '—' : `${w.quotesApproved} · ${compactUsd(w.quotesApprovedValue)}`)}
+            {cell('Closing rate', pct(w.closingRate))}
+            <div className="col-span-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /></div>
+          </div>
+        );
+      })() : null}
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
         <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Activity</p>
         <div className="space-y-1.5 overflow-hidden text-[13px] sm:text-sm lg:h-[5.5rem] lg:space-y-1 xl:h-36 xl:text-2xl">
