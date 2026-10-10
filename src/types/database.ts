@@ -766,6 +766,13 @@ export interface BookingRequest {
   job_id: string | null;  // Created job if scheduled
   /** Intake channel. Ads labels are remapped to website before insert. */
   source: 'website' | 'embed' | 'manual' | 'phone' | 'google_ads' | 'cost-calculator' | 'other';
+  /** Paid-ads tag. google_ads when a click id or cpc/ppc medium is present. */
+  lead_source?: 'google_ads' | null;
+  utm_source?: string | null;
+  utm_medium?: string | null;
+  utm_campaign?: string | null;
+  utm_term?: string | null;
+  utm_content?: string | null;
   ip_address: string | null;
   gclid?: string | null;
   gbraid?: string | null;

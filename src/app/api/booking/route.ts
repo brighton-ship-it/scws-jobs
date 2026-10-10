@@ -11,12 +11,9 @@ import {
   extractBookingUtms,
   normalizeBookingSource,
 } from '@/lib/booking-source';
-import {
-  extractAdsClickIds,
-  isMissingClickIdColumnError,
-  MISSING_CLICK_ID_COLUMNS_WARNING,
-  omitClickIdColumns,
-} from '@/lib/ads/click-ids';
+import { InboundBodyError, inboundAdsFields, readInboundRecord, type InboundAdsFields } from '@/lib/ads/inbound-body';
+import { customerAdsPatch } from '@/lib/ads/lead-tag';
+import { missingColumnName, withoutColumn } from '@/lib/ads/optional-column';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -39,7 +36,17 @@ export async function OPTIONS() {
 export async function POST(request: NextRequest) {
   try {
     const supabase = createServiceClient();
-    const body = await request.json();
+    let rawBody: Record<string, unknown>;
+    try {
+      rawBody = await readInboundRecord(request);
+    } catch (error) {
+      if (error instanceof InboundBodyError) {
+        return NextResponse.json({ error: error.message }, { status: error.status, headers: corsHeaders });
+      }
+      throw error;
+    }
+    const inbound = inboundAdsFields(rawBody, request.headers.get('cookie'), request.url);
+    const body = inbound.body as Record<string, any>;
 
     // Honeypot spam check - if this field is filled, it's a bot
     if (body.website_url) {
@@ -122,10 +129,11 @@ export async function POST(request: NextRequest) {
     // Get IP address for tracking
     const forwardedFor = request.headers.get('x-forwarded-for');
     const ip_address = forwardedFor ? forwardedFor.split(',')[0].trim() : null;
-    const clickIds = extractAdsClickIds(body);
+    const clickIds = inbound.clickIds;
 
     // Check for existing customer by phone
     let customer_id: string | null = null;
+    let createdAdsCustomer = false;
     const { data: existingCustomer } = await supabase
       .from('customers')
       .select('id')
@@ -149,6 +157,22 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    if (inbound.lead_source === 'google_ads') {
+      if (customer_id) {
+        await tagExistingCustomer(supabase, customer_id, inbound);
+      } else {
+        customer_id = await createAdsCustomer(supabase, {
+          name: customer_name.trim(),
+          phone: cleanPhone,
+          email: email?.toLowerCase()?.trim() || null,
+          address,
+          city,
+          inbound,
+        });
+        createdAdsCustomer = Boolean(customer_id);
+      }
+    }
+
     // Create the booking request
     const bookingRow = {
       service_type,
@@ -166,6 +190,12 @@ export async function POST(request: NextRequest) {
       customer_id,
       source,
       ip_address,
+      lead_source: inbound.lead_source,
+      utm_source: inbound.utms.utm_source,
+      utm_medium: inbound.utms.utm_medium,
+      utm_campaign: inbound.utms.utm_campaign,
+      utm_term: inbound.utms.utm_term,
+      utm_content: inbound.utms.utm_content,
       gclid: clickIds.gclid,
       gbraid: clickIds.gbraid,
       wbraid: clickIds.wbraid,
@@ -173,44 +203,22 @@ export async function POST(request: NextRequest) {
       ga_session_id: clickIds.ga_session_id,
     };
 
-    let { data: booking, error: bookingError } = await supabase
-      .from('booking_requests')
-      .insert(bookingRow)
-      .select()
-      .single();
-
-    // Migration 20260827 may not be applied yet (PGRST204). Keep the lead.
-    if (bookingError && isMissingClickIdColumnError(bookingError)) {
-      console.warn(MISSING_CLICK_ID_COLUMNS_WARNING, bookingError.message);
-      const retry = await supabase
-        .from('booking_requests')
-        .insert(omitClickIdColumns(bookingRow))
-        .select()
-        .single();
-      booking = retry.data;
-      bookingError = retry.error;
-    }
+    let { data: booking, error: bookingError } = await insertStrippingMissingColumns(
+      supabase,
+      'booking_requests',
+      bookingRow
+    );
 
     // Last resort if a CHECK we have not seen yet still rejects source.
+    // lead_source stays google_ads on its own column; source is only the intake channel.
     if (bookingError && isSourceCheckError(bookingError) && bookingRow.source !== 'website') {
       console.warn('[Booking] source CHECK rejected', bookingRow.source, bookingError.message);
-      const fallbackRow = { ...bookingRow, source: 'website' as const };
-      const retry = await supabase
-        .from('booking_requests')
-        .insert(fallbackRow)
-        .select()
-        .single();
-      booking = retry.data;
-      bookingError = retry.error;
-      if (bookingError && isMissingClickIdColumnError(bookingError)) {
-        const retryNoIds = await supabase
-          .from('booking_requests')
-          .insert(omitClickIdColumns(fallbackRow))
-          .select()
-          .single();
-        booking = retryNoIds.data;
-        bookingError = retryNoIds.error;
-      }
+      const fallback = await insertStrippingMissingColumns(supabase, 'booking_requests', {
+        ...bookingRow,
+        source: 'website',
+      });
+      booking = fallback.data;
+      bookingError = fallback.error;
     }
 
     if (bookingError) {
@@ -249,7 +257,7 @@ NOTES:
 ${notes || 'None'}
 
 ---
-${customer_id ? '✓ Matched to existing customer in system' : '⚡ New customer - not yet in system'}
+${createdAdsCustomer ? '⚡ New customer tagged google_ads' : customer_id ? '✓ Matched to existing customer in system' : '⚡ New customer - not yet in system'}
 
 View in Jobs App: ${process.env.NEXT_PUBLIC_APP_URL || 'https://jobs.scwellservice.com'}/requests
     `.trim();
@@ -335,6 +343,97 @@ export async function GET(request: NextRequest) {
     console.error('Get bookings API error:', error);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
+}
+
+async function insertStrippingMissingColumns(
+  supabase: ReturnType<typeof createServiceClient>,
+  table: string,
+  row: Record<string, unknown>
+) {
+  const db = supabase as any;
+  let current = { ...row };
+  let result = await db.from(table).insert(current).select().single();
+  for (let attempt = 0; attempt < 12 && result.error; attempt += 1) {
+    const column = missingColumnName(result.error);
+    if (!column || !(column in current)) break;
+    console.warn(`[Booking] ${table} is missing column ${column}; saving without it`);
+    current = withoutColumn(current, column);
+    result = await db.from(table).insert(current).select().single();
+  }
+  return result;
+}
+
+async function tagExistingCustomer(
+  supabase: ReturnType<typeof createServiceClient>,
+  customerId: string,
+  inbound: InboundAdsFields
+) {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('lead_source, lead_source_detail, utm_source, utm_medium, utm_campaign, utm_term, utm_content, gclid, gbraid, wbraid, ga_client_id, ga_session_id')
+    .eq('id', customerId)
+    .single();
+  if (error) {
+    console.warn('[Booking] Could not read customer attribution:', error.message);
+    return;
+  }
+  const patch = customerAdsPatch(data, inbound);
+  if (!Object.keys(patch).length) return;
+  const db = supabase as any;
+  let current: Record<string, string> = { ...patch };
+  let update = await db.from('customers').update(current).eq('id', customerId);
+  for (let attempt = 0; attempt < 12 && update.error; attempt += 1) {
+    const column = missingColumnName(update.error);
+    if (!column || !(column in current)) break;
+    current = withoutColumn(current, column);
+    update = await db.from('customers').update(current).eq('id', customerId);
+  }
+  if (update.error) {
+    console.warn('[Booking] Could not tag customer google_ads:', update.error.message);
+  }
+}
+
+async function createAdsCustomer(
+  supabase: ReturnType<typeof createServiceClient>,
+  input: {
+    name: string;
+    phone: string;
+    email: string | null;
+    address: string;
+    city: string;
+    inbound: InboundAdsFields;
+  }
+): Promise<string | null> {
+  const row: Record<string, unknown> = {
+    name: input.name,
+    phone: input.phone,
+    email: input.email,
+    billing_address: `${input.address.trim()}, ${input.city.trim()}`.trim(),
+    lead_source: 'google_ads',
+    lead_source_detail: [
+      input.inbound.campaign ? `campaign=${input.inbound.campaign}` : null,
+      input.inbound.keyword ? `keyword=${input.inbound.keyword}` : null,
+    ]
+      .filter(Boolean)
+      .join('; ') || null,
+    utm_source: input.inbound.utms.utm_source,
+    utm_medium: input.inbound.utms.utm_medium,
+    utm_campaign: input.inbound.utms.utm_campaign,
+    utm_term: input.inbound.utms.utm_term,
+    utm_content: input.inbound.utms.utm_content,
+    gclid: input.inbound.clickIds.gclid,
+    gbraid: input.inbound.clickIds.gbraid,
+    wbraid: input.inbound.clickIds.wbraid,
+    ga_client_id: input.inbound.clickIds.ga_client_id,
+    ga_session_id: input.inbound.clickIds.ga_session_id,
+    lead_stage: 'lead',
+  };
+  const inserted = await insertStrippingMissingColumns(supabase, 'customers', row);
+  if (inserted.error || !inserted.data?.id) {
+    console.warn('[Booking] Could not create google_ads customer:', inserted.error?.message);
+    return null;
+  }
+  return String(inserted.data.id);
 }
 
 // Helper functions
