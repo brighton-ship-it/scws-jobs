@@ -143,7 +143,7 @@ export function candidatesFromBookedJobs(input: {
   for (const { job, keys, at } of ordered) {
     if (!Number.isFinite(at) || at < floor) continue; // pre-floor jobs are not reported one by one
     const ex = (reason: ExclusionReason) =>
-      excluded.push({ jobId: job.id, clientName: job.clientName ?? null, bookedAt: job.createdAt, reason });
+      excluded.push({ jobId: job.id, clientName: job.clientName ?? null, bookedAt: job.createdAt ?? null, reason });
     if ((job.jobStatus || '').toLowerCase() === 'archived') {
       ex('archived');
       continue;
