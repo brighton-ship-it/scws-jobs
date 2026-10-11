@@ -55,6 +55,7 @@ import {
   parseCreateJobArgs,
   parseCreateVisitArgs,
 } from '../jobber/mcp-job-writes.ts';
+import { cancelJob, cancelVisit, rescheduleVisit } from '../jobber/mcp-job-cancel.ts';
 import { createNote, parseCreateNoteArgs } from '../jobber/mcp-notes.ts';
 import { assertNoNotifyArgs } from '../jobber/mcp-notify.ts';
 import { createRequest } from '../jobber/mcp-request-writes.ts';
@@ -71,7 +72,7 @@ import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.8.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.9.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -123,7 +124,7 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. create_client, create_property, create_request, create_job, create_visit, and create_note write records. Nothing emails, texts, or notifies a client.',
+  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, create_request, create_job, create_visit, and create_note write records. Nothing emails, texts, or notifies a client.',
   'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
   'edit_invoice sets taxRateId and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings, not a charge. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
@@ -655,6 +656,59 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           description:
             'COMPLETE_PAST_DESTROY_FUTURE or DESTROY_ALL. Required. DESTROY_ALL deletes incomplete visits, past and future.',
         },
+      },
+    },
+  },
+  {
+    name: 'cancel_job',
+    description:
+      'Cancel a Jobber job by closing it (jobClose, DESTROY_ALL: deletes its incomplete visits). Requires an explicit encoded jobId and a reason. Refuses invoiced, paid, or completed jobs unless force=true. dryRun=true previews. Returns before and after state, an undo note, and writes an audit line. Not available to the receptionist. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['jobId', 'reason'],
+      properties: {
+        jobId: { type: 'string', description: 'Required. Encoded Jobber job id (not a job number).' },
+        reason: { type: 'string', description: 'Required, 5+ characters: who asked and why. Written to the audit log.' },
+        force: { type: 'boolean', description: 'Override the refusal for invoiced, paid, or completed jobs. Default false.' },
+        dryRun: { type: 'boolean', description: 'Read the job and return the before state and plan without changing anything.' },
+      },
+    },
+  },
+  {
+    name: 'cancel_visit',
+    description:
+      'Cancel one visit on a job (visitDelete). Requires the encoded jobId, the visitId, and a reason. Refuses invoiced, paid, or completed jobs and completed visits unless force=true. dryRun=true previews. Returns before and after state, an undo note (create_visit args), and writes an audit line. Not available to the receptionist. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['jobId', 'visitId', 'reason'],
+      properties: {
+        jobId: { type: 'string', description: 'Required. Encoded Jobber job id (not a job number).' },
+        reason: { type: 'string', description: 'Required, 5+ characters: who asked and why. Written to the audit log.' },
+        force: { type: 'boolean', description: 'Override the refusal for invoiced, paid, or completed jobs. Default false.' },
+        dryRun: { type: 'boolean', description: 'Read the job and return the before state and plan without changing anything.' },
+        visitId: { type: 'string', description: 'Required. Encoded visit id from get_job includeVisits.' },
+      },
+    },
+  },
+  {
+    name: 'reschedule_visit',
+    description:
+      'Move a visit to a new start and end (visitEditSchedule, America/Los_Angeles unless the value has a zone), optionally replacing the assigned technicians (visitEditAssignedUsers). Requires jobId, visitId, startAt, endAt, and a reason. Same refusals, dryRun, undo note, and audit line as cancel_visit. Not available to the receptionist. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['jobId', 'visitId', 'startAt', 'endAt', 'reason'],
+      properties: {
+        jobId: { type: 'string', description: 'Required. Encoded Jobber job id (not a job number).' },
+        reason: { type: 'string', description: 'Required, 5+ characters: who asked and why. Written to the audit log.' },
+        force: { type: 'boolean', description: 'Override the refusal for invoiced, paid, or completed jobs. Default false.' },
+        dryRun: { type: 'boolean', description: 'Read the job and return the before state and plan without changing anything.' },
+        visitId: { type: 'string', description: 'Required. Encoded visit id from get_job includeVisits.' },
+        startAt: { type: 'string', description: 'New start. ISO datetime; no zone means America/Los_Angeles.' },
+        endAt: { type: 'string', description: 'New end. Same rules as startAt.' },
+        assigneeIds: { type: 'array', items: { type: 'string' }, description: 'Optional user ids from list_users. Replaces the assigned technicians.' },
       },
     },
   },
@@ -1424,6 +1478,50 @@ export async function callJobberMcpTool(
           job,
           note: 'Closed with jobClose. jobComplete was not called. Nothing was emailed or texted.',
         });
+      }
+      case 'cancel_job': {
+        assertNoNotifyArgs(args);
+        const result = await cancelJob(
+          {
+            jobId: args.jobId,
+            reason: args.reason,
+            force: optionalBoolean(args, 'force'),
+            dryRun: optionalBoolean(args, 'dryRun'),
+          },
+          deps
+        );
+        return textResult(result);
+      }
+      case 'cancel_visit': {
+        assertNoNotifyArgs(args);
+        const result = await cancelVisit(
+          {
+            jobId: args.jobId,
+            visitId: args.visitId,
+            reason: args.reason,
+            force: optionalBoolean(args, 'force'),
+            dryRun: optionalBoolean(args, 'dryRun'),
+          },
+          deps
+        );
+        return textResult(result);
+      }
+      case 'reschedule_visit': {
+        assertNoNotifyArgs(args);
+        const result = await rescheduleVisit(
+          {
+            jobId: args.jobId,
+            visitId: args.visitId,
+            startAt: args.startAt,
+            endAt: args.endAt,
+            assigneeIds: parseAssigneeIds(args.assigneeIds),
+            reason: args.reason,
+            force: optionalBoolean(args, 'force'),
+            dryRun: optionalBoolean(args, 'dryRun'),
+          },
+          deps
+        );
+        return textResult(result);
       }
       case 'create_job': {
         assertNoNotifyArgs(args);

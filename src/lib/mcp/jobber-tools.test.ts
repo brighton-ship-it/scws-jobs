@@ -75,12 +75,13 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('edit_invoice'));
     assert.ok(names.includes('create_invoice_draft'));
     assert.ok(names.includes('close_job'));
+    for (const n of ['cancel_job', 'cancel_visit', 'reschedule_visit']) assert.ok(names.includes(n), n);
     assert.ok(names.includes('list_tax_rates'));
     assert.ok(names.includes('search_products'));
     assert.ok(names.includes('get_products'));
     assert.ok(names.includes('edit_product'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.8.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.9.0');
     for (const name of [
       'create_client',
       'create_property',
