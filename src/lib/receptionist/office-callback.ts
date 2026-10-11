@@ -93,17 +93,30 @@ function textParam(params: Record<string, unknown>, keys: string[]): string {
   return '';
 }
 
-/** Collapse whitespace and join the first copy of each distinct snippet. */
+const normSentence = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/**
+ * Collapse whitespace and join the distinct sentences of each snippet.
+ * Mike's booking, urgent-flag and callback tools each pass a slightly different
+ * copy of the same note ("No water, tripped breaker. Booked placeholder..."),
+ * so dedupe per sentence (ignoring case/punctuation), not just per whole snippet.
+ */
 export function joinUniqueTexts(parts: Array<string | null | undefined>): string {
   const seen = new Set<string>();
   const kept: string[] = [];
   for (const part of parts) {
     const trimmed = (part || '').replace(/\s+/g, ' ').trim();
     if (!trimmed) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    kept.push(trimmed);
+    const sentences = trimmed.match(/[^.!?]+[.!?]*/g) || [trimmed];
+    const fresh: string[] = [];
+    for (const raw of sentences) {
+      const sentence = raw.trim();
+      const key = normSentence(sentence);
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      fresh.push(sentence);
+    }
+    if (fresh.length) kept.push(fresh.join(' '));
   }
   return kept.join(' — ');
 }
@@ -265,7 +278,14 @@ function notesContain(notes: string, text: string): boolean {
 export function appendOfficeNotes(existingNotes: string, request: OfficeRequest, upgrade: boolean): string {
   const lines: string[] = [];
   if (upgrade) lines.push('Mike upgraded this callback to an emergency.');
-  if (request.reason && !notesContain(existingNotes, request.reason)) lines.push(`Reason: ${request.reason}`);
+  if (request.reason) {
+    const fresh = joinUniqueTexts([request.reason])
+      .split(' — ')
+      .flatMap((chunk) => chunk.match(/[^.!?]+[.!?]*/g) || [chunk])
+      .map((sentence) => sentence.trim())
+      .filter((sentence) => sentence && !notesContain(existingNotes, sentence));
+    if (fresh.length) lines.push(`Reason: ${fresh.join(' ')}`);
+  }
   if (request.address && !notesContain(existingNotes, request.address)) lines.push(`Address: ${request.address}`);
   if (request.city && !notesContain(existingNotes, request.city)) lines.push(`City: ${request.city}`);
   if (lines.length === 0) return existingNotes;

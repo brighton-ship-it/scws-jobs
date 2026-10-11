@@ -12,6 +12,7 @@ import {
 } from './book-service-call.ts';
 import { handleCheckSchedule } from './check-schedule.ts';
 import { computeOpenSlots } from './open-slots.ts';
+import { joinUniqueTexts, appendOfficeNotes } from './office-callback.ts';
 
 const THU_4PM = new Date('2026-09-03T23:00:00.000Z');
 const THU_530PM = new Date('2026-09-04T00:30:00.000Z');
@@ -446,7 +447,7 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.assignedTechName, 'Brian Eads');
     assert.equal(SERVICE_CALL_PRICE_USD, 200);
     const query =
-      (JSON.parse(bodies.find((body) => body.includes('SearchClients')) || '{}') as { query?: string })
+      (JSON.parse(bodies.find((body) => body.includes('SearchClients') && body.includes('properties')) || '{}') as { query?: string })
         .query || '';
     assert.match(query, /SearchClients/);
     assert.equal(/properties\s*\(\s*first\s*:/.test(query), false);
@@ -833,5 +834,120 @@ describe('checkSchedule booking attach — confirm-lock still holds', () => {
     delete process.env.SARAH_BLOCK_DAYTIME_BOOKING;
     assert.equal(result.bookingBlockReason, 'daytime_weekday');
     assert.equal(result.canConfirm, false);
+  });
+});
+
+describe('duplicate-booking guard', () => {
+  const NOW = THU_530PM;
+  const client: JobberClientNode = {
+    id: 'client-1',
+    name: 'Bradley Brockle',
+    phones: [{ number: '619-879-1062' }],
+  };
+  const recentJob = (createdAt: string, street = '15788 Lyons Valley Rd') => ({
+    title: 'Service Call',
+    createdAt,
+    property: { address: { street1: street, city: 'Jamul' } },
+    visits: {
+      nodes: [
+        {
+          startAt: '2026-09-08T15:00:00.000Z',
+          endAt: '2026-09-08T17:00:00.000Z',
+          allDay: false,
+          assignedUsers: { nodes: [{ name: { full: 'Colton Hagler' } }] },
+        },
+      ],
+    },
+  });
+  function jobberWith(jobs: unknown[], calls: string[]) {
+    return async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}')) as GraphqlBody;
+      const query = body.query || '';
+      calls.push(query);
+      if (query.includes('SearchClients')) return jsonResponse({ data: { clients: { nodes: [client] } } });
+      if (query.includes('GetUpcomingVisits')) return jsonResponse({ data: { client: { jobs: { nodes: jobs } } } });
+      if (query.includes('ShopUsers')) return jsonResponse({ data: { users: { nodes: [BRIAN, COWIN, DOUG] } } });
+      if (query.includes('OccupiedVisits')) return jsonResponse({ data: { visits: { nodes: [] } } });
+      return jsonResponse({ errors: [{ message: 'unexpected ' + query.slice(0, 40) }] });
+    };
+  }
+  const slot = () => firstOpenSlot(NOW, 'user-brian', 'Brian Eads');
+
+  it('blocks a second booking when the caller booked in the last 3 days', async () => {
+    const calls: string[] = [];
+    const { result } = await handleBookServiceCall(
+      { phone: '6198791062', name: 'Bradley Brockle', address: '15788 Lyons Valley Road', city: 'Jamul', startAt: slot().startAt },
+      { now: NOW, accessToken: 't', fetchFn: jobberWith([recentJob('2026-09-02T20:00:00.000Z')], calls) }
+    );
+    assert.equal(result.booked, false);
+    assert.equal(result.alreadyBooked, true);
+    assert.equal(result.bookingBlockReason, 'already_booked');
+    assert.match(result.message, /already booked/i);
+    assert.match(result.message, /keep it or move it/i);
+    assert.equal(calls.some((q) => q.includes('JobCreate') || q.includes('VisitCreate')), false);
+  });
+
+  it('does not block when the existing job is older than 3 days', async () => {
+    const calls: string[] = [];
+    const { result } = await handleBookServiceCall(
+      { phone: '6198791062', name: 'Bradley Brockle', address: '15788 Lyons Valley Rd', city: 'Jamul', startAt: slot().startAt },
+      { now: NOW, accessToken: 't', fetchFn: jobberWith([recentJob('2026-08-20T20:00:00.000Z')], calls) }
+    );
+    assert.notEqual(result.bookingBlockReason, 'already_booked');
+  });
+
+  it('allows a second job for a different address', async () => {
+    const calls: string[] = [];
+    const { result } = await handleBookServiceCall(
+      { phone: '6198791062', name: 'Bradley Brockle', address: '9 Other Way', city: 'Jamul', startAt: slot().startAt },
+      { now: NOW, accessToken: 't', fetchFn: jobberWith([recentJob('2026-09-02T20:00:00.000Z')], calls) }
+    );
+    assert.notEqual(result.bookingBlockReason, 'already_booked');
+  });
+
+  it('allows a second job when the caller says it is a different problem', async () => {
+    const calls: string[] = [];
+    const { result } = await handleBookServiceCall(
+      { phone: '6198791062', name: 'Bradley Brockle', address: '15788 Lyons Valley Rd', city: 'Jamul', startAt: slot().startAt, differentProblem: true },
+      { now: NOW, accessToken: 't', fetchFn: jobberWith([recentJob('2026-09-02T20:00:00.000Z')], calls) }
+    );
+    assert.notEqual(result.bookingBlockReason, 'already_booked');
+  });
+
+  it('checkSchedule returns the existing booking and no open slots', async () => {
+    const calls: string[] = [];
+    const { result } = await handleCheckSchedule(
+      { phone: '6198791062', city: 'Jamul', address: '15788 Lyons Valley Rd', intent: 'book' },
+      { now: NOW, accessToken: 't', fetchFn: jobberWith([recentJob('2026-09-02T20:00:00.000Z')], calls) }
+    );
+    assert.equal(result.alreadyBooked, true);
+    assert.equal(result.mayBook, false);
+    assert.equal(result.recentBooking?.technicians[0], 'Colton Hagler');
+    assert.deepEqual(result.openSlots, []);
+    assert.match(result.bookingMessage || '', /already booked/i);
+  });
+});
+
+describe('repeated note dedupe', () => {
+  it('collapses the same sentences passed by booking, flag and callback', () => {
+    const out = joinUniqueTexts([
+      'No water, tripped breaker. Booked placeholder Tuesday.',
+      'No water, tripped breaker. Booked placeholder Tuesday.',
+      'no water tripped breaker!  Booked placeholder Tuesday. Wants a call now.',
+    ]);
+    assert.equal(out.match(/tripped breaker/gi)?.length, 1);
+    assert.equal(out.match(/Booked placeholder/gi)?.length, 1);
+    assert.match(out, /Wants a call now/);
+  });
+
+  it('does not re-append sentences already in the stored notes', () => {
+    const existing = 'Mike requested a callback.\nReason: No water, tripped breaker. Booked placeholder Tuesday.';
+    const merged = appendOfficeNotes(
+      existing,
+      { kind: 'emergency', name: '', phone: '1', email: '', address: '', city: '', reason: 'No water, tripped breaker. Booked placeholder Tuesday. Wants live call.', repeatCaller: null },
+      false
+    );
+    assert.equal(merged.match(/tripped breaker/gi)?.length, 1);
+    assert.match(merged, /Wants live call/);
   });
 });
