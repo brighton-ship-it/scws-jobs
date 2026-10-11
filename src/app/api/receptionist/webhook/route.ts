@@ -631,6 +631,7 @@ async function executeTool(name: string, params: any, phone: string) {
           needNow: params.needNow,
           thisWeekend: params.thisWeekend,
           notes: params.notes || params.reason,
+          differentProblem: params.differentProblem ?? params.secondJob,
         },
         {
           // The weekend-emergency flag is folded into the end-of-call email

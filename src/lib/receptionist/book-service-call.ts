@@ -18,6 +18,12 @@ import {
   JOBBER_GRAPHQL_URL,
   LOOKUP_ERROR_CONFIRMATION_RULE,
   NO_VISIT_CONFIRMATION_RULE,
+  VISIT_CONFIRMATION_RULE,
+  alreadyBookedMessage,
+  findRecentBooking,
+  isDifferentAddress,
+  lookupUpcomingVisits,
+  type ScheduleVisit,
   formatPtDate,
   formatVisitTime,
   normalizePhone10,
@@ -65,6 +71,8 @@ export type BookServiceCallInput = WeekendNeedInput & {
   preferredTime?: string | null;
   title?: string | null;
   serviceType?: string | null;
+  /** Caller explicitly wants a second job for a different problem. */
+  differentProblem?: boolean | string | null;
 };
 
 export type BookedVisit = {
@@ -93,6 +101,8 @@ export type BookServiceCallResult = {
   clientId?: string;
   clientCreated?: boolean;
   error?: string;
+  alreadyBooked?: boolean;
+  recentBooking?: ScheduleVisit;
 };
 
 export type OfficeFlag = {
@@ -645,6 +655,25 @@ export async function bookServiceCall(
       "I can only schedule a service call Monday through Friday. I won't put a Saturday or Sunday visit on the calendar. I'll have the office call you back.",
       NO_VISIT_CONFIRMATION_RULE
     );
+  }
+
+  // Duplicate-booking guard: same caller already has an upcoming visit on a job
+  // created in the last 3 days. Fail open if the lookup itself errors.
+  const secondJobOk = /^(true|yes|1)$/i.test(String(input.differentProblem ?? ''));
+  if (!secondJobOk && input.phone) {
+    try {
+      const existing = await lookupUpcomingVisits(input.phone, deps);
+      const recent = existing.lookupStatus === 'ok' ? findRecentBooking(existing.visits || [], now) : undefined;
+      if (recent && !isDifferentAddress(input.address, recent.address)) {
+        return blockedResult('already_booked', alreadyBookedMessage(recent), VISIT_CONFIRMATION_RULE, {
+          canConfirm: true,
+          alreadyBooked: true,
+          recentBooking: recent,
+        });
+      }
+    } catch (error) {
+      console.error('[Receptionist] Duplicate-booking guard lookup failed (continuing):', error);
+    }
   }
 
   const slots = await lookupOpenSlots(

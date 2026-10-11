@@ -29,6 +29,10 @@ export const BOOK_JOB_TOOL = {
       },
       thisWeekend: { type: 'boolean', description: 'True if they need service this weekend' },
       notes: { type: 'string', description: 'Short problem description' },
+      differentProblem: {
+        type: 'boolean',
+        description: 'True ONLY when the caller already has a booking and explicitly wants a second job for a different problem or address.',
+      },
     },
     required: ['phone', 'name', 'address', 'city', 'startAt'],
   },
@@ -54,5 +58,11 @@ Assign only: Brian Eads for Ramona / west / central SD; Doug Pollack or Cowin fo
 Title is Service Call only. Never create a drill, pump, or quote visit. Price is $200. Do not tell the customer the $200 is a credit toward later pump or repair work — it is not.
 
 Search existing Jobber clients (the API does this). Do not create a second client for the same person.
+
+Already booked: if checkSchedule or bookJob returns alreadyBooked: true (or bookingBlockReason "already_booked"), the caller has a visit booked in the last 3 days. Say "you're already booked for [day/time]" using recentBooking, and ask if they want to keep it or move it. Never book a second job. To move it, call createCallback ("wants to move [slot]"). Only if they say it is a different problem or a different address, call bookJob again with differentProblem true.
+
+Place names: the transcriber sometimes hears Jamul as "Pamul", "Pumu", "Hamul" or "Jamool". Always treat those as Jamul (Jamul, CA) and spell it Jamul in tool calls and notes.
+
+Notes: send the problem description once, in one tool. Do not repeat the same note text in bookJob, flagEmergency and createCallback.
 
 Do not send the customer a text or email yourself.`;

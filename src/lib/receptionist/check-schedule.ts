@@ -31,6 +31,8 @@ export type ScheduleVisit = {
   technicians: string[];
   date: string;
   time: string;
+  /** When the Jobber job was created (only set when Jobber returned it). */
+  jobCreatedAt?: string;
 };
 
 export type NextAppointment = {
@@ -74,6 +76,9 @@ export type ScheduleLookupResult = {
   assignedTechId?: string | null;
   allowlistedTechIds?: string[];
   weekendEmergency?: boolean;
+  /** Upcoming visit on a job created in the last RECENT_BOOKING_DAYS days (duplicate-booking guard). */
+  recentBooking?: ScheduleVisit;
+  alreadyBooked?: boolean;
 };
 
 export type CheckScheduleInput = {
@@ -130,6 +135,7 @@ const UPCOMING_VISITS_QUERY = `
       jobs(first: ${UPCOMING_JOBS_PAGE}) {
         nodes {
           title
+          createdAt
           property {
             address {
               street1
@@ -392,12 +398,54 @@ function collectVisits(jobs: any[], now: Date): ScheduleVisit[] {
         technicians: technicianNamesFromAssignedUsers(visit.assignedUsers),
         date,
         time,
+        ...(job.createdAt ? { jobCreatedAt: job.createdAt } : {}),
       });
     }
   }
 
   visits.sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
   return visits;
+}
+
+/** A booking made in the last 3 days still counts as "already booked". */
+export const RECENT_BOOKING_DAYS = 3;
+
+export function findRecentBooking(visits: ScheduleVisit[], now: Date): ScheduleVisit | undefined {
+  const cutoff = now.getTime() - RECENT_BOOKING_DAYS * 24 * 60 * 60 * 1000;
+  return visits.find((visit) => {
+    if (!visit.jobCreatedAt) return false;
+    const created = Date.parse(visit.jobCreatedAt);
+    if (Number.isNaN(created) || created < cutoff) return false;
+    // Upcoming only: visit has not already started.
+    const start = Date.parse(visit.startAt);
+    return !Number.isNaN(start) && start >= now.getTime() - 6 * 60 * 60 * 1000;
+  });
+}
+
+function streetKey(value: string | null | undefined): string {
+  return String(value || '')
+    .toLowerCase()
+    .split(',')[0]
+    .replace(/[.#]/g, ' ')
+    .replace(/\broad\b/g, 'rd')
+    .replace(/\bstreet\b/g, 'st')
+    .replace(/\bavenue\b/g, 'ave')
+    .replace(/\bdrive\b/g, 'dr')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** True when the caller gave an address that is clearly not the already-booked one. */
+export function isDifferentAddress(requested: string | null | undefined, booked: string | null | undefined): boolean {
+  const a = streetKey(requested);
+  const b = streetKey(booked);
+  if (!a || !b) return false;
+  return a !== b && !a.includes(b) && !b.includes(a);
+}
+
+export function alreadyBookedMessage(visit: ScheduleVisit): string {
+  const tech = visit.technicians.length ? ` ${visit.technicians.join(' and ')} is assigned.` : '';
+  return `You're already booked for ${visit.date}, ${visit.time}${visit.address ? ` at ${visit.address}` : ''}.${tech} Ask whether they want to keep it or move it. Do not book another one. To move it, flag it for the office.`;
 }
 
 function visitsFoundResult(customerName: string | null, visits: ScheduleVisit[]): ScheduleLookupResult {
@@ -576,6 +624,22 @@ export async function handleCheckSchedule(
       };
     }
 
+    const recent = findRecentBooking(result.visits || [], deps.now ?? new Date());
+    if (recent && !isDifferentAddress(input.address, recent.address)) {
+      return {
+        result: {
+          ...result,
+          mayBook: false,
+          alreadyBooked: true,
+          recentBooking: recent,
+          openSlots: [],
+          availableSlots: [],
+          bookingBlockReason: 'already_booked',
+          bookingMessage: alreadyBookedMessage(recent),
+        },
+      };
+    }
+
     const slots = await lookupOpenSlots(
       {
         city: input.city,
@@ -608,6 +672,7 @@ export async function handleCheckSchedule(
         mayBook: slots.openSlots.length > 0,
         openSlots: withSlotIds(slots.openSlots),
         availableSlots: withSlotIds(slots.openSlots),
+        ...(recent ? { recentBooking: recent } : {}),
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
         allowlistedTechIds: slots.allowlistedTechIds,
