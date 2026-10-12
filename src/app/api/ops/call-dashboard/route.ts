@@ -78,9 +78,10 @@ export async function GET(request: NextRequest) {
       const from = winStart.toISOString();
       const to = new Date(Date.now() + 86400_000).toISOString();
       const slack = new Date(winStart.getTime() - 60 * 86400_000).toISOString();
-      const [invoices, quotes, jobsCreated, jobsCompleted, payments] = await Promise.all([
+      let [invoices, quotes, jobsCreated, jobsCompleted, payments] = await Promise.all([
         loadWeeklyInvoices(from, to), loadWeeklyQuotes(slack, to), loadWeeklyJobsCreated(from, to), loadWeeklyJobsCompleted(from, to), loadWeeklyPayments(from, to),
       ]);
+      if (!invoices) { await new Promise((r) => setTimeout(r, 1500)); invoices = await loadWeeklyInvoices(from, to); } // one retry: every revenue card depends on it
       const allCalls = [...adsCalls, ...liveCalls];
       dash.weekly = buildWeeklySales({
         now: nowD, invoices, quotes, jobsCreated, jobsCompleted, payments,
