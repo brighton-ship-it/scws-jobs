@@ -363,7 +363,8 @@ export function buildDashboard(input: {
       if (!Number.isFinite(t) || t > at || usedCalls.has(c)) continue;
       const h = hashPhone(c.caller_phone);
       if (!h || !hashes.includes(h)) continue;
-      if (!best || t > Date.parse(best.started_at || '')) best = c;
+      // Same attribution as the ROAS card: credit the caller's latest prior AD call; Mike calls only when there is none.
+      if (!best || (!!best.live && !c.live) || (!!best.live === !!c.live && t > Date.parse(best.started_at || ''))) best = c;
     }
     if (!best) continue;
     // Strict new-customer rule (same as ROAS (new customers)): no Jobber job created before the caller's FIRST call.
