@@ -33,16 +33,16 @@ export async function GET(request: NextRequest) {
     const quotesFrom = new Date(now.getTime() - 180 * DAY);
     const costFrom = new Date(now.getTime() - 90 * DAY);
     const timeFrom = new Date(now.getTime() - 30 * DAY);
-    const [calls, spend, sinceInv, quotes, history, costs, time, qbo] = await Promise.all([
+    const sinceInv = await loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow);
+    const [calls, spend, quotes, costs, time, qbo] = await Promise.all([
       db.from('ads_calls').select('started_at, caller_phone, campaign_name').gte('started_at', DASH_FLOOR_ISO).order('started_at', { ascending: false }).limit(5000),
       loadDailySpend(now),
-      loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow),
       loadWeeklyQuotes(quotesFrom.toISOString(), tomorrow),
-      loadHistoryInvoices(histFrom.toISOString(), tomorrow),
       loadCompletedJobCosts(costFrom.toISOString(), tomorrow),
       loadTimesheets(timeFrom.toISOString(), tomorrow),
       db.from('quickbooks_connections').select('id').limit(1),
     ]);
+    const history = await loadHistoryInvoices(histFrom.toISOString(), tomorrow);
     const roasSince = calls.error ? null : buildRoasView({ invoices: sinceInv, adCalls: calls.data ?? [], spend, start: new Date(DASH_FLOOR_ISO), now });
     const cards = buildMetrics({
       now, histFrom, history, roasSince, sinceLabel: 'Since Sep 18, 2026', quotes, quotesFrom, costs, costFrom, time, timeFrom,
@@ -55,6 +55,10 @@ export async function GET(request: NextRequest) {
       timeEntries: time.rows?.length ?? null, timeError: time.error ?? null,
       oldestInvoice: history.rows?.reduce<string | null>((m, r) => (r.issuedDate && (!m || r.issuedDate < m) ? r.issuedDate : m), null) ?? null,
     };
+    if (request.nextUrl.searchParams.get('debug') === '1') {
+      (diag as any).costSample = (costs.rows ?? []).filter((j) => (j.jobCosting?.totalCost ?? 0) > 0).slice(0, 25);
+      (diag as any).quoteSample = (quotes ?? []).filter((q) => /approved|converted/i.test(q.quoteStatus || '')).slice(0, 25);
+    }
     return finish(NextResponse.json({ cards, diag, generatedAt: now.toISOString() }));
   } catch (error) {
     console.error('[ops-metrics]', error instanceof Error ? error.message : 'error');

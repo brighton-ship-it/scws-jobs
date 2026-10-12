@@ -13,11 +13,11 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
     let after: string | null = null; let truncated = false;
     for (let page = 0; page < maxPages; page++) {
       let res: any = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < 8; attempt++) {
         try { res = await jobberGraphql(query, { ...variables, first, after }); assertNoJobberErrors(res, `metrics ${field}`); break; }
         catch (e) {
-          if (attempt === 4 || !/throttl|rate|cost|429/i.test(e instanceof Error ? e.message : '')) throw e;
-          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+          if (attempt === 7 || !/throttl|rate|cost|429/i.test(e instanceof Error ? e.message : '')) throw e;
+          await new Promise((r) => setTimeout(r, 3000 * (attempt + 1)));
         }
       }
       const conn = res?.data?.[field];
@@ -47,7 +47,9 @@ export async function loadHistoryInvoices(fromIso: string, toIso: string): Promi
   let a = new Date(fromIso);
   const end = new Date(toIso);
   while (a < end) { const b = new Date(Math.min(a.getTime() + 91 * 86400_000, end.getTime())); chunks.push([a.toISOString(), b.toISOString()]); a = b; }
-  const parts = await Promise.all(chunks.map(([x, y], i) => new Promise<Loaded<HistInvoice>>((r) => setTimeout(r, i * 400)).then(() => paged<HistInvoice>(`hinv|${x}|${y.slice(0, 10)}`, HIST_INVOICES, 'invoices', { filter: { issuedDate: { after: x, before: y } } })) as any));
+  // Sequential: parallel chunks trip Jobber's query-cost throttle (and starve the call dashboard).
+  const parts: Loaded<HistInvoice>[] = [];
+  for (const [x, y] of chunks) parts.push(await paged<HistInvoice>(`hinv|${x.slice(0, 10)}|${y.slice(0, 10)}`, HIST_INVOICES, 'invoices', { filter: { issuedDate: { after: x, before: y } } }, 40, 50));
   const bad = parts.find((p) => !p.rows);
   if (bad) return { rows: null, error: bad.error };
   const seen = new Set<string>(); const rows: HistInvoice[] = [];
@@ -64,7 +66,7 @@ export const loadCompletedJobCosts = (from: string, to: string) =>
   paged<CostJob>(`cost|${from.slice(0, 10)}`, COST_JOBS, 'jobs', { filter: { completedAt: { after: from, before: to } } }, 20, 50);
 
 export interface TimeEntry { id: string; startAt?: string | null; endAt?: string | null; finalDuration?: number | null; job?: { id?: string | null } | null; user?: { id?: string | null } | null }
-const TIMESHEETS = `query MetricsTime($first: Int!, $after: String, $filter: TimeSheetEntryFilterAttributes) {
+const TIMESHEETS = `query MetricsTime($first: Int!, $after: String, $filter: TimeSheetEntriesFilterAttributes) {
   timeSheetEntries(first: $first, after: $after, filter: $filter) {
     nodes { id startAt endAt finalDuration job { id } user { id } }
     pageInfo { hasNextPage endCursor } } }`;
