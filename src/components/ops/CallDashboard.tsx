@@ -389,6 +389,7 @@ export function CallDashboardPage() {
           ))}
         </div>
         <button onClick={reload} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 sm:text-sm">Refresh</button>
+        <a href="/ops/metrics" className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 sm:text-sm">Metrics</a>
         <a href="/ops/calls/tv" className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white shadow-sm transition-colors hover:bg-slate-700 sm:text-sm">TV mode ↗</a>
       </div>
 
