@@ -332,11 +332,11 @@ export function CallDashboardPage() {
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
             <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
-            <Kpi delay={120} color={palette.revenue} label="New-cust. return (inv / paid)" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={`${mult(t.multipleInvoiced)} / ${mult(t.multiplePaid)}`} sub="revenue ÷ ad spend" />
+            <Kpi delay={120} color={palette.revenue} label="Return all / new (invoiced)" range={rangeLabel} hint="all = every ad caller (new + repeat); new = new customers only; Jobber invoices ÷ Google Ads spend" value={data.roas ? `${mult(data.roas.overall.multipleInvoiced)} / ${mult(data.roas.newOnly.multipleInvoiced)}` : '—'} sub="revenue ÷ ad spend" />
             <Kpi delay={160} color={palette.booked} label="Booked value" range={rangeLabel} value={usd(t.bookedValue)} sub={`${usd(t.perCall.booked, 2)}/call`} />
             <Kpi delay={200} color={palette.revenue} label="Quote value" range={rangeLabel} value={usd(t.quoteValue)} sub={`${usd(t.perCall.quote, 2)}/call`} />
-            <Kpi delay={240} color={palette.revenue} label="New-cust. invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
-            <Kpi delay={280} color={palette.paid} label="New-cust. paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
+            <Kpi delay={240} color={palette.revenue} label="New-cust. invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(data.roas ? data.roas.newOnly.invoiced : null)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
+            <Kpi delay={280} color={palette.paid} label="New-cust. paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(data.roas ? data.roas.newOnly.paid : null)} sub={data.roas && data.roas.newOnly.invoiced ? `${Math.round((data.roas.newOnly.paid / data.roas.newOnly.invoiced) * 100)}% of invoiced` : undefined} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -466,11 +466,14 @@ export function CallDashboardTv() {
   const sinceRange = 'Since Sep 18';
   const showSince = view === 'since' && !!tt;
   const mainRange = showSince ? sinceRange : monthRange;
-  const mainRev = showSince ? { invoiced: tt!.invoicedValue ?? 0, paid: tt!.paidValue ?? 0 } : tv?.revenueMonth;
+  const ro = data?.roas ?? null;
+  const mainRev = showSince ? (ro ? { invoiced: ro.newOnly.invoiced, paid: ro.newOnly.paid } : null) : tv?.revenueMonth;
+  const wk = data?.adSplit?.week;
+  const weekNew = wk && wk.rows.every((r) => r.invoicedNew != null) ? wk.rows.reduce((a, r) => a + (r.invoicedNew ?? 0), 0) : null;
   const mainSpend = showSince ? tt!.spend : tv?.spendMonth;
-  const mainMult = showSince ? tt!.multipleInvoiced : tv?.multipleMonth ?? null;
-  const altRange = showSince ? monthRange : sinceRange;
-  const altMult = showSince ? tv?.multipleMonth ?? null : tt?.multipleInvoiced ?? null;
+  const mainMult = showSince ? ro?.overall.multipleInvoiced ?? null : tv?.multipleMonth ?? null;
+  const altRange = showSince ? `${sinceRange} · new customers` : `${sinceRange} · all ad callers`;
+  const altMult = showSince ? ro?.newOnly.multipleInvoiced ?? null : ro?.overall.multipleInvoiced ?? null;
   return (
     <div className="fixed inset-0 z-50 flex flex-col gap-3 overflow-y-auto overflow-x-hidden bg-slate-950 text-white antialiased sm:gap-4 lg:overflow-hidden xl:gap-6" style={{ padding: 'max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left))' }}>
       <style>{STYLES}</style>
@@ -496,12 +499,12 @@ export function CallDashboardTv() {
           <BigTile delay={40} accent={palette.answered} label="Answered" range="Today" value={String(tv.answeredToday)} spark={last7.map((d) => d.answered)} />
           <BigTile delay={80} accent={palette.missed} label="Missed / short" range="Today" value={String(tv.missedToday)} spark={last7.map((d) => d.missed)} />
           <BigTile delay={120} accent={palette.booked} label="Booked" range="Today / this week" value={`${tv.bookedToday} / ${tv.bookedWeek}`} spark={last7.map((d) => d.booked)} />
-          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range="This week" value={usd(tv.revenueWeek.invoiced)} sub={`paid ${usd(tv.revenueWeek.paid)}`} />
-          <BigTile delay={200} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? 0)} sub={`paid ${usd(mainRev?.paid ?? 0)} (collected)`} />
+          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range={wk?.dates ? `This week · ${wk.dates}` : 'This week'} value={usd(weekNew)} sub={`all ad callers ${usd(wk ? wk.rows.reduce((a, r) => a + r.invoiced, 0) : null)}`} />
+          <BigTile delay={200} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? null)} sub={`paid ${usd(mainRev?.paid ?? null)} (collected)`} />
           <BigTile delay={240} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={last7.map((d) => d.spend ?? 0)} />
           <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3.5 sm:p-4 lg:min-h-0" style={{ animationDelay: '280ms' }}>
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
-            <p className="self-start text-[11px] font-semibold uppercase leading-snug tracking-[0.12em] text-slate-400 sm:text-xs sm:tracking-[0.18em] xl:text-base">Ad return<span className="mt-0.5 block text-[10px] font-medium normal-case tracking-normal text-slate-500 sm:text-[11px] xl:text-lg">{mainRange} · invoiced</span></p>
+            <p className="self-start text-[11px] font-semibold uppercase leading-snug tracking-[0.12em] text-slate-400 sm:text-xs sm:tracking-[0.18em] xl:text-base">Ad return<span className="mt-0.5 block text-[10px] font-medium normal-case tracking-normal text-slate-500 sm:text-[11px] xl:text-lg">{mainRange} · {showSince ? 'all ad callers · ' : ''}invoiced</span></p>
             <div className="flex w-full max-w-[420px] flex-1 items-center"><Gauge dark value={mainMult} label="invoiced ÷ spend" /></div>
             <p className="text-[11px] text-slate-400 xl:text-xl">{altRange}: <span className="font-semibold text-slate-200">{mult(altMult)}</span></p>
           </div>

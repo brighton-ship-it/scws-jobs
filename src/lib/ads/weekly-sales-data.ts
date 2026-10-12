@@ -49,7 +49,7 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
 const INVOICES = `
   query WeeklyInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
     invoices(first: $first, after: $after, filter: $filter) {
-      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 25) { nodes { createdAt } } } }
+      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
