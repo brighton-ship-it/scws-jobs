@@ -1,6 +1,6 @@
 /** Weekly sales rollup for the ops call dashboard (pure; Jobber loaders live in weekly-sales-data.ts). */
 import { ptDateKey, ptStartOfDay, ptWeekStart, DASH_FLOOR_ISO } from './call-dashboard.ts';
-import { invoicePretaxUsd, type InvoiceAmountInput } from './invoice-value.ts';
+import { invoicePretaxUsd, isIssuedInvoice, type InvoiceAmountInput } from './invoice-value.ts';
 import { workCategory, WORK_CATEGORIES, WORK_CATEGORY_RULE, type WorkCategory } from './work-category.ts';
 
 export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
@@ -25,6 +25,8 @@ export interface WeekRow {
   cash: number | null;
   cashCount: number | null;
   invoiceCount: number | null;
+  /** Issued invoices with $0 pre-tax value (included in invoiceCount). */
+  zeroInvoices?: number;
   jobsBooked: number | null;
   jobsCompleted: number | null;
   quotesSent: number | null;
@@ -106,7 +108,7 @@ export interface WeeklyInput {
   range?: { range: string; startKey: string; endKey: string; name: string } | null;
 }
 
-type Row = Pick<WeekRow, 'invoiced' | 'paid' | 'cash' | 'cashCount' | 'invoiceCount' | 'jobsBooked' | 'jobsCompleted' | 'quotesSent' | 'quotesSentValue' | 'quotesApproved' | 'quotesApprovedValue' | 'calls' | 'bookedCalls' | 'closingRate'>;
+type Row = Pick<WeekRow, 'zeroInvoices' | 'invoiced' | 'paid' | 'cash' | 'cashCount' | 'invoiceCount' | 'jobsBooked' | 'jobsCompleted' | 'quotesSent' | 'quotesSentValue' | 'quotesApproved' | 'quotesApprovedValue' | 'calls' | 'bookedCalls' | 'closingRate'>;
 const emptyRow = (input: WeeklyInput): Row => ({
   invoiced: input.invoices ? 0 : null, paid: input.invoices ? 0 : null, cash: input.payments ? 0 : null, cashCount: input.payments ? 0 : null, invoiceCount: input.invoices ? 0 : null,
   jobsBooked: input.jobsCreated ? 0 : null, jobsCompleted: input.jobsCompleted ? 0 : null,
@@ -120,9 +122,10 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
   for (const inv of input.invoices ?? []) {
     const w = at(jobberDateKey(inv.issuedDate));
     const pre = invoicePretaxUsd(inv);
-    if (!w || !pre) continue;
+    if (!w || !isIssuedInvoice(inv)) continue;
+    w.invoiceCount = (w.invoiceCount ?? 0) + 1; // every issued invoice, incl. $0 ones (matches Jobber's count)
+    if (!pre) { w.zeroInvoices = (w.zeroInvoices ?? 0) + 1; continue; }
     w.invoiced = round((w.invoiced ?? 0) + pre);
-    w.invoiceCount = (w.invoiceCount ?? 0) + 1;
     const total = inv.amounts?.total, pay = inv.amounts?.paymentsTotal;
     if (typeof total === 'number' && total > 0 && typeof pay === 'number' && pay > 0) {
       w.paid = round((w.paid ?? 0) + Math.min(pay, total) * (pre / total));
@@ -253,7 +256,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
       'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals.',
       WORK_CATEGORY_RULE,
-      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date). Call to booking = new booked ÷ calls (below).',
+      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date). Call to booking = new-customer bookings ÷ ad + Mike calls in the range (Google Ads tracked calls + Mike AI receptionist calls, de-duplicated; staff-answered Main/Ransom/GBP calls are not in the denominator). New customer = no Jobber job before their first call.',
       `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ all calls (Google Ads calls + Mike AI receptionist calls), since ${md(floorKey)} (tracking start). By-campaign closing uses Google Ads calls only, split by drilling vs pump campaign. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
   };

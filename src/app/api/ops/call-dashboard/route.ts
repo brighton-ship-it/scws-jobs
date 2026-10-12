@@ -40,8 +40,8 @@ export async function GET(request: NextRequest) {
         .gte('conversion_at', DASH_FLOOR_ISO).limit(2000),
       loadDailySpend(),
       db.from('receptionist_calls')
-        .select('vapi_call_id, phone, duration_sec, called_at, status')
-        .gte('called_at', since).neq('status', 'processing').neq('status', 'spam')
+        .select('vapi_call_id, phone, duration_sec, called_at, status, summary')
+        .gte('called_at', since).neq('status', 'spam')
         .order('called_at', { ascending: false }).limit(2000),
     ]);
     const notes: string[] = [];
@@ -51,12 +51,16 @@ export async function GET(request: NextRequest) {
     const jobMoney = await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
     if (live.error) notes.push(`live calls: ${live.error.message}`);
     const adsCalls: DashCall[] = calls.data ?? [];
-    const liveCalls = mergeLiveCalls(adsCalls, live.data ?? []);
+    // 'processing' is only the webhook's claim placeholder; ~220 Sep 18–Oct 7 calls finished (duration + summary)
+    // but never left that status. Count every real call: drop only fresh in-flight claims and rows with no phone.
+    const liveRows = (live.data ?? []).filter((r: any) => /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
+      && !(r.status === 'processing' && r.duration_sec == null && !r.summary && Date.now() - Date.parse(r.called_at) < 15 * 60_000));
+    const liveCalls = mergeLiveCalls(adsCalls, liveRows);
     let bookingIds = new Set<string>();
-    const ids = (live.data ?? []).map((r: { vapi_call_id: string }) => r.vapi_call_id).slice(0, 300);
-    if (ids.length) {
-      const br = await db.from('booking_requests').select('vapi_call_id').in('vapi_call_id', ids);
-      if (!br.error) bookingIds = new Set((br.data ?? []).map((r: { vapi_call_id: string }) => r.vapi_call_id));
+    const ids = liveRows.map((r: { vapi_call_id: string }) => r.vapi_call_id).slice(0, 600);
+    for (let i = 0; i < ids.length; i += 150) {
+      const br = await db.from('booking_requests').select('vapi_call_id').in('vapi_call_id', ids.slice(i, i + 150));
+      if (!br.error) for (const r of br.data ?? []) bookingIds.add(r.vapi_call_id);
     }
     for (const c of liveCalls) c.live_booking_request = bookingIds.has((c as any)._vapi);
     const dash = buildDashboard({ calls: [...adsCalls, ...liveCalls], conversions, spend, paidByJob: null, jobMoney, range });
@@ -120,6 +124,7 @@ export async function GET(request: NextRequest) {
     }
     if (!dash.roas && dash.adSplit) blankSplitMoney(dash);
     strictMoneyOnly(dash);
+    dropStaleFields(dash);
     dash.gaps.push(...notes);
     return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString() }));
   } catch (error) {
@@ -173,4 +178,12 @@ function strictMoneyOnly(dash: any) {
   for (const d of dash.series ?? []) d.invoiced = null;
   for (const r of dash.recent ?? []) r.value = null;
   if (dash.tv) for (const k of Object.keys(dash.tv)) if (/revenue|multiple|invoiced|paid/i.test(k)) dash.tv[k] = null;
+}
+
+/** Remove leftover payload fields from the old basis so nothing can display them again. */
+function dropStaleFields(dash: any) {
+  const t = dash.totals;
+  if (t) for (const k of ['invoicedValue', 'paidValue', 'multipleInvoiced', 'multiplePaid', 'bookedValue', 'quoteValue', 'perCall']) delete t[k];
+  if (dash.tv) for (const k of ['callsToday', 'answeredToday', 'missedToday', 'revenueWeek', 'revenueMonth', 'multipleMonth']) delete dash.tv[k];
+  if (dash.roas) delete dash.roas.mer;
 }
