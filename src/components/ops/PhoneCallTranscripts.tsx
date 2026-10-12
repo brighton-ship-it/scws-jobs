@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 
-type Row = { call_sid: string; started_at: string; caller_number: string | null; source: string | null; dial_status: string | null; answered: boolean | null; duration_seconds: number | null; processing_status: string; transcript: string | null; summary: string | null; outcome: string | null; caller_name: string | null; needs_followup: boolean | null };
+type Row = { call_sid: string; started_at: string; caller_number: string | null; source: string | null; dial_status: string | null; answered: boolean | null; duration_seconds: number | null; processing_status: string; transcript: string | null; summary: string | null; outcome: string | null; caller_name: string | null; needs_followup: boolean | null; jobber_client_id?: string | null; processing_error?: string | null };
 
 export function PhoneCallTranscripts() {
   const [rows, setRows] = useState<Row[]>([]);
@@ -27,6 +27,7 @@ export function PhoneCallTranscripts() {
                 <span className="mt-0.5 block text-slate-600">{r.summary || (r.processing_status === 'done' ? '' : `(${r.processing_status})`)}</span>
               </span>
               <span className="flex shrink-0 gap-1 text-xs">
+                {r.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
                 {r.outcome ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-slate-600">{r.outcome.replace(/_/g, ' ')}</span> : null}
                 {r.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
               </span>
