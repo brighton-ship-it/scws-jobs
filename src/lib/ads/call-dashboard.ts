@@ -297,17 +297,25 @@ export interface PreviousTotals {
 function group(
   calls: Array<DashCall & { _booked: boolean; _inv: number }>,
   keyOf: (c: DashCall) => string,
-  spendByKey?: Map<string, number>
+  spendByKey?: Map<string, number>,
+  booked?: Array<{ call: DashCall; inv: number }>
 ): GroupRow[] {
   const map = new Map<string, GroupRow>();
+  const blank = (key: string): GroupRow => ({ key, calls: 0, answered: 0, short: 0, booked: 0, spend: null, costPerCall: null, invoiced: 0 });
   for (const c of calls) {
     const key = keyOf(c) || '(none)';
     const r = map.get(key) ?? { key, calls: 0, answered: 0, short: 0, booked: 0, spend: null, costPerCall: null, invoiced: 0 };
     r.calls += 1;
     if (isAnswered(c)) r.answered += 1;
     if (isShort(c)) r.short += 1;
-    if (c._booked) { r.booked += 1; r.invoiced += c._inv; }
+    if (!booked && c._booked) { r.booked += 1; r.invoiced += c._inv; }
     map.set(key, r);
+  }
+  // Same bookings as the funnel: new-customer jobs booked in the window, credited to their call (even if that call was earlier).
+  if (booked) for (const b of booked) {
+    const key = keyOf(b.call) || '(none)';
+    const r = map.get(key) ?? blank(key);
+    r.booked += 1; r.invoiced += b.inv; map.set(key, r);
   }
   const rows = Array.from(map.values());
   for (const r of rows) {
@@ -514,6 +522,7 @@ export function buildDashboard(input: {
     convs: Array.from(creditedCall.entries()).map(([conv, call]) => ({ conv, call })),
   });
 
+  const bookedInWin = fJobs.map((cv) => ({ call: creditedCall.get(cv) as DashCall, inv: invOf(cv) }));
   return {
     adSplit,
     series, previous, funnel, bookedCredited,
@@ -543,9 +552,9 @@ export function buildDashboard(input: {
       multipleInvoiced: ratio(invoicedValue, spend),
       multiplePaid: paidValue == null ? null : ratio(paidValue, spend),
     },
-    byCampaign: group(decorated, (c) => c.campaign_name || '', spendByCampaign),
-    byKeyword: group(decorated, (c) => c.keyword || (c.ad_group_name ? `ad group: ${c.ad_group_name}` : '')),
-    byTrackingNumber: group(decorated, (c) => c.call_source || (c.caller_area_code ? `area ${c.caller_area_code}` : '')),
+    byCampaign: group(decorated, (c) => c.campaign_name || '', spendByCampaign, bookedInWin),
+    byKeyword: group(decorated, (c) => c.keyword || (c.ad_group_name ? `ad group: ${c.ad_group_name}` : ''), undefined, bookedInWin),
+    byTrackingNumber: group(decorated, (c) => c.call_source || (c.caller_area_code ? `area ${c.caller_area_code}` : ''), undefined, bookedInWin),
     recent,
     tv: {
       callsToday: callsToday.length,
