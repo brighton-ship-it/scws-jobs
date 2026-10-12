@@ -91,6 +91,15 @@ export async function GET(request: NextRequest) {
         invoices, adCalls: adsCalls, booked: dash.bookedCredited ?? [], spend, now: nowD,
         windows: { main: { label: RN[range] ?? 'Selected range', start: new Date(dash.revenueStart) }, week: { label: 'This week (Mon–today)', start: wk < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : wk } },
       });
+      if (dash.roas && dash.weekly?.totals) {
+        const inv = dash.weekly.totals.invoiced, sp = dash.roas.spend;
+        dash.roas.mer = { invoiced: inv, spend: sp, multiple: inv != null && sp && sp > 0 ? Math.round((inv / sp) * 100) / 100 : null };
+        dash.weekly.sources.push(
+          'Blended ROAS (all callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
+          'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call.',
+          'MER (marketing efficiency ratio) = ALL pre-tax Jobber invoices issued in the range (every customer, any source) ÷ total Google Ads spend, same Pacific days. Not attribution: a top-line efficiency check.',
+        );
+      }
       if (shared) dash.adSplit = shared;
       else if (dash.adSplit) blankSplitMoney(dash);
     } catch (e) {
