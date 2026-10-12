@@ -244,9 +244,11 @@ export interface RoasSide { invoiced: number; paid: number; invoices: number; cl
 export interface RoasView { spend: number | null; overall: RoasSide; newOnly: RoasSide; byCategory: Record<AdCategory, { spend: number | null; overall: RoasSide; newOnly: RoasSide }>; method: string[] }
 export interface AdSplitRow {
   category: AdCategory; spend: number | null; clicks: number | null; calls: number; booked: number;
+  /** Overall (all ad callers) pre-tax invoiced; same calculation as the ROAS card. */
   invoiced: number; multiple: number | null;
+  invoicedNew?: number; multipleNew?: number | null; paid?: number; multiplePaid?: number | null;
 }
-export interface AdSplitWindow { label: string; from: string; rows: AdSplitRow[] }
+export interface AdSplitWindow { label: string; from: string; to?: string; dates?: string; rows: AdSplitRow[] }
 export interface AdSplit { since: AdSplitWindow; week: AdSplitWindow }
 
 /** Drilling = any campaign with "drilling" in its name; every other Google Ads campaign is pump/service. */

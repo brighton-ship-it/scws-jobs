@@ -6,7 +6,7 @@
  *    Google Ads call (not already a customer when they called).
  * Attribution goes to the campaign of the client's latest ad call before the invoice.
  */
-import { adCategory, digits10, ptDateKey, type AdCategory, type RoasSide, type RoasView, type SpendDay } from './call-dashboard.ts';
+import { adCategory, digits10, ptDateKey, type AdCategory, type AdSplit, type AdSplitRow, type AdSplitWindow, type RoasSide, type RoasView, type SpendDay } from './call-dashboard.ts';
 import { invoicePretaxUsd } from './invoice-value.ts';
 import type { WeeklyInvoice } from './weekly-sales.ts';
 
@@ -84,4 +84,43 @@ export function buildRoasView(input: {
       'Paid = payments received to date on those invoices (pre-tax share). Credit goes to the campaign of the latest ad call before the invoice. Mike/AI receptionist calls are not ad calls and are excluded.',
     ],
   };
+}
+
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+export const mdKey = (k: string) => { const [, m, d] = k.split('-').map(Number); return `${MON[m - 1]} ${d}`; };
+
+/**
+ * Pump vs drilling campaign cards, built from the SAME calculation as the ROAS card (buildRoasView):
+ * same invoices/attribution, same spend rows, same Pacific-day window. Calls = Google Ads calls in the window;
+ * booked = new-customer bookings credited to a call (same set as the funnel).
+ */
+export function buildSharedAdSplit(input: {
+  invoices: WeeklyInvoice[] | null;
+  adCalls: AdCallLite[];
+  booked: Array<{ at: string; cat: AdCategory | null }>;
+  spend: SpendDay[] | null;
+  windows: { main: { label: string; start: Date }; week: { label: string; start: Date } };
+  now: Date;
+}): AdSplit | null {
+  const mk = (w: { label: string; start: Date }): AdSplitWindow | null => {
+    const v = buildRoasView({ invoices: input.invoices, adCalls: input.adCalls, spend: input.spend, start: w.start, now: input.now });
+    if (!v) return null;
+    const a = ptDateKey(w.start), b = ptDateKey(input.now), t0 = w.start.getTime();
+    const rows = (['pump', 'drilling'] as AdCategory[]).map((category): AdSplitRow => {
+      const c = v.byCategory[category];
+      const sp = input.spend ? input.spend.filter((d) => adCategory(d.campaign) === category && d.date >= a && d.date <= b) : null;
+      return {
+        category, spend: c.spend, clicks: sp ? sp.reduce((x, d) => x + (d.clicks ?? 0), 0) : null,
+        calls: input.adCalls.filter((x) => adCategory(x.campaign_name) === category && Date.parse(x.started_at || '') >= t0).length,
+        booked: input.booked.filter((x) => x.cat === category && Date.parse(x.at) >= t0).length,
+        invoiced: c.overall.invoiced, multiple: c.overall.multipleInvoiced,
+        invoicedNew: c.newOnly.invoiced, multipleNew: c.newOnly.multipleInvoiced,
+        paid: c.overall.paid, multiplePaid: c.overall.multiplePaid,
+      };
+    });
+    const dates = a === b ? mdKey(a) : `${mdKey(a)}–${mdKey(b)}`;
+    return { label: `${w.label}: ${dates}`, dates, from: w.start.toISOString(), to: input.now.toISOString(), rows };
+  };
+  const main = mk(input.windows.main), week = mk(input.windows.week);
+  return main && week ? { since: main, week } : null;
 }

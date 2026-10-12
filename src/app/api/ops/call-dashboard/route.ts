@@ -5,11 +5,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
-import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, rangeStart, ptDateKey, adCategory, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
+import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney } from '@/lib/ads/call-dashboard-data';
-import { buildRoasView } from '@/lib/ads/roas-view';
+import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -84,6 +84,14 @@ export async function GET(request: NextRequest) {
         adBooked: dash.bookedCredited ?? [],
       });
       dash.roas = buildRoasView({ invoices, adCalls: adsCalls, spend, start: new Date(dash.revenueStart), now: nowD });
+      // Campaign cards use the same calculation, window and spend as the ROAS card / funnel.
+      const RN: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
+      const wk = ptWeekStart(nowD);
+      const shared = buildSharedAdSplit({
+        invoices, adCalls: adsCalls, booked: dash.bookedCredited ?? [], spend, now: nowD,
+        windows: { main: { label: RN[range] ?? 'Selected range', start: new Date(dash.revenueStart) }, week: { label: 'This week (Mon–today)', start: wk < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : wk } },
+      });
+      if (shared) dash.adSplit = shared;
     } catch (e) {
       notes.push(`weekly sales: ${e instanceof Error ? e.message : 'error'}`);
     }
