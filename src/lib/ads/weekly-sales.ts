@@ -8,7 +8,7 @@ export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
 export interface WeeklyInvoice extends InvoiceAmountInput {
   amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; paymentsTotal?: number | null } | null;
   jobs?: { nodes?: Array<{ title?: string | null }> | null } | null;
-  client?: { id?: string | null; createdAt?: string | null; phones?: Array<{ number?: string | null }> | null } | null;
+  client?: { id?: string | null; createdAt?: string | null; phones?: Array<{ number?: string | null }> | null; jobs?: { nodes?: Array<{ createdAt?: string | null }> | null } | null } | null;
 }
 export interface WeeklyQuote { title?: string | null; quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
 export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null }
