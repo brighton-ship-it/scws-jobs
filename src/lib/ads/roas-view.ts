@@ -33,9 +33,9 @@ export function buildRoasView(input: {
   }
   byPhone.forEach((l) => l.sort((a, b) => a.t - b.t));
   const a = ptDateKey(input.start), b = ptDateKey(input.now);
-  const side = (): RoasSide & { _c: Set<string> } => ({ invoiced: 0, paid: 0, invoices: 0, clients: 0, multipleInvoiced: null, multiplePaid: null, _c: new Set() });
+  const side = (): RoasSide & { _c: Set<string>; _u: Set<string> } => ({ invoiced: 0, paid: 0, invoices: 0, clients: 0, multipleInvoiced: null, multiplePaid: null, _c: new Set(), _u: new Set() });
   const S = { all: side(), neu: side(), pump: { all: side(), neu: side() }, drilling: { all: side(), neu: side() } };
-  const add = (s: ReturnType<typeof side>, pre: number, paid: number, cid: string) => { s.invoiced += pre; s.paid += paid; s.invoices += 1; s._c.add(cid); };
+  const add = (s: ReturnType<typeof side>, pre: number, paid: number, cid: string, unpaid: boolean) => { s.invoiced += pre; s.paid += paid; s.invoices += 1; s._c.add(cid); if (unpaid) s._u.add(cid); };
   for (const inv of input.invoices) {
     const pre = invoicePretaxUsd(inv);
     const issued = Date.parse(inv.issuedDate || '');
@@ -57,14 +57,15 @@ export function buildRoasView(input: {
     // a lead created earlier with no work is still a new customer).
     const jobTimes = (inv.client?.jobs?.nodes ?? []).map((j) => Date.parse(j?.createdAt || '')).filter(Number.isFinite);
     const isNew = inv.client?.jobs ? !jobTimes.some((t) => t < first) : (Number.isFinite(Date.parse(inv.client?.createdAt || '')) && Date.parse(inv.client?.createdAt || '') >= first - DAY);
-    add(S.all, pre, paid, cid); add(S[last.cat].all, pre, paid, cid);
-    if (isNew) { add(S.neu, pre, paid, cid); add(S[last.cat].neu, pre, paid, cid); }
+    const unpaid = !(typeof total === 'number' && typeof pay === 'number' && pay >= total - 0.01);
+    add(S.all, pre, paid, cid, unpaid); add(S[last.cat].all, pre, paid, cid, unpaid);
+    if (isNew) { add(S.neu, pre, paid, cid, unpaid); add(S[last.cat].neu, pre, paid, cid, unpaid); }
   }
   const spendOf = (cat?: AdCategory) => input.spend
     ? round(input.spend.filter((d) => d.date >= a && d.date <= b && (!cat || adCategory(d.campaign) === cat)).reduce((x, d) => x + d.costUsd, 0))
     : null;
   const fin = (s: ReturnType<typeof side>, spend: number | null): RoasSide => ({
-    invoiced: round(s.invoiced), paid: round(s.paid), invoices: s.invoices, clients: s._c.size,
+    invoiced: round(s.invoiced), paid: round(s.paid), invoices: s.invoices, clients: s._c.size, paidClients: s._c.size - s._u.size,
     multipleInvoiced: spend && spend > 0 ? round(s.invoiced / spend) : null,
     multiplePaid: spend && spend > 0 ? round(s.paid / spend) : null,
   });
