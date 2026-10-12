@@ -202,3 +202,33 @@ test('adSplit separates pump and drilling by campaign', () => {
   assert.deepEqual([pump.spend, pump.clicks, pump.calls, pump.booked, pump.invoiced, pump.multiple], [100, 10, 1, 0, 0, 0]);
   assert.equal(d.adSplit!.week.rows[1].booked, 1);
 });
+
+test('sales headline totals follow the selected range, weeks unchanged', async () => {
+  const { buildWeeklySales: b, rangeTitle } = await import('./weekly-sales.ts');
+  const now = new Date('2026-10-12T19:00:00Z'); // Mon Oct 12 PT
+  const inv = (d: string, sub: number) => ({ invoiceStatus: 'paid', issuedDate: d, amounts: { subtotal: sub, total: sub, taxAmount: 0, paymentsTotal: sub } });
+  const input = {
+    now, invoices: [inv('2026-10-12', 100), inv('2026-10-06', 200), inv('2026-09-20', 400), inv('2026-07-20', 800)],
+    quotes: [{ quoteStatus: 'approved', sentAt: '2026-09-15T18:00:00Z', transitionedAt: '2026-10-07T18:00:00Z', amounts: { subtotal: 50 } }],
+    jobsCreated: [{ createdAt: '2026-10-08T18:00:00Z' }, { createdAt: '2026-09-01T18:00:00Z' }], jobsCompleted: [],
+    payments: [{ amount: 75, entryDate: '2026-09-30', adjustmentType: 'PAYMENT' }], callTimes: [], bookedAt: [],
+  };
+  const r7 = b({ ...input, range: { range: '7', startKey: '2026-10-06', endKey: '2026-10-12', name: '7' } });
+  assert.equal(r7.totals?.invoiced, 300);
+  assert.equal(r7.totals?.cash, 0);
+  assert.equal(r7.totals?.quotesSent, 0);
+  assert.equal(r7.totals?.quotesApprovedValue, 50);
+  assert.equal(r7.totals?.jobsBooked, 1);
+  assert.equal(r7.totals?.title, 'Last 7 days: Oct 6–Oct 12');
+  const r30 = b({ ...input, range: { range: '30', startKey: '2026-09-13', endKey: '2026-10-12', name: '30' } });
+  assert.equal(r30.totals?.invoiced, 700);
+  assert.equal(r30.totals?.cash, 75);
+  assert.equal(r30.totals?.quotesSent, 1);
+  const r90 = b({ ...input, range: { range: '90', startKey: '2026-07-15', endKey: '2026-10-12', name: '90' } });
+  assert.equal(r90.totals?.invoiced, 1500);
+  assert.equal(r90.totals?.jobsBooked, 2);
+  // weekly rows identical regardless of range
+  assert.deepEqual(r7.weeks, r90.weeks);
+  assert.equal(r7.weeks[r7.weeks.length - 1].invoiced, 100); // Mon Oct 12 = new week
+  assert.equal(rangeTitle('since', '2026-09-18', '2026-10-12'), 'Since Sep 18: Sep 18–Oct 12');
+});
