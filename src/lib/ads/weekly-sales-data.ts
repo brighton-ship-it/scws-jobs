@@ -49,7 +49,7 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
 const INVOICES = `
   query WeeklyInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
     invoices(first: $first, after: $after, filter: $filter) {
-      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } } }
+      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 25) { nodes { createdAt } } } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
@@ -76,7 +76,7 @@ const JOBS = `
   }`;
 
 export const loadWeeklyInvoices = (after: string, before: string) =>
-  paged<WeeklyInvoice>(`inv2|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } });
+  paged<WeeklyInvoice>(`inv3|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } });
 /** Quotes sent in the window may have been created earlier, so filter by created date with slack. */
 export const loadWeeklyQuotes = (createdAfter: string, createdBefore: string) =>
   paged<WeeklyQuote>(`q2|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES);

@@ -2,8 +2,8 @@
  * ROAS for the ops call dashboard, computed straight from Jobber invoices (pure).
  *  - Overall: every non-draft/void invoice issued in the range to a client whose phone called a Google Ads
  *    number BEFORE the invoice was issued (new and repeat customers).
- *  - New customers only: the same invoices, limited to clients created in Jobber no earlier than one day
- *    before their first Google Ads call (i.e. not already a customer when they called).
+ *  - New customers only: the same invoices, limited to clients with no Jobber job created before their first
+ *    Google Ads call (not already a customer when they called).
  * Attribution goes to the campaign of the client's latest ad call before the invoice.
  */
 import { adCategory, digits10, ptDateKey, type AdCategory, type RoasSide, type RoasView, type SpendDay } from './call-dashboard.ts';
@@ -53,8 +53,10 @@ export function buildRoasView(input: {
     const total = inv.amounts?.total, pay = inv.amounts?.paymentsTotal;
     const paid = typeof total === 'number' && total > 0 && typeof pay === 'number' && pay > 0 ? Math.min(pay, total) * (pre / total) : 0;
     const cid = inv.client?.id || phones[0];
-    const created = Date.parse(inv.client?.createdAt || '');
-    const isNew = Number.isFinite(created) && created >= first - DAY;
+    // New = no Jobber job for this client created before their first Google Ads call (client record age is ignored:
+    // a lead created earlier with no work is still a new customer).
+    const jobTimes = (inv.client?.jobs?.nodes ?? []).map((j) => Date.parse(j?.createdAt || '')).filter(Number.isFinite);
+    const isNew = inv.client?.jobs ? !jobTimes.some((t) => t < first) : (Number.isFinite(Date.parse(inv.client?.createdAt || '')) && Date.parse(inv.client?.createdAt || '') >= first - DAY);
     add(S.all, pre, paid, cid); add(S[last.cat].all, pre, paid, cid);
     if (isNew) { add(S.neu, pre, paid, cid); add(S[last.cat].neu, pre, paid, cid); }
   }
@@ -78,7 +80,7 @@ export function buildRoasView(input: {
     },
     method: [
       'ROAS overall = pre-tax Jobber invoices (not draft/void) issued in the range to any client whose phone called a Google Ads number before the invoice, ÷ Google Ads spend for the same Pacific days. Includes repeat customers.',
-      'ROAS new customers = the same, limited to clients created in Jobber no earlier than 1 day before their first Google Ads call (not already a customer when they called).',
+      'ROAS new customers = the same, limited to clients with no Jobber job created before their first Google Ads call (not already a customer when they called; repeat customers such as Cauzza are excluded).',
       'Paid = payments received to date on those invoices (pre-tax share). Credit goes to the campaign of the latest ad call before the invoice. Mike/AI receptionist calls are not ad calls and are excluded.',
     ],
   };

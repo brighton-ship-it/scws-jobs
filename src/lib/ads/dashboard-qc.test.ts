@@ -33,8 +33,8 @@ test('ROAS overall vs new-only from Jobber invoices', () => {
     now, start: new Date('2026-09-18T07:00:00Z'), spend: [{ date: '2026-10-01', campaign: 'Leads-Search-1', costUsd: 100 }],
     adCalls: [{ started_at: '2026-10-01T16:00:00Z', caller_phone: '9515550001', campaign_name: 'Leads-Search-1' }, { started_at: '2026-10-01T16:00:00Z', caller_phone: '9515550002', campaign_name: 'Leads-Search-Drilling' }],
     invoices: [
-      { invoiceStatus: 'paid', issuedDate: '2026-10-03T16:00:00Z', amounts: { subtotal: 400, total: 400, taxAmount: 0, paymentsTotal: 400 }, client: { id: 'new', createdAt: '2026-10-01T17:00:00Z', phones: [{ number: '(951) 555-0001' }] } },
-      { invoiceStatus: 'awaiting_payment', issuedDate: '2026-10-03T16:00:00Z', amounts: { subtotal: 600, total: 600, taxAmount: 0, paymentsTotal: 0 }, client: { id: 'old', createdAt: '2025-01-01T00:00:00Z', phones: [{ number: '9515550002' }] } },
+      { invoiceStatus: 'paid', issuedDate: '2026-10-03T16:00:00Z', amounts: { subtotal: 400, total: 400, taxAmount: 0, paymentsTotal: 400 }, client: { id: 'new', createdAt: '2025-06-01T17:00:00Z', jobs: { nodes: [{ createdAt: '2026-10-01T18:00:00Z' }] }, phones: [{ number: '(951) 555-0001' }] } },
+      { invoiceStatus: 'awaiting_payment', issuedDate: '2026-10-03T16:00:00Z', amounts: { subtotal: 600, total: 600, taxAmount: 0, paymentsTotal: 0 }, client: { id: 'old', createdAt: '2025-01-01T00:00:00Z', phones: [{ number: '9515550002' }], jobs: { nodes: [{ createdAt: '2025-02-01T00:00:00Z' }] } } },
       { invoiceStatus: 'paid', issuedDate: '2026-09-30T16:00:00Z', amounts: { subtotal: 900, total: 900, taxAmount: 0, paymentsTotal: 900 }, client: { id: 'new', createdAt: '2026-10-01T17:00:00Z', phones: [{ number: '9515550001' }] } },
       { invoiceStatus: 'draft', issuedDate: '2026-10-03T16:00:00Z', amounts: { subtotal: 50, total: 50, taxAmount: 0, paymentsTotal: 0 }, client: { id: 'new', phones: [{ number: '9515550001' }] } },
     ],
