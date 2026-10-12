@@ -62,7 +62,7 @@ describe('phone-calls', () => {
       if (u.includes('transcriptions')) return new Response('Hi this is Ryan, my well pump is down and I have cattle, please send someone.');
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"Ryan needs pump service","outcome":"emergency","caller_name":"Ryan","needs_followup":true}' } }] }));
     }) as any;
-    const r = await handleRecording({ CallSid: 'CA9', From: '+17602712106', RecordingUrl: 'https://api.twilio.com/2010-04-01/Accounts/AC/Recordings/RE1', RecordingSid: 'RE1', RecordingDuration: '45' }, db, { TWILIO_ACCOUNT_SID: 'AC', TWILIO_AUTH_TOKEN: 't', OPENAI_API_KEY: 'k' } as any, { fetch: f });
+    const r = await handleRecording({ CallSid: 'CA9', From: '+17602712106', RecordingUrl: 'https://api.twilio.com/2010-04-01/Accounts/AC/Recordings/RE1', RecordingSid: 'RE1', RecordingDuration: '45' }, db, { TWILIO_ACCOUNT_SID: 'AC', TWILIO_AUTH_TOKEN: 't', OPENAI_API_KEY: 'k' } as any, { fetch: f, jobber: null });
     assert.equal(r.reason, 'done');
     const row = db.rows.get('CA9');
     assert.equal(row.processing_status, 'done'); assert.equal(row.outcome, 'emergency'); assert.equal(row.jobber_client_id, 'JC1');
@@ -75,4 +75,13 @@ describe('phone-calls', () => {
     assert.equal(r.ok, false);
     assert.equal(db.rows.get('CA3').processing_status, 'failed');
   });
+});
+
+import { buildNoteMessage } from './jobber-note.ts';
+import { buildInboundTwiml as bit } from './twiml.ts';
+it('note message + callerId + jobber hook', async () => {
+  const m = buildNoteMessage({ startedAt: '2026-10-12T16:00:00Z', source: 'google_ads', summary: 'S', outcome: 'quote_request', needsFollowup: true, transcript: 'hi', durationSeconds: 40 });
+  assert.match(m, /Oct 12, 9:00 AM PT \(40s\) · google_ads/); assert.match(m, /NEEDS FOLLOW-UP/);
+  assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', callerId: '+18773863995' }), /callerId="\+18773863995"/);
+  assert.doesNotMatch(bit({ shopNumbers: ['+1'], baseUrl: 'https://x' }), /callerId/);
 });

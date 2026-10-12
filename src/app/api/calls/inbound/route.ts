@@ -5,7 +5,7 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
-import { buildInboundTwiml } from '@/lib/phone-calls/twiml';
+import { buildInboundTwiml, buildSimulatorTwiml } from '@/lib/phone-calls/twiml';
 import { shopNumbers, publicUrl, TRACKING_SOURCES } from '@/lib/phone-calls/config';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
@@ -17,6 +17,9 @@ export async function POST(req: NextRequest) {
   if (!valid) return new NextResponse('Forbidden', { status: 403 });
 
   const to = params.To || params.Called || '';
+  const q = new URL(req.url).searchParams;
+  // Test harness (signed requests only): ?sim=1 and a number calling itself = simulated shop answering.
+  if (q.get('sim') === '1' && params.From && params.From === to) return xml(buildSimulatorTwiml());
   const db: any = optionalServiceClient();
   if (db && params.CallSid) {
     // Best effort: never block ringing the shop on logging (table may not exist yet).
@@ -29,7 +32,12 @@ export async function POST(req: NextRequest) {
     } catch (e) { console.error('[phone-calls] log start failed', e instanceof Error ? e.message : e); }
   }
   const base = new URL(publicUrl(req)).origin;
-  return xml(buildInboundTwiml({ shopNumbers: shopNumbers(), baseUrl: base }));
+  // Per-number ring override via the (signed) voice URL, e.g. ?ring=+17604408520
+  const ring = q.get('ring')?.split(',').map((x) => x.trim()).filter((x) => /^\+\d{10,15}$/.test(x));
+  const targets = ring?.length ? ring : shopNumbers();
+  // Ringing the same Twilio number (test loop) needs our own caller ID; otherwise pass the caller's number through.
+  const callerId = targets.includes(to) ? to : undefined;
+  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId }));
 }
 
 export async function GET() {
