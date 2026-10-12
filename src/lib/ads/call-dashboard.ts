@@ -241,7 +241,7 @@ export function buildCallLogView(rows: Array<Record<string, any>>, now: Date): C
 
 export type AdCategory = 'pump' | 'drilling';
 export interface RoasSide { invoiced: number; paid: number; invoices: number; clients: number; multipleInvoiced: number | null; multiplePaid: number | null }
-export interface RoasView { spend: number | null; overall: RoasSide; newOnly: RoasSide; byCategory: Record<AdCategory, { spend: number | null; overall: RoasSide; newOnly: RoasSide }>; method: string[] }
+export interface RoasView { /** MER = all Jobber invoiced (pre-tax) in range ÷ all ad spend. Filled by the route. */ mer?: { invoiced: number | null; spend: number | null; multiple: number | null } | null; spend: number | null; overall: RoasSide; newOnly: RoasSide; byCategory: Record<AdCategory, { spend: number | null; overall: RoasSide; newOnly: RoasSide }>; method: string[] }
 export interface AdSplitRow {
   category: AdCategory; spend: number | null; clicks: number | null; calls: number; booked: number;
   /** Overall (all ad callers) pre-tax invoiced; same calculation as the ROAS card. */
