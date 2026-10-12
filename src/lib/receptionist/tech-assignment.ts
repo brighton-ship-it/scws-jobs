@@ -20,6 +20,8 @@
  * and the fallback roster above.
  */
 
+import { getCountyByCity } from '../tax-rates.ts';
+
 export const TECH_COWIN = 'Cowin';
 export const TECH_BRIAN_EADS = 'Brian Eads';
 export const TECH_DOUG_POLLACK = 'Doug Pollack';
@@ -176,6 +178,37 @@ const DESERT_ZIPS = new Set([
   '92275', // Salton City
 ]);
 
+/**
+ * Southwest Riverside County (Oct 12 2026): Murrieta / Temecula area is closer to the
+ * Anza shop than to Ramona, so it goes to the Anza pool (Doug / Cowin), not Brian.
+ * Before this, Murrieta matched no list and silently defaulted to Ramona.
+ */
+const RIVERSIDE_WEST_CITIES = [
+  'murrieta',
+  'temecula',
+  'french valley',
+  'menifee',
+  'sun city',
+  'wildomar',
+  'lake elsinore',
+  'canyon lake',
+  'perris',
+  'nuevo',
+  'quail valley',
+  'la cresta',
+  'de luz',
+];
+
+const RIVERSIDE_WEST_ZIPS = new Set([
+  '92562', '92563', '92564', // Murrieta
+  '92590', '92591', '92592', '92593', // Temecula
+  '92596', // French Valley / Winchester
+  '92584', '92585', '92586', '92587', // Menifee / Sun City / Canyon Lake
+  '92595', // Wildomar
+  '92530', '92532', // Lake Elsinore
+  '92570', '92571', // Perris
+]);
+
 const BRIAN_CITIES = [
   'ramona',
   'escondido',
@@ -255,9 +288,52 @@ export function assignShopTerritory(input: {
   const place = normalizePlace([input.city, input.address].filter(Boolean).join(' '));
   if (cityMatches(place, COWIN_CITIES)) return 'anza';
   if (cityMatches(place, BRIAN_CITIES)) return 'ramona';
+  if (zip && RIVERSIDE_WEST_ZIPS.has(zip)) return 'anza';
+  if (cityMatches(place, RIVERSIDE_WEST_CITIES)) return 'anza';
+  if (getCountyByCity(input.city || '') === 'Riverside') return 'anza';
 
   // Default to the Ramona / west-central shop, not Anza.
   return 'ramona';
+}
+
+/**
+ * Coarse dispatch zone for a site, used to keep fallback techs from being sent across
+ * territory (e.g. a tech working Ramona today being offered for Murrieta).
+ */
+export type DispatchZone = 'sd' | 'riverside' | 'desert';
+
+export function dispatchZoneForPlace(input: {
+  city?: string | null;
+  address?: string | null;
+  zip?: string | null;
+}): DispatchZone | null {
+  const raw = [input.city, input.address, input.zip].filter(Boolean).join(' ');
+  if (!normalizePlace(raw)) return null;
+  const territory = assignShopTerritory(input);
+  if (territory === 'desert') return 'desert';
+  if (territory === 'anza') return 'riverside';
+  const zip = extractZip(input.zip) || extractZip(input.address) || extractZip(input.city);
+  const place = normalizePlace([input.city, input.address].filter(Boolean).join(' '));
+  if ((zip && BRIAN_ZIPS.has(zip)) || cityMatches(place, BRIAN_CITIES)) return 'sd';
+  if (getCountyByCity(input.city || '') === 'San Diego') return 'sd';
+  return null; // unknown place: do not guess
+}
+
+const ZONE_NAMES: Record<string, DispatchZone> = { sd: 'sd', ramona: 'sd', riverside: 'riverside', anza: 'riverside', murrieta: 'riverside', desert: 'desert' };
+
+/**
+ * Optional fallback home bases from env, e.g.
+ * RECEPTIONIST_FALLBACK_HOME_ZONES="chris:riverside,sergio:riverside,haze:sd".
+ * A fallback tech with a known home base and an empty day is only offered in that zone.
+ */
+export function fallbackHomeZones(env: NodeJS.ProcessEnv = process.env): Map<string, DispatchZone> {
+  const out = new Map<string, DispatchZone>();
+  for (const part of String(env.RECEPTIONIST_FALLBACK_HOME_ZONES || '').split(',')) {
+    const [key, zone] = part.split(':').map((v) => v?.trim().toLowerCase());
+    const z = zone ? ZONE_NAMES[zone] : undefined;
+    if (key && z) out.set(key, z);
+  }
+  return out;
 }
 
 /** Allowed Sarah assignees for this job location. */
@@ -395,14 +471,14 @@ export function resolveTechsForLocation(
 export function resolveFallbackTechs(
   users: JobberUser[],
   env: NodeJS.ProcessEnv = process.env
-): { id: string; name: string }[] {
-  const resolved: { id: string; name: string }[] = [];
+): { id: string; name: string; key: ShopTech['key'] }[] {
+  const resolved: { id: string; name: string; key: ShopTech['key'] }[] = [];
   const seen = new Set<string>();
   for (const tech of fallbackTechs()) {
     const match = resolveTechUserId(tech, users, env);
     if (!match || seen.has(match.id)) continue;
     seen.add(match.id);
-    resolved.push(match);
+    resolved.push({ ...match, key: tech.key });
   }
   return resolved;
 }
