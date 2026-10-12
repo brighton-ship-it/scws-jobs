@@ -57,10 +57,10 @@ export async function loadHistoryInvoices(fromIso: string, toIso: string): Promi
   return { rows, truncated: parts.some((p) => p.truncated) };
 }
 
-export interface CostJob { id: string; title?: string | null; completedAt?: string | null; jobCosting?: { totalRevenue?: number | null; totalCost?: number | null; lineItemCost?: number | null; labourCost?: number | null; expenseCost?: number | null; profitAmount?: number | null } | null }
+export interface CostJob { id: string; jobNumber?: number | null; title?: string | null; completedAt?: string | null; jobCosting?: { totalRevenue?: number | null; totalCost?: number | null; lineItemCost?: number | null; labourCost?: number | null; expenseCost?: number | null; profitAmount?: number | null } | null }
 const COST_JOBS = `query MetricsJobCosts($first: Int!, $after: String, $filter: JobFilterAttributes) {
   jobs(first: $first, after: $after, filter: $filter) {
-    nodes { id title completedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } }
+    nodes { id jobNumber title completedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } }
     pageInfo { hasNextPage endCursor } } }`;
 export const loadCompletedJobCosts = (from: string, to: string) =>
   paged<CostJob>(`cost|${from.slice(0, 10)}`, COST_JOBS, 'jobs', { filter: { completedAt: { after: from, before: to } } }, 20, 50);

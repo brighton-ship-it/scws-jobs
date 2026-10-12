@@ -45,8 +45,11 @@ export function buildMetrics(input: {
   qboConnected: boolean;
 }): MetricCard[] {
   const today = ptDateKey(input.now);
-  const histRange = `${md(ptDateKey(input.histFrom))} – ${md(today)} (invoice issue date)`;
   const inv = input.history.rows;
+  // Jobber history may start later than the requested window (SCWS's Jobber data starts Feb 2025): show the real span.
+  const oldest = inv?.reduce<number>((m, r) => { const t = Date.parse(r.issuedDate || ''); return Number.isFinite(t) && t < m ? t : m; }, Infinity) ?? Infinity;
+  const histStart = Number.isFinite(oldest) && oldest > input.histFrom.getTime() ? new Date(oldest) : input.histFrom;
+  const histRange = `${md(ptDateKey(histStart))} – ${md(today)} (invoice issue date; all Jobber history in that span)`;
   const cards: MetricCard[] = [];
   const histNeeds = inv ? undefined : `needs Jobber invoice history (load failed: ${input.history.error ?? 'unknown'})`;
   const trunc = input.history.truncated ? ' Warning: Jobber page cap hit, some invoices may be missing.' : '';
@@ -137,7 +140,7 @@ export function buildMetrics(input: {
   const timeRange = `${md(ptDateKey(input.timeFrom))} – ${md(today)} (timesheet start)`;
   const te = input.time.rows;
   const ut: MetricCard = { id: 'util', title: 'Technician utilization', value: NA, measures: 'Clocked hours on a job ÷ all clocked hours (job + general/travel/shop time).', source: 'Jobber timesheets.', range: timeRange };
-  if (!te) ut.needs = `needs Jobber timesheets (query failed: ${input.time.error ?? 'unknown'})`;
+  if (!te) ut.needs = /permission/i.test(input.time.error ?? '') ? 'needs timesheet access: the SCWS Jobber app isn\'t allowed to read timesheets (Jobber says "hidden due to permissions"). Add the Timesheets read scope to the app and re-authorize, and crews need to clock in/out in Jobber. Paid hours per tech are also needed for true utilization.' : `needs Jobber timesheets (query failed: ${input.time.error ?? 'unknown'})`;
   else {
     const hrs = (e: TimeEntry) => { if (typeof e.finalDuration === 'number' && e.finalDuration > 0) return e.finalDuration / 3600; const a = Date.parse(e.startAt || ''), b = Date.parse(e.endAt || ''); return Number.isFinite(a) && Number.isFinite(b) && b > a ? (b - a) / 3600_000 : 0; };
     const total = te.reduce((s, e) => s + hrs(e), 0); const onJob = te.filter((e) => e.job?.id).reduce((s, e) => s + hrs(e), 0);
@@ -150,24 +153,26 @@ export function buildMetrics(input: {
   // 6) Quote-to-close cycle time
   const qs = input.quotes;
   const qRange = `Quotes created ${md(ptDateKey(input.quotesFrom))} – ${md(today)}`;
-  const cy: MetricCard = { id: 'cycle', title: 'Quote-to-close cycle time', value: NA, measures: 'Median days from quote sent to approved (or converted to a job). Jobber only exposes the latest status change, so converted quotes are measured to conversion, which can run a little long.', source: 'Jobber quotes: sentAt → transitionedAt, status approved/converted. Service-call quotes ($200, auto-created) excluded.', range: qRange };
+  const cy: MetricCard = { id: 'cycle', title: 'Quote-to-close cycle time', value: NA, measures: 'Median days from quote sent to approved (or converted to a job). Jobber only exposes the latest status change, so converted quotes are measured to conversion, which can run a little long.', source: 'Jobber quotes: sentAt → transitionedAt, status approved/converted. Service-call quotes ($200, auto-created) and quotes never marked sent (approved on the spot) are excluded.', range: qRange };
   if (!qs) cy.needs = 'needs Jobber quotes (load failed)';
   else {
     const days = (c: Cat | null) => qs.filter((q) => /approved|converted/i.test(q.quoteStatus || '') && workCategory(q.title) !== 'service_call' && (!c || cat2(q.title) === c))
       .map((q) => (Date.parse(q.transitionedAt || '') - Date.parse(q.sentAt || '')) / DAY).filter((d) => Number.isFinite(d) && d >= 0).sort((a, b) => a - b);
     const med = (a: number[]) => (a.length ? (a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2) : null);
-    const f = (a: number[]) => { const m = med(a); return m == null ? NA : `${m < 1 ? '<1' : Math.round(m)} days`; };
+    const f = (a: number[]) => { const m = med(a); return m == null ? NA : m < 1 ? 'Same day' : `${Math.round(m)} day${Math.round(m) === 1 ? '' : 's'}`; };
+    const sameDay = (a: number[]) => (a.length ? `${pct(a.filter((x) => x < 1).length / a.length)} within 24 h` : '');
     const all = days(null), p = days('pump'), d = days('drilling');
-    cy.value = f(all); cy.sub = `${all.length} closed quotes`;
-    cy.rows = [{ label: 'Pump & service', value: f(p), note: `${p.length} quotes` }, { label: 'Drilling', value: f(d), note: `${d.length} quotes` }];
+    cy.value = f(all); cy.sub = `Median of ${all.length} won quotes · ${sameDay(all)}`;
+    cy.rows = [{ label: 'Pump & service', value: f(p), note: `${p.length} quotes · ${sameDay(p)}` }, { label: 'Drilling', value: f(d), note: `${d.length} quotes · ${sameDay(d)}` }];
   }
   cards.push(cy);
 
   // 7) Repeat purchase rate
-  const rp: MetricCard = { id: 'repeat', title: 'Repeat purchase rate', value: NA, measures: 'Share of customers invoiced in the window who were invoiced for 2 or more separate jobs (or separate dates when no job is linked).' + trunc, source: 'Jobber invoices (not draft/void), grouped by client.', range: histRange, needs: histNeeds };
+  const rp: MetricCard = { id: 'repeat', title: 'Repeat purchase rate', value: NA, measures: 'Share of customers invoiced in the window who came back: invoiced again at least 60 days after an earlier invoice. The 60-day gap keeps a $200 service call plus the repair it led to from counting as a repeat.' + trunc, source: 'Jobber invoices (not draft/void), grouped by client.', range: histRange, needs: histNeeds };
   if (inv) {
-    const jobsBy = new Map<string, Set<string>>(); const catBy = { pump: new Set<string>(), drilling: new Set<string>() };
-    for (const i of inv) { if (!invoicePretaxUsd(i) || !i.client?.id) continue; const k = i.jobs?.nodes?.[0]?.id || `d:${i.issuedDate}`; (jobsBy.get(i.client.id) ?? jobsBy.set(i.client.id, new Set()).get(i.client.id)!).add(k); catBy[cat2(i.jobs?.nodes?.[0]?.title)].add(i.client.id); }
+    const span = new Map<string, { a: number; b: number }>(); const catBy = { pump: new Set<string>(), drilling: new Set<string>() };
+    for (const i of inv) { const t = Date.parse(i.issuedDate || ''); if (!invoicePretaxUsd(i) || !i.client?.id || !Number.isFinite(t)) continue; const x = span.get(i.client.id); span.set(i.client.id, { a: Math.min(x?.a ?? t, t), b: Math.max(x?.b ?? t, t) }); catBy[cat2(i.jobs?.nodes?.[0]?.title)].add(i.client.id); }
+    const jobsBy = { get: (id: string) => { const x = span.get(id); return { size: x && x.b - x.a >= 60 * DAY ? 2 : 1 }; }, keys: () => span.keys() };
     const rate = (ids: string[]) => { const rep = ids.filter((id) => (jobsBy.get(id)?.size ?? 0) >= 2).length; return { rep, n: ids.length, v: ids.length ? pct(rep / ids.length) : NA }; };
     const a = rate(Array.from(jobsBy.keys())), p = rate(Array.from(catBy.pump)), d = rate(Array.from(catBy.drilling));
     rp.value = a.v; rp.sub = `${a.rep} of ${a.n} customers`;
@@ -179,7 +184,7 @@ export function buildMetrics(input: {
   const nowT = input.now.getTime(); const yrAgo = nowT - 365 * DAY; const twoAgo = nowT - 730 * DAY;
   const nr: MetricCard = { id: 'nrr', title: 'Net revenue retention', value: NA, measures: 'Revenue this year from customers who bought last year ÷ what those same customers spent last year. Over 100% = existing customers are spending more.', source: 'Jobber invoices (not draft/void), pre-tax, grouped by client.', range: `Last year: ${md(ptDateKey(new Date(twoAgo)))} – ${md(ptDateKey(new Date(yrAgo)))}; this year: ${md(ptDateKey(new Date(yrAgo)))} – ${md(today)}`, needs: histNeeds };
   if (inv) {
-    if (input.histFrom.getTime() > twoAgo + DAY) nr.needs = 'needs 24 months of Jobber invoices';
+    if (histStart.getTime() > twoAgo + 7 * DAY) nr.needs = `needs 24 months of invoice history: Jobber invoices only go back to ${md(ptDateKey(histStart))}, so last year is only partly in Jobber. Comparing a partial year with a full one would understate retention. Older invoices (QuickBooks / pre-Jobber) would fill it in; this card turns on by itself around Mar 2027.`;
     else {
       const base = new Map<string, { v: number; c: Cat }>(); const cur = new Map<string, number>();
       for (const i of inv) {
