@@ -37,7 +37,10 @@ export async function POST(req: NextRequest) {
   const targets = ring?.length ? ring : shopNumbers();
   // Ringing the same Twilio number (test loop) needs our own caller ID; otherwise pass the caller's number through.
   const callerId = targets.includes(to) ? to : undefined;
-  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId }));
+  // Ring timeout (s): default 60 so a Google Voice ring group can roll to Mike (~35s) before Twilio gives up.
+  const t = parseInt(q.get('timeout') || process.env.PHONE_CALL_RING_TIMEOUT || '60', 10);
+  const timeout = Number.isFinite(t) ? Math.min(Math.max(t, 10), 120) : 60;
+  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId, timeout }));
 }
 
 export async function GET() {
