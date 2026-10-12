@@ -3,11 +3,11 @@ import { assertNoJobberErrors, jobberGraphql, type JobberGraphqlResult } from '.
 import type { WeeklyInvoice, WeeklyQuote, WeeklyJob, WeeklyPayment } from './weekly-sales.ts';
 
 const TTL_MS = 10 * 60_000;
-const MAX_PAGES = 12;
+const MAX_PAGES = 20;
 /** Payment records include one INVOICE-type row per invoice, so ~100/week: 9 weeks needs ~20 pages; newest come first. */
-const PAYMENT_MAX_PAGES = 40;
+const PAYMENT_MAX_PAGES = 60; // up to 90-day range
 /** ~125 days of created quotes (9 weeks + 60d slack) at ~75/week needs well over 12 pages. */
-const QUOTE_MAX_PAGES = 30;
+const QUOTE_MAX_PAGES = 45; // up to 90-day range + 60d slack
 const cache = new Map<string, { at: number; rows: unknown[] | null }>();
 
 async function paged<T>(key: string, query: string, field: string, variables: Record<string, unknown>, maxPages = MAX_PAGES): Promise<T[] | null> {

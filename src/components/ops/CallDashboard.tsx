@@ -223,23 +223,27 @@ function AdSplitCard({ split }: { split: NonNullable<Dashboard['adSplit']> }) {
 }
 
 function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> }) {
-  const w = weekly.weeks[weekly.weeks.length - 1];
+  const cw = weekly.weeks[weekly.weeks.length - 1];
   const prev = weekly.weeks[weekly.weeks.length - 2];
   const first = weekly.weeks[0];
+  // Headline tiles follow the selected range; fall back to this week if the API predates range totals.
+  const w = weekly.totals ?? cw;
+  const title = weekly.totals?.title ?? `This week to date: ${cw.label}`;
+  const span = w.label;
   const rows: Array<[string, string, string?]> = [
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
-    ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent this week`],
+    ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
     ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved`],
     ['Closing rate', pct(w.closingRate), `${w.bookedCalls ?? 0} booked / ${w.calls} calls`],
     ['Last full week', usd(prev?.invoiced), prev?.label],
   ];
   return (
-    <Card title="Weekly sales" subtitle={`This week to date: ${w.label} · last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
+    <Card title="Sales" subtitle={`${title} · bars: last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} + this week (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced this week</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{w.label} · {w.invoiceCount ?? 0} invoices, pre-tax</p></div>
-        <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid on this week&apos;s invoices</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.paid)}</p><p className="text-xs text-slate-500">invoices issued {w.label}</p></div>
-        <div className="col-span-2 min-w-0 rounded-xl bg-emerald-50 px-4 py-3 sm:col-span-1"><p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">Cash collected this week</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.cash)}</p><p className="text-xs text-slate-500">payments received {w.label} · {w.cashCount ?? 0} payments, any invoice</p></div>
+        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{span} · {w.invoiceCount ?? 0} invoices, pre-tax</p></div>
+        <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid on those invoices</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.paid)}</p><p className="text-xs text-slate-500">invoices issued {span}</p></div>
+        <div className="col-span-2 min-w-0 rounded-xl bg-emerald-50 px-4 py-3 sm:col-span-1"><p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">Cash collected</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.cash)}</p><p className="text-xs text-slate-500">payments received {span} · {w.cashCount ?? 0} payments, any invoice</p></div>
       </div>
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
@@ -292,7 +296,7 @@ export function CallDashboardPage() {
 
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
-          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Weekly sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
 
           {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
 
@@ -458,14 +462,15 @@ export function CallDashboardTv() {
         <div className="grid auto-rows-[150px] grid-cols-2 gap-2.5 sm:gap-3 lg:min-h-0 lg:flex-1 lg:auto-rows-fr lg:grid-cols-4 lg:grid-rows-2 xl:gap-5" aria-busy="true">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel-dark" />)}</div>
       ) : <div className="flex-1" />}
       {data?.weekly ? (() => {
-        const ws = data.weekly.weeks; const w = ws[ws.length - 1];
+        const ws = data.weekly.weeks; const w = data.weekly.totals ?? ws[ws.length - 1];
+        const head = data.weekly.totals?.title ?? `This week to date ${w.label}`;
         const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-base font-bold tabular-nums sm:text-lg xl:text-3xl">{v}</p>{sub ? <p className="truncate text-[10px] text-slate-500 xl:text-base">{sub}</p> : null}</div>);
         return (
-          <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(8,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Weekly sales">
-            <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-9 xl:text-sm">Weekly sales · this week to date {w.label} · bars: invoiced, last 9 weeks, Mon–Sun</p>
+          <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(8,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
+            <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-9 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
             {cell('Invoiced', usd(w.invoiced))}
-            {cell('Paid on invoices', usd(w.paid), 'issued this week')}
-            {cell('Cash collected', usd(w.cash), 'received this week')}
+            {cell('Paid on invoices', usd(w.paid), `issued ${w.label}`)}
+            {cell('Cash collected', usd(w.cash), `received ${w.label}`)}
             {cell('Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked))}
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}

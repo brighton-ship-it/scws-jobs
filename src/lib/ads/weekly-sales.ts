@@ -32,8 +32,17 @@ export interface WeekRow {
   bookedCalls: number | null;
   closingRate: number | null;
 }
+/** Headline totals over the dashboard's selected date range (same definitions as a week row). */
+export interface RangeTotals extends Omit<WeekRow, 'weekStart' | 'weekEnd' | 'current'> {
+  range: string;      // '7' | '30' | '90' | 'since'
+  startKey: string;   // YYYY-MM-DD PT (inclusive)
+  endKey: string;     // YYYY-MM-DD PT (inclusive, today)
+  title: string;      // "Last 30 days: Sep 13–Oct 12"
+}
 export interface WeeklySales {
   weeks: WeekRow[]; // oldest -> newest
+  /** Totals for the selected range; absent when the caller did not pass one. */
+  totals?: RangeTotals | null;
   sources: string[];
   gaps: string[];
 }
@@ -76,25 +85,21 @@ export interface WeeklyInput {
   callTimes: string[];
   /** booked-call conversion timestamps (new-customer bookings credited to a call) */
   bookedAt: string[];
+  /** Selected dashboard range for the headline totals (inclusive PT date keys). */
+  range?: { range: string; startKey: string; endKey: string; name: string } | null;
 }
 
-export function buildWeeklySales(input: WeeklyInput): WeeklySales {
-  const now = input.now ?? new Date();
-  const bounds = weekBounds(now);
-  const idx = new Map<string, number>();
-  const weeks: WeekRow[] = bounds.map((b, i) => {
-    for (let d = 0; d < 7; d++) idx.set(ptDateKey(ptStartOfDay(b.start, d)), i);
-    return {
-      weekStart: b.startKey, weekEnd: b.endKey, label: `${md(b.startKey)}–${md(b.endKey)}`, current: b.current,
-      invoiced: input.invoices ? 0 : null, paid: input.invoices ? 0 : null, cash: input.payments ? 0 : null, cashCount: input.payments ? 0 : null, invoiceCount: input.invoices ? 0 : null,
-      jobsBooked: input.jobsCreated ? 0 : null, jobsCompleted: input.jobsCompleted ? 0 : null,
-      quotesSent: input.quotes ? 0 : null, quotesSentValue: input.quotes ? 0 : null,
-      quotesApproved: input.quotes ? 0 : null, quotesApprovedValue: input.quotes ? 0 : null,
-      calls: 0, bookedCalls: 0, closingRate: null,
-    };
-  });
-  const at = (key: string | null) => (key != null && idx.has(key) ? weeks[idx.get(key)!] : undefined);
+type Row = Pick<WeekRow, 'invoiced' | 'paid' | 'cash' | 'cashCount' | 'invoiceCount' | 'jobsBooked' | 'jobsCompleted' | 'quotesSent' | 'quotesSentValue' | 'quotesApproved' | 'quotesApprovedValue' | 'calls' | 'bookedCalls' | 'closingRate'>;
+const emptyRow = (input: WeeklyInput): Row => ({
+  invoiced: input.invoices ? 0 : null, paid: input.invoices ? 0 : null, cash: input.payments ? 0 : null, cashCount: input.payments ? 0 : null, invoiceCount: input.invoices ? 0 : null,
+  jobsBooked: input.jobsCreated ? 0 : null, jobsCompleted: input.jobsCompleted ? 0 : null,
+  quotesSent: input.quotes ? 0 : null, quotesSentValue: input.quotes ? 0 : null,
+  quotesApproved: input.quotes ? 0 : null, quotesApprovedValue: input.quotes ? 0 : null,
+  calls: 0, bookedCalls: 0, closingRate: null,
+});
 
+/** Adds every record into the row returned by `at(dateKey)` (undefined = outside any bucket). */
+function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefined, floorKey: string) {
   for (const inv of input.invoices ?? []) {
     const w = at(jobberDateKey(inv.issuedDate));
     const pre = invoicePretaxUsd(inv);
@@ -123,7 +128,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
       sent.quotesSent = (sent.quotesSent ?? 0) + 1;
       sent.quotesSentValue = round((sent.quotesSentValue ?? 0) + val);
     }
-    // Approved is bucketed by APPROVAL date (transitionedAt), independent of the week the quote was sent.
+    // Approved is bucketed by APPROVAL date (transitionedAt), independent of when the quote was sent.
     if (isApprovedStatus(q.quoteStatus)) {
       const appr = at(jobberDateKey(q.transitionedAt));
       if (appr) {
@@ -134,18 +139,39 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
   }
   for (const j of input.jobsCreated ?? []) { const w = at(jobberDateKey(j.createdAt)); if (w) w.jobsBooked = (w.jobsBooked ?? 0) + 1; }
   for (const j of input.jobsCompleted ?? []) { const w = at(jobberDateKey(j.completedAt)); if (w) w.jobsCompleted = (w.jobsCompleted ?? 0) + 1; }
-
   // Closing rate only counts calls/bookings since the tracking floor (booking attribution starts then).
+  for (const t of input.callTimes) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.calls += 1; }
+  for (const t of input.bookedAt) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.bookedCalls = (w.bookedCalls ?? 0) + 1; }
+}
+
+const RANGE_NAMES: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
+export const rangeTitle = (range: string, startKey: string, endKey: string) => `${RANGE_NAMES[range] ?? 'Selected range'}: ${md(startKey)}–${md(endKey)}`;
+
+/** Oldest PT date key the loaders must cover: the 9-week chart window or the selected range, whichever is earlier. */
+export function salesWindowStart(now: Date, rangeStart: Date): Date {
+  const wk = weekBounds(now)[0].start;
+  return rangeStart.getTime() < wk.getTime() ? ptStartOfDay(rangeStart, 0) : wk;
+}
+
+export function buildWeeklySales(input: WeeklyInput): WeeklySales {
+  const now = input.now ?? new Date();
+  const bounds = weekBounds(now);
+  const idx = new Map<string, number>();
+  const weeks: WeekRow[] = bounds.map((b, i) => {
+    for (let d = 0; d < 7; d++) idx.set(ptDateKey(ptStartOfDay(b.start, d)), i);
+    return { weekStart: b.startKey, weekEnd: b.endKey, label: `${md(b.startKey)}–${md(b.endKey)}`, current: b.current, ...emptyRow(input) };
+  });
+  const at = (key: string | null) => (key != null && idx.has(key) ? weeks[idx.get(key)!] : undefined);
   const floorKey = ptDateKey(new Date(DASH_FLOOR_ISO));
-  for (const t of input.callTimes) {
-    const k = jobberDateKey(t);
-    const w = at(k);
-    if (w && k! >= floorKey) w.calls += 1;
-  }
-  for (const t of input.bookedAt) {
-    const k = jobberDateKey(t);
-    const w = at(k);
-    if (w && k! >= floorKey) w.bookedCalls = (w.bookedCalls ?? 0) + 1;
+  accumulate(input, at, floorKey);
+  let totals: RangeTotals | null = null;
+  if (input.range) {
+    const { range, startKey, endKey } = input.range;
+    const row = emptyRow(input);
+    accumulate(input, (k) => (k != null && k >= startKey && k <= endKey ? row : undefined), floorKey);
+    if (endKey < floorKey) { row.bookedCalls = null; row.calls = 0; }
+    row.closingRate = row.calls > 0 ? Math.min(1, (row.bookedCalls ?? 0) / row.calls) : null;
+    totals = { ...row, range, startKey, endKey, label: `${md(startKey)}–${md(endKey)}`, title: rangeTitle(range, startKey, endKey) };
   }
   for (const w of weeks) {
     if (w.weekEnd < floorKey) { w.bookedCalls = null; w.closingRate = null; w.calls = 0; continue; }
@@ -161,13 +187,13 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
   if (!input.jobsCreated) gaps.push('Weekly jobs booked unavailable (Jobber jobs query failed).');
   if (!input.jobsCompleted) gaps.push('Weekly jobs completed unavailable (Jobber jobs query failed).');
   return {
-    weeks, gaps,
+    weeks, gaps, totals,
     sources: [
       'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share), so it follows the invoice week, not the day the money arrived.',
       'Cash collected = Jobber payment records by the date the payment was received (payments and deposits, less refunds and failed ACH), whichever week the invoice was issued.',
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
       'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes now approved/converted, counted in the week they were approved (Jobber status-change time), whenever they were sent.',
-      `Closing rate = new-customer bookings credited to a call ÷ all calls, weeks since ${md(floorKey)} (tracking start). Weeks are Mon–Sun, Pacific.`,
+      `Closing rate = new-customer bookings credited to a call ÷ all calls, weeks since ${md(floorKey)} (tracking start). Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
   };
 }

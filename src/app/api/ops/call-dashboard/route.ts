@@ -5,8 +5,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
-import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
-import { buildWeeklySales, weekBounds } from '@/lib/ads/weekly-sales';
+import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, rangeStart, ptDateKey, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
+import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadPaidByJob } from '@/lib/ads/call-dashboard-data';
 
@@ -63,16 +63,19 @@ export async function GET(request: NextRequest) {
     if (log.error) notes.push(`call log: ${log.error.message}`);
     else dash.callLog = buildCallLogView(log.data ?? [], new Date());
     try {
-      const wb = weekBounds(new Date());
-      const from = wb[0].start.toISOString();
+      const nowD = new Date();
+      const rStart = rangeStart(range, nowD);
+      const winStart = salesWindowStart(nowD, rStart);
+      const from = winStart.toISOString();
       const to = new Date(Date.now() + 86400_000).toISOString();
-      const slack = new Date(wb[0].start.getTime() - 60 * 86400_000).toISOString();
+      const slack = new Date(winStart.getTime() - 60 * 86400_000).toISOString();
       const [invoices, quotes, jobsCreated, jobsCompleted, payments] = await Promise.all([
         loadWeeklyInvoices(from, to), loadWeeklyQuotes(slack, to), loadWeeklyJobsCreated(from, to), loadWeeklyJobsCompleted(from, to), loadWeeklyPayments(from, to),
       ]);
       const allCalls = [...adsCalls, ...liveCalls];
       dash.weekly = buildWeeklySales({
-        invoices, quotes, jobsCreated, jobsCompleted, payments,
+        now: nowD, invoices, quotes, jobsCreated, jobsCompleted, payments,
+        range: { range, startKey: ptDateKey(rStart), endKey: ptDateKey(nowD), name: range },
         callTimes: allCalls.map((c) => c.started_at).filter((t): t is string => !!t),
         bookedAt: conversions.map((c: { conversion_at: string | null }) => c.conversion_at).filter((t: string | null): t is string => !!t),
       });
