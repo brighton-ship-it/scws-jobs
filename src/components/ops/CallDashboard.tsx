@@ -238,13 +238,14 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
             <div key={r.category} className={`min-w-0 rounded-xl border p-3 ${box}`}>
               <div className="flex items-baseline justify-between gap-2">
                 <p className={`truncate text-xs font-semibold ${ink} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
-                <p className={`shrink-0 text-sm font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`} title={r.category === 'drilling' ? 'Early read: drilling revenue is long-tail and arrives over months' : 'invoiced ÷ spend'}>{mult(r.multiple)}{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
+                <p className={`shrink-0 text-2xl font-extrabold tabular-nums ${ink} ${dark ? 'xl:text-4xl' : ''}`} title="ROAS (new customers) = new-customer invoiced ÷ spend">{r.multipleNew === undefined ? '—' : mult(r.multipleNew)}<span className="ml-1 text-[10px] font-medium text-slate-400 xl:text-sm">ROAS new</span>{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
               </div>
-              <dl className="mt-2 grid grid-cols-3 gap-x-2 gap-y-1.5">
-                {([['Spend', usd(r.spend)], ['Clicks', r.clicks == null ? '—' : String(r.clicks)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (all)', usd(r.invoiced)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)], ['Blended ROAS', mult(r.multiple)], ['ROAS (new)', r.multipleNew === undefined ? '—' : mult(r.multipleNew)], ['Paid (all)', r.paid == null ? '—' : usd(r.paid)]] as const).map(([k, v]) => (
-                  <div key={k} className="min-w-0"><dt className={`truncate text-[10px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-sm font-semibold tabular-nums ${ink} ${dark ? 'xl:text-2xl' : ''}`}>{v}</dd></div>
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
+                {([['Spend', usd(r.spend)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)]] as const).map(([k, v]) => (
+                  <div key={k} className="min-w-0"><dt className={`truncate text-[11px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd></div>
                 ))}
               </dl>
+              <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended ROAS (all callers) {mult(r.multiple)}</p>
             </div>
           ))}
           {win.otherBooked != null ? <p className={`text-[11px] ${mut} ${dark ? 'xl:text-sm' : ''}`}>{win.otherBooked > 0 ? `+${win.otherBooked} booked via Mike calls · ` : ''}{win.rows.reduce((a, r) => a + r.booked, 0) + win.otherBooked} new booked total</p> : null}
@@ -368,15 +369,11 @@ export function CallDashboardPage() {
 
           {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
 
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
             <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
-            <Kpi delay={120} color={palette.revenue} label="Blended ROAS / ROAS (new)" range={rangeLabel} hint="all = every ad caller (new + repeat); new = new customers only; Jobber invoices ÷ Google Ads spend" value={data.roas ? `${mult(data.roas.overall.multipleInvoiced)} / ${mult(data.roas.newOnly.multipleInvoiced)}` : '—'} sub={`MER ${mult(data.roas?.mer?.multiple ?? null)} · all invoiced ÷ spend`} />
-            <Kpi delay={160} color={palette.booked} label="Booked value" range={rangeLabel} value={usd(t.bookedValue)} sub={`${usd(t.perCall.booked, 2)}/call`} />
-            <Kpi delay={200} color={palette.revenue} label="Quote value" range={rangeLabel} value={usd(t.quoteValue)} sub={`${usd(t.perCall.quote, 2)}/call`} />
-            <Kpi delay={240} color={palette.revenue} label="New-cust. invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(data.roas ? data.roas.newOnly.invoiced : null)} sub={data.roas && t.calls ? `${usd(data.roas.newOnly.invoiced / t.calls, 2)}/call` : undefined} />
-            <Kpi delay={280} color={palette.paid} label="New-cust. paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(data.roas ? data.roas.newOnly.paid : null)} sub={data.roas && data.roas.newOnly.invoiced ? `${Math.round((data.roas.newOnly.paid / data.roas.newOnly.invoiced) * 100)}% of invoiced` : undefined} />
+            <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={rangeLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended ${mult(data.roas.overall.multipleInvoiced)} · MER ${mult(data.roas.mer?.multiple ?? null)}` : undefined} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -394,7 +391,7 @@ export function CallDashboardPage() {
                 { label: 'Calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
                 { label: 'Booked jobs (new)', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
                 { label: `New customers invoiced${data.roas ? ` · ${usd(data.roas.newOnly.invoiced)}` : ''}`, value: data.roas ? data.roas.newOnly.clients : null, color: palette.revenue },
-                { label: `Paid in full${data.roas ? ` · ${usd(data.roas.newOnly.paid)} collected` : ''}`, value: data.roas ? data.roas.newOnly.paidClients ?? null : null, color: palette.paid },
+                { label: 'Paid in full', value: data.roas ? data.roas.newOnly.paidClients ?? null : null, color: palette.paid },
               ]} />
               <p className="mt-2 text-[11px] text-slate-400">
                 {data.funnel?.adCalls != null ? `${data.funnel.adCalls} Google Ads + ${data.funnel.calls - data.funnel.adCalls} Mike calls · ${data.funnel.uniqueCallers ?? '—'} unique callers` : null}
@@ -404,19 +401,14 @@ export function CallDashboardPage() {
             <Card title="Return on ad spend" subtitle={`Jobber invoices ÷ Google Ads spend · ${rangeLabel}`} delay={180} className="lg:col-span-1">
               {data.roas ? (
                 <>
-                  <Gauge value={data.roas.overall.multipleInvoiced} label="Blended ROAS" />
-                  <p className="-mt-1 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">Blended ROAS (all callers)</p>
-                  <table className="mt-2 w-full text-center text-xs tabular-nums text-slate-500">
-                    <thead><tr className="text-[10px] uppercase tracking-wider"><th></th><th className="font-semibold">Invoiced</th><th className="font-semibold">Paid</th></tr></thead>
-                    <tbody>
-                      <tr><td className="py-0.5 text-left">Blended ROAS (all callers)</td><td className="font-bold text-slate-900">{mult(data.roas.overall.multipleInvoiced)} · {compactUsd(data.roas.overall.invoiced)}</td><td className="font-bold text-slate-900">{mult(data.roas.overall.multiplePaid)} · {compactUsd(data.roas.overall.paid)}</td></tr>
-                      <tr><td className="py-0.5 text-left">ROAS (new customers)</td><td className="font-bold text-slate-900">{mult(data.roas.newOnly.multipleInvoiced)} · {compactUsd(data.roas.newOnly.invoiced)}</td><td className="font-bold text-slate-900">{mult(data.roas.newOnly.multiplePaid)} · {compactUsd(data.roas.newOnly.paid)}</td></tr>
-                      <tr><td className="py-0.5 text-left">Pump ads</td><td>{mult(data.roas.byCategory.pump.overall.multipleInvoiced)} / new {mult(data.roas.byCategory.pump.newOnly.multipleInvoiced)}</td><td>{compactUsd(data.roas.byCategory.pump.spend)} spend</td></tr>
-                      <tr><td className="py-0.5 text-left">Drilling ads</td><td>{mult(data.roas.byCategory.drilling.overall.multipleInvoiced)} / new {mult(data.roas.byCategory.drilling.newOnly.multipleInvoiced)}</td><td>{compactUsd(data.roas.byCategory.drilling.spend)} spend</td></tr>
-                    </tbody>
-                  </table>
-                  <p className="mt-1 text-center text-[11px] text-slate-400">MER <span className="font-bold text-slate-900">{mult(data.roas.mer?.multiple ?? null)}</span> = all Jobber invoiced {compactUsd(data.roas.mer?.invoiced ?? null)} ÷ spend {compactUsd(data.roas.spend)} · paid = collected so far</p>
-                  <details className="mt-1 text-[10px] text-slate-400"><summary className="cursor-pointer">How ROAS is counted</summary><ul className="list-disc pl-4">{data.roas.method.map((m) => <li key={m}>{m}</li>)}</ul></details>
+                  <Gauge value={data.roas.newOnly.multipleInvoiced} label="ROAS (new)" />
+                  <p className="-mt-1 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">ROAS (new customers)</p>
+                  <p className="mt-1 text-center text-sm text-slate-500">{usd(data.roas.newOnly.invoiced)} invoiced ÷ {usd(data.roas.spend)} spend</p>
+                  <div className="mt-3 flex justify-center gap-6 text-center text-xs text-slate-500">
+                    <div><div className="text-lg font-bold tabular-nums text-slate-800">{mult(data.roas.overall.multipleInvoiced)}</div>Blended (all callers)</div>
+                    <div><div className="text-lg font-bold tabular-nums text-slate-800">{mult(data.roas.mer?.multiple ?? null)}</div>MER</div>
+                  </div>
+                  <details className="mt-2 text-[10px] text-slate-400"><summary className="cursor-pointer">How it is counted</summary><ul className="list-disc pl-4">{data.roas.method.filter((m) => !m.startsWith('Paid')).map((m) => <li key={m}>{m}</li>)}</ul></details>
                 </>
               ) : (
                 <p className="py-10 text-center text-sm text-slate-400">— Jobber invoices did not load; refresh in a minute.</p>
@@ -509,16 +501,15 @@ export function CallDashboardTv() {
         <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3 xl:gap-4" aria-busy="true">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="cd-skel-dark h-[150px]" />)}</div>
       ) : null}
       {tv ? (
-        <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 lg:grid-cols-5 xl:gap-4" aria-label="Revenue and return">
-          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? null)} sub={`paid ${usd(mainRev?.paid ?? null)} · this week ${usd(weekNew)}`} />
+        <div className="grid shrink-0 grid-cols-1 gap-2.5 sm:grid-cols-3 sm:gap-3 xl:gap-4" aria-label="Revenue and return">
+          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? null)} sub={`this week ${usd(weekNew)}`} />
           <BigTile delay={200} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={last7.map((d) => d.spend ?? 0)} />
           <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '240ms' }}>
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
-            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'Blended ROAS' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{showSince ? 'all ad callers · ' : ''}{mainRange}</span></p>
-            <div className="w-full max-w-[220px] xl:max-w-[260px]"><Gauge dark value={mainMult} label="invoiced ÷ spend" /></div>
+            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'ROAS (new customers)' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
+            <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={showSince ? ro?.newOnly.multipleInvoiced ?? null : mainMult} label="invoiced ÷ spend" /></div>
+            {showSince ? <p className="text-sm text-slate-400 xl:text-xl">Blended <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span> · MER <span className="font-semibold text-slate-200">{mult(ro?.mer?.multiple ?? null)}</span></p> : null}
           </div>
-          <BigTile delay={280} accent={palette.booked} label="ROAS (new customers)" range={sinceRange} value={mult(ro?.newOnly.multipleInvoiced ?? null)} sub={`${usd(ro?.newOnly.invoiced ?? null)} invoiced`} />
-          <BigTile delay={320} accent={palette.paid} label="MER" range={`${sinceRange} · all invoiced ÷ spend`} value={mult(ro?.mer?.multiple ?? null)} sub={`${compactUsd(ro?.mer?.invoiced ?? null)} ÷ ${compactUsd(ro?.spend ?? null)}`} />
         </div>
       ) : null}
       {data?.weekly ? (() => {
