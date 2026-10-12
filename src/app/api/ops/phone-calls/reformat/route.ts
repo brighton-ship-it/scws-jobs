@@ -19,13 +19,13 @@ export async function POST(request: NextRequest) {
   const { data, error } = await db.from('inbound_call_recordings').select('call_sid, transcript, summary')
     .eq('processing_status', 'done').not('transcript', 'is', null).order('started_at', { ascending: false }).limit(200);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  const todo = (data ?? []).filter((r: any) => (r.transcript || '').trim().length > 20 && (!hasSpeakerTurns(r.transcript) || !/\nWho:/.test(r.summary || ''))).slice(0, limit);
+  const todo = (data ?? []).filter((r: any) => (r.transcript || '').trim().length > 20 && (!hasSpeakerTurns(r.transcript) || !/\n(Who|Address|Issue|Next step|Booked):/.test(r.summary || ''))).slice(0, limit);
   const done: string[] = [];
   const started = Date.now();
   for (const r of todo) {
     if (Date.now() - started > 45_000) break;
     const transcript = await labelTurns(r.transcript).catch(() => r.transcript);
-    const summary = /\nWho:/.test(r.summary || '') ? r.summary : composeSummary(r.summary || '', await summaryCard(transcript).catch(() => null));
+    const summary = /\n(Who|Address|Issue|Next step|Booked):/.test(r.summary || '') ? r.summary : composeSummary(r.summary || '', await summaryCard(transcript).catch(() => null));
     const up = await db.from('inbound_call_recordings').update({ transcript, summary, updated_at: new Date().toISOString() }).eq('call_sid', r.call_sid);
     if (!up.error) done.push(r.call_sid);
   }

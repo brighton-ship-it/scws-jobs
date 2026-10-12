@@ -146,7 +146,8 @@ function Badge({ outcome }: { outcome: string }) {
 
 type FeedRow = NonNullable<Dashboard['callFeed']>[number];
 const fmtDur = (s: number | null) => (s == null ? '—' : s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.round(s)}s`);
-const feedTime = (iso: string) => new Date(iso).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const ptDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+const feedTime = (iso: string) => { const d = new Date(iso); const t = d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' }); return ptDay(d) === ptDay(new Date()) ? t : `${d.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric' })}, ${t}`; };
 function OutcomePill({ o, dark = false }: { o: string; dark?: boolean }) {
   const c = o === 'Booked' ? (dark ? 'bg-emerald-500 text-emerald-950' : 'bg-emerald-600 text-white')
     : o === 'Missed' ? (dark ? 'bg-rose-500 text-white' : 'bg-rose-600 text-white')
@@ -162,7 +163,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
   const sub = dark ? 'text-slate-300' : 'text-slate-600';
   return (
     <table className={`w-full table-fixed text-left ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
-      <colgroup><col className="w-[17%]" /><col className="w-[33%]" /><col className="w-[17%]" /><col className="w-[18%]" /><col className="w-[15%]" /></colgroup>
+      <colgroup><col className="w-[21%]" /><col className="w-[32%]" /><col className="w-[16%]" /><col className="w-[17%]" /><col className="w-[14%]" /></colgroup>
       <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
       <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
         {list.length === 0 ? <tr><td colSpan={5} className={`px-3 py-6 text-center ${sub}`}>No calls yet</td></tr> : list.map((r, i) => (
