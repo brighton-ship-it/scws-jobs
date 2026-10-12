@@ -92,13 +92,20 @@ export async function GET(request: NextRequest) {
         windows: { main: { label: RN[range] ?? 'Selected range', start: new Date(dash.revenueStart) }, week: { label: 'This week (Mon–today)', start: wk < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : wk } },
       });
       if (shared) dash.adSplit = shared;
+      else if (dash.adSplit) blankSplitMoney(dash);
     } catch (e) {
       notes.push(`weekly sales: ${e instanceof Error ? e.message : 'error'}`);
     }
+    if (!dash.roas && dash.adSplit) blankSplitMoney(dash);
     dash.gaps.push(...notes);
     return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString() }));
   } catch (error) {
     console.error('[call-dashboard]', error instanceof Error ? error.message : 'error');
     return finish(NextResponse.json({ error: 'Failed to load dashboard' }, { status: 500 }));
   }
+}
+
+/** Never show the old per-booking matching: if the shared Jobber calculation is unavailable, hide money on the campaign cards. */
+function blankSplitMoney(dash: { adSplit?: { since: { rows: any[] }; week: { rows: any[] } } }) {
+  for (const w of [dash.adSplit!.since, dash.adSplit!.week]) for (const r of w.rows) { r.invoiced = null; r.multiple = null; }
 }
