@@ -491,9 +491,9 @@ export function CallDashboardTv() {
       {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
       {tv ? (
         <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3 xl:gap-4">
-          <BigTile delay={0} accent={palette.answered} label="Calls" range="Today" value={String(tv.callsToday)} spark={last7.map((d) => d.answered + d.missed)} />
-          <BigTile delay={40} accent={palette.answered} label="Answered" range="Today" value={String(tv.answeredToday)} spark={last7.map((d) => d.answered)} />
-          <BigTile delay={80} accent={palette.missed} label="Missed / short" range="Today" value={String(tv.missedToday)} spark={last7.map((d) => d.missed)} />
+          <BigTile delay={0} accent={palette.answered} label="Calls" range="Today · all incoming" value={String(data?.callLog?.today.total ?? tv.callsToday)} spark={last7.map((d) => d.answered + d.missed)} />
+          <BigTile delay={40} accent={palette.answered} label="Answered" range="Today" value={String(data?.callLog?.today.answered ?? tv.answeredToday)} sub={data?.callLog ? `+${data.callLog.today.forwardedAi} to Mike` : undefined} spark={last7.map((d) => d.answered)} />
+          <BigTile delay={80} accent={palette.missed} label="Missed" range="Today" value={String(data?.callLog?.today.missed ?? tv.missedToday)} spark={last7.map((d) => d.missed)} />
           <BigTile delay={120} accent={palette.booked} label="Booked" range="Today / this week" value={`${tv.bookedToday} / ${tv.bookedWeek}`} spark={last7.map((d) => d.booked)} />
         </div>
       ) : !error ? (
