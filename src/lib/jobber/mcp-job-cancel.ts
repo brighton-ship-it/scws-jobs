@@ -44,6 +44,7 @@ export type CancelJobState = {
   jobNumber: string | number | null;
   title: string | null;
   jobStatus: string | null;
+  billingType: string | null;
   completedAt: string | null;
   jobberWebUri: string | null;
   client: { id: string | null; name: string | null } | null;
@@ -95,6 +96,7 @@ const JOB_STATE = `
       jobNumber
       title
       jobStatus
+      billingType
       completedAt
       jobberWebUri
       client { id name }
@@ -221,6 +223,7 @@ export function summarizeJobState(raw: any): CancelJobState {
     jobNumber: raw.jobNumber ?? null,
     title: raw.title ?? null,
     jobStatus: raw.jobStatus ?? null,
+    billingType: raw.billingType ?? null,
     completedAt: raw.completedAt ?? null,
     jobberWebUri: raw.jobberWebUri ?? null,
     client: raw.client ? { id: raw.client.id ?? null, name: raw.client.name ?? null } : null,
@@ -412,7 +415,7 @@ export function cancelJob(input: CommonInput, deps?: JobberDeps, audit: AuditSin
         if (alreadyClosed) await step(JOB_REOPEN, { jobId: state.id }, 'jobReopen');
         // Delete the scheduled visits explicitly. Never visitComplete, never COMPLETE_PAST_*.
         if (open.length) await step(VISIT_DELETE, { ids: open.map((v) => v.id) }, 'visitDelete');
-        await step(JOB_EDIT_NO_INVOICE, { jobId: state.id, input: { invoicing: { invoicingSchedule: 'NEVER' } } }, 'jobEdit');
+        await step(JOB_EDIT_NO_INVOICE, { jobId: state.id, input: { invoicing: { invoicingType: state.billingType || 'FIXED_PRICE', invoicingSchedule: 'NEVER' } } }, 'jobEdit');
         await step(JOB_CLOSE, { jobId: state.id, input: { modifyIncompleteVisitsBy: 'DESTROY_ALL' } }, 'jobClose');
         await step(JOB_NOTE, { jobId: state.id, input: { message: `Cancelled: ${reason}. Visits removed, not completed. No invoice needed.` } }, 'jobCreateNote');
       },

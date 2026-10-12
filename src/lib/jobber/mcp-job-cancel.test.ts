@@ -176,7 +176,7 @@ describe('cancel_job never files a cancelled job as finished work', () => {
     assert.equal(r.changed, true);
     const order = w.calls.filter((c) => c.startsWith('Mcp') && c !== 'McpCancelJobState');
     assert.deepEqual(order, ['McpCancelVisitDelete', 'McpCancelJobNoInvoice', 'McpCancelJobClose', 'McpCancelJobNote']);
-    assert.ok(bodies.some((b) => b.includes('"invoicingSchedule":"NEVER"')));
+    assert.ok(bodies.some((b) => b.includes('"invoicingType":"FIXED_PRICE","invoicingSchedule":"NEVER"')));
     assert.ok(bodies.some((b) => b.includes('Cancelled: Cancelled by customer')));
     assert.equal(bodies.some((b) => /visitComplete|COMPLETE_PAST/.test(b)), false);
   });
