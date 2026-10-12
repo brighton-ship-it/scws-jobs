@@ -114,7 +114,11 @@ export function buildMetrics(input: {
     const costed = withRev.filter((j) => (j.jobCosting?.totalCost ?? 0) > 0);
     const share = withRev.length ? costed.length / withRev.length : 0;
     gm.sub = `${costed.length} of ${withRev.length} completed jobs with revenue have any cost entered`;
-    if (costed.length < 10 || share < 0.5) gm.needs = `needs job costs: only ${costed.length} of ${withRev.length} completed jobs have a cost in Jobber (line-item costs, timesheets or expenses), so a margin would be overstated`;
+    // Line-item costs entered per foot / per unit at the wrong scale show up as cost far above revenue.
+    const bad = costed.filter((j) => (j.jobCosting?.totalCost ?? 0) > 2 * (j.jobCosting?.totalRevenue ?? 0));
+    const worst = bad.slice().sort((a, b) => (b.jobCosting!.totalCost! - b.jobCosting!.totalRevenue!) - (a.jobCosting!.totalCost! - a.jobCosting!.totalRevenue!))[0];
+    if (bad.length >= 3) gm.needs = `needs correct Jobber line-item costs: ${bad.length} of ${costed.length} costed jobs show cost over 2× revenue (worst: #${worst.jobNumber ?? '?'} ${worst.title?.trim() ?? ''}, cost ${usd(worst.jobCosting!.totalCost!)} on ${usd(worst.jobCosting!.totalRevenue!)} revenue), which points to unit costs entered at the wrong scale. Those few jobs swing the average negative, so no margin is shown until they're fixed.`;
+    else if (costed.length < 10 || share < 0.5) gm.needs = `needs job costs: only ${costed.length} of ${withRev.length} completed jobs have a cost in Jobber (line-item costs, timesheets or expenses), so a margin would be overstated`;
     else {
       const agg = (js: CostJob[]) => { const rev = js.reduce((s, j) => s + (j.jobCosting?.totalRevenue ?? 0), 0); const cost = js.reduce((s, j) => s + (j.jobCosting?.totalCost ?? 0), 0); return { n: js.length, per: js.length ? (rev - cost) / js.length : 0, m: rev > 0 ? (rev - cost) / rev : 0 }; };
       const a = agg(costed); const p = agg(costed.filter((j) => cat2(j.title) === 'pump')); const d = agg(costed.filter((j) => cat2(j.title) === 'drilling'));
