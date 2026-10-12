@@ -10,6 +10,7 @@ import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney } from '@/lib/ads/call-dashboard-data';
 import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
+import { buildCallFeed } from '@/lib/ads/call-feed';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -63,6 +64,13 @@ export async function GET(request: NextRequest) {
       .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);
     if (log.error) notes.push(`call log: ${log.error.message}`);
     else dash.callLog = buildCallLogView(log.data ?? [], new Date());
+    try {
+      const recs = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name')
+        .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('started_at', { ascending: false }).limit(100);
+      const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
+        .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
+      dash.callFeed = buildCallFeed({ log: log.data ?? [], recordings: recs.data ?? [], mike: mk.data ?? [], bookedMike: bookingIds, limit: 40 });
+    } catch (e) { notes.push(`call feed: ${e instanceof Error ? e.message : 'error'}`); }
     try {
       const nowD = new Date();
       const rStart = rangeStart(range, nowD);

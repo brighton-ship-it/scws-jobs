@@ -1,4 +1,4 @@
-import { downloadRecording, transcribe, summarize } from './process.ts';
+import { downloadRecording, transcribe, summarize, labelTurns, summaryCard, composeSummary } from './process.ts';
 import { findClientByPhone, buildNoteMessage, postCallNote } from './jobber-note.ts';
 
 export const MIN_SECONDS = 8;
@@ -30,8 +30,10 @@ export async function handleRecording(params: Record<string, string>, db: any, e
   await db.from('inbound_call_recordings').upsert({ ...base, processing_status: 'processing', updated_at: now() }, { onConflict: 'call_sid' });
   try {
     const audio = await downloadRecording(params.RecordingUrl, env.TWILIO_ACCOUNT_SID!, env.TWILIO_AUTH_TOKEN!, deps.fetch);
-    const transcript = await transcribe(audio, env, deps.fetch);
+    const raw = await transcribe(audio, env, deps.fetch);
+    const transcript = raw.trim().length > 20 ? await labelTurns(raw, env, deps.fetch).catch(() => raw) : raw;
     const s = transcript.trim().length > 20 ? await summarize(transcript, env, deps.fetch) : { summary: 'No speech captured.', outcome: 'voicemail_or_no_answer', caller_name: null, needs_followup: false };
+    if (transcript.trim().length > 20) s.summary = composeSummary(s.summary, await summaryCard(transcript, env, deps.fetch).catch(() => null));
     let jobber: string | null = null;
     const phone = normalizePhone(row?.caller_number ?? params.From);
     if (phone) {
