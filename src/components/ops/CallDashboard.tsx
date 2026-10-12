@@ -201,7 +201,7 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
                 <p className={`shrink-0 text-sm font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`} title={r.category === 'drilling' ? 'Early read: drilling revenue is long-tail and arrives over months' : 'invoiced ÷ spend'}>{mult(r.multiple)}{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
               </div>
               <dl className="mt-2 grid grid-cols-3 gap-x-2 gap-y-1.5">
-                {([['Spend', usd(r.spend)], ['Clicks', r.clicks == null ? '—' : String(r.clicks)], ['Calls', String(r.calls)], ['Booked', String(r.booked)], ['Invoiced', usd(r.invoiced)], ['Return', mult(r.multiple)]] as const).map(([k, v]) => (
+                {([['Spend', usd(r.spend)], ['Clicks', r.clicks == null ? '—' : String(r.clicks)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (all)', usd(r.invoiced)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)], ['Return all', mult(r.multiple)], ['Return new', r.multipleNew === undefined ? '—' : mult(r.multipleNew)], ['Paid (all)', r.paid == null ? '—' : usd(r.paid)]] as const).map(([k, v]) => (
                   <div key={k} className="min-w-0"><dt className={`truncate text-[10px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-sm font-semibold tabular-nums ${ink} ${dark ? 'xl:text-2xl' : ''}`}>{v}</dd></div>
                 ))}
               </dl>
@@ -215,7 +215,7 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
 
 function AdSplitCard({ split }: { split: NonNullable<Dashboard['adSplit']> }) {
   return (
-    <Card title="Ad spend: pump vs drilling" subtitle="Google Ads campaigns · calls, bookings and invoiced revenue credited to the campaign that rang · return = invoiced ÷ spend" delay={100}>
+    <Card title="Ad spend: pump vs drilling" subtitle="Google Ads campaigns · same calculation as the Return on ad spend card: Jobber invoices to callers whose latest prior ad call was this campaign ÷ Google Ads spend, same Pacific days · all = new + repeat customers" delay={100}>
       <AdSplitBlocks split={split} />
       <p className="mt-3 text-[11px] text-amber-600">Drilling return is early: drilling jobs invoice weeks to months after the call, so expect it to rise. Spend and clicks come straight from Google Ads; calls are Google Ads calls only.</p>
     </Card>
