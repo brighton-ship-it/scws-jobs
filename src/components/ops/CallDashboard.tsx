@@ -68,7 +68,7 @@ const STYLES = `
 .cd-skel{background:linear-gradient(90deg,#e2e8f0 0,#f1f5f9 100px,#e2e8f0 200px);background-size:400px 100%;animation:cd-shimmer 1.4s linear infinite;border-radius:8px}
 .cd-skel-dark{background:linear-gradient(90deg,#1e293b 0,#334155 100px,#1e293b 200px);background-size:400px 100%;animation:cd-shimmer 1.4s linear infinite;border-radius:12px}
 @media (max-width:1023px){.cd-big{font-size:clamp(1.9rem,8.5vw,2.75rem)}}
-@media (min-width:1024px){.cd-big{font-size:clamp(2.25rem,5.2vw,6rem)}}
+@media (min-width:1024px){.cd-big{font-size:clamp(1.75rem,3vw,4rem)}}
 .cd-big{white-space:nowrap}
 @media (prefers-reduced-motion:reduce){.cd-live,.cd-rise,.cd-bar rect,.cd-line,.cd-skel,.cd-skel-dark{animation:none!important}}
 `;
@@ -439,7 +439,7 @@ export function CallDashboardPage() {
 
 function BigTile({ label, range, value, sub, accent, spark, delta, delay }: { label: string; range?: string; value: string; sub?: string; accent: string; spark?: number[]; delta?: React.ReactNode; delay: number }) {
   return (
-    <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col justify-between gap-2 overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3.5 sm:p-4 lg:min-h-0 xl:p-6" style={{ animationDelay: `${delay}ms` }}>
+    <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col justify-between gap-2 overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3.5 sm:p-4 xl:p-5" style={{ animationDelay: `${delay}ms` }}>
       <span className="absolute inset-x-0 top-0 h-0.5" style={{ background: accent }} />
       <p className="text-[11px] font-semibold uppercase leading-snug tracking-[0.12em] text-slate-400 sm:text-xs sm:tracking-[0.18em] xl:text-base">{label}{range ? <span className="mt-0.5 block text-[10px] font-medium normal-case tracking-normal text-slate-500 sm:text-[11px] xl:text-lg">{range}</span> : null}</p>
       <div className="min-w-0">
@@ -472,10 +472,8 @@ export function CallDashboardTv() {
   const weekNew = wk && wk.rows.every((r) => r.invoicedNew != null) ? wk.rows.reduce((a, r) => a + (r.invoicedNew ?? 0), 0) : null;
   const mainSpend = showSince ? tt!.spend : tv?.spendMonth;
   const mainMult = showSince ? ro?.overall.multipleInvoiced ?? null : tv?.multipleMonth ?? null;
-  const altRange = showSince ? 'ROAS (new customers)' : `${sinceRange} · Blended ROAS`;
-  const altMult = showSince ? ro?.newOnly.multipleInvoiced ?? null : ro?.overall.multipleInvoiced ?? null;
   return (
-    <div className="fixed inset-0 z-50 flex flex-col gap-3 overflow-y-auto overflow-x-hidden bg-slate-950 text-white antialiased sm:gap-4 lg:overflow-hidden xl:gap-6" style={{ padding: 'max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left))' }}>
+    <div className="fixed inset-0 z-50 flex flex-col gap-3 overflow-y-auto overflow-x-hidden bg-slate-950 text-white antialiased sm:gap-4 xl:gap-5" style={{ padding: 'max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left))' }}>
       <style>{STYLES}</style>
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2 xl:px-4 xl:pt-4">
         <div className="flex min-w-0 items-center gap-3 sm:gap-4">
@@ -494,24 +492,28 @@ export function CallDashboardTv() {
       </div>
       {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
       {tv ? (
-        <div className="grid shrink-0 auto-rows-[minmax(150px,auto)] grid-cols-2 gap-2.5 sm:gap-3 lg:min-h-0 lg:flex-1 lg:shrink lg:auto-rows-fr lg:grid-cols-4 lg:grid-rows-2 xl:gap-5">
+        <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3 xl:gap-4">
           <BigTile delay={0} accent={palette.answered} label="Calls" range="Today" value={String(tv.callsToday)} spark={last7.map((d) => d.answered + d.missed)} />
           <BigTile delay={40} accent={palette.answered} label="Answered" range="Today" value={String(tv.answeredToday)} spark={last7.map((d) => d.answered)} />
           <BigTile delay={80} accent={palette.missed} label="Missed / short" range="Today" value={String(tv.missedToday)} spark={last7.map((d) => d.missed)} />
           <BigTile delay={120} accent={palette.booked} label="Booked" range="Today / this week" value={`${tv.bookedToday} / ${tv.bookedWeek}`} spark={last7.map((d) => d.booked)} />
-          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range={wk?.dates ? `This week · ${wk.dates}` : 'This week'} value={usd(weekNew)} sub={`all ad callers ${usd(wk ? wk.rows.reduce((a, r) => a + r.invoiced, 0) : null)}`} />
-          <BigTile delay={200} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? null)} sub={`paid ${usd(mainRev?.paid ?? null)} (collected)`} />
-          <BigTile delay={240} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={last7.map((d) => d.spend ?? 0)} />
-          <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center gap-1 overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3.5 sm:p-4 lg:min-h-0" style={{ animationDelay: '280ms' }}>
-            <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
-            <p className="self-start text-[11px] font-semibold uppercase leading-snug tracking-[0.12em] text-slate-400 sm:text-xs sm:tracking-[0.18em] xl:text-base">Ad return<span className="mt-0.5 block text-[10px] font-medium normal-case tracking-normal text-slate-500 sm:text-[11px] xl:text-lg">{mainRange} · {showSince ? 'Blended ROAS (all callers)' : 'invoiced'}</span></p>
-            <div className="flex w-full max-w-[420px] flex-1 items-center"><Gauge dark value={mainMult} label="invoiced ÷ spend" /></div>
-            <p className="text-[11px] text-slate-400 xl:text-xl">{altRange}: <span className="font-semibold text-slate-200">{mult(altMult)}</span>{showSince ? <> · MER <span className="font-semibold text-slate-200">{mult(ro?.mer?.multiple ?? null)}</span></> : null}</p>
-          </div>
         </div>
       ) : !error ? (
-        <div className="grid auto-rows-[150px] grid-cols-2 gap-2.5 sm:gap-3 lg:min-h-0 lg:flex-1 lg:auto-rows-fr lg:grid-cols-4 lg:grid-rows-2 xl:gap-5" aria-busy="true">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel-dark" />)}</div>
-      ) : <div className="flex-1" />}
+        <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3 xl:gap-4" aria-busy="true">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="cd-skel-dark h-[150px]" />)}</div>
+      ) : null}
+      {tv ? (
+        <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3 lg:grid-cols-5 xl:gap-4" aria-label="Revenue and return">
+          <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? null)} sub={`paid ${usd(mainRev?.paid ?? null)} · this week ${usd(weekNew)}`} />
+          <BigTile delay={200} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={last7.map((d) => d.spend ?? 0)} />
+          <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '240ms' }}>
+            <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
+            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'Blended ROAS' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{showSince ? 'all ad callers · ' : ''}{mainRange}</span></p>
+            <div className="w-full max-w-[220px] xl:max-w-[260px]"><Gauge dark value={mainMult} label="invoiced ÷ spend" /></div>
+          </div>
+          <BigTile delay={280} accent={palette.booked} label="ROAS (new customers)" range={sinceRange} value={mult(ro?.newOnly.multipleInvoiced ?? null)} sub={`${usd(ro?.newOnly.invoiced ?? null)} invoiced`} />
+          <BigTile delay={320} accent={palette.paid} label="MER" range={`${sinceRange} · all invoiced ÷ spend`} value={mult(ro?.mer?.multiple ?? null)} sub={`${compactUsd(ro?.mer?.invoiced ?? null)} ÷ ${compactUsd(ro?.spend ?? null)}`} />
+        </div>
+      ) : null}
       {data?.weekly ? (() => {
         const ws = data.weekly.weeks; const w = data.weekly.totals ?? ws[ws.length - 1];
         const head = data.weekly.totals?.title ?? `This week to date ${w.label}`;
