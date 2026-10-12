@@ -56,7 +56,7 @@ export async function GET(request: NextRequest) {
       oldestInvoice: history.rows?.reduce<string | null>((m, r) => (r.issuedDate && (!m || r.issuedDate < m) ? r.issuedDate : m), null) ?? null,
     };
     if (request.nextUrl.searchParams.get('debug') === '1') {
-      (diag as any).costSample = (costs.rows ?? []).filter((j) => (j.jobCosting?.totalCost ?? 0) > 0).slice(0, 25);
+      (diag as any).costSample = (costs.rows ?? []).filter((j) => (j.jobCosting?.totalCost ?? 0) > 0).sort((a, b) => (a.jobCosting?.profitAmount ?? 0) - (b.jobCosting?.profitAmount ?? 0)).slice(0, 40);
       (diag as any).quoteSample = (quotes ?? []).filter((q) => /approved|converted/i.test(q.quoteStatus || '')).slice(0, 25);
     }
     return finish(NextResponse.json({ cards, diag, generatedAt: now.toISOString() }));
