@@ -17,7 +17,7 @@ export async function GET(request: NextRequest) {
   try {
     const db = createServiceClient() as any;
     const { data, error } = await db.from('inbound_call_recordings')
-      .select('call_sid, started_at, caller_number, source, dial_status, answered, duration_seconds, processing_status, transcript, summary, outcome, caller_name, needs_followup, jobber_client_id')
+      .select('call_sid, started_at, caller_number, source, dial_status, answered, duration_seconds, processing_status, transcript, summary, outcome, caller_name, needs_followup, jobber_client_id, processing_error')
       .order('started_at', { ascending: false }).limit(25);
     if (error) return finish(NextResponse.json({ calls: [], note: error.message }));
     return finish(NextResponse.json({ calls: data ?? [] }));
