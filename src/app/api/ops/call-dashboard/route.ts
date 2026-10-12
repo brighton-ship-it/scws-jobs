@@ -1,3 +1,4 @@
+import { unstable_cache } from 'next/cache';
 /**
  * GET /api/ops/call-dashboard?range=7|30|90|since
  * Internal, read-only. Auth: CRM session or office key (see src/lib/ops-auth.ts).
@@ -81,7 +82,8 @@ export async function GET(request: NextRequest) {
       let [invoices, quotes, jobsCreated, jobsCompleted, payments] = await Promise.all([
         loadWeeklyInvoices(from, to), loadWeeklyQuotes(slack, to), loadWeeklyJobsCreated(from, to), loadWeeklyJobsCompleted(from, to), loadWeeklyPayments(from, to),
       ]);
-      if (!invoices) { await new Promise((r) => setTimeout(r, 1500)); invoices = await loadWeeklyInvoices(from, to); } // one retry: every revenue card depends on it
+      if (!invoices) invoices = await sharedInvoices(from, to); // Vercel data cache shared across instances (last good pull)
+      else void rememberInvoices(from, invoices);
       const allCalls = [...adsCalls, ...liveCalls];
       dash.weekly = buildWeeklySales({
         now: nowD, invoices, quotes, jobsCreated, jobsCompleted, payments,
@@ -114,6 +116,7 @@ export async function GET(request: NextRequest) {
       notes.push(`weekly sales: ${e instanceof Error ? e.message : 'error'}`);
     }
     if (!dash.roas && dash.adSplit) blankSplitMoney(dash);
+    strictMoneyOnly(dash);
     dash.gaps.push(...notes);
     return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString() }));
   } catch (error) {
@@ -122,7 +125,49 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// Last good Jobber invoice pull, persisted in the Vercel data cache (shared by all instances) so a throttled
+// or cold Jobber call never blanks the revenue cards. Key is per window start; refreshed whenever a live pull succeeds.
+const invKey = (from: string) => ['dash-invoices-v1', from.slice(0, 10)];
+async function sharedInvoices(from: string, to: string) {
+  try {
+    const get = unstable_cache(async () => {
+      for (let i = 0; i < 3; i++) {
+        const r = await loadWeeklyInvoices(from, to);
+        if (r) return r;
+        await new Promise((res) => setTimeout(res, 2000 * (i + 1)));
+      }
+      throw new Error('jobber invoices unavailable'); // never cache a failure
+    }, invKey(from), { revalidate: 3600, tags: ['dash-invoices'] });
+    return await get();
+  } catch { return null; }
+}
+async function rememberInvoices(from: string, rows: unknown[]) {
+  try { await unstable_cache(async () => rows, invKey(from), { revalidate: 3600, tags: ['dash-invoices'] })(); } catch { /* best effort */ }
+}
+
 /** Never show the old per-booking matching: if the shared Jobber calculation is unavailable, hide money on the campaign cards. */
 function blankSplitMoney(dash: { adSplit?: { since: { rows: any[] }; week: { rows: any[] } } }) {
   for (const w of [dash.adSplit!.since, dash.adSplit!.week]) for (const r of w.rows) { r.invoiced = null; r.multiple = null; }
+}
+
+/** Every dollar / multiple on the page comes from the one strict new-customer Jobber calculation (dash.roas).
+ *  Old per-booking (offline-conversion) money is removed; null => UI shows '—'. */
+function strictMoneyOnly(dash: any) {
+  const ro = dash.roas;
+  const t = dash.totals;
+  if (t) {
+    t.invoicedValue = ro ? ro.newOnly.invoiced : null;
+    t.multipleInvoiced = ro ? ro.newOnly.multipleInvoiced : null;
+    t.paidValue = null; t.multiplePaid = null;
+    t.bookedValue = null; t.quoteValue = null;
+    if (t.perCall) t.perCall = { booked: null, quote: null, invoiced: ro && t.calls ? Math.round((ro.newOnly.invoiced / t.calls) * 100) / 100 : null };
+  }
+  const byCat = new Map<string, number | null>();
+  for (const r of dash.adSplit?.since?.rows ?? []) byCat.set(r.category, r.invoicedNew ?? null);
+  const camp = (key: string) => { const k = String(key || '').toLowerCase(); return k.includes('drill') ? 'drilling' : k.includes('search') ? 'pump' : null; };
+  for (const r of dash.byCampaign ?? []) { const c = camp(r.key); r.invoiced = ro && c ? byCat.get(c) ?? null : null; }
+  for (const r of [...(dash.byKeyword ?? []), ...(dash.byTrackingNumber ?? [])]) r.invoiced = null;
+  for (const d of dash.series ?? []) d.invoiced = null;
+  for (const r of dash.recent ?? []) r.value = null;
+  if (dash.tv) for (const k of Object.keys(dash.tv)) if (/revenue|multiple|invoiced|paid/i.test(k)) dash.tv[k] = null;
 }

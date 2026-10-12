@@ -480,13 +480,13 @@ export function CallDashboardTv() {
   const monthRange = `${pt({ month: 'short' })} 1–${pt({ day: 'numeric' })}`;
   const sinceRange = 'Since Sep 18';
   const showSince = view === 'since' && !!tt;
-  const mainRange = showSince ? sinceRange : monthRange;
+  const mainRange = sinceRange; void monthRange; // money tiles always use the shared ROAS window
   const ro = data?.roas ?? null;
-  const mainRev = showSince ? (ro ? { invoiced: ro.newOnly.invoiced, paid: ro.newOnly.paid } : null) : tv?.revenueMonth;
+  const mainRev = ro ? { invoiced: ro.newOnly.invoiced, paid: ro.newOnly.paid } : null; // one strict new-customer source; '—' on failure
   const wk = data?.adSplit?.week;
   const weekNew = wk && wk.rows.every((r) => r.invoicedNew != null) ? wk.rows.reduce((a, r) => a + (r.invoicedNew ?? 0), 0) : null;
-  const mainSpend = showSince ? tt!.spend : tv?.spendMonth;
-  const mainMult = showSince ? ro?.overall.multipleInvoiced ?? null : tv?.multipleMonth ?? null;
+  const mainSpend = ro ? ro.spend : tt?.spend ?? null;
+  const mainMult = ro?.overall.multipleInvoiced ?? null;
   return (
     <div className="fixed inset-0 z-50 flex flex-col gap-3 overflow-y-auto overflow-x-hidden bg-slate-950 text-white antialiased sm:gap-4 xl:gap-5" style={{ padding: 'max(1rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(1rem, env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left))' }}>
       <style>{STYLES}</style>
@@ -523,8 +523,8 @@ export function CallDashboardTv() {
           <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '240ms' }}>
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
             <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'ROAS (new customers)' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
-            <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={showSince ? ro?.newOnly.multipleInvoiced ?? null : mainMult} label="invoiced ÷ spend" /></div>
-            {showSince ? <p className="text-sm text-slate-400 xl:text-xl">Blended (all callers) <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
+            <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={ro?.newOnly.multipleInvoiced ?? null} label="invoiced ÷ spend" /></div>
+            {ro ? <p className="text-sm text-slate-400 xl:text-xl">Blended (all callers) <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
           </div>
         </div>
       ) : null}
