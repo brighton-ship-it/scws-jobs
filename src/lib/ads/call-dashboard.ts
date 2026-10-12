@@ -33,6 +33,9 @@ export interface DashConversion {
   payload: unknown;
 }
 
+/** Live Jobber money for one booked job (all non-draft/void invoices on the job, pre-tax). */
+export interface JobMoney { invoiced: number; paid: number; invoiceCount: number; fullyPaid: boolean }
+
 export interface SpendDay {
   date: string; // YYYY-MM-DD (account time zone, PT)
   campaign: string;
@@ -196,7 +199,11 @@ export interface Dashboard {
   /** Additive. Same-length window immediately before the selected range (null = not measurable). */
   previous?: PreviousTotals;
   /** Additive. Counts for the calls -> booked -> invoiced -> paid funnel. */
-  funnel?: { calls: number; booked: number; invoiced: number; paid: number | null };
+  funnel?: { calls: number; adCalls?: number; uniqueCallers?: number; booked: number; invoiced: number; paid: number | null; partPaid?: number | null };
+  /** Additive. Bookings credited to a call (same set as the funnel), with the call's ad category. */
+  bookedCredited?: Array<{ at: string; cat: AdCategory | null }>;
+  /** Additive. ROAS on all ad callers vs new customers only (filled by the route from Jobber invoices). */
+  roas?: RoasView | null;
   /** Additive. All inbound calls from the Voice audit log (phone_call_log). Null until the table exists. */
   callLog?: CallLogView | null;
   /** Additive. Ad spend/return split: pump (Search-1 etc.) vs drilling, fixed windows (independent of range). */
@@ -233,6 +240,8 @@ export function buildCallLogView(rows: Array<Record<string, any>>, now: Date): C
 }
 
 export type AdCategory = 'pump' | 'drilling';
+export interface RoasSide { invoiced: number; paid: number; invoices: number; clients: number; multipleInvoiced: number | null; multiplePaid: number | null }
+export interface RoasView { spend: number | null; overall: RoasSide; newOnly: RoasSide; byCategory: Record<AdCategory, { spend: number | null; overall: RoasSide; newOnly: RoasSide }>; method: string[] }
 export interface AdSplitRow {
   category: AdCategory; spend: number | null; clicks: number | null; calls: number; booked: number;
   invoiced: number; multiple: number | null;
@@ -252,6 +261,7 @@ export function buildAdSplit(input: {
   spend: SpendDay[] | null;
   convs: Array<{ conv: DashConversion; call: DashCall }>;
   now: Date;
+  jobMoney?: Map<string, JobMoney> | null;
 }): AdSplit {
   const { now } = input;
   const floor = new Date(DASH_FLOOR_ISO);
@@ -264,7 +274,7 @@ export function buildAdSplit(input: {
       const clicks = sp ? sp.reduce((x, d) => x + (d.clicks ?? 0), 0) : null;
       const calls = input.calls.filter((c) => !c.live && adCategory(c.campaign_name) === category && c.started_at && Date.parse(c.started_at) >= t0).length;
       const won = input.convs.filter((x) => adCategory(x.call.campaign_name) === category && x.conv.conversion_at && Date.parse(x.conv.conversion_at) >= t0);
-      const invoiced = round(won.reduce((x, w) => x + (stagesOf(w.conv).invoiced ?? 0), 0));
+      const invoiced = round(won.reduce((x, w) => x + (input.jobMoney?.get(w.conv.jobber_job_id)?.invoiced ?? stagesOf(w.conv).invoiced ?? 0), 0));
       return { category, spend, clicks, calls, booked: won.length, invoiced, multiple: spend && spend > 0 ? round(invoiced / spend) : null };
     });
     return { label, from: from.toISOString(), rows };
@@ -309,6 +319,8 @@ export function buildDashboard(input: {
   conversions: DashConversion[];
   spend: SpendDay[] | null;
   paidByJob: Map<string, number> | null;
+  /** Live Jobber invoiced/paid per booked job. When present it replaces the (stale) offline-conversion stage values. */
+  jobMoney?: Map<string, JobMoney> | null;
   range: DashRange;
   now?: Date;
 }): Dashboard {
@@ -345,19 +357,21 @@ export function buildDashboard(input: {
   const convOfCall = new Map<DashCall, DashConversion>();
   creditedCall.forEach((c, cv) => convOfCall.set(c, cv));
 
+  const jm = input.jobMoney ?? null;
+  const invOf = (c: DashConversion): number => jm?.get(c.jobber_job_id)?.invoiced ?? stagesOf(c).invoiced ?? 0;
   const decorated = callsAll.map((c) => {
     const conv = convOfCall.get(c);
-    const st = conv ? stagesOf(conv) : null;
-    return Object.assign({}, c, { _booked: !!conv, _inv: st ? (st.invoiced ?? 0) : 0, _conv: conv ?? null });
+    return Object.assign({}, c, { _booked: !!conv, _inv: conv ? invOf(conv) : 0, _conv: conv ?? null });
   });
 
   // Per-conversion (job) money, windowed by booking time.
   const convWindow = convs.filter((c) => inRange(c.conversion_at, revStart));
   const sum = (list: DashConversion[], pick: (s: ConvStages) => number) =>
     round(list.reduce((a, c) => a + pick(stagesOf(c)), 0));
-  const invoicedOf = (s: ConvStages) => s.invoiced ?? 0;
+  const invSum = (list: DashConversion[]) => round(list.reduce((a, c) => a + invOf(c), 0));
+  const paidOf = (c: DashConversion): number | null => jm ? (jm.get(c.jobber_job_id)?.paid ?? 0) : input.paidByJob ? (input.paidByJob.get(c.jobber_job_id) ?? 0) : null;
   const paidSum = (list: DashConversion[]): number | null =>
-    input.paidByJob ? round(list.reduce((a, c) => a + (input.paidByJob!.get(c.jobber_job_id) ?? 0), 0)) : null;
+    jm || input.paidByJob ? round(list.reduce((a, c) => a + (paidOf(c) ?? 0), 0)) : null;
 
   const spendSlice = (from: Date, to: Date = now): number | null => {
     if (!input.spend) return null;
@@ -365,7 +379,7 @@ export function buildDashboard(input: {
     return round(input.spend.filter((d) => d.date >= a && d.date <= b).reduce((x, d) => x + d.costUsd, 0));
   };
   if (!input.spend) gaps.push('Ad spend unavailable (Google Ads not configured or query failed).');
-  if (!input.paidByJob) gaps.push('Paid amounts unavailable (Jobber read failed); paid multiple hidden.');
+  if (!input.paidByJob && !jm) gaps.push('Paid amounts unavailable (Jobber read failed); paid multiple hidden.');
 
   const spend = spendSlice(revStart);
   const spendByCampaign = new Map<string, number>();
@@ -379,7 +393,7 @@ export function buildDashboard(input: {
   for (const cv of input.conversions) if (!creditedCall.has(cv)) for (const h of convPhoneHashes(cv)) existingHashes.add(h);
   const known = decorated.filter((c) => !c._booked && (c.customer_id || c.jobber_client_id || existingHashes.has(hashPhone(c.caller_phone) ?? ''))).length;
   const matched = decorated.filter((c) => c.caller_phone).length;
-  const invoicedValue = sum(convWindow, invoicedOf);
+  const invoicedValue = invSum(convWindow);
   const paidValue = paidSum(convWindow);
   const callsN = callsAll.length;
   const ratio = (a: number, b: number | null) => (b && b > 0 ? round(a / b) : null);
@@ -419,7 +433,7 @@ export function buildDashboard(input: {
   const convWeek = convs.filter((c) => inRange(c.conversion_at, weekStart));
   const convMonth = convs.filter((c) => inRange(c.conversion_at, monthStart < floor ? floor : monthStart));
   const spendMonth = spendSlice(monthStart < floor ? floor : monthStart);
-  const monthInv = sum(convMonth, invoicedOf);
+  const monthInv = invSum(convMonth);
 
   const ticker = [
     ...input.calls
@@ -454,7 +468,7 @@ export function buildDashboard(input: {
   }
   for (const c of convWindow) {
     const d = c.conversion_at ? byDate.get(ptDateKey(new Date(c.conversion_at))) : undefined;
-    if (d) { d.booked += 1; d.invoiced = round(d.invoiced + invoicedOf(stagesOf(c))); }
+    if (d) { d.booked += 1; d.invoiced = round(d.invoiced + invOf(c)); }
   }
   if (input.spend) for (const sd of input.spend) { const d = byDate.get(sd.date); if (d && d.spend != null) d.spend = round(d.spend + sd.costUsd); }
   const lenMs = now.getTime() - start.getTime();
@@ -466,21 +480,31 @@ export function buildDashboard(input: {
     missed: prevCalls.filter((c) => !isAnswered(c)).length,
     spend: input.spend ? round(input.spend.filter((d) => d.date >= ptDateKey(prevStart) && d.date < ptDateKey(start)).reduce((x, d) => x + d.costUsd, 0)) : null,
   };
+  // Funnel: every stage counts the SAME set of jobs (bookings in the window credited to a call), so each
+  // stage is a subset of the one before. Paid = fully paid (balance 0); partly paid jobs are reported separately.
+  const fJobs = convWindow.filter((c) => creditedCall.has(c));
   const funnel = {
     calls: callsN,
-    booked: bookedCalls,
-    invoiced: convWindow.filter((c) => (stagesOf(c).invoiced ?? 0) > 0).length,
-    paid: input.paidByJob ? convWindow.filter((c) => (input.paidByJob!.get(c.jobber_job_id) ?? 0) > 0).length : null,
+    adCalls: callsAll.filter((c) => !c.live).length,
+    uniqueCallers: new Set(callsAll.map((c) => digits10(c.caller_phone)).filter(Boolean)).size,
+    booked: fJobs.length,
+    invoiced: fJobs.filter((c) => (jm ? (jm.get(c.jobber_job_id)?.invoiceCount ?? 0) > 0 : invOf(c) > 0)).length,
+    paid: jm ? fJobs.filter((c) => jm.get(c.jobber_job_id)?.fullyPaid).length
+      : input.paidByJob ? fJobs.filter((c) => (paidOf(c) ?? 0) > 0 && (paidOf(c) ?? 0) >= invOf(c) - 0.01).length : null,
+    partPaid: jm ? fJobs.filter((c) => { const m = jm.get(c.jobber_job_id); return !!m && m.paid > 0 && !m.fullyPaid; }).length : null,
   };
+  const bookedCredited = Array.from(creditedCall.entries())
+    .filter(([cv]) => !!cv.conversion_at)
+    .map(([cv, call]) => ({ at: cv.conversion_at as string, cat: adCategory(call.campaign_name) }));
 
   const adSplit = buildAdSplit({
-    calls: input.calls, spend: input.spend, now,
+    calls: input.calls, spend: input.spend, now, jobMoney: jm,
     convs: Array.from(creditedCall.entries()).map(([conv, call]) => ({ conv, call })),
   });
 
   return {
     adSplit,
-    series, previous, funnel,
+    series, previous, funnel, bookedCredited,
     range: input.range,
     start: start.toISOString(),
     revenueStart: revStart.toISOString(),
@@ -489,9 +513,9 @@ export function buildDashboard(input: {
       answered: decorated.filter(isAnswered).length,
       missedOrShort: decorated.filter((c) => !isAnswered(c)).length,
       matched,
-      bookedNew: bookedCalls,
+      bookedNew: fJobs.length,
       knownExisting: known,
-      unmatched: callsN - bookedCalls - known,
+      unmatched: Math.max(0, callsN - bookedCalls - known),
       quoteValue: sum(convWindow, (s) => s.approved ?? 0),
       bookedValue: sum(convWindow, (s) => s.booking),
       invoicedValue,
@@ -503,7 +527,7 @@ export function buildDashboard(input: {
       },
       spend,
       costPerCall: spend != null && callsN ? round(spend / callsN) : null,
-      costPerBooked: spend != null && convWindow.length ? round(spend / convWindow.length) : null,
+      costPerBooked: spend != null && fJobs.length ? round(spend / fJobs.length) : null,
       multipleInvoiced: ratio(invoicedValue, spend),
       multiplePaid: paidValue == null ? null : ratio(paidValue, spend),
     },
@@ -517,7 +541,7 @@ export function buildDashboard(input: {
       missedToday: callsToday.filter((c) => !isAnswered(c)).length,
       bookedToday: convs.filter((c) => inRange(c.conversion_at, todayStart)).length,
       bookedWeek: convWeek.length,
-      revenueWeek: { invoiced: sum(convWeek, invoicedOf), paid: paidSum(convWeek) },
+      revenueWeek: { invoiced: invSum(convWeek), paid: paidSum(convWeek) },
       revenueMonth: { invoiced: monthInv, paid: paidSum(convMonth) },
       spendMonth,
       multipleMonth: ratio(monthInv, spendMonth),

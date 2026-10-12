@@ -49,14 +49,14 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
 const INVOICES = `
   query WeeklyInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
     invoices(first: $first, after: $after, filter: $filter) {
-      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } }
+      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
 const QUOTES = `
   query WeeklyQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) {
     quotes(first: $first, after: $after, filter: $filter) {
-      nodes { id quoteStatus sentAt transitionedAt amounts { subtotal total } }
+      nodes { id title quoteStatus sentAt transitionedAt amounts { subtotal total } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
@@ -70,18 +70,18 @@ const PAYMENTS = `
 const JOBS = `
   query WeeklyJobs($first: Int!, $after: String, $filter: JobFilterAttributes) {
     jobs(first: $first, after: $after, filter: $filter) {
-      nodes { id createdAt completedAt }
+      nodes { id title createdAt completedAt }
       pageInfo { hasNextPage endCursor }
     }
   }`;
 
 export const loadWeeklyInvoices = (after: string, before: string) =>
-  paged<WeeklyInvoice>(`inv|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } });
+  paged<WeeklyInvoice>(`inv2|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } });
 /** Quotes sent in the window may have been created earlier, so filter by created date with slack. */
 export const loadWeeklyQuotes = (createdAfter: string, createdBefore: string) =>
-  paged<WeeklyQuote>(`q|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES);
+  paged<WeeklyQuote>(`q2|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES);
 export const loadWeeklyJobsCreated = (after: string, before: string) =>
-  paged<WeeklyJob>(`jc|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } });
+  paged<WeeklyJob>(`jc2|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } });
 export const loadWeeklyJobsCompleted = (after: string, before: string) =>
   paged<WeeklyJob>(`jd|${after}`, JOBS, 'jobs', { filter: { completedAt: { after, before } } });
 /** Payment records by payment received (entry) date, regardless of which week the invoice was issued. */
