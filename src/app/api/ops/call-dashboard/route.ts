@@ -89,7 +89,7 @@ export async function GET(request: NextRequest) {
       const wk = ptWeekStart(nowD);
       const shared = buildSharedAdSplit({
         invoices, adCalls: adsCalls, booked: dash.bookedCredited ?? [], spend, now: nowD,
-        windows: { main: { label: RN[range] ?? 'Selected range', start: new Date(dash.revenueStart) }, week: { label: 'This week (Mon–today)', start: wk < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : wk } },
+        windows: { main: { label: RN[range] ?? 'Selected range', start: new Date(dash.revenueStart) }, week: { label: 'This week so far (Mon–today)', start: wk < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : wk } },
       });
       if (dash.roas && dash.weekly?.totals) {
         const inv = dash.weekly.totals.invoiced, sp = dash.roas.spend;
