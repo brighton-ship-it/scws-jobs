@@ -104,7 +104,7 @@ export async function GET(request: NextRequest) {
         const inv = dash.weekly.totals.invoiced, sp = dash.roas.spend;
         dash.roas.mer = { invoiced: inv, spend: sp, multiple: inv != null && sp && sp > 0 ? Math.round((inv / sp) * 100) / 100 : null };
         dash.weekly.sources.push(
-          'Blended ROAS (all callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
+          'Blended (all callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
           'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call.',
         );
       }
