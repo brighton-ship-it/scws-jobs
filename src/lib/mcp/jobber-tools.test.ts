@@ -1383,6 +1383,86 @@ describe('callJobberMcpTool', () => {
       bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|recordPayment|collectPayment|lineItemsToEdit/.test(body))
     );
   });
+
+  it('sets message with invoiceEdit and does not send the invoice', async () => {
+    const invoiceId = 'Z2lkOi8vSm9iYmVyL0ludm9pY2UvMTc1NjAwMTEw';
+    const bodies: string[] = [];
+    const clientMessage =
+      "Thanks for having us out, Diane. We'll send you a separate quote for that.";
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('invoiceEdit')) {
+        return jsonResponse({
+          data: {
+            invoiceEdit: {
+              invoice: {
+                id: invoiceId,
+                invoiceNumber: '5897',
+                invoiceStatus: 'awaiting_payment',
+                message: clientMessage,
+              },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      return jsonResponse({
+        data: {
+          invoice: {
+            id: invoiceId,
+            invoiceNumber: '5897',
+            subject: 'Service Call',
+            message: clientMessage,
+            invoiceStatus: 'awaiting_payment',
+            issuedDate: '2026-10-12T15:51:47Z',
+            dueDate: '2026-10-12T07:00:00Z',
+            createdAt: '2026-10-12T15:47:08Z',
+            clientHubUri: null,
+            jobberWebUri: 'https://secure.getjobber.com/invoices/175600110',
+            amounts: { total: 200, paymentsTotal: 0, invoiceBalance: 200 },
+            client: { id: 'c1', name: 'Diane Neale', emails: [] },
+            lineItems: { nodes: [{ id: 'li-1', name: '1MS', description: '1 Man service', quantity: 1, unitPrice: 200 }] },
+          },
+        },
+      });
+    };
+
+    const result = await callJobberMcpTool(
+      'edit_invoice',
+      { invoiceId, message: clientMessage },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    assert.match(result.content[0].text, /"emailed": false/);
+    assert.match(result.content[0].text, /We'll send you a separate quote/);
+    const edit = JSON.parse(bodies.find((body) => body.includes('invoiceEdit')) || '{}') as {
+      variables?: { input?: Record<string, unknown> };
+    };
+    assert.deepEqual(edit.variables?.input, { message: clientMessage });
+    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice/.test(body)));
+  });
+
+  it('requires message on create_invoice_draft', async () => {
+    const result = await callJobberMcpTool(
+      'create_invoice_draft',
+      { jobNumber: '3576' },
+      { token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /message is required/i);
+  });
+
+  it('lists message on create_invoice_draft and edit_invoice schemas', () => {
+    const create = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'create_invoice_draft');
+    const edit = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'edit_invoice');
+    assert.ok(create);
+    assert.ok(edit);
+    assert.deepEqual(create?.inputSchema.required, ['message']);
+    assert.equal(typeof create?.inputSchema.properties?.message, 'object');
+    assert.equal(typeof edit?.inputSchema.properties?.message, 'object');
+  });
 });
 
 describe('handleJobberMcpRequest auth gate', () => {

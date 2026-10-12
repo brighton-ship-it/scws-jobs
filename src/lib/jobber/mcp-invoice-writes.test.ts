@@ -72,6 +72,15 @@ describe('invoice write builders', () => {
     assert.equal('lineItemsToEdit' in input, false);
   });
 
+  it('maps message onto InvoiceEditInput and allows message-only edits', () => {
+    const input = buildInvoiceEditInput({
+      message: 'Thanks for having us out. The service call is complete.',
+    });
+    assert.deepEqual(input, {
+      message: 'Thanks for having us out. The service call is complete.',
+    });
+  });
+
   it('refuses add, update, and remove line items', () => {
     const fee = parseInvoiceLineDrafts(
       [
@@ -95,7 +104,7 @@ describe('invoice write builders', () => {
       message
     );
     assert.throws(() => buildInvoiceEditInput({ removeLineItemIds: ['li-1'] }), message);
-    assert.throws(() => buildInvoiceEditInput({}), /taxRateId/);
+    assert.throws(() => buildInvoiceEditInput({}), /message, taxRateId/);
   });
 
   it('builds an unsent invoice create from a job', () => {
@@ -103,11 +112,13 @@ describe('invoice write builders', () => {
       clientId: 'client-1',
       jobId: JOB_ID,
       subject: 'Job 8801',
+      message: 'Thanks for having us out. The service call is complete.',
       lineItems: [{ name: 'Pump', quantity: 1, unitPrice: 100, taxable: true }],
       taxRateId: 'sd-tax',
     });
     assert.equal(input.clientId, 'client-1');
     assert.equal(input.jobId, JOB_ID);
+    assert.equal(input.message, 'Thanks for having us out. The service call is complete.');
     assert.deepEqual(input.tax, { taxCalculationMethod: 'EXCLUSIVE' });
     assert.deepEqual(input.dueDetails, {});
     assert.equal(input.taxRateId, 'sd-tax');
@@ -116,6 +127,20 @@ describe('invoice write builders', () => {
     assert.deepEqual(input.lineItems, [
       { name: 'Pump', quantity: 1, unitPrice: 100, taxable: true },
     ]);
+  });
+
+  it('requires a non-empty client message on create', () => {
+    assert.throws(
+      () =>
+        buildUnsentInvoiceCreateInput({
+          clientId: 'client-1',
+          jobId: JOB_ID,
+          subject: 'Job 8801',
+          message: '   ',
+          lineItems: [{ name: 'Pump', quantity: 1, unitPrice: 100, taxable: true }],
+        }),
+      /message is required/
+    );
   });
 
   it('omits saveToProductsAndServices, which InvoiceCreationLineItemInput does not define', () => {
@@ -139,6 +164,7 @@ describe('invoice write builders', () => {
       clientId: 'client-1',
       jobId: JOB_ID,
       subject: 'Job 8801',
+      message: 'Thanks for choosing Southern California Well Service!',
       lineItems: lines,
     });
     assert.deepEqual(input.lineItems, [
@@ -227,6 +253,55 @@ describe('editInvoice', () => {
     assert.equal(variables.input.lineItemsToEdit, undefined);
     assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice|invoiceCreateLineItems|invoiceEditLineItems|invoiceDeleteLineItems/.test(body)));
   });
+
+  it('sends invoiceEdit with message only and does not mark the invoice sent', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('mutation') && query.includes('invoiceEdit')) {
+        return jsonResponse({
+          data: {
+            invoiceEdit: {
+              invoice: {
+                id: INVOICE_ID,
+                invoiceNumber: '5897',
+                invoiceStatus: 'draft',
+                message: 'Thanks for having us out.',
+              },
+              userErrors: [],
+            },
+          },
+        });
+      }
+      if (query.includes('invoice(id:')) {
+        return jsonResponse({
+          data: {
+            invoice: {
+              ...invoiceNode(),
+              invoiceNumber: '5897',
+              invoiceStatus: 'draft',
+              message: 'Thanks for having us out.',
+            },
+          },
+        });
+      }
+      return jsonResponse({ errors: [{ message: `unexpected ${query.slice(0, 80)}` }] });
+    };
+
+    const invoice = await editInvoice(
+      { invoiceId: INVOICE_ID, message: 'Thanks for having us out.' },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(invoice.invoiceNumber, '5897');
+    assert.equal(invoice.message, 'Thanks for having us out.');
+    const edit = bodies.find((body) => body.includes('invoiceEdit'));
+    assert.ok(edit);
+    const variables = (JSON.parse(edit) as { query: string; variables: { input: Record<string, unknown> } }).variables;
+    assert.deepEqual(variables.input, { message: 'Thanks for having us out.' });
+    assert.ok(bodies.every((body) => !/invoiceMarkAsSent|invoiceSend|sendInvoice/.test(body)));
+  });
 });
 
 describe('createInvoiceDraftFromJob', () => {
@@ -279,6 +354,7 @@ describe('createInvoiceDraftFromJob', () => {
     const result = await createInvoiceDraftFromJob(
       {
         jobId: JOB_ID,
+        message: 'Thanks for having us out. The service call is complete.',
         lineItems: [{ name: 'Pump', quantity: 1, unitPrice: 100, taxable: true }],
         taxRateId: 'sd-tax',
       },
@@ -289,10 +365,11 @@ describe('createInvoiceDraftFromJob', () => {
     assert.equal(result.invoice.jobberWebUri, 'https://secure.getjobber.com/invoices/5806');
     assert.equal(result.invoice.amounts.total, 17617.59);
     const create = JSON.parse(bodies.find((body) => body.includes('invoiceCreate')) || '{}') as {
-      variables?: { input?: { lineItems?: Array<Record<string, unknown>> } };
+      variables?: { input?: { jobId?: string; clientId?: string; message?: string; lineItems?: Array<Record<string, unknown>> } };
     };
     assert.equal(create.variables?.input?.jobId, JOB_ID);
     assert.equal(create.variables?.input?.clientId, 'client-1');
+    assert.equal(create.variables?.input?.message, 'Thanks for having us out. The service call is complete.');
     assert.equal('issuedDate' in (create.variables?.input || {}), false);
     assert.deepEqual(create.variables?.input?.lineItems, [
       { name: 'Pump', quantity: 1, unitPrice: 100, taxable: true },
@@ -366,7 +443,10 @@ describe('createInvoiceDraftFromJob', () => {
       return jsonResponse({ errors: [{ message: 'unexpected query' }] });
     };
 
-    const result = await createInvoiceDraftFromJob({ jobId: JOB_ID }, { fetchImpl, token: 'test' });
+    const result = await createInvoiceDraftFromJob(
+      { jobId: JOB_ID, message: 'Thanks for choosing Southern California Well Service!' },
+      { fetchImpl, token: 'test' }
+    );
     assert.equal(result.invoice.invoiceNumber, '5811');
     assert.equal(result.invoice.invoiceStatus, 'draft');
     const create = JSON.parse(bodies.find((body) => body.includes('invoiceCreate')) || '{}') as {
