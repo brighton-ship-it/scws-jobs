@@ -1,4 +1,5 @@
 import { downloadRecording, transcribe, summarize } from './process.ts';
+import { findClientByPhone, buildNoteMessage, postCallNote } from './jobber-note.ts';
 
 export const MIN_SECONDS = 8;
 export function normalizePhone(p: string | null | undefined): string | null {
@@ -9,14 +10,15 @@ export function normalizePhone(p: string | null | undefined): string | null {
 }
 
 /** Process one completed recording. `db` is a supabase-like client. Idempotent per CallSid. */
-export async function handleRecording(params: Record<string, string>, db: any, env: NodeJS.ProcessEnv = process.env, deps: { fetch?: typeof fetch } = {}) {
+type JobberHooks = { find: typeof findClientByPhone; post: typeof postCallNote };
+export async function handleRecording(params: Record<string, string>, db: any, env: NodeJS.ProcessEnv = process.env, deps: { fetch?: typeof fetch; jobber?: JobberHooks | null } = {}) {
   const callSid = params.CallSid;
   if (!callSid || !params.RecordingUrl) return { ok: false, reason: 'missing fields' };
   const dur = parseInt(params.RecordingDuration || '0', 10) || 0;
   const now = () => new Date().toISOString();
   const base = { call_sid: callSid, recording_sid: params.RecordingSid, recording_duration_seconds: dur };
 
-  const existing = await db.from('inbound_call_recordings').select('processing_status, updated_at, caller_number').eq('call_sid', callSid).maybeSingle();
+  const existing = await db.from('inbound_call_recordings').select('processing_status, updated_at, caller_number, started_at, source, duration_seconds').eq('call_sid', callSid).maybeSingle();
   const row = existing?.data;
   if (row && (row.processing_status === 'done' || row.processing_status === 'skipped')) return { ok: true, reason: 'already processed' };
   if (row?.processing_status === 'processing' && Date.now() - Date.parse(row.updated_at) < 4 * 60_000) return { ok: true, reason: 'in progress' };
@@ -36,7 +38,18 @@ export async function handleRecording(params: Record<string, string>, db: any, e
       const m = await db.from('ads_calls').select('jobber_client_id').eq('caller_phone', phone).not('jobber_client_id', 'is', null).limit(1).maybeSingle();
       jobber = m?.data?.jobber_client_id ?? null;
     }
-    await db.from('inbound_call_recordings').upsert({ ...base, transcript, ...s, jobber_client_id: jobber, processing_status: 'done', processing_error: null, updated_at: now() }, { onConflict: 'call_sid' });
+    let noteStatus: string | null = null;
+    const hooks = deps.jobber === undefined ? { find: findClientByPhone, post: postCallNote } : deps.jobber;
+    if (hooks && phone && env.PHONE_CALL_JOBBER_NOTES !== 'false' && s.outcome !== 'spam') {
+      try {
+        if (!jobber) jobber = (await hooks.find(phone))?.id ?? null;
+        if (jobber) {
+          await hooks.post(jobber, buildNoteMessage({ startedAt: row?.started_at, source: row?.source, summary: s.summary, outcome: s.outcome, needsFollowup: s.needs_followup, transcript, durationSeconds: row?.duration_seconds ?? dur }));
+          noteStatus = 'note posted';
+        } else noteStatus = 'no jobber client match';
+      } catch (e) { noteStatus = 'jobber note failed: ' + (e instanceof Error ? e.message : 'error').slice(0, 200); }
+    }
+    await db.from('inbound_call_recordings').upsert({ ...base, transcript, ...s, jobber_client_id: jobber, processing_status: 'done', processing_error: noteStatus, updated_at: now() }, { onConflict: 'call_sid' });
     return { ok: true, reason: 'done' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'error';

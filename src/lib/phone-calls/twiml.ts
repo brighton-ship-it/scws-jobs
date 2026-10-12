@@ -3,14 +3,25 @@ import { RECORDING_NOTICE } from './config.ts';
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 /** Announce, then ring the shop numbers (simultaneously) with dual-channel recording from answer. */
-export function buildInboundTwiml(opts: { shopNumbers: string[]; baseUrl: string; timeout?: number }): string {
+export function buildInboundTwiml(opts: { shopNumbers: string[]; baseUrl: string; timeout?: number; callerId?: string }): string {
   const base = opts.baseUrl.replace(/\/$/, '');
   const numbers = opts.shopNumbers.map((n) => `<Number>${esc(n)}</Number>`).join('');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Say voice="Polly.Joanna">${esc(RECORDING_NOTICE)}</Say>
-  <Dial timeout="${opts.timeout ?? 30}" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status" method="POST">${numbers}</Dial>
+  <Dial${opts.callerId ? ` callerId="${esc(opts.callerId)}"` : ''} timeout="${opts.timeout ?? 30}" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status" method="POST">${numbers}</Dial>
 </Response>`;
 }
 
 export const EMPTY_RESPONSE = '<?xml version="1.0" encoding="UTF-8"?><Response/>';
+
+/** Test-only simulated shop answer (used when a test number rings itself). */
+export function buildSimulatorTwiml(): string {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Matthew">Southern California Well Service, this is the test shop line. How can I help you?</Say>
+  <Pause length="9"/>
+  <Say voice="Polly.Matthew">Okay, I can have a technician out to Ramona on Thursday morning to look at the pressure tank. We will call you Wednesday to confirm. Thanks for calling.</Say>
+  <Pause length="3"/>
+</Response>`;
+}
