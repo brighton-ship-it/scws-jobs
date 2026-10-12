@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   attributeContact,
   buildClosedLoopReport,
+  campaignTotals,
   closedLoopEmailText,
   reportWindow,
   type ClosedLoopLead,
@@ -93,5 +94,55 @@ describe('closed loop report', () => {
       start: '2026-10-03',
       end: '2026-10-10',
     });
+  });
+
+  it('credits an ad caller to the ad campaign even when Sarah logged a phone lead', () => {
+    const result = attributeContact({
+      phone: '(760) 555-0100',
+      leads: [lead({ id: 'p1', lead_source: 'phone' })],
+      adsCalls: [{ phone: '7605550100', campaign: 'Leads-Search-1', keyword: null }],
+      now: new Date('2026-10-12T00:00:00Z'),
+    });
+    assert.deepEqual(result, { source: 'google_ads', campaign: 'Leads-Search-1', keyword: '' });
+  });
+
+  it('fills a blank campaign on a google_ads lead from the ad call', () => {
+    const result = attributeContact({
+      phone: '7605550100',
+      leads: [lead({ id: 'c1', lead_source: 'google_ads' })],
+      adsCalls: [{ phone: '7605550100', campaign: 'Leads-Search-Drilling', keyword: null }],
+      now: new Date('2026-10-12T00:00:00Z'),
+    });
+    assert.equal(result.campaign, 'Leads-Search-Drilling');
+  });
+
+  it('keeps a click-id lead keyword over an ad call', () => {
+    const result = attributeContact({
+      phone: '7605550100',
+      leads: [lead({ id: 'g', lead_source: 'google_ads', gclid: 'x', utm_campaign: 'S1', utm_term: 'pump' })],
+      adsCalls: [{ phone: '7605550100', campaign: 'Drilling', keyword: null }],
+      now: new Date('2026-10-12T00:00:00Z'),
+    });
+    assert.deepEqual(result, { source: 'google_ads', campaign: 'S1', keyword: 'pump' });
+  });
+
+  it('rolls keyword rows up to campaign totals', () => {
+    const rows = buildClosedLoopReport({
+      leads: [],
+      calls: [{ campaign: 'S1' }, { campaign: 'S1' }],
+      bookedJobs: [],
+      quotes: [],
+      invoices: [{ source: 'google_ads', campaign: 'S1', valueUsd: 1000 }],
+      costs: [
+        { campaign: 'S1', keyword: 'a', costUsd: 100 },
+        { campaign: 'S1', keyword: 'b', costUsd: 150 },
+      ],
+    });
+    const totals = campaignTotals(rows);
+    assert.equal(totals.length, 1);
+    assert.equal(totals[0].calls, 2);
+    assert.equal(totals[0].cost, 250);
+    assert.equal(totals[0].roas, 4);
+    assert.match(closedLoopEmailText(rows, { start: 'a', end: 'b' }), /S1 \| 0 \| 2 \| 0 \| 0 \| \$1000\.00 \| \$250\.00 \| 4\.00x/);
   });
 });

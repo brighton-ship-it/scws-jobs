@@ -71,21 +71,36 @@ export function attributeContact(input: {
       return b.created - a.created;
     });
 
+  const call = (input.adsCalls ?? []).find((row) => phone && normalizePhone(row.phone) === phone);
   const winner = leads[0]?.lead;
-  if (winner) {
+
+  // A click-id / google_ads lead keeps its own campaign and keyword. If the lead
+  // carries no campaign (e.g. a customer tagged google_ads by the ads-calls cron),
+  // fill the campaign from the matching ad call.
+  if (winner && isAdsLead(winner)) {
+    const campaign = blank(winner.utm_campaign) || blank(call?.campaign);
     return {
-      source: sourceOfLead(winner),
-      campaign: blank(winner.utm_campaign),
+      source: 'google_ads',
+      campaign,
       keyword: blank(winner.utm_term),
     };
   }
 
-  const call = (input.adsCalls ?? []).find((row) => phone && normalizePhone(row.phone) === phone);
+  // An ad call beats a non-ads lead: Sarah logs every phone call as a
+  // booking_request with source "phone", which used to swallow ad callers.
   if (call) {
     return {
       source: 'google_ads',
       campaign: blank(call.campaign),
       keyword: blank(call.keyword),
+    };
+  }
+
+  if (winner) {
+    return {
+      source: sourceOfLead(winner),
+      campaign: blank(winner.utm_campaign),
+      keyword: blank(winner.utm_term),
     };
   }
 
@@ -230,6 +245,24 @@ export function closedLoopSheetValues(
   ];
 }
 
+/** Google Ads rows summed per campaign (keyword collapsed). */
+export function campaignTotals(rows: ClosedLoopGroup[]): ClosedLoopGroup[] {
+  const groups = new Map<string, MutableGroup>();
+  for (const row of rows) {
+    if (row.source !== 'google_ads') continue;
+    const g = ensure(groups, 'google_ads', row.campaign, '');
+    g.leads += row.leads;
+    g.calls += row.calls;
+    g.bookedJobs += row.bookedJobs;
+    g.quotes += row.quotes;
+    g.invoicedRevenue = roundMoney(g.invoicedRevenue + row.invoicedRevenue);
+    g.cost = roundMoney(g.cost + row.cost);
+  }
+  return Array.from(groups.values())
+    .map((g) => ({ ...g, roas: g.cost > 0 ? roundMoney(g.invoicedRevenue / g.cost) : null }))
+    .sort((a, b) => a.campaign.localeCompare(b.campaign));
+}
+
 export function closedLoopEmailText(rows: ClosedLoopGroup[], period: { start: string; end: string }): string {
   const lines = [
     `SCWS paid-ads closed loop ${period.start} to ${period.end}`,
@@ -253,6 +286,28 @@ export function closedLoopEmailText(rows: ClosedLoopGroup[], period: { start: st
     );
   }
   if (!rows.length) lines.push('No rows in this window.');
+  const totals = campaignTotals(rows);
+  if (totals.length) {
+    lines.push(
+      '',
+      'Google Ads by campaign (calls come from call_view, which has no keyword, so ROAS is only meaningful per campaign):',
+      'campaign | leads | calls | booked | quotes | invoiced | cost | roas'
+    );
+    for (const row of totals) {
+      lines.push(
+        [
+          row.campaign || '—',
+          row.leads,
+          row.calls,
+          row.bookedJobs,
+          row.quotes,
+          `$${row.invoicedRevenue.toFixed(2)}`,
+          `$${row.cost.toFixed(2)}`,
+          row.roas == null ? '—' : `${row.roas.toFixed(2)}x`,
+        ].join(' | ')
+      );
+    }
+  }
   lines.push('', 'Unmatched invoiced revenue is source unattributed.');
   return lines.join('\n');
 }

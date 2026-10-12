@@ -118,8 +118,8 @@ export async function POST(request: NextRequest) {
       db
         .from('ads_calls')
         .select('caller_phone, campaign_name, keyword, started_at')
-        .gte('started_at', period.start)
-        .limit(2000),
+        .gte('started_at', matchSince)
+        .limit(5000),
       db
         .from('book_job_conversions')
         .select('jobber_job_id, booking_request_id, customer_id, sent_to_google, fired_at')
@@ -139,17 +139,23 @@ export async function POST(request: NextRequest) {
       ...(customers.data ?? []).map((row) => mapLead(row, 'customers')),
     ];
     const leadsInWindow = allLeads.filter((lead) => lead.created_at >= period.start);
-    const adsCalls = (calls.data ?? []).map(
-      (row: { caller_phone: string | null; campaign_name: string | null; keyword: string | null }) => ({
-        phone: row.caller_phone,
-        campaign: row.campaign_name,
-        keyword: row.keyword,
-      })
+    // All ad calls in the 90-day match window attribute quotes/jobs/invoices;
+    // only calls inside the report week are counted as calls.
+    type AdsCallRow = { caller_phone: string | null; campaign_name: string | null; keyword: string | null; started_at: string | null };
+    const adsCallRows: AdsCallRow[] = (calls.data ?? []).slice().sort((a: AdsCallRow, b: AdsCallRow) =>
+      String(b.started_at || '').localeCompare(String(a.started_at || ''))
     );
+    const adsCalls = adsCallRows.map((row) => ({
+      phone: row.caller_phone,
+      campaign: row.campaign_name,
+      keyword: row.keyword,
+    }));
+    const adsCallsInWindow = adsCallRows
+      .filter((row) => String(row.started_at || '') >= period.start && String(row.started_at || '') < period.end)
+      .map((row) => ({ campaign: row.campaign_name, keyword: row.keyword }));
 
     const leadById = new Map(allLeads.map((lead) => [lead.id, lead]));
     const bookedJobs = (booked.data ?? [])
-      .filter((row: { sent_to_google?: boolean | null }) => row.sent_to_google !== false)
       .map((row: { booking_request_id?: string | null; customer_id?: string | null }) => {
         const lead =
           leadById.get(String(row.booking_request_id || '')) ||
@@ -158,7 +164,7 @@ export async function POST(request: NextRequest) {
         return attributeContact({
           phone: lead.phone,
           email: lead.email,
-          leads: [lead],
+          leads: allLeads,
           adsCalls,
         });
       });
@@ -190,7 +196,7 @@ export async function POST(request: NextRequest) {
 
     const rows = buildClosedLoopReport({
       leads: leadsInWindow,
-      calls: adsCalls,
+      calls: adsCallsInWindow,
       bookedJobs,
       quotes,
       invoices,
