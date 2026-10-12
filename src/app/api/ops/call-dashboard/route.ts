@@ -106,7 +106,6 @@ export async function GET(request: NextRequest) {
         dash.weekly.sources.push(
           'Blended ROAS (all callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
           'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call.',
-          'MER (marketing efficiency ratio) = ALL pre-tax Jobber invoices issued in the range (every customer, any source) ÷ total Google Ads spend, same Pacific days. Not attribution: a top-line efficiency check.',
         );
       }
       if (shared) dash.adSplit = shared;
