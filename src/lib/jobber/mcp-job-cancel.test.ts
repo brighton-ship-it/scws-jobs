@@ -43,6 +43,9 @@ function world(opts: { invoices?: unknown[]; status?: string; visitComplete?: bo
       deleted = true;
       return res({ data: { visitDelete: { visits: [{ id: VISIT }], userErrors: [] }, jobClose: { job: { id: JOB }, userErrors: [] } } });
     }
+    if (q.includes('McpCancelJobReopen')) return res({ data: { jobReopen: { job: { id: JOB }, userErrors: [] } } });
+    if (q.includes('McpCancelJobNoInvoice')) return res({ data: { jobEdit: { job: { id: JOB }, userErrors: [] } } });
+    if (q.includes('McpCancelJobNote')) return res({ data: { jobCreateNote: { jobNote: { id: 'n' } , userErrors: [] } } });
     if (q.includes('visitEditSchedule')) return res({ data: { visitEditSchedule: { visit: { id: VISIT }, userErrors: [] } } });
     if (q.includes('visitEditAssignedUsers')) return res({ data: { visitEditAssignedUsers: { visit: { id: VISIT }, userErrors: [] } } });
     return res({ errors: [{ message: 'unexpected' }] });
@@ -161,5 +164,27 @@ describe('not exposed to the receptionist', () => {
         assert.doesNotMatch(text, /mcp-job-cancel|cancel_job|cancel_visit|reschedule_visit/, file);
       }
     }
+  });
+});
+
+describe('cancel_job never files a cancelled job as finished work', () => {
+  it('deletes visits, sets invoicing NEVER, closes, notes; never completes a visit', async () => {
+    const w = world();
+    const bodies: string[] = [];
+    const f: typeof fetch = async (u, init) => { bodies.push(String(init?.body)); return w.fetchImpl(u, init); };
+    const r = await cancelJob({ jobId: JOB, reason: 'Cancelled by customer' }, { fetchImpl: f, token: 't' }, w.audit);
+    assert.equal(r.changed, true);
+    const order = w.calls.filter((c) => c.startsWith('Mcp') && c !== 'McpCancelJobState');
+    assert.deepEqual(order, ['McpCancelVisitDelete', 'McpCancelJobNoInvoice', 'McpCancelJobClose', 'McpCancelJobNote']);
+    assert.ok(bodies.some((b) => b.includes('"invoicingSchedule":"NEVER"')));
+    assert.ok(bodies.some((b) => b.includes('Cancelled: Cancelled by customer')));
+    assert.equal(bodies.some((b) => /visitComplete|COMPLETE_PAST/.test(b)), false);
+  });
+  it('reopens an already-closed job first when forced', async () => {
+    const w = world({ status: 'requires_invoicing' });
+    await assert.rejects(cancelJob({ jobId: JOB, reason: 'Cancelled by customer' }, w.deps, w.audit), /Refused/);
+    await cancelJob({ jobId: JOB, reason: 'Cancelled by customer', force: true }, w.deps, w.audit);
+    assert.ok(w.calls.includes('McpCancelJobReopen'));
+    assert.ok(w.calls.indexOf('McpCancelJobReopen') < w.calls.indexOf('McpCancelJobClose'));
   });
 });
