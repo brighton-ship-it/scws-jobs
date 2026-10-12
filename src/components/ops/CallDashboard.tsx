@@ -162,25 +162,40 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
   const ink = dark ? 'text-white' : 'text-slate-900';
   const sub = dark ? 'text-slate-300' : 'text-slate-600';
   return (
-    <table className={`w-full table-fixed text-left ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
+    <>
+    <ul className={`sm:hidden ${dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}`}>
+      {list.length === 0 ? <li className={`px-4 py-6 text-center ${sub}`}>No calls yet</li> : list.map((r, i) => (
+        <li key={i} className={`px-4 py-3 ${r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}`}>
+          <div className="flex items-center justify-between gap-3">
+            <span className={`whitespace-nowrap text-sm tabular-nums ${sub}`}>{feedTime(r.at)} · {fmtDur(r.durationSeconds)}</span>
+            <span className="shrink-0 text-sm"><OutcomePill o={r.outcome} dark={dark} /></span>
+          </div>
+          <div className={`mt-1 break-words text-base font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
+          <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}{r.answeredBy ? ` · ${r.answeredBy}` : ''}</div>
+          {r.summary ? <div className={`mt-1 text-sm ${sub}`}>{r.summary}</div> : null}
+        </li>
+      ))}
+    </ul>
+    <table className={`hidden w-full table-fixed text-left sm:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
       <colgroup><col className="w-[22%]" /><col className="w-[31%]" /><col className="w-[16%]" /><col className="w-[17%]" /><col className="w-[14%]" /></colgroup>
       <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
       <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
         {list.length === 0 ? <tr><td colSpan={5} className={`px-3 py-6 text-center ${sub}`}>No calls yet</td></tr> : list.map((r, i) => (
           <tr key={i} className={r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}>
-            <td className={`px-3 py-2 align-top tabular-nums leading-snug break-words ${sub}`}>{feedTime(r.at)}</td>
+            <td className={`whitespace-nowrap px-3 py-2 align-top tabular-nums ${sub}`}>{feedTime(r.at)}</td>
             <td className="px-3 py-2 align-top">
               <div className={`truncate font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
               {r.name ? <div className={`truncate text-sm ${sub}`}>{r.phone}</div> : null}
               {r.summary ? <div className={`truncate text-sm ${sub}`} title={r.summary}>{r.summary}</div> : null}
             </td>
             <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}{r.answeredBy ? <div className={`truncate text-sm font-normal ${sub}`}>{r.answeredBy}</div> : null}</td>
-            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} dark={dark} /></td>
+            <td className="overflow-hidden px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} dark={dark} /></td>
             <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${ink}`}>{fmtDur(r.durationSeconds)}</td>
           </tr>
         ))}
       </tbody>
     </table>
+    </>
   );
 }
 
