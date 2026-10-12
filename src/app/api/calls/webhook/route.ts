@@ -7,7 +7,8 @@ const supabase = optionalServiceClient();
 const TRACKING_NUMBERS: Record<string, string> = {
   '+17604630493': 'seo',
   '+17603312502': 'google_ads',
-  '+17602791262': 'gmb',
+  '+17602791262': 'gbp_ramona',
+  '+19516510957': 'gbp_anza',
   '+17604937719': 'direct',
 };
 
