@@ -1,7 +1,8 @@
 /**
  * Guarded cancel / reschedule writes for the authenticated Production MCP.
  *
- * Tools: cancel_job (jobClose, DESTROY_ALL), cancel_visit (visitDelete),
+ * Tools: cancel_job (visitDelete open visits, jobEdit invoicing NEVER,
+ * jobClose, jobCreateNote "Cancelled: ..."), cancel_visit (visitDelete),
  * reschedule_visit (visitEditSchedule, optional visitEditAssignedUsers).
  * Mutation names and inputs follow the hightreequency/jobberschema docs
  * (mutations-jobs.md, mutations-visits.md). jobClose is the one validated
@@ -120,6 +121,39 @@ const JOB_CLOSE = `
   mutation McpCancelJobClose($jobId: EncodedId!, $input: JobCloseInput!) {
     jobClose(jobId: $jobId, input: $input) {
       job { id jobNumber jobStatus completedAt }
+      userErrors { message path }
+    }
+  }
+`;
+
+const JOB_REOPEN = `
+  mutation McpCancelJobReopen($jobId: EncodedId!) {
+    jobReopen(jobId: $jobId) {
+      job { id jobStatus }
+      userErrors { message path }
+    }
+  }
+`;
+
+/**
+ * A closed Jobber job with no invoice lands in "Requires invoicing", which the
+ * office reads as finished work. Setting the invoicing schedule to NEVER first
+ * means the close files it under Archived instead. Jobber has no jobDelete and
+ * no "cancelled" status, so archived + a cancellation note is the closest.
+ */
+const JOB_EDIT_NO_INVOICE = `
+  mutation McpCancelJobNoInvoice($jobId: EncodedId!, $input: JobEditInput!) {
+    jobEdit(jobId: $jobId, input: $input) {
+      job { id jobStatus }
+      userErrors { message path }
+    }
+  }
+`;
+
+const JOB_NOTE = `
+  mutation McpCancelJobNote($jobId: EncodedId!, $input: JobCreateNoteInput!) {
+    jobCreateNote(jobId: $jobId, input: $input) {
+      jobNote { id }
       userErrors { message path }
     }
   }
@@ -355,17 +389,32 @@ async function run(
 export function cancelJob(input: CommonInput, deps?: JobberDeps, audit: AuditSink = defaultAuditSink) {
   return run('cancel_job', input, deps, audit, async ({ state }) => {
     const open = state.visits.filter((v) => !v.isComplete);
+    const status = (state.jobStatus || '').toLowerCase();
+    const alreadyClosed = Boolean(state.completedAt) || status === 'requires_invoicing' || status === 'archived';
+    const reason = parseReason(input.reason);
+    const step = async (query: string, vars: Record<string, unknown>, key: string) => {
+      const result = await gql(query, vars, deps);
+      assertNoJobberErrors(result, key);
+      const errors = jobberUserErrors(result.data?.[key]);
+      if (errors.length) throw new Error(`${key}: ${errors.join('; ')}`);
+    };
     return {
-      plan: `jobClose job #${state.jobNumber} (${state.client?.name || 'client'}) with DESTROY_ALL, deleting ${open.length} incomplete visit(s)`,
+      plan:
+        (alreadyClosed ? `jobReopen job #${state.jobNumber} (it was closed as ${status || 'completed'}), then ` : '') +
+        `visitDelete ${open.length} open visit(s) on job #${state.jobNumber} (${state.client?.name || 'client'}), ` +
+        `set invoicing to NEVER so it is not "Requires invoicing", jobClose (no visit is marked complete), ` +
+        `and add the note "Cancelled: ${reason}"`,
       undo:
-        `Reopen job #${state.jobNumber} in Jobber (job page > More > Reopen job), then recreate the visits with create_visit: ` +
+        `Reopen job #${state.jobNumber} in Jobber (job page > More > Reopen job), set invoicing back to On completion, then recreate the visits with create_visit: ` +
         JSON.stringify(open.map((v) => visitUndoArgs(state.id, v))),
       warnings: [],
       apply: async () => {
-        const result = await gql(JOB_CLOSE, { jobId: state.id, input: { modifyIncompleteVisitsBy: 'DESTROY_ALL' } }, deps);
-        assertNoJobberErrors(result, 'jobClose');
-        const errors = jobberUserErrors(result.data?.jobClose);
-        if (errors.length) throw new Error(errors.join('; '));
+        if (alreadyClosed) await step(JOB_REOPEN, { jobId: state.id }, 'jobReopen');
+        // Delete the scheduled visits explicitly. Never visitComplete, never COMPLETE_PAST_*.
+        if (open.length) await step(VISIT_DELETE, { ids: open.map((v) => v.id) }, 'visitDelete');
+        await step(JOB_EDIT_NO_INVOICE, { jobId: state.id, input: { invoicing: { invoicingSchedule: 'NEVER' } } }, 'jobEdit');
+        await step(JOB_CLOSE, { jobId: state.id, input: { modifyIncompleteVisitsBy: 'DESTROY_ALL' } }, 'jobClose');
+        await step(JOB_NOTE, { jobId: state.id, input: { message: `Cancelled: ${reason}. Visits removed, not completed. No invoice needed.` } }, 'jobCreateNote');
       },
     };
   });

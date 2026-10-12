@@ -662,7 +662,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'cancel_job',
     description:
-      'Cancel a Jobber job by closing it (jobClose, DESTROY_ALL: deletes its incomplete visits). Requires an explicit encoded jobId and a reason. Refuses invoiced, paid, or completed jobs unless force=true. dryRun=true previews. Returns before and after state, an undo note, and writes an audit line. Not available to the receptionist. Does not email or text the client.',
+      'Cancel a Jobber job: deletes its open visits (visitDelete, never marks a visit complete), sets invoicing to NEVER so the closed job is Archived instead of Requires invoicing, closes it (jobClose), and adds a "Cancelled: <reason>" job note. An already-closed job (force=true) is reopened first so it can be re-filed the same way. Requires an explicit encoded jobId and a reason. Refuses invoiced, paid, or completed jobs unless force=true. dryRun=true previews. Returns before and after state, an undo note, and writes an audit line. Not available to the receptionist. Does not email or text the client.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
