@@ -559,6 +559,58 @@ describe('fallback techs', () => {
     assert.equal(result.allowlistedTechIds.includes('user-chris'), false);
   });
 
+  it('Murrieta goes to the Anza pool (Doug/Cowin), not Brian by default', async () => {
+    const result = await lookupOpenSlots(
+      { city: 'Murrieta' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits(ALL) }
+    );
+    assert.ok(['user-doug', 'user-cowin'].includes(result.openSlots[0].technicianId));
+    assert.equal(result.openSlots.some((s) => s.technicianId === 'user-brian'), false);
+  });
+
+  it('Murrieta: fallback tech working Ramona that day is not sent; one working Temecula is', async () => {
+    const day0 = windows[0];
+    const late = windows.find((w) => w.startAt.slice(0, 10) === day0.startAt.slice(0, 10) && w !== day0)!;
+    const withCity = (slot: { startAt: string; endAt: string }, id: string, name: string, city: string) => ({
+      ...visitFor(slot, id, name),
+      job: { title: 'Service Call', property: { address: { city } } },
+    });
+    // Primary pool busy all of day 0 (all-day drill), so fallback is considered.
+    const allDay = (id: string, name: string) => ({
+      startAt: day0.startAt, endAt: day0.endAt, allDay: true, title: 'Drill new well',
+      assignedUsers: { nodes: [{ id, name: { full: name } }] },
+    });
+    const occupied = [
+      allDay('user-doug', 'Doug Pollack'),
+      allDay('user-cowin', 'Cowin'),
+      withCity(late, 'user-chris', 'Chris Glass', 'Ramona'),
+      withCity(late, 'user-haze', 'Haze Tarbell', 'Ramona'),
+      withCity(late, 'user-sergio', 'Sergio Valdovinos Mendez', 'Temecula'),
+    ];
+    const result = await lookupOpenSlots(
+      { city: 'Murrieta' },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits(ALL, occupied) }
+    );
+    const sameDay = result.openSlots.filter((s) => s.startAt.slice(0, 10) === day0.startAt.slice(0, 10));
+    assert.ok(sameDay.length > 0);
+    for (const s of sameDay) assert.equal(s.technicianId, 'user-sergio');
+  });
+
+  it('home-zone env keeps an idle fallback tech in their own territory', async () => {
+    const occupied = [visitFor(windows[0], 'user-brian', 'Brian Eads')];
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        env: { RECEPTIONIST_FALLBACK_HOME_ZONES: 'chris:riverside' },
+        fetchFn: mockUsersAndVisits(ALL, occupied),
+      }
+    );
+    assert.equal(result.openSlots[0].startAt, windows[0].startAt);
+    assert.equal(result.openSlots[0].technicianId, 'user-haze');
+  });
+
   it('Travis only in Jobber → still no slots', async () => {
     const result = await lookupOpenSlots(
       { city: 'Ramona' },

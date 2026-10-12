@@ -29,6 +29,9 @@ import {
 import {
   allowedTechSpokenName,
   assignShopTech,
+  dispatchZoneForPlace,
+  fallbackHomeZones,
+  type DispatchZone,
   formatTechNames,
   isAllowlistedTechId,
   resolveFallbackTechs,
@@ -459,6 +462,48 @@ export function mergeWithFallbackSlots(
   return mergeOpenSlots([primary, earlier], Math.max(maxSlots, 1));
 }
 
+/**
+ * Location gate for ONE fallback tech (Oct 12 2026). Returns the slots that do not send
+ * the tech across territory, each tagged with a rank (0 = already near the caller that
+ * day or home-based there, 1 = no location signal). A day is dropped when the tech's
+ * board that day has a stop in a different zone than the caller, or when the tech has a
+ * known home base in another zone and nothing near the caller that day.
+ */
+export function locationGateFallbackSlots(options: {
+  slots: OpenSlot[];
+  occupied: OccupiedVisit[];
+  technicianId: string;
+  technicianName: string;
+  callerZone: DispatchZone | null;
+  homeZone?: DispatchZone | null;
+}): Array<OpenSlot & { rank: number }> {
+  const { callerZone } = options;
+  if (!callerZone) return options.slots.map((slot) => ({ ...slot, rank: 1 }));
+  const mine = options.occupied.filter((visit) =>
+    visitBelongsToTech(visit, options.technicianId, options.technicianName)
+  );
+  const out: Array<OpenSlot & { rank: number }> = [];
+  for (const slot of options.slots) {
+    const day = ptCalendarDate(new Date(slot.startAt));
+    const zones = mine
+      .filter((visit) => {
+        if (!visit.startAt) return false;
+        if (visit.allDay) return visitCoversPtDay(visit, day);
+        return ptCalendarDate(new Date(visit.startAt)) === day;
+      })
+      .map((visit) => dispatchZoneForPlace({ city: visit.city }))
+      .filter((zone): zone is DispatchZone => Boolean(zone));
+    if (zones.some((zone) => zone !== callerZone)) continue; // working elsewhere that day
+    if (zones.length > 0) {
+      out.push({ ...slot, rank: 0 });
+      continue;
+    }
+    if (options.homeZone && options.homeZone !== callerZone) continue;
+    out.push({ ...slot, rank: options.homeZone === callerZone ? 0 : 1 });
+  }
+  return out;
+}
+
 export function slotMatchesRequest(slot: OpenSlot, requestedStartAt: string): boolean {
   if (!requestedStartAt) return false;
   if (slot.startAt === requestedStartAt) return true;
@@ -600,21 +645,34 @@ export async function lookupOpenSlots(
     );
     const primarySlots = mergeOpenSlots(slotsByTech, perTechMax * Math.max(resolved.length, 1));
     // Fallback techs need a COMPLETE view of the board; if visits were truncated, skip them.
-    const fallbackSlots = complete
-      ? mergeOpenSlots(
-          fallbackResolved.map((tech) =>
-            computeOpenSlots({
+    // They are also location-gated: never sent across territory, nearest first.
+    const callerZone = dispatchZoneForPlace(location);
+    const homeZones = fallbackHomeZones(deps.env ?? process.env);
+    const gated = complete
+      ? fallbackResolved.map((tech) =>
+          locationGateFallbackSlots({
+            slots: computeOpenSlots({
               occupied,
               now,
               technicianId: tech.id,
               technicianName: tech.name,
               maxSlots: perTechMax,
               siteCity,
-            })
-          ),
-          perTechMax * Math.max(fallbackResolved.length, 1)
+            }),
+            occupied,
+            technicianId: tech.id,
+            technicianName: tech.name,
+            callerZone,
+            homeZone: homeZones.get(tech.key) ?? null,
+          })
         )
       : [];
+    const strip = (slots: Array<OpenSlot & { rank: number }>, rank: number): OpenSlot[] =>
+      slots.filter((slot) => slot.rank === rank).map(({ rank: _rank, ...slot }) => slot);
+    const fallbackSlots = mergeOpenSlots(
+      [...gated.map((slots) => strip(slots, 0)), ...gated.map((slots) => strip(slots, 1))],
+      perTechMax * Math.max(fallbackResolved.length, 1)
+    );
     const openSlots = mergeWithFallbackSlots(primarySlots, fallbackSlots).filter((slot) =>
       isWeekdayVisitStart(slot.startAt)
     );
