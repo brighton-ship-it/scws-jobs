@@ -45,6 +45,8 @@ export async function loadDailySpend(now = new Date()): Promise<SpendDay[] | nul
 const JOB_PAID_QUERY = `
   query DashJobPaid($id: EncodedId!) {
     job(id: $id) {
+      createdAt
+      client { jobs(first: 10) { nodes { id createdAt } } }
       invoices(first: 20) {
         nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } }
       }
@@ -81,7 +83,9 @@ export async function loadJobMoney(jobIds: string[]): Promise<Map<string, JobMon
           if (!(typeof total === 'number' && typeof pay === 'number' && pay >= total - 0.01)) fullyPaid = false;
         }
         paid = Math.round(paid * 100) / 100;
-        const money: JobMoney = { invoiced: Math.round(invoiced * 100) / 100, paid, invoiceCount, fullyPaid: invoiceCount > 0 && fullyPaid };
+        const priorJobTimes = (res.data?.job?.client?.jobs?.nodes ?? [])
+          .filter((j: any) => j?.id !== id).map((j: any) => Date.parse(j?.createdAt || '')).filter(Number.isFinite);
+        const money: JobMoney = { invoiced: Math.round(invoiced * 100) / 100, paid, invoiceCount, fullyPaid: invoiceCount > 0 && fullyPaid, clientJobTimes: priorJobTimes };
         paidCache.set(id, { at: Date.now(), paid, money });
         out.set(id, money);
       } catch (error) {

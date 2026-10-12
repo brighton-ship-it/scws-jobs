@@ -253,14 +253,14 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
             <div key={r.category} className={`min-w-0 rounded-xl border p-3 ${box}`}>
               <div className="flex items-baseline justify-between gap-2">
                 <p className={`truncate text-xs font-semibold ${ink} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
-                <p className={`shrink-0 text-2xl font-extrabold tabular-nums ${ink} ${dark ? 'xl:text-4xl' : ''}`} title="ROAS (new customers) = new-customer invoiced ÷ spend">{r.multipleNew === undefined ? '—' : mult(r.multipleNew)}<span className="ml-1 text-[10px] font-medium text-slate-400 xl:text-sm">ROAS new</span>{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
+                <p className={`shrink-0 text-2xl font-extrabold tabular-nums ${ink} ${dark ? 'xl:text-4xl' : ''}`} title="ROAS (new customers) = new-customer invoiced ÷ spend">{r.multipleNew === undefined ? '—' : mult(r.multipleNew)}<span className="ml-1 text-[10px] font-medium text-slate-400 xl:text-sm">ROAS (new customers)</span>{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
               </div>
               <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
                 {([['Spend', usd(r.spend)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)]] as const).map(([k, v]) => (
                   <div key={k} className="min-w-0"><dt className={`truncate text-[11px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd></div>
                 ))}
               </dl>
-              <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended ROAS (all callers) {mult(r.multiple)}</p>
+              <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}</p>
             </div>
           ))}
           {win.otherBooked != null ? <p className={`text-[11px] ${mut} ${dark ? 'xl:text-sm' : ''}`}>{win.otherBooked > 0 ? `+${win.otherBooked} booked via Mike calls · ` : ''}{win.rows.reduce((a, r) => a + r.booked, 0) + win.otherBooked} new booked total</p> : null}
@@ -390,7 +390,7 @@ export function CallDashboardPage() {
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
             <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
-            <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={rangeLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
+            <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={rangeLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended (all callers) ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -524,7 +524,7 @@ export function CallDashboardTv() {
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
             <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'ROAS (new customers)' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
             <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={showSince ? ro?.newOnly.multipleInvoiced ?? null : mainMult} label="invoiced ÷ spend" /></div>
-            {showSince ? <p className="text-sm text-slate-400 xl:text-xl">Blended <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
+            {showSince ? <p className="text-sm text-slate-400 xl:text-xl">Blended (all callers) <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
           </div>
         </div>
       ) : null}

@@ -34,7 +34,7 @@ export interface DashConversion {
 }
 
 /** Live Jobber money for one booked job (all non-draft/void invoices on the job, pre-tax). */
-export interface JobMoney { invoiced: number; paid: number; invoiceCount: number; fullyPaid: boolean }
+export interface JobMoney { invoiced: number; paid: number; invoiceCount: number; fullyPaid: boolean; /** createdAt (ms) of the client's OTHER Jobber jobs */ clientJobTimes?: number[] }
 
 export interface SpendDay {
   date: string; // YYYY-MM-DD (account time zone, PT)
@@ -356,7 +356,15 @@ export function buildDashboard(input: {
       if (!h || !hashes.includes(h)) continue;
       if (!best || t > Date.parse(best.started_at || '')) best = c;
     }
-    if (best) { usedCalls.add(best); creditedCall.set(cv, best); convs.push(cv); }
+    if (!best) continue;
+    // Strict new-customer rule (same as ROAS (new customers)): no Jobber job created before the caller's FIRST call.
+    const times = input.jobMoney?.get(cv.jobber_job_id)?.clientJobTimes;
+    if (times) {
+      let first = Infinity;
+      for (const c of input.calls) { const h = hashPhone(c.caller_phone); const t = Date.parse(c.started_at || ''); if (h && hashes.includes(h) && t < first) first = t; }
+      if (times.some((t) => t < first)) continue; // existing customer: not a new booking
+    }
+    usedCalls.add(best); creditedCall.set(cv, best); convs.push(cv);
   }
   const convOfCall = new Map<DashCall, DashConversion>();
   creditedCall.forEach((c, cv) => convOfCall.set(c, cv));
@@ -405,7 +413,7 @@ export function buildDashboard(input: {
   const noKeyword = decorated.every((c) => !c.keyword);
   if (noKeyword) gaps.push('Keyword is not returned by Google Ads call_view, so the keyword table shows ad group instead.');
   gaps.push('Tracking number is not stored; the table shows the call source/area code reported by Google Ads.');
-  gaps.push('New vs existing: booked = new customer (offline-conversion rules); "known" = phone matches a CRM/Jobber client with no new-customer booking.');
+  gaps.push('New customer (every card): booked job whose client had no Jobber job created before their first call to us. Bookings from clients with earlier jobs count as existing.');
   gaps.push('Live vs delayed: calls answered by Mike (AI receptionist) appear within about a minute of hang-up. Google Ads call data (campaign, ad source) is synced every 15 minutes, but Google itself can report calls hours late, so ad-attributed counts and today\'s ad calls may lag. Jobber bookings/payments refresh about every 10-15 minutes. Spend is daily.');
   gaps.push('Revenue, spend and multiples count from Sep 18, 2026 (when closed-loop tracking began).');
 
