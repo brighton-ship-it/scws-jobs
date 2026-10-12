@@ -206,6 +206,8 @@ export interface Dashboard {
   roas?: RoasView | null;
   /** Additive. All inbound calls from the Voice audit log (phone_call_log). Null until the table exists. */
   callLog?: CallLogView | null;
+  /** Additive. Legible unified call feed (Voice log + recorded tracking lines + Mike). */
+  callFeed?: import('./call-feed.ts').FeedRow[] | null;
   /** Additive. Ad spend/return split: pump (Search-1 etc.) vs drilling, fixed windows (independent of range). */
   adSplit?: AdSplit;
   /** Additive. Weekly sales rollup (current week-to-date + prior 8 weeks). */

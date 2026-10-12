@@ -143,6 +143,46 @@ function Badge({ outcome }: { outcome: string }) {
   return <span className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-xs font-medium ring-1 ring-inset ${cls}`}><span className={`h-1.5 w-1.5 rounded-full ${dot}`} />{outcome}</span>;
 }
 
+
+type FeedRow = NonNullable<Dashboard['callFeed']>[number];
+const fmtDur = (s: number | null) => (s == null ? '—' : s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.round(s)}s`);
+const feedTime = (iso: string) => new Date(iso).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+function OutcomePill({ o, dark = false }: { o: string; dark?: boolean }) {
+  const c = o === 'Booked' ? (dark ? 'bg-emerald-500 text-emerald-950' : 'bg-emerald-600 text-white')
+    : o === 'Missed' ? (dark ? 'bg-rose-500 text-white' : 'bg-rose-600 text-white')
+    : o === 'Voicemail' ? (dark ? 'bg-amber-400 text-amber-950' : 'bg-amber-500 text-white')
+    : o.startsWith('Mike') ? (dark ? 'bg-sky-400 text-sky-950' : 'bg-sky-600 text-white')
+    : (dark ? 'bg-slate-200 text-slate-900' : 'bg-slate-700 text-white');
+  return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{o}</span>;
+}
+export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; dark?: boolean; max?: number }) {
+  const list = max ? rows.slice(0, max) : rows;
+  const head = dark ? 'text-slate-400' : 'text-slate-500';
+  const ink = dark ? 'text-white' : 'text-slate-900';
+  const sub = dark ? 'text-slate-300' : 'text-slate-600';
+  return (
+    <table className={`w-full table-fixed text-left ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
+      <colgroup><col className="w-[17%]" /><col className="w-[33%]" /><col className="w-[17%]" /><col className="w-[18%]" /><col className="w-[15%]" /></colgroup>
+      <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
+      <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
+        {list.length === 0 ? <tr><td colSpan={5} className={`px-3 py-6 text-center ${sub}`}>No calls yet</td></tr> : list.map((r, i) => (
+          <tr key={i} className={r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}>
+            <td className={`whitespace-nowrap px-3 py-2 align-top tabular-nums ${sub}`}>{feedTime(r.at)}</td>
+            <td className="px-3 py-2 align-top">
+              <div className={`truncate font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
+              {r.name ? <div className={`truncate text-sm ${sub}`}>{r.phone}</div> : null}
+              {r.summary ? <div className={`truncate text-sm ${sub}`} title={r.summary}>{r.summary}</div> : null}
+            </td>
+            <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}{r.answeredBy ? <div className={`truncate text-sm font-normal ${sub}`}>{r.answeredBy}</div> : null}</td>
+            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} dark={dark} /></td>
+            <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${ink}`}>{fmtDur(r.durationSeconds)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 const th = 'sticky top-0 z-10 bg-slate-50/95 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 backdrop-blur';
 
 function GroupTable({ title, rows, delay }: { title: string; rows: GroupRow[]; delay: number }) {
@@ -385,41 +425,11 @@ export function CallDashboardPage() {
                 </>
               )}
             </Card>
-            <Card title="Recent calls" subtitle="Latest 25" delay={220} className="lg:col-span-3 !p-0">
-              <div className="-mx-5 -mb-5 max-h-[300px] overflow-auto">
-                <table className="w-full text-left text-sm">
-                  <thead><tr><th className={th}>Time</th><th className={th}>Outcome</th><th className={`${th} text-right`}>Value</th></tr></thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {data.recent.length === 0 ? <tr><td colSpan={3} className="px-5 py-8 text-center text-slate-400">No calls yet</td></tr> : data.recent.map((r, i) => (
-                      <tr key={i} className="hover:bg-slate-50/80"><td className="whitespace-nowrap px-3 py-2 text-xs text-slate-600"><div className="font-medium text-slate-800">{when(r.at)}</div><div className="text-slate-400">{r.phone} · {r.durationSeconds ?? '—'}s</div></td>
-                        <td className="px-3 py-2"><Badge outcome={r.outcome} /></td><td className="px-3 py-2 text-right tabular-nums">{r.value ? usd(r.value) : ''}</td></tr>
-                    ))}
-                  </tbody>
-                </table>
+            <Card title="Recent calls" subtitle={data.callLog ? `All incoming · today ${data.callLog.today.total} · ${data.callLog.today.answered} answered · ${data.callLog.today.forwardedAi} to Mike · ${data.callLog.today.missed} missed` : 'All incoming'} delay={220} className="lg:col-span-3 !p-0">
+              <div className="-mx-5 -mb-5 max-h-[520px] overflow-auto">
+                {data.callFeed ? <CallFeedTable rows={data.callFeed} /> : <p className="px-5 py-8 text-center text-slate-400">Call feed unavailable</p>}
               </div>
             </Card>
-            {data.callLog ? (
-              <Card title="Call log: all incoming" subtitle={`Today ${data.callLog.today.total} · ${data.callLog.today.answered} answered · ${data.callLog.today.forwardedAi} to Mike · ${data.callLog.today.missed} missed${data.callLog.today.missed ? ' ⚠' : ''}`} delay={230} className="lg:col-span-3 !p-0">
-                <div className="-mx-5 -mb-5 max-h-[360px] overflow-auto">
-                  <table className="w-full text-left text-sm">
-                    <thead><tr><th className={th}>Time</th><th className={th}>Caller</th><th className={th}>Outcome</th></tr></thead>
-                    <tbody className="divide-y divide-slate-100">
-                      {data.callLog.rows.map((r, i) => {
-                        const missed = r.outcome === 'missed';
-                        const label = missed ? 'Missed' : r.outcome === 'forwarded_ai' ? 'Mike (AI)' : r.outcome === 'voicemail' ? 'Voicemail' : r.answeredBy ? `Answered by ${r.answeredBy}` : 'Answered';
-                        return (
-                          <tr key={i} className={missed ? 'bg-rose-50 hover:bg-rose-100/70' : 'hover:bg-slate-50/80'}>
-                            <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-600"><div className="font-medium text-slate-800">{when(r.at)}</div><div className="text-slate-400">{r.durationSeconds ?? '—'}s</div></td>
-                            <td className="px-3 py-2 text-xs text-slate-600"><div className={missed ? 'font-semibold text-rose-700' : 'font-medium text-slate-800'}>{missed ? <a href={`tel:${r.phone}`}>{r.phone}</a> : r.phone.replace(/^\+1(\d{3})(\d{3})(\d{4})$/, '($1) •••-$3')}</div><div className="text-slate-400">{[r.client, r.campaign].filter(Boolean).join(' · ') || ' '}</div></td>
-                            <td className="px-3 py-2"><Badge outcome={label} /></td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </Card>
-            ) : null}
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
@@ -540,16 +550,8 @@ export function CallDashboardTv() {
         </div>
       ) : null}
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
-        <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Activity</p>
-        <div className="space-y-1.5 overflow-hidden text-[13px] sm:text-sm lg:h-[5.5rem] lg:space-y-1 xl:h-36 xl:text-2xl">
-          {(tv?.ticker ?? []).length === 0 ? <p className="text-slate-500">{tv ? 'No recent activity' : ' '}</p> : null}
-          {(tv?.ticker ?? []).slice(0, 4).map((t, i) => (
-            <p key={i} className={`flex min-w-0 items-start gap-2 sm:items-center sm:gap-3 ${t.kind === 'booking' ? 'font-bold text-emerald-400' : 'text-slate-200'}`}>
-              <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full sm:mt-0 ${t.kind === 'booking' ? 'bg-emerald-400' : 'bg-sky-400'}`} />
-              <span className="shrink-0 tabular-nums text-slate-500">{when(t.at)}</span><span className="line-clamp-2 min-w-0 flex-1 break-words sm:line-clamp-1 sm:truncate">{t.text}</span>
-            </p>
-          ))}
-        </div>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Recent calls</p>
+        {data?.callFeed ? <CallFeedTable dark rows={data.callFeed} max={6} /> : <p className="text-slate-500">{tv ? 'No recent calls' : ' '}</p>}
       </div>
     </div>
   );
