@@ -18,7 +18,14 @@ export default function MetricsPage() {
       if (q) { try { localStorage.setItem(KEY_STORAGE, q); } catch {} }
       let k = q; try { k = k || localStorage.getItem(KEY_STORAGE); } catch {}
       setKey(k);
-      const res = await fetch('/api/ops/metrics', { headers: k ? { [QUOTES_GP_KEY_HEADER]: k } : {}, cache: 'no-store' });
+      let res: Response | null = null;
+      for (let i = 0; i < 3; i++) {
+        try { res = await fetch('/api/ops/metrics', { headers: k ? { [QUOTES_GP_KEY_HEADER]: k } : {}, cache: 'no-store', signal: AbortSignal.timeout(290_000) }); }
+        catch { res = null; }
+        if (res && (res.ok || res.status === 401)) break;
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      if (!res) throw new Error('Jobber is slow right now. Tap Refresh to try again.');
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
       const j = await res.json(); setCards(j.cards); setAt(j.generatedAt); setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); }
