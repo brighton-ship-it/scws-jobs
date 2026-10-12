@@ -6,12 +6,12 @@ import { unstable_cache } from 'next/cache';
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
-import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
+import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney } from '@/lib/ads/call-dashboard-data';
 import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
-import { buildCallFeed } from '@/lib/ads/call-feed';
+import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
@@ -70,7 +70,10 @@ export async function GET(request: NextRequest) {
         .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('started_at', { ascending: false }).limit(100);
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
-      dash.callFeed = buildCallFeed({ log: log.data ?? [], recordings: recs.data ?? [], mike: mk.data ?? [], bookedMike: bookingIds, limit: 40 });
+      const merged = mergeCallFeed({ log: log.data ?? [], recordings: recs.data ?? [], mike: mk.data ?? [], bookedMike: bookingIds });
+      dash.callFeed = merged.slice(0, 40);
+      // Main page header and TV "today" tiles share this one count across every line.
+      if (dash.callLog) dash.callLog.today = feedToday(merged, ptStartOfDay(new Date()).getTime());
     } catch (e) { notes.push(`call feed: ${e instanceof Error ? e.message : 'error'}`); }
     try {
       const nowD = new Date();

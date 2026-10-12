@@ -24,9 +24,22 @@ const LINE_BY_NUMBER: Record<string, string> = {
 const LINE_BY_SOURCE: Record<string, string> = { gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads', seo: 'Website', direct: 'Direct', main_line: 'Main' };
 const firstLine = (s: string | null | undefined) => { const l = (s ?? '').split('\n')[0].trim(); return l ? (l.length > 180 ? `${l.slice(0, 177)}…` : l) : null; };
 
-export function buildCallFeed(input: {
+export function buildCallFeed(input: Parameters<typeof mergeCallFeed>[0] & { limit?: number }): FeedRow[] {
+  return mergeCallFeed(input).slice(0, input.limit ?? 40);
+}
+
+/** Today's totals over EVERY line (Main, Ransom, GBP Anza/Ramona, Direct, ads tracking, Mike), one row per call. */
+export function feedToday(rows: FeedRow[], todayStartMs: number) {
+  const t = rows.filter((r) => Date.parse(r.at) >= todayStartMs);
+  const mike = t.filter((r) => r.line.startsWith('Mike') || r.outcome === 'Mike (AI)').length;
+  const missed = t.filter((r) => r.outcome === 'Missed' || r.outcome === 'Voicemail').length;
+  return { total: t.length, answered: t.length - mike - missed, missed, forwardedAi: mike };
+}
+
+/** All calls merged and de-duplicated (no limit), newest first. */
+export function mergeCallFeed(input: {
   log: Array<Record<string, any>>; recordings: Array<Record<string, any>>; mike: Array<Record<string, any>>;
-  bookedMike?: Set<string>; limit?: number;
+  bookedMike?: Set<string>;
 }): FeedRow[] {
   const mikeById = new Map(input.mike.map((m) => [m.vapi_call_id ?? m.id, m]));
   const rows: Array<FeedRow & { _d: string | null; _t: number }> = [];
@@ -57,5 +70,5 @@ export function buildCallFeed(input: {
     rows.push({ at: m.called_at, name: m.customer_name ?? null, phone: formatPhone(m.phone), line: 'Mike',
       outcome: input.bookedMike?.has(m.vapi_call_id) ? 'Booked' : 'Mike (AI)', answeredBy: null, durationSeconds: m.duration_sec ?? null, summary: firstLine(m.summary), _d: d, _t: t });
   }
-  return rows.sort((a, b) => b._t - a._t).slice(0, input.limit ?? 40).map(({ _d, _t, ...r }) => r);
+  return rows.sort((a, b) => b._t - a._t).map(({ _d, _t, ...r }) => r);
 }
