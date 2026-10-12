@@ -4,12 +4,12 @@ import {
 } from './google-ads-api.ts';
 import { assertNoJobberErrors, jobberGraphql } from '../jobber/client.ts';
 import { invoicePretaxUsd } from './invoice-value.ts';
-import { ptDateKey, DASH_FLOOR_ISO, type SpendDay } from './call-dashboard.ts';
+import { ptDateKey, DASH_FLOOR_ISO, type SpendDay, type JobMoney } from './call-dashboard.ts';
 
 const SPEND_TTL_MS = 30 * 60_000;
 const PAID_TTL_MS = 10 * 60_000;
 let spendCache: { at: number; key: string; rows: SpendDay[] } | null = null;
-const paidCache = new Map<string, { at: number; paid: number }>();
+const paidCache = new Map<string, { at: number; paid: number; money: JobMoney }>();
 
 export function dailySpendGaql(from: string, to: string): string {
   return `SELECT campaign.name, segments.date, metrics.cost_micros, metrics.clicks FROM campaign WHERE segments.date BETWEEN '${from}' AND '${to}' AND campaign.status != 'REMOVED'`;
@@ -52,12 +52,12 @@ const JOB_PAID_QUERY = `
   }
 `;
 
-/** Pre-tax paid dollars per job (payments scaled to the pre-tax share of each invoice). */
-export async function loadPaidByJob(jobIds: string[]): Promise<Map<string, number> | null> {
-  const out = new Map<string, number>();
+/** Live Jobber money per booked job: pre-tax invoiced, pre-tax paid share, and whether every invoice is paid in full. */
+export async function loadJobMoney(jobIds: string[]): Promise<Map<string, JobMoney> | null> {
+  const out = new Map<string, JobMoney>();
   const todo = jobIds.filter((id) => {
     const hit = paidCache.get(id);
-    if (hit && Date.now() - hit.at < PAID_TTL_MS) { out.set(id, hit.paid); return false; }
+    if (hit && Date.now() - hit.at < PAID_TTL_MS) { out.set(id, hit.money); return false; }
     return true;
   });
   let failed = 0;
@@ -67,18 +67,23 @@ export async function loadPaidByJob(jobIds: string[]): Promise<Map<string, numbe
         const res = await jobberGraphql(JOB_PAID_QUERY, { id });
         assertNoJobberErrors(res, 'dashboard job paid');
         const nodes = res.data?.job?.invoices?.nodes ?? [];
-        let paid = 0;
+        let paid = 0, invoiced = 0, invoiceCount = 0, fullyPaid = true;
         for (const inv of nodes) {
           const pre = invoicePretaxUsd(inv);
+          if (!pre) continue; // drafts / void / bad debt are not revenue
+          invoiceCount += 1;
+          invoiced += pre;
           const total = inv?.amounts?.total;
           const pay = inv?.amounts?.paymentsTotal;
-          if (pre && typeof total === 'number' && total > 0 && typeof pay === 'number' && pay > 0) {
+          if (typeof total === 'number' && total > 0 && typeof pay === 'number' && pay > 0) {
             paid += Math.min(pay, total) * (pre / total);
           }
+          if (!(typeof total === 'number' && typeof pay === 'number' && pay >= total - 0.01)) fullyPaid = false;
         }
         paid = Math.round(paid * 100) / 100;
-        paidCache.set(id, { at: Date.now(), paid });
-        out.set(id, paid);
+        const money: JobMoney = { invoiced: Math.round(invoiced * 100) / 100, paid, invoiceCount, fullyPaid: invoiceCount > 0 && fullyPaid };
+        paidCache.set(id, { at: Date.now(), paid, money });
+        out.set(id, money);
       } catch (error) {
         failed += 1;
         console.warn('[call-dashboard] paid failed:', error instanceof Error ? error.message : 'error');
@@ -87,4 +92,10 @@ export async function loadPaidByJob(jobIds: string[]): Promise<Map<string, numbe
   }
   if (todo.length > 0 && failed === todo.length && out.size === 0) return null;
   return out;
+}
+
+/** Back-compat: pre-tax paid dollars per job. */
+export async function loadPaidByJob(jobIds: string[]): Promise<Map<string, number> | null> {
+  const m = await loadJobMoney(jobIds);
+  return m ? new Map(Array.from(m.entries()).map(([k, v]) => [k, v.paid])) : null;
 }

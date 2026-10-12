@@ -5,10 +5,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
-import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, rangeStart, ptDateKey, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
+import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, rangeStart, ptDateKey, adCategory, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
-import { loadDailySpend, loadPaidByJob } from '@/lib/ads/call-dashboard-data';
+import { loadDailySpend, loadJobMoney } from '@/lib/ads/call-dashboard-data';
+import { buildRoasView } from '@/lib/ads/roas-view';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
@@ -45,7 +46,7 @@ export async function GET(request: NextRequest) {
     if (calls.error) notes.push(`calls: ${calls.error.message}`);
     if (convs.error) notes.push(`conversions: ${convs.error.message}`);
     const conversions = convs.data ?? [];
-    const paidByJob = await loadPaidByJob(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
+    const jobMoney = await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
     if (live.error) notes.push(`live calls: ${live.error.message}`);
     const adsCalls: DashCall[] = calls.data ?? [];
     const liveCalls = mergeLiveCalls(adsCalls, live.data ?? []);
@@ -56,7 +57,7 @@ export async function GET(request: NextRequest) {
       if (!br.error) bookingIds = new Set((br.data ?? []).map((r: { vapi_call_id: string }) => r.vapi_call_id));
     }
     for (const c of liveCalls) c.live_booking_request = bookingIds.has((c as any)._vapi);
-    const dash = buildDashboard({ calls: [...adsCalls, ...liveCalls], conversions, spend, paidByJob, range });
+    const dash = buildDashboard({ calls: [...adsCalls, ...liveCalls], conversions, spend, paidByJob: null, jobMoney, range });
     const log = await db.from('phone_call_log')
       .select('started_at, caller_phone, called_number, outcome, answered_by, duration_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at')
       .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);
@@ -77,8 +78,12 @@ export async function GET(request: NextRequest) {
         now: nowD, invoices, quotes, jobsCreated, jobsCompleted, payments,
         range: { range, startKey: ptDateKey(rStart), endKey: ptDateKey(nowD), name: range },
         callTimes: allCalls.map((c) => c.started_at).filter((t): t is string => !!t),
-        bookedAt: conversions.map((c: { conversion_at: string | null }) => c.conversion_at).filter((t: string | null): t is string => !!t),
+        // Same bookings as the funnel: conversions credited to a call (not every uploaded conversion).
+        bookedAt: (dash.bookedCredited ?? []).map((b) => b.at),
+        adCalls: allCalls.filter((c) => c.started_at).map((c) => ({ at: c.started_at as string, cat: c.live ? null : adCategory(c.campaign_name) })),
+        adBooked: dash.bookedCredited ?? [],
       });
+      dash.roas = buildRoasView({ invoices, adCalls: adsCalls, spend, start: new Date(dash.revenueStart), now: nowD });
     } catch (e) {
       notes.push(`weekly sales: ${e instanceof Error ? e.message : 'error'}`);
     }

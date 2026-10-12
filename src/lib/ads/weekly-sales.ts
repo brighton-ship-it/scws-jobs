@@ -1,15 +1,18 @@
 /** Weekly sales rollup for the ops call dashboard (pure; Jobber loaders live in weekly-sales-data.ts). */
 import { ptDateKey, ptStartOfDay, ptWeekStart, DASH_FLOOR_ISO } from './call-dashboard.ts';
 import { invoicePretaxUsd, type InvoiceAmountInput } from './invoice-value.ts';
+import { workCategory, WORK_CATEGORIES, WORK_CATEGORY_RULE, type WorkCategory } from './work-category.ts';
 
 export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
 
 export interface WeeklyInvoice extends InvoiceAmountInput {
   amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; paymentsTotal?: number | null } | null;
+  jobs?: { nodes?: Array<{ title?: string | null }> | null } | null;
+  client?: { id?: string | null; createdAt?: string | null; phones?: Array<{ number?: string | null }> | null } | null;
 }
-export interface WeeklyQuote { quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
+export interface WeeklyQuote { title?: string | null; quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
 export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null }
-export interface WeeklyJob { createdAt?: string | null; completedAt?: string | null }
+export interface WeeklyJob { title?: string | null; createdAt?: string | null; completedAt?: string | null }
 
 export interface WeekRow {
   weekStart: string; // YYYY-MM-DD Monday PT
@@ -32,17 +35,28 @@ export interface WeekRow {
   bookedCalls: number | null;
   closingRate: number | null;
 }
+export interface CategoryRow {
+  quotesSent: number; quotesSentValue: number; quotesApproved: number; quotesApprovedValue: number;
+  invoiced: number; invoiceCount: number; jobsBooked: number;
+}
+export interface AdClosing { calls: number; booked: number; closingRate: number | null }
 /** Headline totals over the dashboard's selected date range (same definitions as a week row). */
 export interface RangeTotals extends Omit<WeekRow, 'weekStart' | 'weekEnd' | 'current'> {
   range: string;      // '7' | '30' | '90' | 'since'
   startKey: string;   // YYYY-MM-DD PT (inclusive)
   endKey: string;     // YYYY-MM-DD PT (inclusive, today)
   title: string;      // "Last 30 days: Sep 13–Oct 12"
+  /** Drilling vs pump/service vs service-call split of quotes, invoices and jobs (see WORK_CATEGORY_RULE). */
+  byCategory?: Record<WorkCategory, CategoryRow> | null;
+  /** Closing rate by ad campaign type (Google Ads drilling vs pump campaigns). */
+  closingByAd?: { pump: AdClosing; drilling: AdClosing } | null;
 }
 export interface WeeklySales {
   weeks: WeekRow[]; // oldest -> newest
   /** Totals for the selected range; absent when the caller did not pass one. */
   totals?: RangeTotals | null;
+  /** Same split for the last full Mon–Sun week. */
+  lastWeekByCategory?: Record<WorkCategory, CategoryRow> | null;
   sources: string[];
   gaps: string[];
 }
@@ -85,6 +99,9 @@ export interface WeeklyInput {
   callTimes: string[];
   /** booked-call conversion timestamps (new-customer bookings credited to a call) */
   bookedAt: string[];
+  /** Calls / credited bookings tagged with the Google Ads campaign type (null = not an ad call). */
+  adCalls?: Array<{ at: string; cat: 'pump' | 'drilling' | null }>;
+  adBooked?: Array<{ at: string; cat: 'pump' | 'drilling' | null }>;
   /** Selected dashboard range for the headline totals (inclusive PT date keys). */
   range?: { range: string; startKey: string; endKey: string; name: string } | null;
 }
@@ -129,7 +146,8 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
       sent.quotesSentValue = round((sent.quotesSentValue ?? 0) + val);
     }
     // Approved is bucketed by APPROVAL date (transitionedAt), independent of when the quote was sent.
-    if (isApprovedStatus(q.quoteStatus)) {
+    // Quotes never sent to the customer (Jobber auto-quotes converted straight into a job) are not approvals.
+    if (isApprovedStatus(q.quoteStatus) && q.sentAt) {
       const appr = at(jobberDateKey(q.transitionedAt));
       if (appr) {
         appr.quotesApproved = (appr.quotesApproved ?? 0) + 1;
@@ -142,6 +160,42 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
   // Closing rate only counts calls/bookings since the tracking floor (booking attribution starts then).
   for (const t of input.callTimes) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.calls += 1; }
   for (const t of input.bookedAt) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.bookedCalls = (w.bookedCalls ?? 0) + 1; }
+}
+
+const emptyCat = (): CategoryRow => ({ quotesSent: 0, quotesSentValue: 0, quotesApproved: 0, quotesApprovedValue: 0, invoiced: 0, invoiceCount: 0, jobsBooked: 0 });
+export const invoiceTitle = (inv: WeeklyInvoice) => inv.jobs?.nodes?.find((j) => j?.title)?.title ?? null;
+
+/** Drilling / pump / service-call split over inclusive PT date keys. Same definitions as the headline row. */
+export function categoryTotals(input: WeeklyInput, startKey: string, endKey: string): Record<WorkCategory, CategoryRow> | null {
+  if (!input.quotes && !input.invoices && !input.jobsCreated) return null;
+  const out = Object.fromEntries(WORK_CATEGORIES.map((c) => [c, emptyCat()])) as Record<WorkCategory, CategoryRow>;
+  const inR = (k: string | null) => k != null && k >= startKey && k <= endKey;
+  for (const q of input.quotes ?? []) {
+    const r = out[workCategory(q.title)];
+    const val = q.amounts?.subtotal ?? q.amounts?.total ?? 0;
+    if (inR(jobberDateKey(q.sentAt))) { r.quotesSent += 1; r.quotesSentValue = round(r.quotesSentValue + val); }
+    if (isApprovedStatus(q.quoteStatus) && q.sentAt && inR(jobberDateKey(q.transitionedAt))) { r.quotesApproved += 1; r.quotesApprovedValue = round(r.quotesApprovedValue + val); }
+  }
+  for (const inv of input.invoices ?? []) {
+    const pre = invoicePretaxUsd(inv);
+    if (!pre || !inR(jobberDateKey(inv.issuedDate))) continue;
+    const r = out[workCategory(invoiceTitle(inv))];
+    r.invoiced = round(r.invoiced + pre); r.invoiceCount += 1;
+  }
+  for (const j of input.jobsCreated ?? []) if (inR(jobberDateKey(j.createdAt))) out[workCategory(j.title)].jobsBooked += 1;
+  return out;
+}
+
+function adClosing(input: WeeklyInput, startKey: string, endKey: string, floorKey: string) {
+  if (!input.adCalls || !input.adBooked) return null;
+  const lo = startKey > floorKey ? startKey : floorKey;
+  const inR = (t: string) => { const k = jobberDateKey(t); return k != null && k >= lo && k <= endKey; };
+  const mk = (cat: 'pump' | 'drilling'): AdClosing => {
+    const calls = input.adCalls!.filter((c) => c.cat === cat && inR(c.at)).length;
+    const booked = input.adBooked!.filter((c) => c.cat === cat && inR(c.at)).length;
+    return { calls, booked, closingRate: calls > 0 ? Math.min(1, booked / calls) : null };
+  };
+  return { pump: mk('pump'), drilling: mk('drilling') };
 }
 
 const RANGE_NAMES: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
@@ -171,7 +225,10 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
     accumulate(input, (k) => (k != null && k >= startKey && k <= endKey ? row : undefined), floorKey);
     if (endKey < floorKey) { row.bookedCalls = null; row.calls = 0; }
     row.closingRate = row.calls > 0 ? Math.min(1, (row.bookedCalls ?? 0) / row.calls) : null;
-    totals = { ...row, range, startKey, endKey, label: `${md(startKey)}–${md(endKey)}`, title: rangeTitle(range, startKey, endKey) };
+    totals = {
+      ...row, range, startKey, endKey, label: `${md(startKey)}–${md(endKey)}`, title: rangeTitle(range, startKey, endKey),
+      byCategory: categoryTotals(input, startKey, endKey), closingByAd: adClosing(input, startKey, endKey, floorKey),
+    };
   }
   for (const w of weeks) {
     if (w.weekEnd < floorKey) { w.bookedCalls = null; w.closingRate = null; w.calls = 0; continue; }
@@ -186,14 +243,17 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
   if (!input.quotes) gaps.push('Weekly quotes unavailable (Jobber quotes query failed).');
   if (!input.jobsCreated) gaps.push('Weekly jobs booked unavailable (Jobber jobs query failed).');
   if (!input.jobsCompleted) gaps.push('Weekly jobs completed unavailable (Jobber jobs query failed).');
+  const lw = weeks.length >= 2 ? weeks[weeks.length - 2] : null;
   return {
     weeks, gaps, totals,
+    lastWeekByCategory: lw ? categoryTotals(input, lw.weekStart, lw.weekEnd) : null,
     sources: [
       'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share), so it follows the invoice week, not the day the money arrived.',
       'Cash collected = Jobber payment records by the date the payment was received (payments and deposits, less refunds and failed ACH), whichever week the invoice was issued.',
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
-      'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes now approved/converted, counted in the week they were approved (Jobber status-change time), whenever they were sent.',
-      `Closing rate = new-customer bookings credited to a call ÷ all calls, weeks since ${md(floorKey)} (tracking start). Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
+      'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals.',
+      WORK_CATEGORY_RULE,
+      `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ all calls (Google Ads calls + Mike AI receptionist calls), since ${md(floorKey)} (tracking start). By-campaign closing uses Google Ads calls only, split by drilling vs pump campaign. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
   };
 }

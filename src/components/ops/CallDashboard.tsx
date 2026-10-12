@@ -235,9 +235,13 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
     ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved`],
-    ['Closing rate', pct(w.closingRate), `${w.bookedCalls ?? 0} booked / ${w.calls} calls`],
-    ['Last full week', usd(prev?.invoiced), prev?.label],
+    ['Closing rate', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} calls`],
+    ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
   ];
+  const cats = weekly.totals?.byCategory;
+  const lwc = weekly.lastWeekByCategory;
+  const cab = weekly.totals?.closingByAd;
+  const CATS = [['drilling', 'Drilling'], ['pump', 'Pump & service'], ['service_call', 'Service calls']] as const;
   return (
     <Card title="Sales" subtitle={`${title} · bars: last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} + this week (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
@@ -255,6 +259,29 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
             </div>
           ))}
         </div>
+        {cats ? (
+          <div className="min-w-0 overflow-x-auto lg:col-span-3">
+            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Drilling vs pump · {span}</p>
+            <table className="w-full text-left text-xs tabular-nums">
+              <thead><tr className="text-[10px] uppercase tracking-wider text-slate-400"><th className="py-1 pr-2 font-semibold">Type</th><th className="py-1 pr-2 text-right font-semibold">Quotes sent</th><th className="py-1 pr-2 text-right font-semibold">Approved</th><th className="py-1 pr-2 text-right font-semibold">Jobs booked</th><th className="py-1 pr-2 text-right font-semibold">Invoiced</th><th className="py-1 pr-2 text-right font-semibold">Last full week</th><th className="py-1 text-right font-semibold">Ad closing</th></tr></thead>
+              <tbody className="divide-y divide-slate-100">
+                {CATS.map(([k, label]) => {
+                  const c = cats[k];
+                  const ac = k === 'service_call' ? null : cab?.[k];
+                  return (
+                    <tr key={k}><td className="py-1 pr-2 font-medium text-slate-700">{label}</td>
+                      <td className="py-1 pr-2 text-right">{c.quotesSent} · {compactUsd(c.quotesSentValue)}</td>
+                      <td className="py-1 pr-2 text-right">{c.quotesApproved} · {compactUsd(c.quotesApprovedValue)}</td>
+                      <td className="py-1 pr-2 text-right">{c.jobsBooked}</td>
+                      <td className="py-1 pr-2 text-right">{usd(c.invoiced)}</td>
+                      <td className="py-1 pr-2 text-right">{lwc ? usd(lwc[k].invoiced) : '—'}</td>
+                      <td className="py-1 text-right" title="new bookings credited to an ad call ÷ Google Ads calls for that campaign type">{ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—'}</td></tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
         <div className="min-w-0 lg:col-span-2"><p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Invoiced (bar) · paid on those invoices (teal)</p><WeeklyBars weeks={weekly.weeks} /><p className="mb-0.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cash collected by payment date</p><WeeklyCashBars weeks={weekly.weeks} /></div>
       </div>
       <details className="mt-3 text-[11px] text-slate-400"><summary className="cursor-pointer">Sources &amp; definitions</summary>
@@ -304,11 +331,11 @@ export function CallDashboardPage() {
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
             <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
-            <Kpi delay={120} color={palette.revenue} label="Return (invoiced / paid)" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={`${mult(t.multipleInvoiced)} / ${mult(t.multiplePaid)}`} sub="revenue ÷ ad spend" />
+            <Kpi delay={120} color={palette.revenue} label="New-cust. return (inv / paid)" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={`${mult(t.multipleInvoiced)} / ${mult(t.multiplePaid)}`} sub="revenue ÷ ad spend" />
             <Kpi delay={160} color={palette.booked} label="Booked value" range={rangeLabel} value={usd(t.bookedValue)} sub={`${usd(t.perCall.booked, 2)}/call`} />
             <Kpi delay={200} color={palette.revenue} label="Quote value" range={rangeLabel} value={usd(t.quoteValue)} sub={`${usd(t.perCall.quote, 2)}/call`} />
-            <Kpi delay={240} color={palette.revenue} label="Invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
-            <Kpi delay={280} color={palette.paid} label="Paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
+            <Kpi delay={240} color={palette.revenue} label="New-cust. invoiced" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.invoicedValue)} sub={`${usd(t.perCall.invoiced, 2)}/call`} spark={s.map((d) => d.invoiced)} />
+            <Kpi delay={280} color={palette.paid} label="New-cust. paid" range={rangeLabel} hint="paid = collected so far; invoiced = billed, whether or not collected yet" value={usd(t.paidValue)} sub={t.paidValue != null && t.invoicedValue ? `${Math.round((t.paidValue / t.invoicedValue) * 100)}% of invoiced` : undefined} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -321,21 +348,41 @@ export function CallDashboardPage() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-5">
-            <Card title="Conversion funnel" subtitle="Calls → booked → invoiced → paid" delay={140}>
+            <Card title="Conversion funnel" subtitle={`New-customer jobs credited to a call · ${rangeLabel}`} delay={140}>
               <Funnel stages={[
                 { label: 'Calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
-                { label: 'Booked', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
+                { label: 'Booked (new)', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
                 { label: 'Invoiced', value: data.funnel?.invoiced ?? null, color: palette.revenue },
-                { label: 'Paid', value: data.funnel?.paid ?? null, color: palette.paid },
+                { label: 'Paid in full', value: data.funnel?.paid ?? null, color: palette.paid },
               ]} />
+              <p className="mt-2 text-[11px] text-slate-400">
+                {data.funnel?.adCalls != null ? `${data.funnel.adCalls} Google Ads + ${data.funnel.calls - data.funnel.adCalls} Mike calls · ${data.funnel.uniqueCallers ?? '—'} unique callers` : null}
+                {data.funnel?.partPaid ? ` · ${data.funnel.partPaid} partly paid` : ''}
+              </p>
             </Card>
-            <Card title="Return on ad spend" subtitle={`Invoiced revenue ÷ spend · ${rangeLabel}`} delay={180} className="lg:col-span-1">
-              <Gauge value={t.multipleInvoiced} label="Invoiced" />
-              <div className="mt-2 flex justify-center gap-6 text-center text-xs text-slate-500">
-                <div title="paid = collected so far"><div className="text-base font-bold tabular-nums text-slate-900">{mult(t.multiplePaid)}</div>paid ⓘ</div>
-                <div><div className="text-base font-bold tabular-nums text-slate-900">{compactUsd(t.invoicedValue)}</div>invoiced</div>
-                <div><div className="text-base font-bold tabular-nums text-slate-900">{compactUsd(t.spend)}</div>spend</div>
-              </div>
+            <Card title="Return on ad spend" subtitle={`Jobber invoices ÷ Google Ads spend · ${rangeLabel}`} delay={180} className="lg:col-span-1">
+              {data.roas ? (
+                <>
+                  <Gauge value={data.roas.overall.multipleInvoiced} label="All ad callers" />
+                  <p className="-mt-1 text-center text-[10px] font-semibold uppercase tracking-wider text-slate-500">All ad callers (new + repeat)</p>
+                  <table className="mt-2 w-full text-center text-xs tabular-nums text-slate-500">
+                    <thead><tr className="text-[10px] uppercase tracking-wider"><th></th><th className="font-semibold">Invoiced</th><th className="font-semibold">Paid</th></tr></thead>
+                    <tbody>
+                      <tr><td className="py-0.5 text-left">All callers</td><td className="font-bold text-slate-900">{mult(data.roas.overall.multipleInvoiced)} · {compactUsd(data.roas.overall.invoiced)}</td><td className="font-bold text-slate-900">{mult(data.roas.overall.multiplePaid)} · {compactUsd(data.roas.overall.paid)}</td></tr>
+                      <tr><td className="py-0.5 text-left">New only</td><td className="font-bold text-slate-900">{mult(data.roas.newOnly.multipleInvoiced)} · {compactUsd(data.roas.newOnly.invoiced)}</td><td className="font-bold text-slate-900">{mult(data.roas.newOnly.multiplePaid)} · {compactUsd(data.roas.newOnly.paid)}</td></tr>
+                      <tr><td className="py-0.5 text-left">Pump ads</td><td>{mult(data.roas.byCategory.pump.overall.multipleInvoiced)} / new {mult(data.roas.byCategory.pump.newOnly.multipleInvoiced)}</td><td>{compactUsd(data.roas.byCategory.pump.spend)} spend</td></tr>
+                      <tr><td className="py-0.5 text-left">Drilling ads</td><td>{mult(data.roas.byCategory.drilling.overall.multipleInvoiced)} / new {mult(data.roas.byCategory.drilling.newOnly.multipleInvoiced)}</td><td>{compactUsd(data.roas.byCategory.drilling.spend)} spend</td></tr>
+                    </tbody>
+                  </table>
+                  <p className="mt-1 text-center text-[11px] text-slate-400">Spend {compactUsd(data.roas.spend)} · paid = collected so far</p>
+                  <details className="mt-1 text-[10px] text-slate-400"><summary className="cursor-pointer">How ROAS is counted</summary><ul className="list-disc pl-4">{data.roas.method.map((m) => <li key={m}>{m}</li>)}</ul></details>
+                </>
+              ) : (
+                <>
+                  <Gauge value={t.multipleInvoiced} label="Invoiced" />
+                  <p className="mt-2 text-center text-xs text-slate-500">New customers only · {mult(t.multiplePaid)} paid · {compactUsd(t.invoicedValue)} invoiced · {compactUsd(t.spend)} spend</p>
+                </>
+              )}
             </Card>
             <Card title="Recent calls" subtitle="Latest 25" delay={220} className="lg:col-span-3 !p-0">
               <div className="-mx-5 -mb-5 max-h-[300px] overflow-auto">
