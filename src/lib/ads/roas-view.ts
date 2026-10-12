@@ -107,6 +107,8 @@ export function buildSharedAdSplit(input: {
     const v = buildRoasView({ invoices: input.invoices, adCalls: input.adCalls, spend: input.spend, start: w.start, now: input.now });
     if (!v) return null;
     const a = ptDateKey(w.start), b = ptDateKey(input.now), t0 = w.start.getTime();
+    const dayKeys: string[] = [];
+    for (let d = new Date(`${a}T12:00:00Z`); ptDateKey(d) <= b && dayKeys.length < 400; d = new Date(d.getTime() + 86400_000)) dayKeys.push(d.toISOString().slice(0, 10));
     const rows = (['pump', 'drilling'] as AdCategory[]).map((category): AdSplitRow => {
       const c = v.byCategory[category];
       const sp = input.spend ? input.spend.filter((d) => adCategory(d.campaign) === category && d.date >= a && d.date <= b) : null;
@@ -117,6 +119,7 @@ export function buildSharedAdSplit(input: {
         invoiced: c.overall.invoiced, multiple: c.overall.multipleInvoiced,
         invoicedNew: c.newOnly.invoiced, multipleNew: c.newOnly.multipleInvoiced,
         paid: c.overall.paid, multiplePaid: c.overall.multiplePaid,
+        dailySpend: sp ? dayKeys.map((k) => Math.round(sp.filter((d) => d.date === k).reduce((x, d) => x + d.costUsd, 0) * 100) / 100) : undefined,
       };
     });
     const dates = a === b ? mdKey(a) : `${mdKey(a)}–${mdKey(b)}`;
