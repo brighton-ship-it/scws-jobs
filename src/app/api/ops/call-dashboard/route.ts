@@ -13,7 +13,7 @@ import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
 import { buildCallFeed } from '@/lib/ads/call-feed';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 180;
 
 export async function GET(request: NextRequest) {
   const auth = await authorizeOps(request);
