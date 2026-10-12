@@ -307,7 +307,7 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
     ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved`],
-    ['Call to booking', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} calls`],
+    ['Call to booking', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} ad + Mike calls`],
     ['Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0} approved / ${w.quotesSent ?? 0} sent`],
     ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
   ];
@@ -318,7 +318,7 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
   return (
     <Card title="Sales" subtitle={`${title} · bars: last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} + this week (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
       <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{span} · {w.invoiceCount ?? 0} invoices, pre-tax</p></div>
+        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{span} · {w.invoiceCount ?? 0} invoices{w.zeroInvoices ? ` (${w.zeroInvoices} at $0)` : ""}, pre-tax</p></div>
         <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid on those invoices</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.paid)}</p><p className="text-xs text-slate-500">invoices issued {span}</p></div>
         <div className="col-span-2 min-w-0 rounded-xl bg-emerald-50 px-4 py-3 sm:col-span-1"><p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">Cash collected</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.cash)}</p><p className="text-xs text-slate-500">payments received {span} · {w.cashCount ?? 0} payments, any invoice</p></div>
       </div>
@@ -403,7 +403,7 @@ export function CallDashboardPage() {
           {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
 
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
+            <Kpi delay={0} color={palette.answered} label="Ad + Mike calls" hint="Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3)." range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
             <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.filter((d) => !data.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
             <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={rangeLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended (all callers) ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
@@ -421,7 +421,7 @@ export function CallDashboardPage() {
           <div className="grid gap-4 lg:grid-cols-5">
             <Card title="Conversion funnel" subtitle={`New-customer jobs credited to a call · ${rangeLabel}`} delay={140}>
               <Funnel stages={[
-                { label: 'Calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
+                { label: 'Ad + Mike calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
                 { label: 'Booked jobs (new)', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
                 { label: `New customers invoiced${data.roas ? ` · ${usd(data.roas.newOnly.invoiced)}` : ''}`, value: data.roas ? data.roas.newOnly.clients : null, color: palette.revenue },
                 { label: 'Paid in full', value: data.roas ? data.roas.newOnly.paidClients ?? null : null, color: palette.paid },
