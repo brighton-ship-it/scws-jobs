@@ -3,6 +3,7 @@
  * Auth: CRM session or office key (see src/lib/ops-auth.ts).
  */
 import { NextRequest, NextResponse } from 'next/server';
+import { unstable_cache } from 'next/cache';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
 import { DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
@@ -26,6 +27,30 @@ export async function GET(request: NextRequest) {
     return res;
   };
   try {
+    const debug = request.nextUrl.searchParams.get('debug') === '1';
+    let payload: any;
+    if (debug) payload = await computeMetrics(true);
+    else {
+      try { payload = await cachedMetrics(); }
+      catch { payload = lastPartial ?? await computeMetrics(false); } // a load failed: serve the partial result uncached
+    }
+    return finish(NextResponse.json(payload));
+  } catch (error) {
+    console.error('[ops-metrics]', error instanceof Error ? error.message : 'error');
+    return finish(NextResponse.json({ error: 'Failed to load metrics' }, { status: 500 }));
+  }
+}
+
+let lastPartial: any = null;
+/** Jobber pulls take ~1 min cold; results are kept in Vercel's shared Data Cache (stale-while-revalidate, 30 min) so every instance answers fast. */
+const cachedMetrics = unstable_cache(async () => {
+  const p = await computeMetrics(false);
+  const d = p.diag;
+  if (d.historyError || d.sinceInvoices == null || d.quotes == null || d.costError) { lastPartial = p; throw new Error('partial metrics: not cached'); }
+  return p;
+}, ['ops-metrics-v1'], { revalidate: 1800 });
+
+async function computeMetrics(debug: boolean) {
     const db = createServiceClient() as any;
     const now = new Date();
     const tomorrow = new Date(now.getTime() + DAY).toISOString();
@@ -56,13 +81,8 @@ export async function GET(request: NextRequest) {
       timeEntries: time.rows?.length ?? null, timeError: time.error ?? null,
       oldestInvoice: history.rows?.reduce<string | null>((m, r) => (r.issuedDate && (!m || r.issuedDate < m) ? r.issuedDate : m), null) ?? null,
     };
-    if (request.nextUrl.searchParams.get('debug') === '1') {
+    if (debug) {
       (diag as any).costSample = (costs.rows ?? []).filter((j) => (j.jobCosting?.totalCost ?? 0) > 0).sort((a, b) => (a.jobCosting?.profitAmount ?? 0) - (b.jobCosting?.profitAmount ?? 0)).slice(0, 40);
-      (diag as any).quoteSample = (quotes ?? []).filter((q) => /approved|converted/i.test(q.quoteStatus || '')).slice(0, 25);
     }
-    return finish(NextResponse.json({ cards, diag, generatedAt: now.toISOString() }));
-  } catch (error) {
-    console.error('[ops-metrics]', error instanceof Error ? error.message : 'error');
-    return finish(NextResponse.json({ error: 'Failed to load metrics' }, { status: 500 }));
-  }
+    return { cards, diag, generatedAt: now.toISOString() };
 }
