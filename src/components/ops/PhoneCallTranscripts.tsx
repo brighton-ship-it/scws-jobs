@@ -4,6 +4,8 @@ import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth'
 
 type Row = { call_sid: string; started_at: string; caller_number: string | null; source: string | null; dial_status: string | null; answered: boolean | null; duration_seconds: number | null; processing_status: string; transcript: string | null; summary: string | null; outcome: string | null; caller_name: string | null; needs_followup: boolean | null; jobber_client_id?: string | null; processing_error?: string | null };
 
+const SOURCE_LABEL: Record<string, string> = { gbp_ramona: 'Google profile · Ramona', gbp_anza: 'Google profile · Anza', gmb: 'Google profile', google_ads: 'Google Ads', seo: 'Website (SEO)', direct: 'Direct', main_line: 'Main line' };
+
 export function PhoneCallTranscripts() {
   const [rows, setRows] = useState<Row[]>([]);
   const [open, setOpen] = useState<string | null>(null);
@@ -23,7 +25,7 @@ export function PhoneCallTranscripts() {
             <button className="flex w-full items-start justify-between gap-3 text-left" onClick={() => setOpen(open === r.call_sid ? null : r.call_sid)}>
               <span className="min-w-0">
                 <span className="font-medium text-slate-800">{r.caller_name || r.caller_number || 'Unknown'}</span>
-                <span className="ml-2 text-xs text-slate-400">{new Date(r.started_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {r.duration_seconds ?? '—'}s · {r.answered === false ? 'missed' : r.source ?? ''}</span>
+                <span className="ml-2 text-xs text-slate-400">{new Date(r.started_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} · {r.duration_seconds ?? '—'}s · {r.answered === false ? 'missed' : (r.source ? SOURCE_LABEL[r.source] ?? r.source : '')}</span>
                 <span className="mt-0.5 block text-slate-600">{r.summary || (r.processing_status === 'done' ? '' : `(${r.processing_status})`)}</span>
               </span>
               <span className="flex shrink-0 gap-1 text-xs">

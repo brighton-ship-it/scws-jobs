@@ -4,7 +4,8 @@ export const RECORDING_NOTICE = 'This call may be recorded for quality and train
 export const TRACKING_SOURCES: Record<string, string> = {
   '+17604630493': 'seo',
   '+17603312502': 'google_ads',
-  '+17602791262': 'gmb',
+  '+17602791262': 'gbp_ramona',
+  '+19516510957': 'gbp_anza',
   '+17604937719': 'direct',
 };
 export function shopNumbers(env: NodeJS.ProcessEnv = process.env): string[] {
