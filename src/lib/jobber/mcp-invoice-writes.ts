@@ -31,10 +31,13 @@
  *   invoiceEditLineItems, or invoiceDeleteLineItems. Those names are
  *   unverified on later API versions and are not called.
  * - taxRateId, allowClientHubCreditCardPayments, allowClientHubAchPayments,
- *   and allowPartialPayments are on InvoiceEditInput in that introspection.
- *   edit_invoice maps allowCardPayments, allowAchPayments, and
- *   allowPartialPayments onto those three fields. They are invoice settings,
- *   not a charge. This module never records or collects a payment.
+ *   allowPartialPayments, and message are on InvoiceEditInput in that
+ *   introspection. edit_invoice maps allowCardPayments, allowAchPayments,
+ *   and allowPartialPayments onto those three fields, and passes message
+ *   through. They are invoice settings / client copy, not a charge. This
+ *   module never records or collects a payment.
+ * - create_invoice_draft requires a customer-facing message (same field on
+ *   InvoiceCreateInput) so drafts always include a client message.
  * - invoiceMarkAsSent exists and only flags the record, but this module
  *   never calls it. invoiceSend is gone. Nothing here emails or texts.
  */
@@ -69,7 +72,7 @@ const DELIVERY_MUTATION =
 const INVOICE_EDIT = `
   mutation McpInvoiceEdit($invoiceId: EncodedId!, $input: InvoiceEditInput!) {
     invoiceEdit(invoiceId: $invoiceId, input: $input) {
-      invoice { id invoiceNumber invoiceStatus subject }
+      invoice { id invoiceNumber invoiceStatus subject message }
       userErrors { message path }
     }
   }
@@ -78,7 +81,7 @@ const INVOICE_EDIT = `
 const INVOICE_CREATE = `
   mutation McpInvoiceCreate($input: InvoiceCreateInput!) {
     invoiceCreate(input: $input) {
-      invoice { id invoiceNumber invoiceStatus subject }
+      invoice { id invoiceNumber invoiceStatus subject message }
       userErrors { message path }
     }
   }
@@ -189,6 +192,7 @@ export function buildInvoiceEditInput(input: {
   addLineItems?: InvoiceLineDraft[];
   updateLineItems?: InvoiceLineUpdate[];
   removeLineItemIds?: string[];
+  message?: string | null;
   taxRateId?: string | null;
   allowCardPayments?: boolean | null;
   allowAchPayments?: boolean | null;
@@ -198,9 +202,12 @@ export function buildInvoiceEditInput(input: {
     throw new Error(INVOICE_LINE_ITEMS_UNSUPPORTED);
   }
   const attributes: Record<string, unknown> = {};
+  // InvoiceEditInput fields from the 2025-01-20 introspection, including message.
+  if (typeof input.message === 'string') {
+    attributes.message = input.message;
+  }
   const taxRateId = input.taxRateId?.trim();
   if (taxRateId) attributes.taxRateId = taxRateId;
-  // InvoiceEditInput fields from the 2025-01-20 introspection. Settings only.
   if (typeof input.allowCardPayments === 'boolean') {
     attributes.allowClientHubCreditCardPayments = input.allowCardPayments;
   }
@@ -212,7 +219,7 @@ export function buildInvoiceEditInput(input: {
   }
   if (!Object.keys(attributes).length) {
     throw new Error(
-      'edit_invoice needs taxRateId, allowCardPayments, allowAchPayments, or allowPartialPayments.'
+      'edit_invoice needs message, taxRateId, allowCardPayments, allowAchPayments, or allowPartialPayments.'
     );
   }
   return attributes;
@@ -222,6 +229,7 @@ export function buildUnsentInvoiceCreateInput(input: {
   clientId: string;
   jobId: string;
   subject: string;
+  message: string;
   lineItems: InvoiceLineDraft[];
   taxRateId?: string | null;
   taxCalculationMethod?: InvoiceTaxMethod;
@@ -230,6 +238,10 @@ export function buildUnsentInvoiceCreateInput(input: {
 }): Record<string, unknown> {
   if (!input.lineItems.length) {
     throw new Error('lineItems is required to create a Jobber invoice draft');
+  }
+  const message = input.message.trim();
+  if (!message) {
+    throw new Error('message is required (customer-facing client message on the invoice)');
   }
   const method = input.taxCalculationMethod || 'EXCLUSIVE';
   if (!INVOICE_TAX_METHODS.includes(method)) {
@@ -242,6 +254,7 @@ export function buildUnsentInvoiceCreateInput(input: {
     clientId: input.clientId,
     jobId: input.jobId,
     subject: input.subject,
+    message,
     dueDetails,
     tax: { taxCalculationMethod: method },
     lineItems: input.lineItems.map(linePayload),
@@ -354,6 +367,7 @@ export async function editInvoice(
     addLineItems?: InvoiceLineDraft[];
     updateLineItems?: InvoiceLineUpdate[];
     removeLineItemIds?: string[];
+    message?: string | null;
     taxRateId?: string | null;
     allowCardPayments?: boolean | null;
     allowAchPayments?: boolean | null;
@@ -408,6 +422,7 @@ export async function createInvoiceDraftFromJob(
     jobId?: string | null;
     jobNumber?: string | null;
     subject?: string | null;
+    message: string;
     lineItems?: InvoiceLineDraft[];
     taxRateId?: string | null;
     taxCalculationMethod?: InvoiceTaxMethod;
@@ -431,6 +446,7 @@ export async function createInvoiceDraftFromJob(
     clientId,
     jobId: job.id,
     subject,
+    message: input.message,
     lineItems,
     taxRateId: input.taxRateId,
     taxCalculationMethod: input.taxCalculationMethod,

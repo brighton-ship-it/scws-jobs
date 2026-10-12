@@ -126,7 +126,7 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 export const JOBBER_MCP_INSTRUCTIONS = [
   'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, create_request, create_job, create_visit, and create_note write records. Nothing emails, texts, or notifies a client.',
   'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
-  'edit_invoice sets taxRateId and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings, not a charge. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
+  'edit_invoice sets message (client-facing body), taxRateId, and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings / copy, not a charge. create_invoice_draft requires message. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
   'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
@@ -505,13 +505,17 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'edit_invoice',
     description:
-      'Edit an existing Jobber invoice via invoiceEdit. Sets taxRateId and optional Client Hub settings allowCardPayments, allowAchPayments, and allowPartialPayments (card, ACH, partial). Those are settings, not a charge. addLineItems, updateLineItems, and removeLineItemIds are rejected. Does not send, email, text, mark sent, record, or collect a payment.',
+      'Edit an existing Jobber invoice via invoiceEdit. Sets optional message (client-facing body), taxRateId, and Client Hub settings allowCardPayments, allowAchPayments, and allowPartialPayments (card, ACH, partial). Those are settings / copy, not a charge. addLineItems, updateLineItems, and removeLineItemIds are rejected. Does not send, email, text, mark sent, record, or collect a payment.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
       properties: {
         invoiceId: { type: 'string', description: 'Encoded Jobber invoice id' },
         invoiceNumber: { type: 'string', description: 'Invoice number, if the id is unknown. Example: 5806' },
+        message: {
+          type: 'string',
+          description: 'Customer-facing client message on the invoice. No GP FLAG math.',
+        },
         addLineItems: {
           type: 'array',
           items: LINE_ITEM_SCHEMA,
@@ -561,14 +565,19 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'create_invoice_draft',
     description:
-      'Create an UNSENT Jobber invoice from a job. Does not email, text, or call invoiceMarkAsSent. issuedDate is omitted. Pass lineItems or the job lines are copied. Optional taxRateId from list_tax_rates. saveToProductsAndServices is not sent: InvoiceCreationLineItemInput does not define it. Returns invoice number, Jobber URL, and totals.',
+      'Create an UNSENT Jobber invoice from a job. Does not email, text, or call invoiceMarkAsSent. issuedDate is omitted. Requires message (customer-facing client message). Pass lineItems or the job lines are copied. Optional taxRateId from list_tax_rates. saveToProductsAndServices is not sent: InvoiceCreationLineItemInput does not define it. Returns invoice number, Jobber URL, and totals.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
+      required: ['message'],
       properties: {
         jobId: { type: 'string', description: 'Encoded Jobber job id' },
         jobNumber: { type: 'string', description: 'Job number, if the id is unknown' },
         subject: { type: 'string', description: 'Invoice subject. Defaults to the job title.' },
+        message: {
+          type: 'string',
+          description: 'Required customer-facing client message. No GP FLAG math.',
+        },
         lineItems: {
           type: 'array',
           items: LINE_ITEM_SCHEMA,
@@ -1353,7 +1362,7 @@ export async function callJobberMcpTool(
         );
         return textResult({
           invoice,
-          note: "Read-only. Use edit_invoice to set taxRateId or Client Hub card, ACH, and partial-payment settings. Jobber's API cannot edit invoice line items; use the Jobber web UI. This gateway cannot send invoices or record payments.",
+          note: "Read-only. Use edit_invoice to set message, taxRateId, or Client Hub card, ACH, and partial-payment settings. Jobber's API cannot edit invoice line items; use the Jobber web UI. This gateway cannot send invoices or record payments.",
         });
       }
       case 'edit_invoice': {
@@ -1374,6 +1383,7 @@ export async function callJobberMcpTool(
             addLineItems,
             updateLineItems,
             removeLineItemIds,
+            message: optionalString(args, 'message'),
             taxRateId: optionalString(args, 'taxRateId'),
             allowCardPayments: optionalBoolean(args, 'allowCardPayments'),
             allowAchPayments: optionalBoolean(args, 'allowAchPayments'),
@@ -1386,10 +1396,14 @@ export async function callJobberMcpTool(
           emailed: false,
           collected: false,
           invoice,
-          note: 'Updated tax and/or Client Hub payment settings with invoiceEdit. Nothing was emailed, texted, or charged.',
+          note: 'Updated message, tax, and/or Client Hub payment settings with invoiceEdit. Nothing was emailed, texted, or charged.',
         });
       }
       case 'create_invoice_draft': {
+        const message = optionalString(args, 'message');
+        if (!message?.trim()) {
+          throw new Error('message is required (customer-facing client message on the invoice)');
+        }
         const lineItems = Array.isArray(args.lineItems)
           ? parseInvoiceLineDrafts(args.lineItems, 'lineItems')
           : undefined;
@@ -1399,6 +1413,7 @@ export async function callJobberMcpTool(
             jobId: optionalString(args, 'jobId'),
             jobNumber: optionalString(args, 'jobNumber'),
             subject: optionalString(args, 'subject'),
+            message,
             lineItems,
             taxRateId: optionalString(args, 'taxRateId'),
             taxCalculationMethod: taxMethod ? normalizeInvoiceTaxMethod(taxMethod) : undefined,
@@ -1413,7 +1428,7 @@ export async function callJobberMcpTool(
           emailed: false,
           invoiceStatus: created.invoiceStatus,
           invoice: created.invoice,
-          note: 'Created with invoiceCreate only. issuedDate was not set. invoiceMarkAsSent was not called. Nothing was emailed or texted.',
+          note: 'Created with invoiceCreate only (includes client message). issuedDate was not set. invoiceMarkAsSent was not called. Nothing was emailed or texted.',
         });
       }
       case 'search_jobs': {

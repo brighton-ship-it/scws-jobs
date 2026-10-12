@@ -61,6 +61,7 @@ export type JobberInvoiceDetail = {
   id: string;
   invoiceNumber?: string | number | null;
   subject?: string | null;
+  message?: string | null;
   invoiceStatus?: string | null;
   issuedDate?: string | null;
   dueDate?: string | null;
@@ -82,6 +83,7 @@ export type JobberInvoiceSummary = {
   id: string;
   invoiceNumber: string | number | null;
   subject: string | null;
+  message: string | null;
   invoiceStatus: string | null;
   issuedDate: string | null;
   dueDate: string | null;
@@ -373,6 +375,7 @@ function invoiceNodeFields(shape: QueryShape): string {
     id
     invoiceNumber
     subject
+    message
     invoiceStatus
     issuedDate
     dueDate
@@ -591,6 +594,7 @@ export function summarizeInvoice(
     id: invoice.id,
     invoiceNumber: invoice.invoiceNumber ?? null,
     subject: invoice.subject ?? null,
+    message: invoice.message ?? null,
     invoiceStatus: normalizeInvoiceStatus(invoice.invoiceStatus) || null,
     issuedDate: invoice.issuedDate ?? null,
     dueDate: invoice.dueDate ?? null,
