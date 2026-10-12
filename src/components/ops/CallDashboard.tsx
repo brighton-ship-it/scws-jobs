@@ -207,6 +207,7 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
               </dl>
             </div>
           ))}
+          {win.otherBooked != null ? <p className={`text-[11px] ${mut} ${dark ? 'xl:text-sm' : ''}`}>{win.otherBooked > 0 ? `+${win.otherBooked} booked via Mike calls · ` : ''}{win.rows.reduce((a, r) => a + r.booked, 0) + win.otherBooked} new booked total</p> : null}
         </div>
       ))}
     </div>

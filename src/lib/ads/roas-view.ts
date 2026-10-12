@@ -119,7 +119,8 @@ export function buildSharedAdSplit(input: {
       };
     });
     const dates = a === b ? mdKey(a) : `${mdKey(a)}–${mdKey(b)}`;
-    return { label: `${w.label}: ${dates}`, dates, from: w.start.toISOString(), to: input.now.toISOString(), rows };
+    const otherBooked = input.booked.filter((x) => !x.cat && Date.parse(x.at) >= t0).length;
+    return { label: `${w.label}: ${dates}`, dates, from: w.start.toISOString(), to: input.now.toISOString(), rows, otherBooked };
   };
   const main = mk(input.windows.main), week = mk(input.windows.week);
   return main && week ? { since: main, week } : null;

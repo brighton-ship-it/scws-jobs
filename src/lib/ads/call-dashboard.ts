@@ -248,7 +248,7 @@ export interface AdSplitRow {
   invoiced: number; multiple: number | null;
   invoicedNew?: number; multipleNew?: number | null; paid?: number; multiplePaid?: number | null;
 }
-export interface AdSplitWindow { label: string; from: string; to?: string; dates?: string; rows: AdSplitRow[] }
+export interface AdSplitWindow { label: string; from: string; to?: string; dates?: string; rows: AdSplitRow[]; /** New bookings credited to a non-ad (Mike AI receptionist) call in the window. */ otherBooked?: number }
 export interface AdSplit { since: AdSplitWindow; week: AdSplitWindow }
 
 /** Drilling = any campaign with "drilling" in its name; every other Google Ads campaign is pump/service. */
