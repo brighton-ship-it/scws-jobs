@@ -33,7 +33,8 @@ export async function GET(request: NextRequest) {
     const quotesFrom = new Date(now.getTime() - 180 * DAY);
     const costFrom = new Date(now.getTime() - 90 * DAY);
     const timeFrom = new Date(now.getTime() - 30 * DAY);
-    const sinceInv = await loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow);
+    let sinceInv = await loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow);
+    for (let i = 0; !sinceInv && i < 3; i++) { await new Promise((r) => setTimeout(r, 6000)); sinceInv = await loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow); } // Jobber cost throttle
     const [calls, spend, quotes, costs, time, qbo] = await Promise.all([
       db.from('ads_calls').select('started_at, caller_phone, campaign_name').gte('started_at', DASH_FLOOR_ISO).order('started_at', { ascending: false }).limit(5000),
       loadDailySpend(now),
