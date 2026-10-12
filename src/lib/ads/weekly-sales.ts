@@ -253,6 +253,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
       'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals.',
       WORK_CATEGORY_RULE,
+      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date). Call to booking = new booked ÷ calls (below).',
       `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ all calls (Google Ads calls + Mike AI receptionist calls), since ${md(floorKey)} (tracking start). By-campaign closing uses Google Ads calls only, split by drilling vs pump campaign. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
   };

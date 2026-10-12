@@ -292,7 +292,8 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
     ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved`],
-    ['Closing rate', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} calls`],
+    ['Call to booking', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} calls`],
+    ['Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0} approved / ${w.quotesSent ?? 0} sent`],
     ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
   ];
   const cats = weekly.totals?.byCategory;
@@ -320,7 +321,7 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
           <div className="min-w-0 overflow-x-auto lg:col-span-3">
             <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Drilling vs pump · {span}</p>
             <table className="w-full text-left text-xs tabular-nums">
-              <thead><tr className="text-[10px] uppercase tracking-wider text-slate-400"><th className="py-1 pr-2 font-semibold">Type</th><th className="py-1 pr-2 text-right font-semibold">Quotes sent</th><th className="py-1 pr-2 text-right font-semibold">Approved</th><th className="py-1 pr-2 text-right font-semibold">Jobs booked</th><th className="py-1 pr-2 text-right font-semibold">Invoiced</th><th className="py-1 pr-2 text-right font-semibold">Last full week</th><th className="py-1 text-right font-semibold">Ad closing</th></tr></thead>
+              <thead><tr className="text-[10px] uppercase tracking-wider text-slate-400"><th className="py-1 pr-2 font-semibold">Type</th><th className="py-1 pr-2 text-right font-semibold">Quotes sent</th><th className="py-1 pr-2 text-right font-semibold">Approved</th><th className="py-1 pr-2 text-right font-semibold">Jobs booked</th><th className="py-1 pr-2 text-right font-semibold">Invoiced</th><th className="py-1 pr-2 text-right font-semibold">Last full week</th><th className="py-1 pr-2 text-right font-semibold">Call to booking</th><th className="py-1 text-right font-semibold">Quote close</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {CATS.map(([k, label]) => {
                   const c = cats[k];
@@ -332,7 +333,8 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
                       <td className="py-1 pr-2 text-right">{c.jobsBooked}</td>
                       <td className="py-1 pr-2 text-right">{usd(c.invoiced)}</td>
                       <td className="py-1 pr-2 text-right">{lwc ? usd(lwc[k].invoiced) : '—'}</td>
-                      <td className="py-1 text-right" title="new bookings credited to an ad call ÷ Google Ads calls for that campaign type">{ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—'}</td></tr>
+                      <td className="py-1 pr-2 text-right" title="new bookings credited to an ad call ÷ Google Ads calls for that campaign type">{ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—'}</td>
+                      <td className="py-1 text-right" title="quotes approved ÷ quotes sent, by count">{c.quotesSent ? `${pct(c.quotesApproved / c.quotesSent)} (${c.quotesApproved}/${c.quotesSent})` : '—'}</td></tr>
                   );
                 })}
               </tbody>
@@ -540,7 +542,7 @@ export function CallDashboardTv() {
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
-            {cell('Closing rate', pct(w.closingRate))}
+            {cell('Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0}/${w.quotesSent ?? 0} quotes`)}
             <div className="col-span-2 mt-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>
         );
