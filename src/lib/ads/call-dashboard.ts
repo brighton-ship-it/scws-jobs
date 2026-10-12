@@ -249,6 +249,7 @@ export interface AdSplitRow {
   /** Overall (all ad callers) pre-tax invoiced; same calculation as the ROAS card. */
   invoiced: number; multiple: number | null;
   invoicedNew?: number; multipleNew?: number | null; paid?: number; multiplePaid?: number | null;
+  /** Google Ads spend per Pacific day in the window (sums to spend). */ dailySpend?: number[];
 }
 export interface AdSplitWindow { label: string; from: string; to?: string; dates?: string; rows: AdSplitRow[]; /** New bookings credited to a non-ad (Mike AI receptionist) call in the window. */ otherBooked?: number }
 export interface AdSplit { since: AdSplitWindow; week: AdSplitWindow }

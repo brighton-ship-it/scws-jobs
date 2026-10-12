@@ -133,6 +133,21 @@ function Kpi({ label, range, hint, value, sub, spark, color, delta, delay }: { l
   );
 }
 
+/** Tiny, unobtrusive daily-spend line under a spend figure. */
+const ptKey = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+
+function MiniSpark({ values, color, title }: { values?: number[]; color: string; title?: string }) {
+  if (!values || values.length < 2) return null;
+  const max = Math.max(...values, 1), w = 100, h = 16;
+  const pts = values.map((v, i) => `${((i / (values.length - 1)) * w).toFixed(1)},${(h - 1 - (v / max) * (h - 2)).toFixed(1)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" className="mt-1 block h-3.5 w-full max-w-[110px] opacity-70" aria-hidden role="img">
+      <title>{title}</title>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function Badge({ outcome }: { outcome: string }) {
   const o = outcome.toLowerCase();
   const [cls, dot] = o.startsWith('booked') ? ['bg-emerald-50 text-emerald-700 ring-emerald-200', 'bg-emerald-500']
@@ -257,7 +272,7 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
               </div>
               <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
                 {([['Spend', usd(r.spend)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)]] as const).map(([k, v]) => (
-                  <div key={k} className="min-w-0"><dt className={`truncate text-[11px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd></div>
+                  <div key={k} className="min-w-0"><dt className={`truncate text-[11px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
                 ))}
               </dl>
               <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}</p>
@@ -389,7 +404,7 @@ export function CallDashboardPage() {
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Calls" range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={`${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
-            <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
+            <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/call · ${usd(t.costPerBooked)}/booked`} spark={s.filter((d) => !data.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
             <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={rangeLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended (all callers) ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
           </div>
 
@@ -519,7 +534,7 @@ export function CallDashboardTv() {
       {tv ? (
         <div className="grid shrink-0 grid-cols-1 gap-2.5 sm:grid-cols-3 sm:gap-3 xl:gap-4" aria-label="Revenue and return">
           <BigTile delay={160} accent={palette.revenue} label="New-cust. revenue" range={mainRange} value={usd(mainRev?.invoiced ?? null)} sub={`this week ${usd(weekNew)}`} />
-          <BigTile delay={200} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={last7.map((d) => d.spend ?? 0)} />
+          <BigTile delay={200} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={s.filter((d) => !data?.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} />
           <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '240ms' }}>
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
             <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'ROAS (new customers)' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
