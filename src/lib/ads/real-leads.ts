@@ -24,6 +24,11 @@ export interface RealLead { phone: string; at: string; cat: AdCategory | null; b
 export interface RealLeadsResult { leads: RealLead[]; reasons: Array<{ at: string; cat: AdCategory | null; live: boolean; reason: LeadReason }>; unresolvedExisting: number }
 
 export const STAFF_PHONES = new Set(['6193208264', '4422272898', '7604915348', '7604408520', '7607895955', '7604630493', '7603312502', '7602791262', '7604937719', '9516510957']);
+/** SCWS's own numbers (GV lines, Twilio tracking/GBP/ads/Direct lines, staff cells, Twilio test line). Calls FROM these are internal/test calls. */
+export const OWN_NUMBERS = new Set<string>([...Array.from(STAFF_PHONES), '7608237963',
+  ...[process.env.TWILIO_FROM_NUMBER, process.env.PHONE_CALL_FORWARD_MAIN, process.env.PHONE_CALL_FORWARD_RANSOM, process.env.SCWS_OWN_NUMBERS]
+    .flatMap((v) => (v ?? '').split(',')).map((v) => { const d = v.replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; }).filter((d) => d.length === 10)]);
+export const isOwnNumber = (phone: string | null | undefined) => { const d = (phone ?? '').replace(/\D/g, ''); return OWN_NUMBERS.has(d.length === 11 && d.startsWith('1') ? d.slice(1) : d); };
 const TOLL_FREE = new Set(['800', '833', '844', '855', '866', '877', '888']);
 const SPAM = /spam|robocall|wrong number|telemarket|solicit|marketing|\bSEO\b|google (listing|business)|sales department|extended warranty on (your|their) (car|vehicle)/i;
 const REAL_NEED = /no water|pressure|pump|well (is|has|stopped)|drill/i;
@@ -58,7 +63,7 @@ export function classifyRealLeads(input: {
     const text = list.map((c) => c.text || '').join(' ');
     const bookedCat = input.booked.has(p) ? input.booked.get(p) ?? null : undefined;
     let phoneReason: LeadReason | null = null;
-    if (STAFF_PHONES.has(p)) phoneReason = 'internal';
+    if (OWN_NUMBERS.has(p)) phoneReason = 'internal';
     else if (bookedCat === undefined) {
       const fj = input.firstJobAt.get(p);
       if (fj === undefined) unresolved += 1;

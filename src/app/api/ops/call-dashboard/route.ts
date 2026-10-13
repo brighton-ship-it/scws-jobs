@@ -10,7 +10,7 @@ import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseR
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
-import { classifyRealLeads, LEAD_REASON_LABEL, type LeadCall } from '@/lib/ads/real-leads';
+import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from '@/lib/ads/real-leads';
 import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
@@ -52,10 +52,11 @@ export async function GET(request: NextRequest) {
     const conversions = convs.data ?? [];
     const jobMoney = await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
     if (live.error) notes.push(`live calls: ${live.error.message}`);
-    const adsCalls: DashCall[] = calls.data ?? [];
+    // SCWS's own numbers (GV/Twilio lines, staff, Twilio test line 760-823-7963) never count as calls, leads or bookings.
+    const adsCalls: DashCall[] = (calls.data ?? []).filter((c: DashCall) => !isOwnNumber(c.caller_phone));
     // 'processing' is only the webhook's claim placeholder; ~220 Sep 18–Oct 7 calls finished (duration + summary)
     // but never left that status. Count every real call: drop only fresh in-flight claims and rows with no phone.
-    const liveRows = (live.data ?? []).filter((r: any) => /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
+    const liveRows = (live.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
       && !(r.status === 'processing' && r.duration_sec == null && !r.summary && Date.now() - Date.parse(r.called_at) < 15 * 60_000));
     const liveCalls = mergeLiveCalls(adsCalls, liveRows);
     let bookingIds = new Set<string>();
@@ -109,13 +110,13 @@ export async function GET(request: NextRequest) {
       .select('started_at, caller_phone, called_number, outcome, answered_by, duration_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at')
       .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);
     if (log.error) notes.push(`call log: ${log.error.message}`);
-    else dash.callLog = buildCallLogView(log.data ?? [], new Date());
+    else { log.data = (log.data ?? []).filter((r: any) => !isOwnNumber(r.caller_phone)); dash.callLog = buildCallLogView(log.data, new Date()); }
     try {
       const recs = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name')
         .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995)').order('started_at', { ascending: false }).limit(100);
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
-      const merged = mergeCallFeed({ log: log.data ?? [], recordings: recs.data ?? [], mike: mk.data ?? [], bookedMike: bookingIds });
+      const merged = mergeCallFeed({ log: log.data ?? [], recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone)), bookedMike: bookingIds });
       dash.callFeed = merged.slice(0, 40);
       // Main page header and TV "today" tiles share this one count across every line.
       if (dash.callLog) dash.callLog.today = feedToday(merged, ptStartOfDay(new Date()).getTime());
