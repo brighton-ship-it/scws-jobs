@@ -35,3 +35,7 @@ export function lineFor(to: string, lineParam?: string | null) {
 export function forwardTargets(line: { forwardEnv: string }, env: NodeJS.ProcessEnv = process.env): string[] {
   return (env[line.forwardEnv] ?? '').split(',').map((s) => s.trim()).filter((x) => /^\+\d{10,15}$/.test(x));
 }
+
+/** Our own Twilio numbers: calls FROM these are test traffic (never real customers). Excluded from dashboards + Jobber. */
+export const TEST_CALLERS = ['+17608237963', '+18773863995'];
+export const isTestCall = (from: string | null | undefined, testParam?: string | null) => testParam === '1' || TEST_CALLERS.includes(from ?? '');

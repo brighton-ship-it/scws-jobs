@@ -42,7 +42,7 @@ export async function handleRecording(params: Record<string, string>, db: any, e
     }
     let noteStatus: string | null = null;
     const hooks = deps.jobber === undefined ? { find: findClientByPhone, post: postCallNote } : deps.jobber;
-    if (hooks && phone && env.PHONE_CALL_JOBBER_NOTES !== 'false' && s.outcome !== 'spam') {
+    if (hooks && phone && env.PHONE_CALL_JOBBER_NOTES !== 'false' && s.outcome !== 'spam' && row?.source !== 'test') {
       try {
         if (!jobber) jobber = (await hooks.find(phone))?.id ?? null;
         if (jobber) {

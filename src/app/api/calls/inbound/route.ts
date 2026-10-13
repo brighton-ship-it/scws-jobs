@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { buildInboundTwiml, buildSimulatorTwiml, buildVoicemailTwiml } from '@/lib/phone-calls/twiml';
-import { shopNumbers, publicUrl, TRACKING_SOURCES, lineFor, forwardTargets } from '@/lib/phone-calls/config';
+import { shopNumbers, publicUrl, TRACKING_SOURCES, lineFor, forwardTargets, isTestCall } from '@/lib/phone-calls/config';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -27,7 +27,7 @@ export async function POST(req: NextRequest) {
     try {
       await db.from('inbound_call_recordings').upsert({
         call_sid: params.CallSid, caller_number: params.From, tracking_number: to,
-        source: line?.source ?? TRACKING_SOURCES[to] ?? 'main_line', caller_city: params.CallerCity || null, caller_state: params.CallerState || null,
+        source: isTestCall(params.From, q.get('test')) ? 'test' : line?.source ?? TRACKING_SOURCES[to] ?? 'main_line', caller_city: params.CallerCity || null, caller_state: params.CallerState || null,
         started_at: new Date().toISOString(), updated_at: new Date().toISOString(),
       }, { onConflict: 'call_sid' });
     } catch (e) { console.error('[phone-calls] log start failed', e instanceof Error ? e.message : e); }

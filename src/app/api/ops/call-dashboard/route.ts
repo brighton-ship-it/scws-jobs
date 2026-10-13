@@ -112,7 +112,7 @@ export async function GET(request: NextRequest) {
     else dash.callLog = buildCallLogView(log.data ?? [], new Date());
     try {
       const recs = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name')
-        .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('started_at', { ascending: false }).limit(100);
+        .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995)').order('started_at', { ascending: false }).limit(100);
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
       const merged = mergeCallFeed({ log: log.data ?? [], recordings: recs.data ?? [], mike: mk.data ?? [], bookedMike: bookingIds });
