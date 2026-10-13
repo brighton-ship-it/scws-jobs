@@ -287,13 +287,13 @@ function dropStaleFields(dash: any) {
 
 /** Tracking numbers shown on each non-ad source card. Yelp / Apple Maps have no number yet (forms only). */
 const SOURCE_NUMBERS: Partial<Record<SourceKey, string[]>> = {
-  gbp: ['(760) 279-1262 Ramona', '(951) 651-0957 Anza'], seo: ['(760) 463-0493'],
+  gbp: ['(760) 279-1262 Ramona', '(951) 651-0957 Anza'], seo: ['(760) 463-0493'], yelp: ['(760) 891-4264'], apple_maps: ['(760) 454-0365'],
 };
 const SOURCE_NOTES: Partial<Record<SourceKey, string>> = {
   gbp: 'Calls recorded from Oct 12. Form source saved from Oct 13.',
   seo: 'Website visitors from search see this number. Form source saved from Oct 13.',
-  yelp: 'No Yelp tracking number yet: forms from Yelp only.',
-  apple_maps: 'No Apple Maps tracking number yet: forms from Apple Maps only.',
+  yelp: 'Calls tracked from Oct 13 once the number is on the Yelp listing. Forms from Yelp.',
+  apple_maps: 'Calls tracked from Oct 13 once the number is on the Apple Maps listing. Forms from Apple Maps.',
 };
 
 async function loadSourceCards(db: any, startMs: number) {

@@ -41,3 +41,14 @@ test('empty is zeros, never invented', () => {
   const cards = buildSourceCards({ startMs: start, nowMs: now, calls: [], forms: [], jobs: [] });
   for (const c of cards) { assert.equal(c.calls, 0); assert.equal(c.forms.total, 0); assert.equal(c.booked.total, 0); }
 });
+test('yelp / apple tracking numbers map to their cards', async () => {
+  const { TRACKING_SOURCES } = await import('../phone-calls/config.ts');
+  assert.equal(TRACKING_SOURCES['+17608914264'], 'yelp');
+  assert.equal(TRACKING_SOURCES['+17604540365'], 'apple_maps');
+  const cards = buildSourceCards({ startMs: start, nowMs: now, forms: [], jobs: [], calls: [
+    { at: '2026-10-12T19:00:00Z', phone: '+17605550001', source: TRACKING_SOURCES['+17608914264'] },
+    { at: '2026-10-12T19:00:00Z', phone: '+17605550002', source: TRACKING_SOURCES['+17604540365'] },
+  ] });
+  assert.equal(cards.find((c) => c.key === 'yelp')!.calls, 1);
+  assert.equal(cards.find((c) => c.key === 'apple_maps')!.calls, 1);
+});

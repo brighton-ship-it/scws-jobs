@@ -23,7 +23,7 @@ export interface ContactEvent { at: string; phone: string | null; connected: boo
 export interface RealLead { phone: string; at: string; cat: AdCategory | null; booked: boolean }
 export interface RealLeadsResult { leads: RealLead[]; reasons: Array<{ at: string; cat: AdCategory | null; live: boolean; reason: LeadReason }>; unresolvedExisting: number }
 
-export const STAFF_PHONES = new Set(['6193208264', '4422272898', '7604915348', '7604408520', '7607895955', '7604630493', '7603312502', '7602791262', '7604937719', '9516510957']);
+export const STAFF_PHONES = new Set(['6193208264', '4422272898', '7604915348', '7604408520', '7607895955', '7604630493', '7603312502', '7602791262', '7604937719', '9516510957', '7608914264', '7604540365']);
 /** SCWS's own numbers (GV lines, Twilio tracking/GBP/ads/Direct lines, staff cells, Twilio test line). Calls FROM these are internal/test calls. */
 export const OWN_NUMBERS = new Set<string>([...Array.from(STAFF_PHONES), '7608237963',
   ...[process.env.TWILIO_FROM_NUMBER, process.env.PHONE_CALL_FORWARD_MAIN, process.env.PHONE_CALL_FORWARD_RANSOM, process.env.SCWS_OWN_NUMBERS]

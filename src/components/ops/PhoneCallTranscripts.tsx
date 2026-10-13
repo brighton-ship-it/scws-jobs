@@ -34,7 +34,7 @@ function Transcript({ text }: { text: string }) {
   );
 }
 
-const SOURCE_LABEL: Record<string, string> = { gbp_ramona: 'Google profile · Ramona', gbp_anza: 'Google profile · Anza', gmb: 'Google profile', google_ads: 'Google Ads', seo: 'Website (SEO)', direct: 'Direct', main_line: 'Main line' };
+const SOURCE_LABEL: Record<string, string> = { gbp_ramona: 'Google profile · Ramona', gbp_anza: 'Google profile · Anza', gmb: 'Google profile', google_ads: 'Google Ads', seo: 'Website (SEO)', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main line' };
 
 export function PhoneCallTranscripts() {
   const [rows, setRows] = useState<Row[]>([]);
