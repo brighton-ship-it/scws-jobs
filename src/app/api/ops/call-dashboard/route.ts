@@ -12,7 +12,7 @@ import { loadWeeklyInvoices, loadWindowQuotes, loadWeeklyJobsCreated, loadWeekly
 import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
 import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from '@/lib/ads/real-leads';
 import { digits10 } from '@/lib/ads/call-dashboard';
-import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
+import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 
@@ -24,6 +24,9 @@ export async function GET(request: NextRequest) {
   if (!auth.ok) return auth.response;
 
   const range = parseRange(request.nextUrl.searchParams.get('range'));
+  // ?debug=sets: read-only verification payload (raw call rows + derived lead/booking/ROAS sets). Same ops auth; no names or call summaries.
+  const debugSets = request.nextUrl.searchParams.get('debug') === 'sets';
+  let debug: Record<string, unknown> | null = null;
   const finish = (res: NextResponse) => {
     res.headers.set('Cache-Control', 'no-store');
     res.headers.set('X-Robots-Tag', 'noindex, nofollow, noarchive');
@@ -170,7 +173,23 @@ export async function GET(request: NextRequest) {
         adCalls: rl.leads.map((l) => ({ at: l.at, cat: l.cat })),
         adBooked: dash.bookedCredited ?? [],
       });
-      dash.roas = buildRoasView({ invoices, adCalls: adsCalls, spend, start: new Date(dash.revenueStart), now: nowD });
+      const roasDetail: RoasDetailRow[] = [];
+      dash.roas = buildRoasView({ invoices, adCalls: adsCalls, spend, start: new Date(dash.revenueStart), now: nowD, detail: debugSets ? roasDetail : undefined });
+      if (debugSets) {
+        const reasonAt = new Map<string, string[]>();
+        for (const r of rl.reasons) { const k = `${r.at}|${r.live ? 1 : 0}`; (reasonAt.get(k) ?? reasonAt.set(k, []).get(k)!).push(r.reason); }
+        debug = {
+          rangeStartMs: rStartMs, floorIso: DASH_FLOOR_ISO,
+          calls: leadCalls.map((c) => ({ at: c.at, phone: digits10(c.phone), durationSec: c.durationSec, cat: c.cat, live: c.live, missed: !!c.missed, hasText: !!(c.text && c.text.trim()), reason: reasonAt.get(`${c.at}|${c.live ? 1 : 0}`)?.shift() ?? null, inRange: inWin(c.at, rStartMs) })),
+          contacts: contacts.filter((x: { connected: boolean }) => x.connected).map((x: { at: string; phone: string | null }) => ({ at: x.at, phone: digits10(x.phone) })),
+          firstJobAt: Object.fromEntries(Array.from(firstJobAt.entries()).map(([k, v]) => [k, v == null ? null : new Date(v).toISOString()])),
+          leads: rl.leads.map((l) => ({ ...l, inRange: inWin(l.at, rStartMs) })),
+          bookedCredited: (dash.bookedCredited ?? []).map((b) => ({ at: b.at, cat: b.cat, phone: b.phone ?? null })),
+          conversions: conversions.map((c: any) => ({ jobId: c.jobber_job_id, at: c.conversion_at, valueUsd: c.value_usd })),
+          adCalls: adsCalls.map((c) => ({ at: c.started_at, phone: digits10(c.caller_phone), campaign: c.campaign_name, status: c.call_status, durationSec: c.duration_seconds })),
+          roasInvoices: roasDetail,
+        };
+      }
       // Campaign cards use the same calculation, window and spend as the ROAS card / funnel.
       const RN: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18', month: 'This month' };
       const wk = ptWeekStart(nowD);
@@ -200,7 +219,7 @@ export async function GET(request: NextRequest) {
     dropStaleFields(dash);
     dash.gaps.push(...notes);
     const ms = await mirrorState();
-    return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null }));
+    return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) }));
   } catch (error) {
     console.error('[call-dashboard]', error instanceof Error ? error.message : 'error');
     return finish(NextResponse.json({ error: 'Failed to load dashboard' }, { status: 500 }));

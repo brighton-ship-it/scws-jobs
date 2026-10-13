@@ -13,6 +13,8 @@ import type { WeeklyInvoice } from './weekly-sales.ts';
 const round = (n: number) => Math.round(n * 100) / 100;
 const DAY = 86400_000;
 
+export interface RoasDetailRow { invoiceId: string | null; issuedDate: string | null; clientId: string; pretax: number; paid: number; cat: AdCategory; isNew: boolean; firstAdCallAt: string; lastAdCallAt: string; priorJobs: number }
+
 export interface AdCallLite { started_at: string | null; caller_phone: string | null; campaign_name: string | null }
 
 export function buildRoasView(input: {
@@ -21,6 +23,8 @@ export function buildRoasView(input: {
   spend: SpendDay[] | null;
   start: Date; // range/revenue start (UTC instant of PT midnight)
   now: Date;
+  /** Optional sink: one row per ad-attributed invoice (debug/verification endpoint). */
+  detail?: RoasDetailRow[];
 }): RoasView | null {
   if (!input.invoices) return null;
   const byPhone = new Map<string, Array<{ t: number; cat: AdCategory | null }>>();
@@ -58,6 +62,7 @@ export function buildRoasView(input: {
     const jobTimes = (inv.client?.jobs?.nodes ?? []).map((j) => Date.parse(j?.createdAt || '')).filter(Number.isFinite);
     const isNew = inv.client?.jobs ? !jobTimes.some((t) => t < first) : (Number.isFinite(Date.parse(inv.client?.createdAt || '')) && Date.parse(inv.client?.createdAt || '') >= first - DAY);
     const unpaid = !(typeof total === 'number' && typeof pay === 'number' && pay >= total - 0.01);
+    input.detail?.push({ invoiceId: inv.id ?? null, issuedDate: inv.issuedDate ?? null, clientId: cid, pretax: pre, paid: round(paid), cat: last.cat, isNew, firstAdCallAt: new Date(first).toISOString(), lastAdCallAt: new Date(last.t).toISOString(), priorJobs: jobTimes.filter((t) => t < first).length });
     add(S.all, pre, paid, cid, unpaid); add(S[last.cat].all, pre, paid, cid, unpaid);
     if (isNew) { add(S.neu, pre, paid, cid, unpaid); add(S[last.cat].neu, pre, paid, cid, unpaid); }
   }
