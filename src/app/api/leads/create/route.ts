@@ -5,6 +5,7 @@ import { InboundBodyError, inboundAdsFields, readInboundRecord } from '@/lib/ads
 import { customerAdsPatch } from '@/lib/ads/lead-tag';
 import { missingColumnName, withoutColumn } from '@/lib/ads/optional-column';
 import type { LeadSource } from '@/types/database';
+import { leadChannel, pathOnly } from '@/lib/leads/lead-channel';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -150,7 +151,10 @@ export async function POST(request: NextRequest) {
       utm_campaign && `campaign=${utm_campaign}`,
     ].filter(Boolean).join(', ');
     
-    const finalLeadSourceDetail = lead_source_detail || utmDetail || null;
+    // Channel (gbp / seo / yelp / apple_maps / google_ads / referral / direct) + first-touch landing page, always recorded.
+    const channel = leadChannel(body, detected_lead_source === 'google_ads');
+    const landTag = pathOnly(body.first_landing_page || body.landing_page);
+    const finalLeadSourceDetail = [`channel=${channel}`, landTag && `landing=${landTag}`, lead_source_detail || utmDetail || null].filter(Boolean).join(', ');
 
     // Check for existing customer by phone
     const { data: existingCustomer } = await supabase
@@ -230,7 +234,7 @@ export async function POST(request: NextRequest) {
         utm_campaign: utm_campaign?.trim() || null,
         utm_term: utm_term?.trim() || null,
         utm_content: utm_content?.trim() || null,
-        referrer_url: referrer_url?.trim() || null,
+        referrer_url: (body.first_referrer || referrer_url || body.referrer)?.trim?.() || null,
         lead_stage: 'lead',
         gclid: clickIds.gclid,
         gbraid: clickIds.gbraid,

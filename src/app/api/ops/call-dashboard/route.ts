@@ -15,6 +15,7 @@ import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
+import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
@@ -125,6 +126,9 @@ export async function GET(request: NextRequest) {
       // Main page header and TV "today" tiles share this one count across every line.
       if (dash.callLog) dash.callLog.today = feedToday(merged, ptStartOfDay(new Date()).getTime());
     } catch (e) { notes.push(`call feed: ${e instanceof Error ? e.message : 'error'}`); }
+    try {
+      dash.sourceCards = await loadSourceCards(db, Math.max(rangeStart(range, new Date()).getTime(), Date.parse(DASH_FLOOR_ISO)));
+    } catch (e) { notes.push(`source cards: ${e instanceof Error ? e.message : 'error'}`); }
     try {
       const nowD = new Date();
       const rStart = rangeStart(range, nowD);
@@ -279,4 +283,39 @@ function dropStaleFields(dash: any) {
   if (t) for (const k of ['invoicedValue', 'paidValue', 'multipleInvoiced', 'multiplePaid', 'bookedValue', 'quoteValue', 'perCall']) delete t[k];
   if (dash.tv) for (const k of ['callsToday', 'answeredToday', 'missedToday', 'revenueWeek', 'revenueMonth', 'multipleMonth']) delete dash.tv[k];
   if (dash.roas) delete dash.roas.mer;
+}
+
+/** Tracking numbers shown on each non-ad source card. Yelp / Apple Maps have no number yet (forms only). */
+const SOURCE_NUMBERS: Partial<Record<SourceKey, string[]>> = {
+  gbp: ['(760) 279-1262 Ramona', '(951) 651-0957 Anza'], seo: ['(760) 463-0493'],
+};
+const SOURCE_NOTES: Partial<Record<SourceKey, string>> = {
+  gbp: 'Calls recorded from Oct 12. Form source saved from Oct 13.',
+  seo: 'Website visitors from search see this number. Form source saved from Oct 13.',
+  yelp: 'No Yelp tracking number yet: forms from Yelp only.',
+  apple_maps: 'No Apple Maps tracking number yet: forms from Apple Maps only.',
+};
+
+async function loadSourceCards(db: any, startMs: number) {
+  const startIso = new Date(startMs).toISOString();
+  const [recs, forms, jobs] = await Promise.all([
+    db.from('inbound_call_recordings').select('started_at, caller_number, source').gte('started_at', startIso).neq('source', 'test').limit(5000),
+    db.from('booking_requests').select('created_at, phone, lead_source, service_type').eq('source', 'website').gte('created_at', startIso).limit(5000),
+    db.from('jobber_jobs').select('client_id, title, created_at').gte('created_at', new Date(startMs - 3600_000).toISOString()).limit(5000),
+  ]);
+  for (const r of [recs, forms, jobs]) if (r.error) throw new Error(r.error.message);
+  const ids = Array.from(new Set((jobs.data ?? []).map((j: any) => j.client_id).filter(Boolean))) as string[];
+  const phones = new Map<string, string[]>();
+  for (let i = 0; i < ids.length; i += 150) {
+    const c = await db.from('jobber_clients').select('id, phones_digits').in('id', ids.slice(i, i + 150));
+    if (c.error) throw new Error(c.error.message);
+    for (const r of c.data ?? []) phones.set(r.id, r.phones_digits ?? []);
+  }
+  return buildSourceCards({
+    startMs, nowMs: Date.now(),
+    calls: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number, source: r.source })),
+    forms: (forms.data ?? []).filter((f: any) => f.lead_source !== 'test' && !isOwnNumber(f.phone)).map((f: any) => ({ at: f.created_at, phone: f.phone, channel: f.lead_source, serviceType: f.service_type })),
+    jobs: (jobs.data ?? []).map((j: any) => ({ createdAt: j.created_at, title: j.title, phones: phones.get(j.client_id) ?? [] })),
+    numbers: SOURCE_NUMBERS, notes: SOURCE_NOTES,
+  });
 }
