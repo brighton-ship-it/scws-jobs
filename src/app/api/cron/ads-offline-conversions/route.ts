@@ -127,7 +127,7 @@ export async function POST(request: NextRequest) {
         mode === 'live' && config
           ? async (conversions) => {
               // Data Manager API (Google Ads uploadClickConversions is closed to new integrations).
-              const token = await refreshGoogleAccessToken({ ...config, refreshToken: config.dataManagerRefreshToken });
+              const token = await refreshGoogleAccessToken({ ...config, refreshToken: config.dataManagerRefreshToken, clientId: config.dataManagerClientId, clientSecret: config.dataManagerClientSecret });
               return ingestEvents(config, conversions, fetch, token);
             }
           : undefined,
