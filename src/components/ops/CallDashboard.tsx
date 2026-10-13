@@ -323,9 +323,9 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
-    ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved`],
+    ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved in range (any send date)`],
     ['Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads`, leadsHint(realLeads)],
-    ['Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0} approved / ${w.quotesSent ?? 0} sent`],
+    ['Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0} of ${w.quotesSent ?? 0} sent in range approved to date`, 'Cohort: quotes sent in the selected range that are approved/converted as of now. Recent quotes may still close.'],
     ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
   ];
   const cats = weekly.totals?.byCategory;
@@ -365,7 +365,7 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
                 ] : [
                   ['Jobs booked', `${c.jobsBooked}${c.siteVisits ? ` +${c.siteVisits} site walk${c.siteVisits === 1 ? '' : 's'}` : ''}`, 'Jobber jobs created; site walks / site visits counted separately'],
                   ['Quotes sent', `${c.quotesSent} · ${compactUsd(c.quotesSentValue)}`],
-                  ['Quote close', c.quotesSent ? `${pct(c.quotesApproved / c.quotesSent)} (${c.quotesApproved}/${c.quotesSent})` : '—', 'quotes approved ÷ quotes sent, by count'],
+                  ['Quote close', c.quotesSent ? `${pct((c.quotesSentApproved ?? 0) / c.quotesSent)} (${c.quotesSentApproved ?? 0}/${c.quotesSent})` : '—', 'of quotes sent in the range, share approved/converted to date (cohort)'],
                   ['Call to booking', ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—', 'new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)'],
                   ['Last full week', lwc ? usd(lwc[k].invoiced) : '—'],
                 ];
@@ -401,6 +401,8 @@ export function CallDashboardPage() {
   const s = data?.series ?? [];
   const prev = data?.previous;
   const rangeLabel = RANGES.find((r) => r.v === range)?.label ?? '';
+  // Spend, revenue and ROAS start at Sep 18 (closed-loop tracking start) even when the toggle reaches further back.
+  const moneyLabel = data?.start && data?.revenueStart && Date.parse(data.start) < Date.parse(data.revenueStart) ? 'Since Sep 18 (tracking start)' : rangeLabel;
   const calls = s.map((d) => d.answered + d.missed);
   return (
     <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased">
@@ -434,8 +436,8 @@ export function CallDashboardPage() {
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Ad + Mike calls" hint="Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3)." range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
             <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={data.realLeads ? `of ${data.realLeads.leads} real leads · ${data.realLeads.excluded.find((e) => e.reason === 'existing')?.count ?? 0} existing-customer callers excluded` : `${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
-            <Kpi delay={80} color={palette.spend} label="Ad spend" range={rangeLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/ad call · ${usd(t.costPerBooked)}/new booking`} spark={s.filter((d) => !data.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
-            <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={rangeLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended (all callers) ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
+            <Kpi delay={80} color={palette.spend} label="Ad spend" range={moneyLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/ad call · ${usd(t.costPerBooked)}/new booking`} spark={s.filter((d) => !data.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
+            <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={moneyLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended (all callers) ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
@@ -484,7 +486,7 @@ export function CallDashboardPage() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
-            <GroupTable title="By campaign" rows={data.byCampaign} delay={240} />
+            <GroupTable title={moneyLabel !== rangeLabel ? "By campaign (spend & $/call since Sep 18)" : "By campaign"} rows={data.byCampaign} delay={240} />
             <GroupTable title="By keyword / ad group" rows={data.byKeyword} delay={270} />
             <GroupTable title="By tracking number / source" rows={data.byTrackingNumber} delay={300} />
           </div>
@@ -589,7 +591,7 @@ export function CallDashboardTv() {
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
-            {cell('Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0}/${w.quotesSent ?? 0} quotes`)}
+            {cell('Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0}/${w.quotesSent ?? 0} sent, approved to date`)}
             {cell('Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0}/${w.calls} real leads`)}
             <div className="col-span-full mt-2 min-w-0 2xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>

@@ -410,7 +410,8 @@ export function buildDashboard(input: {
   const spend = spendSlice(revStart);
   const spendByCampaign = new Map<string, number>();
   if (input.spend) {
-    const a = ptDateKey(start);
+    // Same window as ROAS/revenue: spend before Sep 18 (tracking start) is not counted on 7/30/90-day views either.
+    const a = ptDateKey(revStart);
     for (const d of input.spend) if (d.date >= a) spendByCampaign.set(d.campaign, (spendByCampaign.get(d.campaign) ?? 0) + d.costUsd);
   }
 
@@ -560,7 +561,11 @@ export function buildDashboard(input: {
       multipleInvoiced: ratio(invoicedValue, spend),
       multiplePaid: paidValue == null ? null : ratio(paidValue, spend),
     },
-    byCampaign: group(decorated, (c) => c.campaign_name || '', spendByCampaign, bookedInWin),
+    byCampaign: group(decorated, (c) => c.campaign_name || '', spendByCampaign, bookedInWin).map((r) => {
+      if (r.spend == null) return r;
+      const n = decorated.filter((c) => (c.campaign_name || '') === r.key && inRange(c.started_at, revStart)).length;
+      return { ...r, costPerCall: n ? round(r.spend / n) : null }; // spend and calls over the same days
+    }),
     byKeyword: group(decorated, (c) => c.keyword || (c.ad_group_name ? `ad group: ${c.ad_group_name}` : ''), undefined, bookedInWin),
     byTrackingNumber: group(decorated, (c) => c.call_source || (c.caller_area_code ? `area ${c.caller_area_code}` : ''), undefined, bookedInWin),
     recent,

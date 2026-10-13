@@ -44,3 +44,19 @@ test('headline quote counts exclude service-call quotes; approvals counted by ap
   assert.equal(w.totals!.quotesApprovedValue, 29250);
   assert.equal(w.totals!.byCategory!.service_call.quotesApproved, 1);
 });
+
+test('quote close rate is a cohort: quotes sent in range that are approved to date', () => {
+  const w = buildWeeklySales({
+    now: new Date('2026-10-12T20:00:00Z'), invoices: [], jobsCreated: [], jobsCompleted: [], callTimes: [], bookedAt: [],
+    quotes: [
+      { title: 'New Well Drilling', quoteStatus: 'approved', sentAt: '2026-02-06T23:33:07Z', transitionedAt: '2026-10-05T18:48:35Z', amounts: { subtotal: 26250 } },
+      { title: 'Replace Booster', quoteStatus: 'approved', sentAt: '2026-10-02T17:00:00Z', transitionedAt: '2026-10-03T18:00:00Z', amounts: { subtotal: 3000 } },
+      { title: 'Replace Pump', quoteStatus: 'awaiting_response', sentAt: '2026-10-04T17:00:00Z', amounts: { subtotal: 5000 } },
+    ],
+    range: { range: 'month', startKey: '2026-10-01', endKey: '2026-10-12', name: 'month' },
+  });
+  assert.equal(w.totals!.quotesSent, 2);
+  assert.equal(w.totals!.quotesSentApproved, 1);
+  assert.equal(w.totals!.byCategory!.drilling.quotesSentApproved, 0);
+  assert.equal(w.totals!.quotesApproved, 2);
+});
