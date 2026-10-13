@@ -4,6 +4,7 @@ import {
   candidatesFromInvoices,
   offlineUploadMode,
   runOfflineImport,
+  parsePartialFailure,
   type AttributedLead,
 } from './offline-import.ts';
 
@@ -168,5 +169,72 @@ describe('runOfflineImport', () => {
     });
     assert.equal(calls, 1);
     assert.equal(result.uploaded, 1);
+  });
+});
+
+describe('partial failure handling', () => {
+  const cand = (id: string) => ({
+    jobberJobId: id,
+    invoiceIds: [`inv-${id}`],
+    conversionAt: '2026-10-08T12:00:00.000Z',
+    valueUsd: 100,
+    gclid: null,
+    gbraid: null,
+    wbraid: null,
+    email: null,
+    phone: '7605550100',
+    signal: 'ads_call' as const,
+    campaign: null,
+    keyword: null,
+  });
+  const body = {
+    partialFailureError: {
+      code: 3,
+      message: 'The click identifier could not be matched., at conversions[1]',
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.ads.googleads.v22.errors.GoogleAdsFailure',
+          errors: [
+            {
+              errorCode: { conversionUploadError: 'UNPARSEABLE_GCLID' },
+              message: 'The click identifier could not be matched.',
+              location: { fieldPathElements: [{ fieldName: 'conversions', index: 1 }, { fieldName: 'gclid' }] },
+            },
+          ],
+        },
+      ],
+    },
+    results: [{ orderId: 'a' }, {}, { orderId: 'c' }],
+  };
+
+  it('marks only the failed row as error; others uploaded; failed row stays retryable', async () => {
+    const saved: Record<string, { status: string; error: string | null }> = {};
+    const result = await runOfflineImport({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/2',
+      existing: [{ jobber_job_id: 'b', status: 'error' }],
+      candidates: [cand('a'), cand('b'), cand('c')],
+      save: async (row) => {
+        saved[row.jobber_job_id] = { status: row.status, error: row.error };
+      },
+      upload: async () => ({ ok: true, status: 200, body }),
+    });
+    assert.equal(result.uploaded, 2);
+    assert.equal(saved.a.status, 'uploaded');
+    assert.equal(saved.c.status, 'uploaded');
+    assert.equal(saved.b.status, 'error');
+    assert.match(saved.b.error ?? '', /UNPARSEABLE_GCLID/);
+    assert.equal(result.errors.length, 1);
+  });
+
+  it('parses indexes, ignores empty, and fails all when no index is readable', () => {
+    assert.deepEqual([...parsePartialFailure(body).byIndex.keys()], [1]);
+    assert.equal(parsePartialFailure({ results: [] }).all, null);
+    assert.equal(parsePartialFailure({ partialFailureError: {} }).all, null);
+    assert.equal(parsePartialFailure({ partialFailureError: { code: 3, message: 'boom' } }).all, 'boom');
+    assert.deepEqual(
+      [...parsePartialFailure({ partialFailureError: { code: 3, message: 'x, at conversions[2].gclid' } }).byIndex.keys()],
+      [2]
+    );
   });
 });
