@@ -201,7 +201,7 @@ export interface Dashboard {
   /** Additive. Counts for the calls -> booked -> invoiced -> paid funnel. */
   funnel?: { calls: number; adCalls?: number; uniqueCallers?: number; booked: number; invoiced: number; paid: number | null; partPaid?: number | null };
   /** Additive. Bookings credited to a call (same set as the funnel), with the call's ad category. */
-  bookedCredited?: Array<{ at: string; cat: AdCategory | null }>;
+  bookedCredited?: Array<{ at: string; cat: AdCategory | null; phone?: string | null }>;
   /** Additive. ROAS on all ad callers vs new customers only (filled by the route from Jobber invoices). */
   roas?: RoasView | null;
   /** Additive. All inbound calls from the Voice audit log (phone_call_log). Null until the table exists. */
@@ -212,6 +212,8 @@ export interface Dashboard {
   adSplit?: AdSplit;
   /** Additive. Weekly sales rollup (current week-to-date + prior 8 weeks). */
   weekly?: import('./weekly-sales.ts').WeeklySales | null;
+  /** Additive. Call to booking denominator: real new leads in the selected range (one per caller). */
+  realLeads?: { calls: number; leads: number; pump: number; drilling: number; excluded: Array<{ reason: string; label: string; count: number }>; unresolvedExisting: number } | null;
 }
 
 export interface CallLogRow {
@@ -250,6 +252,7 @@ export interface AdSplitRow {
   invoiced: number; multiple: number | null;
   invoicedNew?: number; multipleNew?: number | null; paid?: number; multiplePaid?: number | null;
   /** Google Ads spend per Pacific day in the window (sums to spend). */ dailySpend?: number[];
+  /** Real new leads (one per caller, junk/existing/repeat excluded) whose type is this campaign. */ leads?: number;
 }
 export interface AdSplitWindow { label: string; from: string; to?: string; dates?: string; rows: AdSplitRow[]; /** New bookings credited to a non-ad (Mike AI receptionist) call in the window. */ otherBooked?: number }
 export interface AdSplit { since: AdSplitWindow; week: AdSplitWindow }
@@ -517,7 +520,8 @@ export function buildDashboard(input: {
   };
   const bookedCredited = Array.from(creditedCall.entries())
     .filter(([cv]) => !!cv.conversion_at)
-    .map(([cv, call]) => ({ at: cv.conversion_at as string, cat: adCategory(call.campaign_name) }));
+    .map(([cv, call]) => Object.defineProperty({ at: cv.conversion_at as string, cat: adCategory(call.campaign_name) }, 'phone', { value: digits10(call.caller_phone), enumerable: false }) as { at: string; cat: AdCategory | null; phone?: string | null });
+  // phone is non-enumerable: used server-side for real-lead matching, never serialized to the browser.
 
   const adSplit = buildAdSplit({
     calls: input.calls, spend: input.spend, now, jobMoney: jm,

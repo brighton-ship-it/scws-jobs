@@ -103,3 +103,41 @@ export async function loadPaidByJob(jobIds: string[]): Promise<Map<string, numbe
   const m = await loadJobMoney(jobIds);
   return m ? new Map(Array.from(m.entries()).map(([k, v]) => [k, v.paid])) : null;
 }
+
+const CLIENT_BY_PHONE = `
+  query DashClientByPhone($q: String!) {
+    clients(searchTerm: $q, first: 5) { nodes { phones { number } jobs(first: 25) { nodes { createdAt } } } }
+  }
+`;
+const FIRST_JOB_TTL_MS = 6 * 3600_000;
+const firstJobCache = new Map<string, { at: number; v: number | null }>();
+const digits = (s: string | null | undefined) => { const d = (s ?? '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+
+/** Earliest Jobber job createdAt (ms) for clients whose phone matches exactly; null = no such client/job.
+ *  Phones not resolved within the time budget (or on Jobber error) are left out (= unknown). Cached 6 h. */
+export async function loadFirstJobByPhone(phones: string[], budgetMs = 60_000, cached?: Map<string, number | null>): Promise<Map<string, number | null>> {
+  const out = new Map<string, number | null>();
+  const t0 = Date.now();
+  const todo: string[] = [];
+  for (const p of Array.from(new Set(phones))) {
+    const hit = firstJobCache.get(p);
+    if (hit && Date.now() - hit.at < FIRST_JOB_TTL_MS) out.set(p, hit.v);
+    else if (cached?.has(p)) out.set(p, cached.get(p)!);
+    else todo.push(p);
+  }
+  for (let i = 0; i < todo.length && Date.now() - t0 < budgetMs; i += 4) {
+    await Promise.all(todo.slice(i, i + 4).map(async (p) => {
+      try {
+        const res = await jobberGraphql(CLIENT_BY_PHONE, { q: p });
+        assertNoJobberErrors(res, 'dashboard client by phone');
+        let first: number | null = null;
+        for (const c of res.data?.clients?.nodes ?? []) {
+          if (!(c?.phones ?? []).some((x: any) => digits(x?.number) === p)) continue;
+          for (const j of c?.jobs?.nodes ?? []) { const t = Date.parse(j?.createdAt || ''); if (Number.isFinite(t) && (first == null || t < first)) first = t; }
+        }
+        out.set(p, first); firstJobCache.set(p, { at: Date.now(), v: first });
+      } catch { /* unknown */ }
+    }));
+  }
+  return out;
+}
