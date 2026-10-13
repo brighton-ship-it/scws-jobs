@@ -4,6 +4,7 @@
  * company), QuickBooks invoices dated Feb 25+ 2025 dropped when Jobber has the same amount within 3 days.
  */
 import { ptDateKey } from './call-dashboard.ts';
+import { workCategory } from './work-category.ts';
 
 /** [normalizedName, drillingFlag 0|1, [[yyyy-mm-dd, pretaxUsd, invoiceNo (only for Feb 25+ 2025)], ...]] */
 export type QboCustomer = [string, number, Array<[string, number] | [string, number, string]>];
@@ -15,7 +16,6 @@ export function normName(n?: string | null): string {
   s = s.replace(/\(.*?\)/g, '').replace(/[^a-z0-9 ]/g, ' ').replace(/\b(inc|llc|the|mr|mrs|ms|dr|and)\b/g, ' ');
   return s.split(/\s+/).filter(Boolean).sort().join(' ');
 }
-const DRJ = /\b(drill\w*|new well|deepen\w*|well destruction|destroy|abandon\w*|pilot hole|test hole|well construction)\b/i;
 const CUTOVER = '2025-02-25';
 const DAY = 86400_000;
 const dnum = (k: string) => Date.parse(`${k}T00:00:00Z`) / DAY;
@@ -74,7 +74,7 @@ export function mergeFullHistory(qbo: QboHistory, jobber: LtvInvoice[]): FullLtv
     const rev = tx.reduce((s, x) => s + x.a, 0);
     if (rev <= 0) return;
     const dates = Array.from(new Set(tx.filter((x) => x.a > 0).map((x) => x.d))).sort();
-    const dept = c.qdr || c.j.some((x) => DRJ.test(x.s)) ? 'drilling' : 'pump';
+    const dept = c.qdr || c.j.some((x) => workCategory(x.s) === 'drilling') ? 'drilling' : 'pump';
     customers.push({ key, dept, source: c.j.length ? (c.q.length ? 'both' : 'jobber') : 'qbo', rev, dates, tx });
   });
   return { customers, all, keys, matched, qboCustomers: qbo.customers.length, jobberCustomers: J.size, droppedDupes, droppedDupeUsd };
