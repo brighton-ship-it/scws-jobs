@@ -553,9 +553,9 @@ export function CallDashboardTv() {
       {data?.weekly ? (() => {
         const ws = data.weekly.weeks; const w = data.weekly.totals ?? ws[ws.length - 1];
         const head = data.weekly.totals?.title ?? `This week to date ${w.label}`;
-        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-lg font-bold tabular-nums xl:text-3xl">{v}</p>{sub ? <p className="text-[10px] leading-tight text-slate-500 xl:text-base">{sub}</p> : null}</div>);
+        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-lg font-bold tabular-nums xl:text-2xl 2xl:text-3xl">{v}</p>{sub ? <p className="text-[10px] leading-tight text-slate-500 xl:text-base">{sub}</p> : null}</div>);
         return (
-          <div className="grid shrink-0 grid-cols-2 items-start gap-x-4 gap-y-3 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-[repeat(9,minmax(0,1fr))_minmax(0,2.2fr)] xl:items-end xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
+          <div className="grid shrink-0 grid-cols-2 items-start gap-x-4 gap-y-3 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-3 md:grid-cols-5 2xl:grid-cols-[repeat(9,minmax(0,1fr))_minmax(0,2.2fr)] 2xl:items-end xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
             <p className="col-span-full text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
             {cell('Invoiced', usd(w.invoiced))}
             {cell('Paid on invoices', usd(w.paid), `issued ${w.label}`)}
@@ -566,7 +566,7 @@ export function CallDashboardTv() {
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
             {cell('Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0}/${w.quotesSent ?? 0} quotes`)}
             {cell('Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0}/${w.calls} real leads`)}
-            <div className="col-span-full mt-2 min-w-0 xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
+            <div className="col-span-full mt-2 min-w-0 2xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>
         );
       })() : null}
