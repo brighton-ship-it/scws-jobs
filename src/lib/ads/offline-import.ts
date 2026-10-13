@@ -293,7 +293,7 @@ export async function runOfflineImport(input: {
     } else {
       const index = uploadIndex++;
       let failure: string | null = null;
-      if (!uploadResult.ok) failure = `Google Ads upload HTTP ${uploadResult.status}`;
+      if (!uploadResult.ok) failure = uploadErrorMessage(uploadResult.status, uploadResult.body);
       else if (failures.all) failure = failures.all;
       else if (failures.byIndex.has(index)) failure = failures.byIndex.get(index)!;
       saved = failure
@@ -352,4 +352,11 @@ export function parsePartialFailure(body: unknown): { byIndex: Map<number, strin
   }
   if (byIndex.size === 0) return { byIndex, all: pfe.message || `partial failure (code ${pfe.code ?? '?'})` };
   return { byIndex, all: null };
+}
+
+/** Whole-request failure text, including Google's error status/message when present. */
+export function uploadErrorMessage(status: number, body: unknown): string {
+  const err = (body as { error?: { status?: string; message?: string } } | null)?.error;
+  const detail = [err?.status, err?.message].filter(Boolean).join(': ');
+  return (`Google upload HTTP ${status}` + (detail ? ` ${detail}` : '')).slice(0, 500);
 }

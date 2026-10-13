@@ -238,3 +238,14 @@ describe('partial failure handling', () => {
     );
   });
 });
+
+import { uploadErrorMessage } from './offline-import.ts';
+describe('uploadErrorMessage', () => {
+  it('includes the Google error status and message', () => {
+    assert.equal(
+      uploadErrorMessage(403, { error: { status: 'PERMISSION_DENIED', message: 'insufficient scopes' } }),
+      'Google upload HTTP 403 PERMISSION_DENIED: insufficient scopes'
+    );
+    assert.equal(uploadErrorMessage(500, null), 'Google upload HTTP 500');
+  });
+});
