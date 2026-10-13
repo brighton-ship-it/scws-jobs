@@ -1,5 +1,9 @@
 # Supabase migrations
 
+## `20261012_jobber_mirror.sql`
+
+Adds the Jobber read mirror (`jobber_clients`, `jobber_jobs`, `jobber_invoices`, `jobber_quotes`, `jobber_payments`, `jobber_timesheets`, `jobber_sync_state`). RLS on with no policies (service role only). Filled by the `/api/cron/jobber-mirror` cron every 10 min (backfill since Jan 2025 first, then rolling windows). `/ops/calls`, the TV page and `/ops/metrics` read the mirror once every backfill is done and the last sync is < 40 min old; otherwise they fall back to live Jobber. Kill switch: `JOBBER_MIRROR_DISABLED=1`. Undo with `20261012_jobber_mirror_rollback.sql`.
+
 ## `20261010_paid_ads_attribution.sql`
 
 Adds `lead_source` and UTM columns on `booking_requests` (campaign is `utm_campaign`, keyword is `utm_term`), log columns on `book_job_conversions`, and tables `ads_calls`, `ads_offline_conversions`, and `ads_closed_loop_reports`.

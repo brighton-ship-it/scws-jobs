@@ -1,6 +1,8 @@
 /** Jobber loaders for /ops/metrics. Each loader fails independently ({ rows: null, error }) and is cached 30 min. */
 import { unstable_cache } from 'next/cache';
 import { assertNoJobberErrors, jobberGraphql } from '../jobber/client.ts';
+import { mirrorInvoices, mirrorJobs, mirrorTimesheets } from '../jobber-mirror/read.ts';
+const fromMirror = async <T>(m: () => Promise<any[] | null>): Promise<Loaded<T> | null> => { try { const r = await m(); return r ? { rows: r as T[] } : null; } catch { return null; } };
 
 const TTL_MS = 30 * 60_000;
 const cache = new Map<string, { at: number; v: Loaded<unknown> }>();
@@ -44,6 +46,7 @@ const HIST_INVOICES = `query MetricsInvoices($first: Int!, $after: String, $filt
 
 /** Invoices issued between from and to, fetched in parallel quarter-sized chunks. */
 export async function loadHistoryInvoices(fromIso: string, toIso: string): Promise<Loaded<HistInvoice>> {
+  const m = await fromMirror<HistInvoice>(() => mirrorInvoices(fromIso, toIso)); if (m) return m;
   const chunks: Array<[string, string]> = [];
   // Calendar-quarter boundaries (UTC) so chunk cache keys are stable from one request to the next.
   const f = new Date(fromIso);
@@ -75,7 +78,7 @@ const COST_JOBS = `query MetricsJobCosts($first: Int!, $after: String, $filter: 
   jobs(first: $first, after: $after, filter: $filter) {
     nodes { id jobNumber title completedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } }
     pageInfo { hasNextPage endCursor } } }`;
-export const loadCompletedJobCosts = (from: string, to: string) =>
+export const loadCompletedJobCosts = async (from: string, to: string) => (await fromMirror<CostJob>(() => mirrorJobs('completed_at', from, to))) ??
   paged<CostJob>(`cost|${from.slice(0, 10)}`, COST_JOBS, 'jobs', { filter: { completedAt: { after: from, before: to } } }, 20, 50);
 
 export interface TimeEntry { id: string; startAt?: string | null; endAt?: string | null; finalDuration?: number | null; job?: { id?: string | null } | null; user?: { id?: string | null } | null }
@@ -83,5 +86,5 @@ const TIMESHEETS = `query MetricsTime($first: Int!, $after: String, $filter: Tim
   timeSheetEntries(first: $first, after: $after, filter: $filter) {
     nodes { id startAt endAt finalDuration job { id } user { id } }
     pageInfo { hasNextPage endCursor } } }`;
-export const loadTimesheets = (from: string, to: string) =>
+export const loadTimesheets = async (from: string, to: string) => (await fromMirror<TimeEntry>(() => mirrorTimesheets(from, to))) ??
   paged<TimeEntry>(`ts|${from.slice(0, 10)}`, TIMESHEETS, 'timeSheetEntries', { filter: { startAt: { after: from, before: to } } }, 20, 100);

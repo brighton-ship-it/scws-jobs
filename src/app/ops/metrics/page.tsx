@@ -27,7 +27,7 @@ export default function MetricsPage() {
       }
       if (!res) throw new Error('Jobber is slow right now. Tap Refresh to try again.');
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
-      const j = await res.json(); setCards(j.cards); setAt(j.generatedAt); setError(null);
+      const j = await res.json(); setCards(j.cards); setAt(j.dataAsOf || j.generatedAt); setError(null);
     } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); }
     finally { setLoading(false); }
   }, []);
@@ -38,7 +38,7 @@ export default function MetricsPage() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="text-xl font-bold">Business metrics</h2>
-          <p className="text-xs text-slate-500">{at ? `Updated ${new Date(at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} PT` : loading ? 'Loading… (first load can take a minute)' : ''}</p>
+          <p className="text-xs text-slate-500">{at ? `Data as of ${new Date(at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} PT` : loading ? 'Loading… (first load can take a minute)' : ''}</p>
         </div>
         <div className="flex gap-2">
           <button onClick={load} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">Refresh</button>

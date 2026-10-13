@@ -13,6 +13,7 @@ import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince
 import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from '@/lib/ads/real-leads';
 import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
+import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 
 export const dynamic = 'force-dynamic';
@@ -198,7 +199,8 @@ export async function GET(request: NextRequest) {
     strictMoneyOnly(dash);
     dropStaleFields(dash);
     dash.gaps.push(...notes);
-    return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString() }));
+    const ms = await mirrorState();
+    return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null }));
   } catch (error) {
     console.error('[call-dashboard]', error instanceof Error ? error.message : 'error');
     return finish(NextResponse.json({ error: 'Failed to load dashboard' }, { status: 500 }));
