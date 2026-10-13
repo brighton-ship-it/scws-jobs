@@ -4,9 +4,9 @@ import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 import {
   googleAdsConfig,
   refreshGoogleAccessToken,
-  uploadClickConversions,
   uploadConversionAdjustments,
 } from '@/lib/ads/google-ads-api';
+import { ingestEvents } from '@/lib/ads/data-manager';
 import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
   offlineUploadMode,
@@ -126,8 +126,9 @@ export async function POST(request: NextRequest) {
       upload:
         mode === 'live' && config
           ? async (conversions) => {
-              const token = await refreshGoogleAccessToken(config);
-              return uploadClickConversions(config, conversions, fetch, token);
+              // Data Manager API (Google Ads uploadClickConversions is closed to new integrations).
+              const token = await refreshGoogleAccessToken({ ...config, refreshToken: config.dataManagerRefreshToken });
+              return ingestEvents(config, conversions, fetch, token);
             }
           : undefined,
     });
