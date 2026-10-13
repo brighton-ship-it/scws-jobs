@@ -209,6 +209,7 @@ export interface Dashboard {
   callLog?: CallLogView | null;
   /** Additive. Legible unified call feed (Voice log + recorded tracking lines + Mike). */
   callFeed?: import('./call-feed.ts').FeedRow[] | null;
+  sourceCards?: import('./source-cards.ts').SourceCard[] | null;
   /** Additive. Ad spend/return split: pump (Search-1 etc.) vs drilling, fixed windows (independent of range). */
   adSplit?: AdSplit;
   /** Additive. Weekly sales rollup (current week-to-date + prior 8 weeks). */

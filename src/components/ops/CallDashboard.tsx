@@ -395,6 +395,30 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
   );
 }
 
+const SOURCE_ACCENT: Record<string, string> = { gbp: '#2563eb', seo: '#16a34a', yelp: '#dc2626', apple_maps: '#475569' };
+function SourceCardsBlock({ cards, rangeLabel }: { cards: NonNullable<Dashboard['sourceCards']>; rangeLabel: string }) {
+  const split = (x: { pump: number; drilling: number }) => `pump ${x.pump} · drilling ${x.drilling}`;
+  return (
+    <Card title="Leads by source (not ads)" subtitle={`Google Business Profile, website search, Yelp and Apple Maps · ${rangeLabel} · Google Ads stays in the cards above`} delay={110}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {cards.map((c) => (
+          <div key={c.key} className="min-w-0 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3" style={{ borderTop: `3px solid ${SOURCE_ACCENT[c.key] ?? '#64748b'}` }}>
+            <p className="truncate text-sm font-semibold text-slate-800">{c.label}</p>
+            <p className="truncate text-[11px] text-slate-500" title={c.numbers.join(' · ')}>{c.numbers.length ? c.numbers.join(' · ') : 'No tracking number yet'}</p>
+            <dl className="mt-2 grid grid-cols-3 gap-2">
+              {([['Calls', String(c.calls), c.calls ? `${c.callers} caller${c.callers === 1 ? '' : 's'}` : ''], ['Forms', String(c.forms.total), c.forms.total ? split(c.forms) : ''], ['Booked', String(c.booked.total), c.booked.total ? split(c.booked) : '']] as const).map(([k, v, sub]) => (
+                <div key={k} className="min-w-0"><dt className="text-[11px] uppercase tracking-wider text-slate-500">{k}</dt><dd className="text-xl font-bold tabular-nums text-slate-900">{v}</dd>{sub ? <dd className="truncate text-[10px] text-slate-500" title={sub}>{sub}</dd> : null}</div>
+              ))}
+            </dl>
+            {c.note ? <p className="mt-2 text-[10px] leading-snug text-slate-400">{c.note}</p> : null}
+          </div>
+        ))}
+      </div>
+      <p className="mt-2 text-[10px] text-slate-400">Calls = calls to that source&apos;s tracking number. Forms = website requests whose first visit came from that source. Booked = a Jobber job created within 30 days of that caller&apos;s or form&apos;s first contact (site walks excluded); drilling vs pump from the job title, forms by the service picked.</p>
+    </Card>
+  );
+}
+
 export function CallDashboardPage() {
   const [range, setRange] = useState<string>('since');
   const { data, error, loading, reload } = useDashboard(range, 30_000);
@@ -433,6 +457,8 @@ export function CallDashboardPage() {
           {data.weekly ? <WeeklySalesCard weekly={data.weekly} realLeads={data.realLeads} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
 
           {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
+
+          {data.sourceCards ? <SourceCardsBlock cards={data.sourceCards} rangeLabel={rangeLabel} /> : null}
 
           <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
             <Kpi delay={0} color={palette.answered} label="Ad + Mike calls" hint="Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3)." range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />

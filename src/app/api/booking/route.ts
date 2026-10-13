@@ -14,6 +14,7 @@ import {
 import { InboundBodyError, inboundAdsFields, readInboundRecord, type InboundAdsFields } from '@/lib/ads/inbound-body';
 import { customerAdsPatch } from '@/lib/ads/lead-tag';
 import { missingColumnName, withoutColumn } from '@/lib/ads/optional-column';
+import { leadChannel, pathOnly, isTestLead } from '@/lib/leads/lead-channel';
 
 const OFFICE_EMAIL = 'brighton@scwellservice.com';
 
@@ -173,6 +174,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // Lead channel (gbp / seo / yelp / apple_maps / google_ads / referral / direct) + first-touch referrer and landing page.
+    const channel = leadChannel(body, inbound.lead_source === 'google_ads');
+    const testLead = isTestLead(body);
+    const refTag = pathOnly(body.first_referrer || body.referrer || body.referrer_url);
+    const landTag = pathOnly(body.first_landing_page || body.landing_page);
+    const channelTags = [testLead ? '[TEST]' : null, `[channel: ${channel}]`, refTag ? `[referrer: ${refTag}]` : null, landTag ? `[landing: ${landTag}]` : null].filter(Boolean).join(' ');
+
     // Create the booking request
     const bookingRow = {
       service_type,
@@ -185,12 +193,12 @@ export async function POST(request: NextRequest) {
       city: city.trim(),
       preferred_date: preferred_date || null,
       preferred_time: preferred_time || null,
-      notes: appendAttributionToNotes(notes, originalSource, utms),
+      notes: [channelTags, appendAttributionToNotes(notes, originalSource, utms)].filter(Boolean).join('\n'),
       status: 'pending',
       customer_id,
       source,
       ip_address,
-      lead_source: inbound.lead_source,
+      lead_source: testLead ? 'test' : channel,
       utm_source: inbound.utms.utm_source,
       utm_medium: inbound.utms.utm_medium,
       utm_campaign: inbound.utms.utm_campaign,
@@ -227,6 +235,11 @@ export async function POST(request: NextRequest) {
         { error: 'Failed to create booking request', details: bookingError.message },
         { status: 500, headers: corsHeaders }
       );
+    }
+
+    if (testLead) {
+      // Verification submission: stored (flagged) so the pipeline can be checked, but nobody is notified.
+      return NextResponse.json({ success: true, test: true, channel, booking: { id: booking.id } }, { headers: corsHeaders });
     }
 
     // Send email notification to office
