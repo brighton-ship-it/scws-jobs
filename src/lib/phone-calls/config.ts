@@ -20,3 +20,18 @@ export function publicUrl(req: { url: string; headers: { get(n: string): string 
   const proto = req.headers.get('x-forwarded-proto') || 'https';
   return `${proto}://${host}${u.pathname}${u.search}`;
 }
+
+/** Ported Google Voice lines (main + Ransom). Each forwards to a NEW Google Voice number set by env. Inactive until ported. */
+export const PORTED_LINES: Record<string, { number: string; source: string; label: string; forwardEnv: string }> = {
+  main: { number: '+17604408520', source: 'main_line', label: 'Main', forwardEnv: 'PHONE_CALL_FORWARD_MAIN' },
+  ransom: { number: '+17607895955', source: 'ransom_line', label: 'Ransom', forwardEnv: 'PHONE_CALL_FORWARD_RANSOM' },
+};
+/** Which ported line a call belongs to: by the dialed number (after port) or ?line= (test number). */
+export function lineFor(to: string, lineParam?: string | null) {
+  const byNum = Object.entries(PORTED_LINES).find(([, l]) => l.number === to)?.[0];
+  const key = byNum ?? (lineParam && PORTED_LINES[lineParam] ? lineParam : null);
+  return key ? { key, ...PORTED_LINES[key] } : null;
+}
+export function forwardTargets(line: { forwardEnv: string }, env: NodeJS.ProcessEnv = process.env): string[] {
+  return (env[line.forwardEnv] ?? '').split(',').map((s) => s.trim()).filter((x) => /^\+\d{10,15}$/.test(x));
+}

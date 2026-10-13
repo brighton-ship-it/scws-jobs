@@ -1,7 +1,8 @@
 /** <Dial action> callback: records how the shop leg ended. Returns empty TwiML (call ends). */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
-import { EMPTY_RESPONSE } from '@/lib/phone-calls/twiml';
+import { EMPTY_RESPONSE, buildVoicemailTwiml } from '@/lib/phone-calls/twiml';
+import { publicUrl, PORTED_LINES } from '@/lib/phone-calls/config';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -19,6 +20,10 @@ export async function POST(req: NextRequest) {
         updated_at: new Date().toISOString(),
       }, { onConflict: 'call_sid' });
     } catch (e) { console.error('[phone-calls] status failed', e instanceof Error ? e.message : e); }
+  }
+  const line = new URL(req.url).searchParams.get('line');
+  if (line && PORTED_LINES[line] && params.DialCallStatus !== 'completed') {
+    return new NextResponse(buildVoicemailTwiml(new URL(publicUrl(req)).origin), { headers: { 'Content-Type': 'text/xml' } });
   }
   return new NextResponse(EMPTY_RESPONSE, { headers: { 'Content-Type': 'text/xml' } });
 }
