@@ -50,6 +50,8 @@ export function rollingTasks(now: Date, wide: boolean): Array<{ field: Field; fi
     { field: 'invoices', filter: { issuedDate: w(120) } },
     { field: 'paymentRecords', filter: { entryDate: w(40) } },
     { field: 'quotes', filter: { createdAt: w(200) } },
+    { field: 'quotes', filter: { status: 'approved' } },
+    { field: 'quotes', filter: { status: 'converted' } }, // hourly: old quote approved and converted at once
     { field: 'jobs', filter: { createdAt: w(60) } },
     { field: 'jobs', filter: { completedAt: w(95) } },
     { field: 'timeSheetEntries', filter: { startAt: w(35) } },
@@ -57,6 +59,8 @@ export function rollingTasks(now: Date, wide: boolean): Array<{ field: Field; fi
     { field: 'invoices', filter: { issuedDate: w(21) } },
     { field: 'paymentRecords', filter: { entryDate: w(7) } },
     { field: 'quotes', filter: { createdAt: w(30) } },
+    // Old quotes approved today (e.g. #3726, created Jul, approved Oct 12) land within one 10-min run.
+    { field: 'quotes', filter: { status: 'approved' } },
     { field: 'jobs', filter: { createdAt: w(14) } },
     { field: 'jobs', filter: { completedAt: w(14) } },
     { field: 'timeSheetEntries', filter: { startAt: w(3) } },

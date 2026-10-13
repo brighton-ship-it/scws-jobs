@@ -323,7 +323,7 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
-    ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved in range (any send date)`],
+    ['Approved this period', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes approved (any send date)`],
     ['Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads`, leadsHint(realLeads)],
     ['Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0} of ${w.quotesSent ?? 0} sent in range approved to date`, 'Cohort: quotes sent in the selected range that are approved/converted as of now. Recent quotes may still close.'],
     ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
@@ -365,7 +365,8 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
                 ] : [
                   ['Jobs booked', `${c.jobsBooked}${c.siteVisits ? ` +${c.siteVisits} site walk${c.siteVisits === 1 ? '' : 's'}` : ''}`, 'Jobber jobs created; site walks / site visits counted separately'],
                   ['Quotes sent', `${c.quotesSent} · ${compactUsd(c.quotesSentValue)}`],
-                  ['Quote close', c.quotesSent ? `${pct((c.quotesSentApproved ?? 0) / c.quotesSent)} (${c.quotesSentApproved ?? 0}/${c.quotesSent})` : '—', 'of quotes sent in the range, share approved/converted to date (cohort)'],
+                  ['Close rate (sent in period)', c.quotesSent ? `${pct((c.quotesSentApproved ?? 0) / c.quotesSent)} (${c.quotesSentApproved ?? 0}/${c.quotesSent})` : '—', 'of quotes sent in the range, share approved/converted to date (cohort)'],
+                  ['Approved this period', `${c.quotesApproved} · ${compactUsd(c.quotesApprovedValue)}`, 'quotes approved in the range by approval date, including quotes sent earlier (e.g. an old drilling quote approved today)'],
                   ['Call to booking', ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—', 'new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)'],
                   ['Last full week', lwc ? usd(lwc[k].invoiced) : '—'],
                 ];
@@ -591,7 +592,7 @@ export function CallDashboardTv() {
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
-            {cell('Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0}/${w.quotesSent ?? 0} sent, approved to date`)}
+            {cell('Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0}/${w.quotesSent ?? 0} sent, approved to date · ${w.quotesApproved ?? 0} approved this period`)}
             {cell('Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0}/${w.calls} real leads`)}
             <div className="col-span-full mt-2 min-w-0 2xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>

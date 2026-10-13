@@ -12,4 +12,5 @@ test('invoice rows strip nested client to id and collect client + job ids', () =
 test('rolling windows: wide covers 200d quotes', () => {
   const t = rollingTasks(new Date('2026-10-12T00:00:00Z'), true).find((x) => x.field === 'quotes')!;
   assert.equal((t.filter.createdAt as any).after.slice(0, 10), '2026-03-26');
+  assert.ok(rollingTasks(new Date(), false).some((x) => x.field === 'quotes' && (x.filter as any).status === 'approved'));
 });
