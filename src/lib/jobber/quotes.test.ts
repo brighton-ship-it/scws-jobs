@@ -17,7 +17,9 @@ import {
   loadJobByIdOrNumber,
   quoteCreateUsedForbiddenFields,
   resolveQuoteCreatePropertyId,
+  jobberPhoneSearchTerm,
   searchClients,
+  searchClientsByPhone,
   summarizeJobberSalesperson,
   toJobberLineItems,
 } from './quotes.ts';
@@ -239,6 +241,28 @@ describe('Jobber client search GraphQL (2025-04-16)', () => {
     assert.match(query, /ClientSearch/);
     assertPropertiesIsPropertyList(query);
     assert.match(query, /quotes\s*\(\s*first:\s*25\s*\)/);
+  });
+
+  it('searches a phone by the last 7 digits without quotes or properties', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body || ''));
+      return jsonResponse({
+        data: {
+          clients: {
+            nodes: [{ id: 'client-9', name: 'Braden Reynolds', phones: [{ number: '(760) 998-8435' }] }],
+          },
+        },
+      });
+    };
+    const clients = await searchClientsByPhone('17609988435', { fetchImpl, token: 'test' });
+    const body = JSON.parse(bodies[0] || '{}') as { query?: string; variables?: { searchTerm?: string } };
+    assert.equal(body.variables?.searchTerm, '9988435');
+    assert.equal(jobberPhoneSearchTerm('7609988435'), '9988435');
+    assert.match(body.query || '', /ClientByPhone/);
+    assert.equal(/quotes\s*\(/.test(body.query || ''), false);
+    assert.equal(/properties/.test(body.query || ''), false);
+    assert.equal(findExistingClient(clients, { phone: '7609988435' })?.id, 'client-9');
   });
 });
 
