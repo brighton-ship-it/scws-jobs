@@ -178,7 +178,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
   const sub = dark ? 'text-slate-300' : 'text-slate-600';
   return (
     <>
-    <ul className={`sm:hidden ${dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}`}>
+    <ul className={`min-[769px]:hidden ${dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}`}>
       {list.length === 0 ? <li className={`px-4 py-6 text-center ${sub}`}>No calls yet</li> : list.map((r, i) => (
         <li key={i} className={`px-4 py-3 ${r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}`}>
           <div className="flex items-center justify-between gap-3">
@@ -191,7 +191,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
         </li>
       ))}
     </ul>
-    <table className={`hidden w-full table-fixed text-left sm:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
+    <table className={`hidden w-full table-fixed text-left min-[769px]:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
       <colgroup><col className="w-[22%]" /><col className="w-[31%]" /><col className="w-[16%]" /><col className="w-[17%]" /><col className="w-[14%]" /></colgroup>
       <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
       <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
@@ -332,9 +332,9 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
           {rows.map(([label, value, sub, hint]) => (
             <div key={label} className="min-w-0" title={hint}>
-              <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+              <p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500">{label}</p>
               <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900">{value}</p>
-              <p className="truncate text-[11px] text-slate-400">{sub}</p>
+              <p className="text-[11px] leading-tight text-slate-400">{sub}</p>
             </div>
           ))}
         </div>
@@ -554,10 +554,10 @@ export function CallDashboardTv() {
       {data?.weekly ? (() => {
         const ws = data.weekly.weeks; const w = data.weekly.totals ?? ws[ws.length - 1];
         const head = data.weekly.totals?.title ?? `This week to date ${w.label}`;
-        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-base font-bold tabular-nums sm:text-lg xl:text-3xl">{v}</p>{sub ? <p className="truncate text-[10px] text-slate-500 xl:text-base">{sub}</p> : null}</div>);
+        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-lg font-bold tabular-nums xl:text-3xl">{v}</p>{sub ? <p className="text-[10px] leading-tight text-slate-500 xl:text-base">{sub}</p> : null}</div>);
         return (
-          <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(9,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
-            <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-10 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
+          <div className="grid shrink-0 grid-cols-2 items-start gap-x-4 gap-y-3 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-[repeat(9,minmax(0,1fr))_minmax(0,2.2fr)] xl:items-end xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
+            <p className="col-span-full text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
             {cell('Invoiced', usd(w.invoiced))}
             {cell('Paid on invoices', usd(w.paid), `issued ${w.label}`)}
             {cell('Cash collected', usd(w.cash), `received ${w.label}`)}
@@ -567,7 +567,7 @@ export function CallDashboardTv() {
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
             {cell('Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0}/${w.quotesSent ?? 0} quotes`)}
             {cell('Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0}/${w.calls} real leads`)}
-            <div className="col-span-2 mt-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
+            <div className="col-span-full mt-2 min-w-0 xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>
         );
       })() : null}
