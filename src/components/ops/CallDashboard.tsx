@@ -491,7 +491,7 @@ function BigTile({ label, range, value, sub, accent, spark, delta, delay }: { la
 
 export function CallDashboardTv() {
   const [view, setView] = useState<'since' | 'month'>('since');
-  const { data, error } = useDashboard('since', 60_000);
+  const { data, error } = useDashboard(view, 60_000);
   const tv = data?.tv;
   const tt = data?.totals;
   const s = data?.series ?? [];
@@ -502,8 +502,7 @@ export function CallDashboardTv() {
   const pt = (o: Intl.DateTimeFormatOptions) => new Date(now).toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', ...o });
   const monthRange = `${pt({ month: 'short' })} 1–${pt({ day: 'numeric' })}`;
   const sinceRange = 'Since Sep 18';
-  const showSince = view === 'since' && !!tt;
-  const mainRange = sinceRange; void monthRange; // money tiles always use the shared ROAS window
+  const mainRange = view === 'month' ? `This month · ${monthRange}` : sinceRange; // every period number follows the toggle (API range)
   const ro = data?.roas ?? null;
   const mainRev = ro ? { invoiced: ro.newOnly.invoiced, paid: ro.newOnly.paid } : null; // one strict new-customer source; '—' on failure
   const wk = data?.adSplit?.week;
@@ -545,7 +544,7 @@ export function CallDashboardTv() {
           <BigTile delay={200} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={s.filter((d) => !data?.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} />
           <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '240ms' }}>
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
-            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'ROAS (new customers)' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
+            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">ROAS (new customers)<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
             <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={ro?.newOnly.multipleInvoiced ?? null} label="invoiced ÷ spend" /></div>
             {ro ? <p className="text-sm text-slate-400 xl:text-xl">Blended (all callers) <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
           </div>

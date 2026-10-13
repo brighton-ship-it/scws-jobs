@@ -201,7 +201,7 @@ function adClosing(input: WeeklyInput, startKey: string, endKey: string, floorKe
   return { pump: mk('pump'), drilling: mk('drilling') };
 }
 
-const RANGE_NAMES: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
+const RANGE_NAMES: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18', month: 'This month' };
 export const rangeTitle = (range: string, startKey: string, endKey: string) => `${RANGE_NAMES[range] ?? 'Selected range'}: ${md(startKey)}–${md(endKey)}`;
 
 /** Oldest PT date key the loaders must cover: the 9-week chart window or the selected range, whichever is earlier. */

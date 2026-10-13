@@ -168,7 +168,7 @@ export async function GET(request: NextRequest) {
       });
       dash.roas = buildRoasView({ invoices, adCalls: adsCalls, spend, start: new Date(dash.revenueStart), now: nowD });
       // Campaign cards use the same calculation, window and spend as the ROAS card / funnel.
-      const RN: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
+      const RN: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18', month: 'This month' };
       const wk = ptWeekStart(nowD);
       const shared = buildSharedAdSplit({
         invoices, adCalls: adsCalls, booked: dash.bookedCredited ?? [], spend, now: nowD,

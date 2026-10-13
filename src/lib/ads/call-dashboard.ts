@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 
 export const DASH_FLOOR_ISO = '2026-09-18T07:00:00.000Z'; // Sep 18 2026 00:00 PT
 export const SHORT_CALL_SECONDS = 15;
-export type DashRange = '7' | '30' | '90' | 'since';
+export type DashRange = '7' | '30' | '90' | 'since' | 'month';
 
 export interface DashCall {
   started_at: string | null;
@@ -107,11 +107,12 @@ export function ptMonthStart(d: Date): Date {
 }
 
 export function parseRange(raw: string | null | undefined): DashRange {
-  return raw === '7' || raw === '30' || raw === '90' || raw === 'since' ? raw : 'since';
+  return raw === '7' || raw === '30' || raw === '90' || raw === 'since' || raw === 'month' ? raw : 'since';
 }
 
 export function rangeStart(range: DashRange, now: Date): Date {
   if (range === 'since') return new Date(DASH_FLOOR_ISO);
+  if (range === 'month') { const m = ptMonthStart(now); return m < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : m; }
   return ptStartOfDay(now, -(Number(range) - 1));
 }
 
