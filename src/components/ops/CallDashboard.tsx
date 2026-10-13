@@ -207,7 +207,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
       ))}
     </ul>
     <table className={`hidden w-full table-fixed text-left min-[769px]:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
-      <colgroup><col className="w-[22%]" /><col className="w-[31%]" /><col className="w-[16%]" /><col className="w-[17%]" /><col className="w-[14%]" /></colgroup>
+      <colgroup><col className="w-[19%]" /><col className="w-[28%]" /><col className="w-[14%]" /><col className="w-[26%]" /><col className="w-[13%]" /></colgroup>
       <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
       <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
         {list.length === 0 ? <tr><td colSpan={5} className={`px-3 py-6 text-center ${sub}`}>No calls yet</td></tr> : list.map((r, i) => (
