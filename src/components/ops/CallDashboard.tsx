@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { PhoneCallTranscripts } from './PhoneCallTranscripts';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
@@ -10,7 +10,7 @@ import {
 
 const KEY_STORAGE = 'quotes_gp_key';
 const RANGES = [
-  { v: '7', label: '7 days' }, { v: '30', label: '30 days' }, { v: '90', label: '90 days' }, { v: 'since', label: 'Since Sep 18' },
+  { v: '7', label: '7 days' }, { v: '30', label: '30 days' }, { v: '90', label: '90 days' }, { v: 'since', label: 'Since Sep 18' }, { v: 'month', label: 'This month' },
 ] as const;
 
 const when = (iso: string | null) =>
@@ -21,31 +21,41 @@ const clock = (iso: string | null | undefined) =>
 type Live = { generatedAt?: string };
 
 function useDashboard(range: string, refreshMs: number | null) {
-  const [data, setData] = useState<Dashboard | null>(null);
+  // One cached payload per period. A response only ever lands in its own period's slot, and the page shows
+  // the selected period's payload only, so switching the toggle never shows the other period's numbers.
+  const [byRange, setByRange] = useState<Record<string, Dashboard>>({});
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const current = useRef(range);
+  current.current = range;
+  const inFlight = useRef<Record<string, boolean>>({});
   const load = useCallback(async () => {
+    const r = range;
+    if (inFlight.current[r]) return; // never stack requests (keeps Jobber load flat while a cold load runs)
+    inFlight.current[r] = true;
     try {
       const url = new URL(window.location.href);
       const q = url.searchParams.get(QUOTES_GP_KEY_QUERY);
       if (q) { try { localStorage.setItem(KEY_STORAGE, q); } catch {} }
       let key = q; try { key = key || localStorage.getItem(KEY_STORAGE); } catch {}
-      const res = await fetch(`/api/ops/call-dashboard?range=${range}`, {
+      const res = await fetch(`/api/ops/call-dashboard?range=${r}`, {
         headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store',
       });
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
-      setData(await res.json()); setError(null);
-    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to load'); }
-    finally { setLoading(false); }
+      const json = await res.json();
+      setByRange((m) => ({ ...m, [r]: json }));
+      if (current.current === r) setError(null);
+    } catch (e) { if (current.current === r) setError(e instanceof Error ? e.message : 'Failed to load'); }
+    finally { inFlight.current[r] = false; if (current.current === r) setLoading(false); }
   }, [range]);
   useEffect(() => {
-    setLoading(true);
+    setLoading(true); setError(null);
     load();
     if (!refreshMs) return;
     const t = setInterval(load, refreshMs);
     return () => clearInterval(t);
   }, [load, refreshMs]);
-  return { data, error, loading, reload: load };
+  return { data: byRange[range] ?? null, error, loading, reload: load };
 }
 
 function useNow(ms = 1000) {
@@ -527,6 +537,7 @@ export function CallDashboardTv() {
           <p className="order-first shrink-0 text-2xl font-bold tabular-nums sm:order-last xl:text-5xl">{clockStr}</p>
         </div>
       </div>
+      {!data && !error ? <p className="text-sm text-slate-400 xl:text-xl" aria-live="polite">Loading {view === 'month' ? 'this month' : 'since Sep 18'} numbers…</p> : null}
       {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
       {tv ? (
         <div className="grid shrink-0 grid-cols-2 gap-2.5 sm:grid-cols-4 sm:gap-3 xl:gap-4">
