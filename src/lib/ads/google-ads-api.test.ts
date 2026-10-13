@@ -72,6 +72,8 @@ describe('offline upload request', () => {
         clientSecret: 'secret',
         refreshToken: 'refresh',
         dataManagerRefreshToken: 'refresh',
+        dataManagerClientId: 'id',
+        dataManagerClientSecret: 'secret',
         customerId: '123',
         loginCustomerId: null,
         apiVersion: 'v18',

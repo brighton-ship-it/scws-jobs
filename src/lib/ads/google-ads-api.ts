@@ -68,6 +68,9 @@ export interface GoogleAdsConfig {
   conversionAction: string | null;
   /** Token with the datamanager scope for offline uploads; falls back to refreshToken. */
   dataManagerRefreshToken: string;
+  /** OAuth client that issued dataManagerRefreshToken; falls back to clientId/clientSecret. */
+  dataManagerClientId: string;
+  dataManagerClientSecret: string;
 }
 
 export function googleAdsConfig(env: Record<string, string | undefined> = process.env): GoogleAdsConfig | null {
@@ -89,6 +92,8 @@ export function googleAdsConfig(env: Record<string, string | undefined> = proces
     apiVersion: env.GOOGLE_ADS_API_VERSION?.trim() || DEFAULT_GOOGLE_ADS_API_VERSION,
     conversionAction: env.GOOGLE_ADS_OFFLINE_CONVERSION_ACTION?.trim() || null,
     dataManagerRefreshToken: env.GOOGLE_DATAMANAGER_REFRESH_TOKEN?.trim() || refreshToken,
+    dataManagerClientId: env.GOOGLE_DATAMANAGER_CLIENT_ID?.trim() || clientId,
+    dataManagerClientSecret: env.GOOGLE_DATAMANAGER_CLIENT_SECRET?.trim() || clientSecret,
   };
 }
 
