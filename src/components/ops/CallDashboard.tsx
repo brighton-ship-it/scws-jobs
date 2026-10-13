@@ -350,27 +350,39 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
           ))}
         </div>
         {cats ? (
-          <div className="min-w-0 overflow-x-auto lg:col-span-3">
-            <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Drilling vs pump · {span}</p>
-            <table className="w-full text-left text-xs tabular-nums">
-              <thead><tr className="text-[10px] uppercase tracking-wider text-slate-400"><th className="py-1 pr-2 font-semibold">Type</th><th className="py-1 pr-2 text-right font-semibold">Quotes sent</th><th className="py-1 pr-2 text-right font-semibold">Approved</th><th className="py-1 pr-2 text-right font-semibold">Jobs booked</th><th className="py-1 pr-2 text-right font-semibold">Invoiced</th><th className="py-1 pr-2 text-right font-semibold">Last full week</th><th className="py-1 pr-2 text-right font-semibold">Call to booking (real leads)</th><th className="py-1 text-right font-semibold">Quote close</th></tr></thead>
-              <tbody className="divide-y divide-slate-100">
-                {CATS.map(([k, label]) => {
-                  const c = cats[k];
-                  const ac = k === 'service_call' ? null : cab?.[k];
-                  return (
-                    <tr key={k}><td className="py-1 pr-2 font-medium text-slate-700">{label}</td>
-                      <td className="py-1 pr-2 text-right">{c.quotesSent} · {compactUsd(c.quotesSentValue)}</td>
-                      <td className="py-1 pr-2 text-right">{c.quotesApproved} · {compactUsd(c.quotesApprovedValue)}</td>
-                      <td className="py-1 pr-2 text-right">{c.jobsBooked}</td>
-                      <td className="py-1 pr-2 text-right">{usd(c.invoiced)}</td>
-                      <td className="py-1 pr-2 text-right">{lwc ? usd(lwc[k].invoiced) : '—'}</td>
-                      <td className="py-1 pr-2 text-right" title="new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)">{ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—'}</td>
-                      <td className="py-1 text-right" title="quotes approved ÷ quotes sent, by count">{c.quotesSent ? `${pct(c.quotesApproved / c.quotesSent)} (${c.quotesApproved}/${c.quotesSent})` : '—'}</td></tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="min-w-0 lg:col-span-3">
+            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">By type · {span}</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {CATS.map(([k, label]) => {
+                const c = cats[k];
+                const ac = k === 'service_call' ? null : cab?.[k];
+                const accent = k === 'drilling' ? 'border-amber-400' : k === 'pump' ? 'border-sky-500' : 'border-violet-500';
+                const svc = k === 'service_call';
+                const lines: Array<[string, string, string?]> = svc ? [
+                  ['Completed', String(c.jobsCompleted ?? 0)],
+                  ['Invoiced', usd(c.invoiced), `${c.invoiceCount} invoices`],
+                  ['Last full week', lwc ? `${lwc[k].jobsBooked} booked` : '—'],
+                ] : [
+                  ['Jobs booked', String(c.jobsBooked)],
+                  ['Quotes sent', `${c.quotesSent} · ${compactUsd(c.quotesSentValue)}`],
+                  ['Quote close', c.quotesSent ? `${pct(c.quotesApproved / c.quotesSent)} (${c.quotesApproved}/${c.quotesSent})` : '—', 'quotes approved ÷ quotes sent, by count'],
+                  ['Call to booking', ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—', 'new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)'],
+                  ['Last full week', lwc ? usd(lwc[k].invoiced) : '—'],
+                ];
+                return (
+                  <section key={k} className={`min-w-0 rounded-xl border border-slate-100 border-l-4 ${accent} bg-white px-3 py-2.5 shadow-sm`}>
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+                    <p className="whitespace-nowrap text-2xl font-extrabold tabular-nums text-slate-900">{svc ? c.jobsBooked : usd(c.invoiced)}</p>
+                    <p className="text-[11px] text-slate-400">{svc ? 'service-call jobs booked' : `invoiced · ${c.invoiceCount} invoices`}</p>
+                    <dl className="mt-2 space-y-1 text-xs">
+                      {lines.map(([l, v, h]) => (
+                        <div key={l} className="flex items-baseline justify-between gap-2" title={h}><dt className="text-slate-500">{l}</dt><dd className="whitespace-nowrap font-semibold tabular-nums text-slate-800">{v}</dd></div>
+                      ))}
+                    </dl>
+                  </section>
+                );
+              })}
+            </div>
           </div>
         ) : null}
         <div className="min-w-0 lg:col-span-2"><p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Invoiced (bar) · paid on those invoices (teal)</p><WeeklyBars weeks={weekly.weeks} /><p className="mb-0.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cash collected by payment date</p><WeeklyCashBars weeks={weekly.weeks} /></div>

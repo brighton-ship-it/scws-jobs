@@ -40,6 +40,8 @@ export interface WeekRow {
 export interface CategoryRow {
   quotesSent: number; quotesSentValue: number; quotesApproved: number; quotesApprovedValue: number;
   invoiced: number; invoiceCount: number; jobsBooked: number;
+  /** Jobs of this type completed in the range (Jobber completedAt). */
+  jobsCompleted?: number;
 }
 export interface AdClosing { calls: number; booked: number; closingRate: number | null }
 /** Headline totals over the dashboard's selected date range (same definitions as a week row). */
@@ -186,6 +188,7 @@ export function categoryTotals(input: WeeklyInput, startKey: string, endKey: str
     r.invoiced = round(r.invoiced + pre); r.invoiceCount += 1;
   }
   for (const j of input.jobsCreated ?? []) if (inR(jobberDateKey(j.createdAt))) out[workCategory(j.title)].jobsBooked += 1;
+  for (const j of input.jobsCompleted ?? []) if (inR(jobberDateKey(j.completedAt))) { const r = out[workCategory(j.title)]; r.jobsCompleted = (r.jobsCompleted ?? 0) + 1; }
   return out;
 }
 
