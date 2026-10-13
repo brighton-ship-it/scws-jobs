@@ -158,7 +158,7 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
   if (!claim.data?.length) return { skipped: 'locked' };
   const report: Record<string, unknown> = {};
   try {
-    const { data: states } = await db.from('jobber_sync_state').select('key, cursor, done, last_success_at');
+    const { data: states } = await db.from('jobber_sync_state').select('key, cursor, done, last_success_at, last_error');
     const st = new Map<string, any>((states ?? []).map((s: any) => [s.key, s]));
     // 1) Backfills (resumable).
     for (const f of BACKFILL_FIELDS) {
@@ -166,7 +166,13 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
       if (s?.done) continue;
       let cursor: string | null = s?.cursor ?? null; let n = 0;
       while (left() > 60_000) {
-        const p = await page(f, backfillFilter(f), cursor);
+        let p;
+        try { p = await page(f, backfillFilter(f), cursor); }
+        catch (e) {
+          // Timesheets are hidden from this Jobber app (permissions): skip them; metrics falls back to live (same '—' as before).
+          if (f === 'timeSheetEntries' && /permission|hidden/i.test(e instanceof Error ? e.message : '')) { await setState(db, key, { cursor: null, done: true, last_error: 'permission' }); cursor = null; break; }
+          throw e;
+        }
         n += await store(db, f, p.nodes);
         cursor = p.next;
         await setState(db, key, { cursor, done: !cursor, ...(cursor ? {} : { last_success_at: new Date().toISOString() }) });
@@ -183,6 +189,7 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
       let n = 0; let complete = true;
       for (const t of rollingTasks(now, wide)) {
         let cursor: string | null = null;
+        if (t.field === 'timeSheetEntries' && st.get('backfill:timeSheetEntries')?.last_error === 'permission') continue;
         do {
           if (left() < 15_000) { complete = false; break; }
           const p = await page(t.field, t.filter, cursor);

@@ -7,6 +7,7 @@ import { createServiceClient } from '../supabase/service.ts';
 import { BACKFILL_FIELDS } from './sync.ts';
 
 const STALE_MS = 40 * 60_000;
+let tsBlocked = false;
 let stateMemo: { at: number; v: { ready: boolean; asOf: string | null } } | null = null;
 const db = () => { try { return createServiceClient() as any; } catch { return null; } };
 const digits10 = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
@@ -17,9 +18,10 @@ export async function mirrorState(): Promise<{ ready: boolean; asOf: string | nu
   let v = { ready: false, asOf: null as string | null };
   try {
     const c = db(); if (!c) return v;
-    const { data, error } = await c.from('jobber_sync_state').select('key, done, last_success_at');
+    const { data, error } = await c.from('jobber_sync_state').select('key, done, last_success_at, last_error');
     if (!error) {
       const m = new Map<string, any>((data ?? []).map((r: any) => [r.key, r]));
+      tsBlocked = m.get('backfill:timeSheetEntries')?.last_error === 'permission';
       const asOf = m.get('rolling')?.last_success_at ?? null;
       const ready = BACKFILL_FIELDS.every((f) => m.get(`backfill:${f}`)?.done) && !!asOf && Date.now() - Date.parse(asOf) < STALE_MS;
       v = { ready, asOf };
@@ -99,7 +101,7 @@ export async function mirrorJobs(by: 'created_at' | 'completed_at', from: string
 }
 
 export async function mirrorTimesheets(from: string, to: string): Promise<any[] | null> {
-  if (!(await mirrorState()).ready) return null;
+  if (!(await mirrorState()).ready || tsBlocked) return null;
   const rows = await all((c) => c.from('jobber_timesheets').select('data').gte('start_at', from).lt('start_at', to).order('start_at').order('id'));
   return rows ? rows.map((r) => r.data) : null;
 }
