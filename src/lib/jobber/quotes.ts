@@ -447,6 +447,41 @@ export async function searchClients(
   return (result.data?.clients?.nodes || []) as JobberClient[];
 }
 
+/**
+ * Phone lookup used by the ads-calls cron. CLIENT_SEARCH pulls quotes and
+ * properties and is expensive enough to hit Jobber's query-cost throttle.
+ * A 10-digit term also misses the client search index; the receptionist
+ * lookup searches the last 7 digits with this lighter selection.
+ */
+const CLIENT_BY_PHONE = `
+  query ClientByPhone($searchTerm: String!) {
+    clients(searchTerm: $searchTerm, first: 10) {
+      nodes {
+        id
+        name
+        phones { number }
+      }
+    }
+  }
+`;
+
+export function jobberPhoneSearchTerm(phone: string): string {
+  const digits = phone.replace(/\D/g, '');
+  const national = digits.length >= 10 ? digits.slice(-10) : digits;
+  return national.slice(-7);
+}
+
+export async function searchClientsByPhone(
+  phone: string,
+  deps?: JobberDeps
+): Promise<JobberClient[]> {
+  const term = jobberPhoneSearchTerm(phone);
+  if (term.length < 7) return [];
+  const result = await graphql(CLIENT_BY_PHONE, { searchTerm: term }, deps);
+  assertNoJobberErrors(result, 'clients');
+  return (result.data?.clients?.nodes || []) as JobberClient[];
+}
+
 export function normalizeStreet(value: string | null | undefined): string {
   return (value || '')
     .toLowerCase()
