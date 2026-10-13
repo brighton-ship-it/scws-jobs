@@ -8,7 +8,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
 import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
-import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
+import { loadWeeklyInvoices, loadWindowQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
 import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from '@/lib/ads/real-leads';
 import { digits10 } from '@/lib/ads/call-dashboard';
@@ -130,7 +130,7 @@ export async function GET(request: NextRequest) {
       const to = new Date(Date.now() + 86400_000).toISOString();
       const slack = new Date(winStart.getTime() - 60 * 86400_000).toISOString();
       let [invoices, quotes, jobsCreated, jobsCompleted, payments] = await Promise.all([
-        loadWeeklyInvoices(from, to), loadWeeklyQuotes(slack, to), loadWeeklyJobsCreated(from, to), loadWeeklyJobsCompleted(from, to), loadWeeklyPayments(from, to),
+        loadWeeklyInvoices(from, to), loadWindowQuotes(slack, to), loadWeeklyJobsCreated(from, to), loadWeeklyJobsCompleted(from, to), loadWeeklyPayments(from, to),
       ]);
       if (!invoices) invoices = await sharedInvoices(from, to); // Vercel data cache shared across instances (last good pull)
       else void rememberInvoices(from, invoices);

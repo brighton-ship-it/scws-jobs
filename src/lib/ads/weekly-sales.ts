@@ -1,7 +1,7 @@
 /** Weekly sales rollup for the ops call dashboard (pure; Jobber loaders live in weekly-sales-data.ts). */
 import { ptDateKey, ptStartOfDay, ptWeekStart, DASH_FLOOR_ISO } from './call-dashboard.ts';
 import { invoicePretaxUsd, isIssuedInvoice, type InvoiceAmountInput } from './invoice-value.ts';
-import { workCategory, WORK_CATEGORIES, WORK_CATEGORY_RULE, type WorkCategory } from './work-category.ts';
+import { workCategory, isSiteVisit, WORK_CATEGORIES, WORK_CATEGORY_RULE, type WorkCategory } from './work-category.ts';
 
 export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
 
@@ -42,6 +42,8 @@ export interface CategoryRow {
   invoiced: number; invoiceCount: number; jobsBooked: number;
   /** Jobs of this type completed in the range (Jobber completedAt). */
   jobsCompleted?: number;
+  /** Site walks / site visits created in the range (estimate visits; excluded from jobsBooked/jobsCompleted). */
+  siteVisits?: number;
 }
 export interface AdClosing { calls: number; booked: number; closingRate: number | null }
 /** Headline totals over the dashboard's selected date range (same definitions as a week row). */
@@ -144,6 +146,8 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
     w.cashCount = (w.cashCount ?? 0) + 1;
   }
   for (const q of input.quotes ?? []) {
+    // Service-call quotes ($200 diagnostic, auto-created) are shown in their own card, never in headline quote counts/dollars.
+    if (workCategory(q.title) === 'service_call') continue;
     const val = q.amounts?.subtotal ?? q.amounts?.total ?? 0;
     const sent = at(jobberDateKey(q.sentAt));
     if (sent) {
@@ -167,7 +171,7 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
   for (const t of input.bookedAt) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.bookedCalls = (w.bookedCalls ?? 0) + 1; }
 }
 
-const emptyCat = (): CategoryRow => ({ quotesSent: 0, quotesSentValue: 0, quotesApproved: 0, quotesApprovedValue: 0, invoiced: 0, invoiceCount: 0, jobsBooked: 0 });
+const emptyCat = (): CategoryRow => ({ quotesSent: 0, quotesSentValue: 0, quotesApproved: 0, quotesApprovedValue: 0, invoiced: 0, invoiceCount: 0, jobsBooked: 0, siteVisits: 0 });
 export const invoiceTitle = (inv: WeeklyInvoice) => inv.jobs?.nodes?.find((j) => j?.title)?.title ?? null;
 
 /** Drilling / pump / service-call split over inclusive PT date keys. Same definitions as the headline row. */
@@ -187,8 +191,8 @@ export function categoryTotals(input: WeeklyInput, startKey: string, endKey: str
     const r = out[workCategory(invoiceTitle(inv))];
     r.invoiced = round(r.invoiced + pre); r.invoiceCount += 1;
   }
-  for (const j of input.jobsCreated ?? []) if (inR(jobberDateKey(j.createdAt))) out[workCategory(j.title)].jobsBooked += 1;
-  for (const j of input.jobsCompleted ?? []) if (inR(jobberDateKey(j.completedAt))) { const r = out[workCategory(j.title)]; r.jobsCompleted = (r.jobsCompleted ?? 0) + 1; }
+  for (const j of input.jobsCreated ?? []) if (inR(jobberDateKey(j.createdAt))) { const r = out[workCategory(j.title)]; if (isSiteVisit(j.title)) r.siteVisits = (r.siteVisits ?? 0) + 1; else r.jobsBooked += 1; }
+  for (const j of input.jobsCompleted ?? []) if (inR(jobberDateKey(j.completedAt)) && !isSiteVisit(j.title)) { const r = out[workCategory(j.title)]; r.jobsCompleted = (r.jobsCompleted ?? 0) + 1; }
   return out;
 }
 
@@ -259,7 +263,7 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
       'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals.',
       WORK_CATEGORY_RULE,
-      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date). Call to booking (real leads) = new-customer bookings ÷ real new leads in the range: Google Ads + Mike calls since Sep 18, one lead per caller (dated by their first call), excluding spam/robocalls/solicitors/vendors, hang-ups and short calls never reached, repeat calls, missed calls later reached, existing customers (Jobber job before their first call) and staff numbers. Any caller with a new booking always counts as a lead. New customer = no Jobber job before their first call.',
+      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date, so a quote sent before the range but approved in it counts as approved only). Headline quote counts and dollars exclude service-call quotes. Call to booking (real leads) = new-customer bookings ÷ real new leads in the range: Google Ads + Mike calls since Sep 18, one lead per caller (dated by their first call), excluding spam/robocalls/solicitors/vendors, hang-ups and short calls never reached, repeat calls, missed calls later reached, existing customers (Jobber job before their first call) and staff numbers. Any caller with a new booking always counts as a lead. New customer = no Jobber job before their first call.',
       `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ real new leads, since ${md(floorKey)} (tracking start). Drilling vs pump: a lead's type is its booking's campaign, else its first Google Ads call's campaign; Mike-only leads count in the total only. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
   };

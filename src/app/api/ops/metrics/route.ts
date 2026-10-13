@@ -10,6 +10,7 @@ import { DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { loadDailySpend } from '@/lib/ads/call-dashboard-data';
 import { loadWeeklyInvoices, loadWeeklyQuotes } from '@/lib/ads/weekly-sales-data';
 import { buildRoasView } from '@/lib/ads/roas-view';
+import { isOwnNumber } from '@/lib/ads/real-leads';
 import { loadHistoryInvoices, loadCompletedJobCosts, loadTimesheets } from '@/lib/ads/metrics-data';
 import { buildMetrics } from '@/lib/ads/metrics';
 import { mirrorState } from '@/lib/jobber-mirror/read';
@@ -65,7 +66,8 @@ async function computeMetrics(debug: boolean) {
     let sinceInv = await loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow);
     for (let i = 0; !sinceInv && i < 3; i++) { await new Promise((r) => setTimeout(r, 6000)); sinceInv = await loadWeeklyInvoices(DASH_FLOOR_ISO, tomorrow); } // Jobber cost throttle
     const [calls, spend, quotes, costs, time, qbo] = await Promise.all([
-      db.from('ads_calls').select('started_at, caller_phone, campaign_name').gte('started_at', DASH_FLOOR_ISO).order('started_at', { ascending: false }).limit(5000),
+      // Same call set as the calls dashboard ROAS card (95 days of ad calls, SCWS's own numbers excluded) so CAC uses the same new customers.
+      db.from('ads_calls').select('started_at, caller_phone, campaign_name').gte('started_at', new Date(now.getTime() - 95 * DAY).toISOString()).order('started_at', { ascending: false }).limit(5000),
       loadDailySpend(now),
       loadWeeklyQuotes(quotesFrom.toISOString(), tomorrow),
       loadCompletedJobCosts(costFrom.toISOString(), tomorrow),
@@ -73,7 +75,7 @@ async function computeMetrics(debug: boolean) {
       db.from('quickbooks_connections').select('id').limit(1),
     ]);
     const history = await loadHistoryInvoices(histFrom.toISOString(), tomorrow);
-    const roasSince = calls.error ? null : buildRoasView({ invoices: sinceInv, adCalls: calls.data ?? [], spend, start: new Date(DASH_FLOOR_ISO), now });
+    const roasSince = calls.error ? null : buildRoasView({ invoices: sinceInv, adCalls: (calls.data ?? []).filter((c: { caller_phone: string | null }) => !isOwnNumber(c.caller_phone)), spend, start: new Date(DASH_FLOOR_ISO), now });
     const cards = buildMetrics({
       now, histFrom, history, roasSince, sinceLabel: 'Since Sep 18, 2026', quotes, quotesFrom, costs, costFrom, time, timeFrom,
       qboConnected: !qbo.error && (qbo.data ?? []).length > 0,

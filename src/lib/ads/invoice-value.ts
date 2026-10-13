@@ -10,6 +10,8 @@ export interface InvoiceAmountInput {
     subtotal?: number | null;
     total?: number | null;
     taxAmount?: number | null;
+    /** Jobber subtotal is BEFORE the invoice discount; pre-tax revenue = subtotal − discountAmount. */
+    discountAmount?: number | null;
   } | null;
 }
 
@@ -23,7 +25,9 @@ export function invoicePretaxUsd(invoice: InvoiceAmountInput): number | null {
   if (!isIssuedInvoice(invoice)) return null;
   const subtotal = invoice.amounts?.subtotal;
   if (typeof subtotal === 'number' && Number.isFinite(subtotal) && subtotal > 0) {
-    return Math.round(subtotal * 100) / 100;
+    const disc = invoice.amounts?.discountAmount;
+    const net = subtotal - (typeof disc === 'number' && Number.isFinite(disc) && disc > 0 ? disc : 0);
+    return net > 0 ? Math.round(net * 100) / 100 : null;
   }
   const total = invoice.amounts?.total;
   const tax = invoice.amounts?.taxAmount;
