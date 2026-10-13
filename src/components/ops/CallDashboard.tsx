@@ -127,7 +127,7 @@ function Kpi({ label, range, hint, value, sub, spark, color, delta, delay }: { l
       {range ? <p className="text-[10px] font-medium text-slate-400">{range}</p> : null}
       <p className="mt-1 text-[1.75rem] font-bold leading-tight tracking-tight tabular-nums text-slate-900">{value}</p>
       <div className="mt-1 min-h-[20px]">{delta}</div>
-      <p className="mt-0.5 min-h-[16px] truncate text-xs text-slate-500">{sub}</p>
+      <p className="mt-0.5 min-h-[16px] text-xs leading-snug text-slate-500">{sub}</p>
       <div className="mt-auto pt-2">{spark ? <Sparkline values={spark} color={color} /> : <div className="h-9" />}</div>
     </div>
   );
@@ -260,19 +260,19 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
   const mut = dark ? 'text-slate-500' : 'text-slate-500';
   const box = dark ? 'border-slate-800 bg-slate-950/50' : 'border-slate-200 bg-slate-50/60';
   return (
-    <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
+    <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">
       {([split.since, split.week] as const).map((win) => (
         <div key={win.label} className="min-w-0 space-y-2">
           <p className={`text-[10px] font-semibold uppercase tracking-wider ${mut} ${dark ? 'xl:text-base' : ''}`}>{win.label}</p>
           {win.rows.map((r) => (
             <div key={r.category} className={`min-w-0 rounded-xl border p-3 ${box}`}>
               <div className="flex items-baseline justify-between gap-2">
-                <p className={`truncate text-xs font-semibold ${ink} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
+                <p className={`min-w-0 text-xs font-semibold leading-tight ${ink} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
                 <p className={`shrink-0 text-2xl font-extrabold tabular-nums ${ink} ${dark ? 'xl:text-4xl' : ''}`} title="ROAS (new customers) = new-customer invoiced ÷ spend">{r.multipleNew === undefined ? '—' : mult(r.multipleNew)}<span className="ml-1 text-[10px] font-medium text-slate-400 xl:text-sm">ROAS (new customers)</span>{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
               </div>
-              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 min-[480px]:grid-cols-4">
                 {([['Spend', usd(r.spend)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)]] as const).map(([k, v]) => (
-                  <div key={k} className="min-w-0"><dt className={`truncate text-[11px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
+                  <div key={k} className="min-w-0"><dt className={`text-[11px] uppercase leading-tight tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
                 ))}
               </dl>
               <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}{r.leads != null ? <span title="new booked ÷ real new leads (one per caller; junk, repeat and existing customers excluded)"> · Call to booking (real leads) {r.leads ? `${pct(Math.min(1, r.booked / r.leads))} (${r.booked}/${r.leads})` : '—'}</span> : null}</p>
