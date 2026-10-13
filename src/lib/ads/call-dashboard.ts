@@ -554,7 +554,8 @@ export function buildDashboard(input: {
         invoiced: callsN ? round(invoicedValue / callsN) : null,
       },
       spend,
-      costPerCall: spend != null && callsN ? round(spend / callsN) : null,
+      // Ad spend ÷ Google Ads calls over the SAME days as the spend (Mike calls are not paid calls).
+      costPerCall: (() => { const n = callsAll.filter((c) => !c.live && adCategory(c.campaign_name) && inRange(c.started_at, revStart)).length; return spend != null && n ? round(spend / n) : null; })(),
       costPerBooked: spend != null && fJobs.length ? round(spend / fJobs.length) : null,
       multipleInvoiced: ratio(invoicedValue, spend),
       multiplePaid: paidValue == null ? null : ratio(paidValue, spend),
