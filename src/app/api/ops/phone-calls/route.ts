@@ -19,8 +19,11 @@ export async function GET(request: NextRequest) {
     const { data, error } = await db.from('inbound_call_recordings')
       .select('call_sid, started_at, caller_number, source, dial_status, answered, duration_seconds, processing_status, transcript, summary, outcome, caller_name, needs_followup, jobber_client_id, processing_error')
       .order('started_at', { ascending: false }).limit(25);
+    // (test traffic filtered below unless ?tests=1)
     if (error) return finish(NextResponse.json({ calls: [], note: error.message }));
-    return finish(NextResponse.json({ calls: data ?? [] }));
+    const tests = new URL(request.url).searchParams.get("tests") === '1';
+    const isTest = (r: any) => r.source === 'test' || ['+17608237963', '+18773863995'].includes(r.caller_number);
+    return finish(NextResponse.json({ calls: (data ?? []).filter((r: any) => tests || !isTest(r)) }));
   } catch {
     return finish(NextResponse.json({ error: 'Failed to load' }, { status: 500 }));
   }
