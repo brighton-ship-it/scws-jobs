@@ -4,9 +4,10 @@ import { workCategory } from './work-category.ts';
 import { ptDateKey, type RoasView } from './call-dashboard.ts';
 import type { HistInvoice, CostJob, TimeEntry } from './metrics-data.ts';
 import type { WeeklyQuote } from './weekly-sales.ts';
+import { mergeFullHistory, summarize, nrrWindow, type QboHistory } from './ltv-full.ts';
 
-export interface MetricRow { label: string; value: string; note?: string }
-export interface MetricCard { id: string; title: string; value: string; sub?: string; rows?: MetricRow[]; measures: string; source: string; range: string; needs?: string }
+export interface MetricRow { label: string; value: string; note?: string; hover?: string }
+export interface MetricCard { id: string; title: string; value: string; sub?: string; rows?: MetricRow[]; measures: string; source: string; range: string; needs?: string; hover?: string; badge?: string }
 
 const usd = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
 const pct = (n: number) => `${Math.round(n * 1000) / 10}%`;
@@ -43,6 +44,7 @@ export function buildMetrics(input: {
   costs: { rows: CostJob[] | null; error?: string }; costFrom: Date;
   time: { rows: TimeEntry[] | null; error?: string }; timeFrom: Date;
   qboConnected: boolean;
+  qbo?: QboHistory | null; // static pre-Jobber QuickBooks sales (Oct 2020 – Feb 2025)
 }): MetricCard[] {
   const today = ptDateKey(input.now);
   const inv = input.history.rows;
@@ -54,18 +56,27 @@ export function buildMetrics(input: {
   const histNeeds = inv ? undefined : `needs Jobber invoice history (load failed: ${input.history.error ?? 'unknown'})`;
   const trunc = input.history.truncated ? ' Warning: Jobber page cap hit, some invoices may be missing.' : '';
 
-  // 1) LTV
-  const ltv = inv ? lifetimeValue(inv) : null;
+  // 1) LTV — full history: QuickBooks (Oct 2020 – Feb 2025) + Jobber
+  const FULL = 'QuickBooks Oct 2020–Feb 2025 + Jobber';
+  const full = inv && input.qbo ? mergeFullHistory(input.qbo, inv as any) : null;
+  const sA = full ? summarize(full.customers) : null;
+  const sP = full ? summarize(full.customers.filter((c) => c.dept === 'pump')) : null;
+  const sD = full ? summarize(full.customers.filter((c) => c.dept === 'drilling')) : null;
+  const fullRange = `Oct 3, 2020 – ${md(today)} (QuickBooks sales Oct 2020–Feb 2025, then Jobber invoices)`;
+  const ltv = sA ? { overall: sA.avg, pump: sP!.avg, drilling: sD!.avg } : null;
+  const both = full ? summarize(full.customers.filter((c) => c.source === 'both')) : null;
   cards.push({
-    id: 'ltv', title: 'Customer lifetime value',
-    value: ltv?.overall != null ? usd(ltv.overall) : NA,
-    sub: ltv ? `${ltv.clients.toLocaleString()} customers · ${usd(ltv.revenue)} invoiced` : undefined,
-    rows: ltv ? [
-      { label: 'Pump & service', value: ltv.pump != null ? usd(ltv.pump) : NA, note: `${ltv.pumpClients} customers` },
-      { label: 'Drilling', value: ltv.drilling != null ? usd(ltv.drilling) : NA, note: `${ltv.drillClients} customers` },
+    id: 'ltv', title: 'Customer lifetime value', badge: FULL,
+    value: sA?.avg != null ? usd(sA.avg) : NA,
+    sub: sA ? `${sA.n.toLocaleString()} customers · ${usd(sA.total)} pre-tax since Oct 2020` : undefined,
+    rows: sA ? [
+      { label: 'Pump & service', value: sP!.avg != null ? usd(sP!.avg) : NA, note: `${sP!.n.toLocaleString()} customers · median ${usd(sP!.median ?? 0)}` },
+      { label: 'Drilling', value: sD!.avg != null ? usd(sD!.avg) : NA, note: `${sD!.n} customers · median ${usd(sD!.median ?? 0)}` },
     ] : undefined,
-    measures: 'Average pre-tax revenue invoiced per customer over the window (actual history, not a projection). Pump/drilling = that customer\'s invoices of that type, by job title.' + trunc,
-    source: 'Jobber invoices (not draft/void), pre-tax subtotal, grouped by Jobber client.', range: histRange, needs: histNeeds,
+    hover: both ? `Customers in both QuickBooks and Jobber: ${both.n}, avg ${usd(both.avg ?? 0)}` : undefined,
+    measures: 'Average pre-tax revenue per customer across the whole business history (actual, not a projection). A customer is drilling if any of their work was drilling, otherwise pump & service. QuickBooks and Jobber customers are matched by exact name, so a few spelling variants are counted twice (slightly understates LTV).' + trunc,
+    source: `${FULL}: QuickBooks Sales by Customer Detail (pre-tax, static snapshot) + live Jobber invoices (not draft/void, subtotal − discount). QuickBooks invoices dated Feb 25–28, 2025 that also appear in Jobber (same amount within 3 days) are dropped.${full ? ` ${full.matched} QuickBooks customers matched to Jobber; ${full.droppedDupes} duplicate invoices dropped.` : ''}`,
+    range: fullRange, needs: histNeeds ?? (input.qbo ? undefined : 'needs the QuickBooks history file'),
   });
 
   // 8) CAC by channel (strict new-customer rule)
@@ -99,8 +110,8 @@ export function buildMetrics(input: {
       { label: 'Pump & service', value: ratio(ltv?.pump, cacPump), note: ltv?.pump != null && cacPump != null ? `${usd(ltv.pump)} ÷ ${usd(cacPump)}` : undefined },
       { label: 'Drilling', value: ratio(ltv?.drilling, cacDrill), note: cacDrill == null ? 'no new drilling customers invoiced yet, so CAC is undefined' : undefined },
     ],
-    measures: 'Customer lifetime value (card 1) ÷ Google Ads CAC (card 8). Above 3:1 is the usual rule of thumb. Mixes a long LTV window with a short CAC window, so read it as directional.',
-    source: 'Cards 1 and 8.', range: `LTV: ${histRange}. CAC: ${input.sinceLabel}.`,
+    measures: 'Customer lifetime value (card 1) ÷ Google Ads CAC (card 8). Above 3:1 is the usual rule of thumb. Mixes a full-history LTV with a short CAC window, so read it as directional.',
+    source: `Cards 1 (${FULL}) and 8.`, range: `LTV: Oct 2020 – ${md(today)}. CAC: ${input.sinceLabel}.`, badge: FULL,
     needs: ltv?.overall == null || cacAll == null ? 'needs both LTV and CAC' : undefined,
   });
 
@@ -171,43 +182,29 @@ export function buildMetrics(input: {
   }
   cards.push(cy);
 
-  // 7) Repeat purchase rate
-  const rp: MetricCard = { id: 'repeat', title: 'Repeat purchase rate', value: NA, measures: 'Share of customers invoiced in the window who came back: invoiced again at least 60 days after an earlier invoice. The 60-day gap keeps a $200 service call plus the repair it led to from counting as a repeat.' + trunc, source: 'Jobber invoices (not draft/void), grouped by client.', range: histRange, needs: histNeeds };
-  if (inv) {
-    const span = new Map<string, { a: number; b: number }>(); const catBy = { pump: new Set<string>(), drilling: new Set<string>() };
-    for (const i of inv) { const t = Date.parse(i.issuedDate || ''); if (!invoicePretaxUsd(i) || !i.client?.id || !Number.isFinite(t)) continue; const x = span.get(i.client.id); span.set(i.client.id, { a: Math.min(x?.a ?? t, t), b: Math.max(x?.b ?? t, t) }); catBy[cat2(i.jobs?.nodes?.[0]?.title)].add(i.client.id); }
-    const jobsBy = { get: (id: string) => { const x = span.get(id); return { size: x && x.b - x.a >= 60 * DAY ? 2 : 1 }; }, keys: () => span.keys() };
-    const rate = (ids: string[]) => { const rep = ids.filter((id) => (jobsBy.get(id)?.size ?? 0) >= 2).length; return { rep, n: ids.length, v: ids.length ? pct(rep / ids.length) : NA }; };
-    const a = rate(Array.from(jobsBy.keys())), p = rate(Array.from(catBy.pump)), d = rate(Array.from(catBy.drilling));
-    rp.value = a.v; rp.sub = `${a.rep} of ${a.n} customers`;
-    rp.rows = [{ label: 'Pump & service customers', value: p.v, note: `${p.rep} of ${p.n}` }, { label: 'Drilling customers', value: d.v, note: `${d.rep} of ${d.n}` }];
+  // 7) Repeat purchase rate — full history
+  const rp: MetricCard = { id: 'repeat', title: 'Repeat purchase rate', value: NA, badge: FULL, measures: 'Share of all customers since Oct 2020 who came back: bought again at least 60 days after an earlier purchase. The 60-day gap keeps a $200 service call plus the repair it led to from counting as a repeat.' + trunc, source: `${FULL}, grouped by customer (same merge as card 1).`, range: fullRange, needs: card1Needs() };
+  if (sA) {
+    rp.value = pct(sA.repeatRate ?? 0); rp.sub = `${sA.repeat60.toLocaleString()} of ${sA.n.toLocaleString()} customers`;
+    rp.rows = [{ label: 'Pump & service customers', value: pct(sP!.repeatRate ?? 0), note: `${sP!.repeat60} of ${sP!.n.toLocaleString()}` }, { label: 'Drilling customers', value: pct(sD!.repeatRate ?? 0), note: `${sD!.repeat60} of ${sD!.n}` }];
   }
   cards.push(rp);
 
-  // 9) Net revenue retention
-  const nowT = input.now.getTime(); const yrAgo = nowT - 365 * DAY; const twoAgo = nowT - 730 * DAY;
-  const nr: MetricCard = { id: 'nrr', title: 'Net revenue retention', value: NA, measures: 'Revenue this year from customers who bought last year ÷ what those same customers spent last year. Over 100% = existing customers are spending more.', source: 'Jobber invoices (not draft/void), pre-tax, grouped by client.', range: `Last year: ${md(ptDateKey(new Date(twoAgo)))} – ${md(ptDateKey(new Date(yrAgo)))}; this year: ${md(ptDateKey(new Date(yrAgo)))} – ${md(today)}`, needs: histNeeds };
-  if (inv) {
-    if (histStart.getTime() > twoAgo + 7 * DAY) nr.needs = `needs 24 months of invoice history: Jobber invoices only go back to ${md(ptDateKey(histStart))}, so last year is only partly in Jobber. Comparing a partial year with a full one would understate retention. Older invoices (QuickBooks / pre-Jobber) would fill it in; this card turns on by itself around Mar 2027.`;
-    else {
-      const base = new Map<string, { v: number; c: Cat }>(); const cur = new Map<string, number>();
-      for (const i of inv) {
-        const pre = invoicePretaxUsd(i); const cid = i.client?.id; const t = Date.parse(i.issuedDate || '');
-        if (!pre || !cid || !Number.isFinite(t)) continue;
-        if (t >= twoAgo && t < yrAgo) { const b = base.get(cid); base.set(cid, { v: (b?.v ?? 0) + pre, c: b?.c === 'drilling' || cat2(i.jobs?.nodes?.[0]?.title) === 'drilling' ? 'drilling' : 'pump' }); }
-        else if (t >= yrAgo) cur.set(cid, (cur.get(cid) ?? 0) + pre);
-      }
-      const calc = (c: Cat | null) => { let b = 0, n = 0, k = 0; base.forEach((x, id) => { if (c && x.c !== c) return; b += x.v; n += cur.get(id) ?? 0; k++; }); return { b, n, k, v: b > 0 ? pct(n / b) : NA }; };
-      const a = calc(null), p = calc('pump'), d = calc('drilling');
-      if (a.b < 1000) nr.needs = 'needs more Jobber history: almost no invoices in the base year';
-      else {
-        nr.value = a.v; nr.sub = `${a.k} customers: ${usd(a.b)} last year → ${usd(a.n)} this year`;
-        nr.rows = [{ label: 'Pump & service', value: p.v, note: `${usd(p.b)} → ${usd(p.n)}` }, { label: 'Drilling (any drilling job last year)', value: d.v, note: `${usd(d.b)} → ${usd(d.n)}` }];
-      }
-    }
+  // 9) Net revenue retention — trailing 12 months vs the 12 before, full history
+  const ymd = (k: string, dy: number) => `${Number(k.slice(0, 4)) - dy}${k.slice(4)}`;
+  const nr: MetricCard = { id: 'nrr', title: 'Net revenue retention', value: NA, badge: FULL, measures: 'What last year\'s customers spent this year ÷ what they spent last year (same customers). Over 100% = existing customers spend more. Emergency pump and one-off drilling work naturally runs low; watch the trend.', source: `${FULL}, pre-tax, grouped by customer (same merge as card 1).`, range: `Last year: ${md(ymd(today, 2))} – ${md(ymd(today, 1))}; this year: ${md(ymd(today, 1))} – ${md(today)}`, needs: card1Needs() };
+  if (full) {
+    const w = (k: number, d?: 'pump' | 'drilling') => nrrWindow(full, ymd(today, k + 1), ymd(today, k), ymd(today, k - 1), d);
+    const a = w(1), p = w(1, 'pump'), d = w(1, 'drilling');
+    nr.value = a.nrr != null ? pct(a.nrr) : NA;
+    nr.sub = `${a.customers} customers: ${usd(a.prior)} last year → ${usd(a.next)} this year · ${pct(a.customers ? a.retained / a.customers : 0)} bought again`;
+    nr.rows = [{ label: 'Pump & service', value: p.nrr != null ? pct(p.nrr) : NA, note: `${usd(p.prior)} → ${usd(p.next)}` }, { label: 'Drilling', value: d.nrr != null ? pct(d.nrr) : NA, note: `${usd(d.prior)} → ${usd(d.next)}` }];
+    const prior: string[] = [];
+    for (let k = 2; ymd(today, k + 1) >= '2020-10-03'; k++) { const x = w(k); if (x.nrr != null) prior.push(`${ymd(today, k).slice(0, 4)}→${ymd(today, k - 1).slice(0, 4)}: ${pct(x.nrr)} (${x.customers} customers)`); }
+    if (prior.length) { nr.hover = `Prior years (same dates, 12 months → next 12): ${prior.join(' · ')}` }
   }
   cards.push(nr);
-
+  function card1Needs() { return histNeeds ?? (input.qbo ? undefined : 'needs the QuickBooks history file'); }
   const order = ['ltv', 'ltv-cac', 'margin', 'ftf', 'util', 'cycle', 'repeat', 'cac', 'nrr'];
   return order.map((id) => cards.find((c) => c.id === id)!);
 }

@@ -35,10 +35,10 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
   }
 }
 
-export interface HistInvoice { id: string; invoiceStatus?: string | null; issuedDate?: string | null; amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null } | null; client?: { id?: string | null } | null; jobs?: { nodes?: Array<{ id?: string | null; title?: string | null }> | null } | null }
+export interface HistInvoice { id: string; invoiceStatus?: string | null; issuedDate?: string | null; subject?: string | null; amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; discountAmount?: number | null } | null; client?: { id?: string | null; name?: string | null; companyName?: string | null } | null; jobs?: { nodes?: Array<{ id?: string | null; title?: string | null }> | null } | null }
 const HIST_INVOICES = `query MetricsInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
   invoices(first: $first, after: $after, filter: $filter) {
-    nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount } client { id } jobs(first: 1) { nodes { id title } } }
+    nodes { id invoiceStatus issuedDate subject amounts { subtotal total taxAmount discountAmount } client { id name companyName } jobs(first: 1) { nodes { id title } } }
     pageInfo { hasNextPage endCursor } } }`;
 
 /** Invoices issued between from and to, fetched in parallel quarter-sized chunks. */

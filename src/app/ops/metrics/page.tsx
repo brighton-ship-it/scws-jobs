@@ -51,13 +51,14 @@ export default function MetricsPage() {
         {(cards ?? []).map((c) => (
           <section key={c.id} className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{c.title}</h3>
-            <div className={`mt-1 text-3xl font-bold ${c.value === '—' ? 'text-slate-300' : 'text-slate-900'}`}>{c.value}</div>
+            {c.badge ? <p className="mt-0.5 text-[10px] font-medium text-emerald-700">{c.badge}</p> : null}
+            <div title={c.hover} className={`mt-1 text-3xl font-bold ${c.value === '—' ? 'text-slate-300' : 'text-slate-900'} ${c.hover ? 'cursor-help' : ''}`}><span className={c.hover ? 'underline decoration-slate-300 decoration-dotted underline-offset-4' : ''}>{c.value}</span></div>
             {c.sub ? <p className="text-xs text-slate-500">{c.sub}</p> : null}
             {c.needs ? <p className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-900"><b>Needs:</b> {c.needs.replace(/^needs\s*/i, '')}</p> : null}
             {c.rows?.length ? (
               <dl className="mt-3 divide-y divide-slate-100 text-sm">
                 {c.rows.map((r) => (
-                  <div key={r.label} className="flex items-baseline justify-between gap-3 py-1.5">
+                  <div key={r.label} title={r.hover} className="flex items-baseline justify-between gap-3 py-1.5">
                     <dt className="min-w-0 text-slate-600">{r.label}{r.note ? <span className="block text-[11px] text-slate-400">{r.note}</span> : null}</dt>
                     <dd className="shrink-0 font-semibold tabular-nums">{r.value}</dd>
                   </div>
