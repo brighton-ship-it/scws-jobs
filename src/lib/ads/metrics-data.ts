@@ -1,4 +1,5 @@
 /** Jobber loaders for /ops/metrics. Each loader fails independently ({ rows: null, error }) and is cached 30 min. */
+import { unstable_cache } from 'next/cache';
 import { assertNoJobberErrors, jobberGraphql } from '../jobber/client.ts';
 
 const TTL_MS = 30 * 60_000;
@@ -44,12 +45,24 @@ const HIST_INVOICES = `query MetricsInvoices($first: Int!, $after: String, $filt
 /** Invoices issued between from and to, fetched in parallel quarter-sized chunks. */
 export async function loadHistoryInvoices(fromIso: string, toIso: string): Promise<Loaded<HistInvoice>> {
   const chunks: Array<[string, string]> = [];
-  let a = new Date(fromIso);
+  // Calendar-quarter boundaries (UTC) so chunk cache keys are stable from one request to the next.
+  const f = new Date(fromIso);
+  let a = new Date(Date.UTC(f.getUTCFullYear(), Math.floor(f.getUTCMonth() / 3) * 3, 1));
   const end = new Date(toIso);
-  while (a < end) { const b = new Date(Math.min(a.getTime() + 91 * 86400_000, end.getTime())); chunks.push([a.toISOString(), b.toISOString()]); a = b; }
+  while (a < end) { const q = new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth() + 3, 1)); const b = q < end ? q : end; chunks.push([a.toISOString(), b.toISOString()]); a = b; }
   // Sequential: parallel chunks trip Jobber's query-cost throttle (and starve the call dashboard).
   const parts: Loaded<HistInvoice>[] = [];
-  for (const [x, y] of chunks) parts.push(await paged<HistInvoice>(`hinv|${x.slice(0, 10)}|${y.slice(0, 10)}`, HIST_INVOICES, 'invoices', { filter: { issuedDate: { after: x, before: y } } }, 40, 50));
+  // Closed quarters (ending 14+ days ago) are kept in Vercel's shared Data Cache for 12 h, so a pull that times out under
+  // Jobber throttling still banks the chunks it finished and the next request picks up where it left off.
+  for (const [x, y] of chunks) {
+    const k = `hinv|${x.slice(0, 10)}|${y.slice(0, 10)}`;
+    const pull = () => paged<HistInvoice>(k, HIST_INVOICES, 'invoices', { filter: { issuedDate: { after: x, before: y } } }, 40, 50);
+    if (Date.parse(y) < Date.now() - 14 * 86400_000) {
+      try {
+        parts.push(await unstable_cache(async () => { const r = await pull(); if (!r.rows) throw new Error(r.error || 'load failed'); return r; }, ['ops-metrics-hinv-v2', x.slice(0, 10), y.slice(0, 10)], { revalidate: 43200 })());
+      } catch (e) { parts.push({ rows: null, error: e instanceof Error ? e.message.slice(0, 200) : 'error' }); }
+    } else parts.push(await pull());
+  }
   const bad = parts.find((p) => !p.rows);
   if (bad) return { rows: null, error: bad.error };
   const seen = new Set<string>(); const rows: HistInvoice[] = [];
