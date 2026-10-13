@@ -134,7 +134,7 @@ export async function GET(request: NextRequest) {
       if (!invoices) invoices = await sharedInvoices(from, to); // Vercel data cache shared across instances (last good pull)
       else void rememberInvoices(from, invoices);
       // After the Jobber revenue pulls (never in parallel, so it cannot throttle them). Cached per phone; small budget per load.
-      const firstJobAt = await loadFirstJobByPhone(leadPhones, invoices ? 20_000 : 0).catch(() => new Map<string, number | null>());
+      const firstJobAt = await loadFirstJobByPhone(leadPhones, invoices && quotes && jobsCreated ? 8_000 : 0).catch(() => new Map<string, number | null>());
       const booked = new Map<string, any>();
       for (const b of dash.bookedCredited ?? []) if (b.phone && !booked.has(b.phone)) booked.set(b.phone, b.cat);
       const leadCalls: LeadCall[] = allSince.map((c) => {

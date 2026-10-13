@@ -1,3 +1,4 @@
+import { unstable_cache } from 'next/cache';
 /** Server-side loaders for the call dashboard, with small in-memory caches. */
 import {
   googleAdsConfig, googleAdsSearch, refreshGoogleAccessToken, searchResultRows, costMicrosToUsd,
@@ -125,16 +126,20 @@ export async function loadFirstJobByPhone(phones: string[], budgetMs = 60_000, c
     else if (cached?.has(p)) out.set(p, cached.get(p)!);
     else todo.push(p);
   }
-  for (let i = 0; i < todo.length && Date.now() - t0 < budgetMs; i += 2) {
-    await Promise.all(todo.slice(i, i + 2).map(async (p) => {
+  for (let i = 0; i < todo.length && Date.now() - t0 < budgetMs; i += 1) {
+    await Promise.all(todo.slice(i, i + 1).map(async (p) => {
       try {
-        const res = await jobberGraphql(CLIENT_BY_PHONE, { q: p });
-        assertNoJobberErrors(res, 'dashboard client by phone');
-        let first: number | null = null;
-        for (const c of res.data?.clients?.nodes ?? []) {
-          if (!(c?.phones ?? []).some((x: any) => digits(x?.number) === p)) continue;
-          for (const j of c?.jobs?.nodes ?? []) { const t = Date.parse(j?.createdAt || ''); if (Number.isFinite(t) && (first == null || t < first)) first = t; }
-        }
+        // Shared Vercel data cache (all instances): each phone hits Jobber at most once per 6 h.
+        const first = await unstable_cache(async () => {
+          const res = await jobberGraphql(CLIENT_BY_PHONE, { q: p });
+          assertNoJobberErrors(res, 'dashboard client by phone'); // throws => not cached
+          let f: number | null = null;
+          for (const c of res.data?.clients?.nodes ?? []) {
+            if (!(c?.phones ?? []).some((x: any) => digits(x?.number) === p)) continue;
+            for (const j of c?.jobs?.nodes ?? []) { const t = Date.parse(j?.createdAt || ''); if (Number.isFinite(t) && (f == null || t < f)) f = t; }
+          }
+          return f;
+        }, ['dash-firstjob-v1', p], { revalidate: 21600 })();
         out.set(p, first); firstJobCache.set(p, { at: Date.now(), v: first });
       } catch { /* unknown */ }
     }));
@@ -153,6 +158,12 @@ const JOBS_CREATED_LIVE = `
 export interface LiveJob { id: string; jobNumber: number | null; createdAt: string; phones: string[]; clientJobTimes: number[] }
 /** Jobber jobs created since `after` (live; the offline-conversion table only refreshes nightly). */
 export async function loadJobsCreatedSince(after: string): Promise<LiveJob[] | null> {
+  // Shared across instances for 10 min so dashboard refreshes don't each re-pull Jobber.
+  const bucket = Math.floor(Date.now() / 600_000);
+  try { return await unstable_cache(async () => { const r = await loadJobsCreatedSinceRaw(after); if (!r) throw new Error('live jobs failed'); return r; }, ['dash-livejobs-v1', after, String(bucket)], { revalidate: 600 })(); }
+  catch { return null; }
+}
+async function loadJobsCreatedSinceRaw(after: string): Promise<LiveJob[] | null> {
   try {
     const out: LiveJob[] = []; let cursor: string | null = null;
     for (let i = 0; i < 15; i++) {
