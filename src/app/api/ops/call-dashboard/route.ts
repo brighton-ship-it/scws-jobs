@@ -76,13 +76,13 @@ export async function GET(request: NextRequest) {
       const d = digits10(r.phone); if (d) (mikeByPhone.get(d) ?? mikeByPhone.set(d, []).get(d)!).push({ t: Date.parse(r.called_at), s });
     }
     const leadPhones = Array.from(new Set(allSince.map((c) => digits10(c.caller_phone)).filter((x): x is string => !!x)));
-    const firstJobP = loadFirstJobByPhone(leadPhones, 70_000).catch(() => new Map<string, number | null>());
     // Booked today / this week (TV + header): the offline-conversion table refreshes only nightly (2:15 AM PT cron),
     // so today's bookings were always 0. Add Jobber jobs created this week, credited with the same rules:
     // a call (ad or Mike) from the client's phone before the job, and no Jobber job before their first call.
     if (dash.tv) {
       const nowB = new Date(); const wkB = ptWeekStart(nowB); const todayB = ptStartOfDay(nowB).getTime();
       const live = await loadJobsCreatedSince(wkB.toISOString());
+      if (!live) notes.push('Booked today/this week: live Jobber job pull failed, showing nightly-uploaded bookings only.');
       if (live) {
         const callsByPhone = new Map<string, number[]>();
         for (const c of [...adsCalls, ...liveCalls]) { const d = digits10(c.caller_phone); const t = Date.parse(c.started_at || ''); if (d && Number.isFinite(t)) (callsByPhone.get(d) ?? callsByPhone.set(d, []).get(d)!).push(t); }
@@ -132,7 +132,8 @@ export async function GET(request: NextRequest) {
       ]);
       if (!invoices) invoices = await sharedInvoices(from, to); // Vercel data cache shared across instances (last good pull)
       else void rememberInvoices(from, invoices);
-      const firstJobAt = await firstJobP;
+      // After the Jobber revenue pulls (never in parallel, so it cannot throttle them). Cached per phone; small budget per load.
+      const firstJobAt = await loadFirstJobByPhone(leadPhones, invoices ? 20_000 : 0).catch(() => new Map<string, number | null>());
       const booked = new Map<string, any>();
       for (const b of dash.bookedCredited ?? []) if (b.phone && !booked.has(b.phone)) booked.set(b.phone, b.cat);
       const leadCalls: LeadCall[] = allSince.map((c) => {
@@ -155,6 +156,7 @@ export async function GET(request: NextRequest) {
         excluded: Object.entries(LEAD_REASON_LABEL).map(([k, label]) => ({ reason: k, label, count: excluded[k] ?? 0 })),
         unresolvedExisting: rl.unresolvedExisting,
       };
+      if (rl.unresolvedExisting) dash.gaps.push(`Real leads: ${rl.unresolvedExisting} callers not yet checked against Jobber for earlier jobs (lookup fills in over the next few refreshes); they count as leads until checked.`);
       const allCalls = rl.leads.map((l) => ({ started_at: l.at, live: !l.cat, campaign_name: l.cat }));
       dash.weekly = buildWeeklySales({
         now: nowD, invoices, quotes, jobsCreated, jobsCompleted, payments,
