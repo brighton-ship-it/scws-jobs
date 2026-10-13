@@ -174,13 +174,17 @@ type FeedRow = NonNullable<Dashboard['callFeed']>[number];
 const fmtDur = (s: number | null) => (s == null ? '—' : s >= 60 ? `${Math.floor(s / 60)}m ${String(Math.round(s % 60)).padStart(2, '0')}s` : `${Math.round(s)}s`);
 const ptDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
 const feedTime = (iso: string) => { const d = new Date(iso); const t = d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' }); return ptDay(d) === ptDay(new Date()) ? t : `${d.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric' })}, ${t}`; };
-function OutcomePill({ o, dark = false }: { o: string; dark?: boolean }) {
+// Google Voice answerer (email local part) -> staff first name. Unknown answerers show their recorded id, never a guess.
+const STAFF_BY_ANSWERER: Record<string, string> = { lizbeth: 'Liz', liz: 'Liz', shanicey: 'Shanicey', brighton: 'Brighton' };
+const answererName = (a: string | null | undefined) => { if (!a) return null; const k = a.toLowerCase(); return STAFF_BY_ANSWERER[k] ?? a.charAt(0).toUpperCase() + a.slice(1); };
+function OutcomePill({ o, by, dark = false }: { o: string; by?: string | null; dark?: boolean }) {
+  const who = o === 'Answered' ? answererName(by) : null;
   const c = o === 'Booked' ? (dark ? 'bg-emerald-500 text-emerald-950' : 'bg-emerald-600 text-white')
     : o === 'Missed' ? (dark ? 'bg-rose-500 text-white' : 'bg-rose-600 text-white')
     : o === 'Voicemail' ? (dark ? 'bg-amber-400 text-amber-950' : 'bg-amber-500 text-white')
     : o.startsWith('Mike') ? (dark ? 'bg-sky-400 text-sky-950' : 'bg-sky-600 text-white')
     : (dark ? 'bg-slate-200 text-slate-900' : 'bg-slate-700 text-white');
-  return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{o}</span>;
+  return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{who ? `${o} · ${who}` : o}</span>;
 }
 export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; dark?: boolean; max?: number }) {
   const list = max ? rows.slice(0, max) : rows;
@@ -194,10 +198,10 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
         <li key={i} className={`px-4 py-3 ${r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}`}>
           <div className="flex items-center justify-between gap-3">
             <span className={`whitespace-nowrap text-sm tabular-nums ${sub}`}>{feedTime(r.at)} · {fmtDur(r.durationSeconds)}</span>
-            <span className="shrink-0 text-sm"><OutcomePill o={r.outcome} dark={dark} /></span>
+            <span className="shrink-0 text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} /></span>
           </div>
           <div className={`mt-1 break-words text-base font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
-          <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}{r.answeredBy ? ` · ${r.answeredBy}` : ''}</div>
+          <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}</div>
           {r.summary ? <div className={`mt-1 text-sm ${sub}`}>{r.summary}</div> : null}
         </li>
       ))}
@@ -214,8 +218,8 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
               {r.name ? <div className={`truncate text-sm ${sub}`}>{r.phone}</div> : null}
               {r.summary ? <div className={`truncate text-sm ${sub}`} title={r.summary}>{r.summary}</div> : null}
             </td>
-            <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}{r.answeredBy ? <div className={`truncate text-sm font-normal ${sub}`}>{r.answeredBy}</div> : null}</td>
-            <td className="overflow-hidden px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} dark={dark} /></td>
+            <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}</td>
+            <td className="overflow-hidden px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} /></td>
             <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${ink}`}>{fmtDur(r.durationSeconds)}</td>
           </tr>
         ))}
@@ -421,6 +425,10 @@ function SourceCardsBlock({ cards, rangeLabel }: { cards: NonNullable<Dashboard[
 
 export function CallDashboardPage() {
   const [range, setRange] = useState<string>('since');
+  useEffect(() => { // honor ?range= (e.g. coming back from TV mode with its period)
+    const r = new URLSearchParams(window.location.search).get('range');
+    if (r && RANGES.some((x) => x.v === r)) setRange(r);
+  }, []);
   const { data, error, loading, reload } = useDashboard(range, 30_000);
   const t = data?.totals;
   const s = data?.series ?? [];
@@ -570,10 +578,13 @@ export function CallDashboardTv() {
           <div className="min-w-0"><h1 className="text-lg font-bold leading-tight tracking-tight sm:text-xl xl:text-4xl">SCWS Calls &amp; Ads</h1><p className="text-xs text-slate-400 xl:text-lg">{dateStr}</p></div>
         </div>
         <div className="flex w-full flex-wrap items-center justify-between gap-x-3 gap-y-2 sm:w-auto sm:flex-nowrap xl:gap-5">
+          <div className="flex items-center gap-2 xl:gap-3">
+          <a href={`/ops/calls?range=${view}`} aria-label="Back to dashboard" title="Back to dashboard" className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-slate-700 bg-slate-900 px-2.5 py-1 text-xs font-medium text-slate-300 transition-colors hover:bg-slate-800 hover:text-white xl:px-4 xl:py-1.5 xl:text-xl"><span aria-hidden>←</span><span className="hidden sm:inline">Back to dashboard</span><span className="sm:hidden">Dashboard</span></a>
           <div className="inline-flex rounded-full border border-slate-700 bg-slate-900 p-0.5 text-xs font-medium xl:text-xl" role="tablist" aria-label="Revenue range">
             {([['since', 'Since Sep 18'], ['month', 'This month']] as const).map(([v, l]) => (
               <button key={v} role="tab" aria-selected={view === v} onClick={() => setView(v)} className={`whitespace-nowrap rounded-full px-2.5 py-1 xl:px-4 xl:py-1.5 ${view === v ? 'bg-slate-100 text-slate-900' : 'text-slate-400'}`}>{l}</button>
             ))}
+          </div>
           </div>
           <LiveBadge dark at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={60_000} error={error} />
           <p className="order-first shrink-0 text-2xl font-bold tabular-nums sm:order-last xl:text-5xl">{clockStr}</p>
