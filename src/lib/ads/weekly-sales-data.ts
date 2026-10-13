@@ -50,14 +50,14 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
 const INVOICES = `
   query WeeklyInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
     invoices(first: $first, after: $after, filter: $filter) {
-      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
+      nodes { id invoiceStatus issuedDate subject amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
 const QUOTES = `
   query WeeklyQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) {
     quotes(first: $first, after: $after, filter: $filter) {
-      nodes { id title quoteStatus sentAt transitionedAt amounts { subtotal total } }
+      nodes { id title quoteStatus sentAt transitionedAt amounts { subtotal total discountAmount } }
       pageInfo { hasNextPage endCursor }
     }
   }`;

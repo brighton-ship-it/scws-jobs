@@ -6,11 +6,12 @@ import { workCategory, isSiteVisit, WORK_CATEGORIES, WORK_CATEGORY_RULE, type Wo
 export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
 
 export interface WeeklyInvoice extends InvoiceAmountInput {
+  subject?: string | null;
   amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; paymentsTotal?: number | null } | null;
   jobs?: { nodes?: Array<{ title?: string | null }> | null } | null;
   client?: { id?: string | null; createdAt?: string | null; phones?: Array<{ number?: string | null }> | null; jobs?: { nodes?: Array<{ createdAt?: string | null }> | null } | null } | null;
 }
-export interface WeeklyQuote { title?: string | null; quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null } | null }
+export interface WeeklyQuote { title?: string | null; quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null; discountAmount?: number | null } | null }
 export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null }
 export interface WeeklyJob { title?: string | null; createdAt?: string | null; completedAt?: string | null }
 
@@ -152,7 +153,7 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
   for (const q of input.quotes ?? []) {
     // Service-call quotes ($200 diagnostic, auto-created) are shown in their own card, never in headline quote counts/dollars.
     if (workCategory(q.title) === 'service_call') continue;
-    const val = q.amounts?.subtotal ?? q.amounts?.total ?? 0;
+    const val = quoteValue(q);
     const sent = at(jobberDateKey(q.sentAt));
     if (sent) {
       sent.quotesSent = (sent.quotesSent ?? 0) + 1;
@@ -177,7 +178,10 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
 }
 
 const emptyCat = (): CategoryRow => ({ quotesSentApproved: 0, quotesSent: 0, quotesSentValue: 0, quotesApproved: 0, quotesApprovedValue: 0, invoiced: 0, invoiceCount: 0, jobsBooked: 0, siteVisits: 0 });
-export const invoiceTitle = (inv: WeeklyInvoice) => inv.jobs?.nodes?.find((j) => j?.title)?.title ?? null;
+/** Category title for an invoice: its first job's title; invoices with no job (e.g. a drilling deposit) use the invoice subject. */
+export const invoiceTitle = (inv: WeeklyInvoice) => inv.jobs?.nodes?.find((j) => j?.title)?.title ?? inv.subject ?? null;
+/** Pre-tax quote dollars: Jobber quote subtotal is BEFORE the quote discount (same as invoices). */
+export const quoteValue = (q: WeeklyQuote) => { const s = q.amounts?.subtotal; if (typeof s === 'number' && Number.isFinite(s)) { const d = q.amounts?.discountAmount; return Math.max(0, Math.round((s - (typeof d === 'number' && d > 0 ? d : 0)) * 100) / 100); } return q.amounts?.total ?? 0; };
 
 /** Drilling / pump / service-call split over inclusive PT date keys. Same definitions as the headline row. */
 export function categoryTotals(input: WeeklyInput, startKey: string, endKey: string): Record<WorkCategory, CategoryRow> | null {
@@ -186,7 +190,7 @@ export function categoryTotals(input: WeeklyInput, startKey: string, endKey: str
   const inR = (k: string | null) => k != null && k >= startKey && k <= endKey;
   for (const q of input.quotes ?? []) {
     const r = out[workCategory(q.title)];
-    const val = q.amounts?.subtotal ?? q.amounts?.total ?? 0;
+    const val = quoteValue(q);
     if (inR(jobberDateKey(q.sentAt))) { r.quotesSent += 1; r.quotesSentValue = round(r.quotesSentValue + val); if (isApprovedStatus(q.quoteStatus)) r.quotesSentApproved = (r.quotesSentApproved ?? 0) + 1; }
     if (isApprovedStatus(q.quoteStatus) && q.sentAt && inR(jobberDateKey(q.transitionedAt))) { r.quotesApproved += 1; r.quotesApprovedValue = round(r.quotesApprovedValue + val); }
   }

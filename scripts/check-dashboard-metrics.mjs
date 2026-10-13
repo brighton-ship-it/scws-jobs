@@ -33,6 +33,33 @@ for (const range of ['since', 'month', '7', '30', '90']) {
   const adCalls = (d.byCampaign ?? []).filter((x) => x.spend != null && x.costPerCall).reduce((a, x) => a + Math.round(x.spend / x.costPerCall), 0);
   if (range === 'since' || range === 'month') eq(`${range} cost per ad call = spend ÷ ad calls`, d.totals.costPerCall, Math.round((r.spend / adCalls) * 100) / 100);
 }
+
+// Scenario checks: rebuild lead / booking / ROAS sets from the raw rows (?debug=sets) and compare with the page.
+for (const range of ['since', 'month', '7']) {
+  const d = await get(`/api/ops/call-dashboard?range=${range}&debug=sets`);
+  const g = d.debug;
+  if (!g) { fails.push(`${range}: debug=sets payload missing`); continue; }
+  const inR = g.calls.filter((c) => c.inRange);
+  eq(`${range} [raw] calls in range = realLeads.calls`, inR.length, d.realLeads.calls, 0);
+  const leadsR = g.leads.filter((l) => l.inRange);
+  eq(`${range} [raw] leads rebuilt = realLeads.leads`, leadsR.length, d.realLeads.leads, 0);
+  eq(`${range} [raw] reason=lead calls = leads`, inR.filter((c) => c.reason === 'lead').length, leadsR.length, 0);
+  for (const e of d.realLeads.excluded) eq(`${range} [raw] excluded ${e.reason}`, inR.filter((c) => c.reason === e.reason).length, e.count, 0);
+  eq(`${range} [raw] pump leads`, leadsR.filter((l) => l.cat === 'pump').length, d.realLeads.pump, 0);
+  eq(`${range} [raw] drilling leads`, leadsR.filter((l) => l.cat === 'drilling').length, d.realLeads.drilling, 0);
+  const leadPhones = new Set(g.leads.map((l) => l.phone));
+  eq(`${range} [raw] every credited booking phone is a real lead`, g.bookedCredited.filter((b) => b.phone && !leadPhones.has(b.phone)).length, 0, 0);
+  eq(`${range} [raw] no lead is an SCWS/staff number`, inR.filter((c) => c.reason === 'lead' && /^(7604408520|7607895955|7608237963|7604915348)$/.test(c.phone || '')).length, 0, 0);
+  // existing-customer rule: a lead never has a Jobber job before its first call (unless booked)
+  const bookedPhones = new Set(g.bookedCredited.map((b) => b.phone));
+  eq(`${range} [raw] no unbooked lead had a Jobber job before first call`, g.leads.filter((l) => !bookedPhones.has(l.phone) && g.firstJobAt[l.phone] && Date.parse(g.firstJobAt[l.phone]) < Date.parse(l.at)).length, 0, 0);
+  const ri = g.roasInvoices;
+  eq(`${range} [raw] ROAS blended $ = sum of attributed invoices`, d.roas.overall.invoiced, sum(ri.map((x) => x.pretax)));
+  eq(`${range} [raw] ROAS new $ = sum of new-customer invoices`, d.roas.newOnly.invoiced, sum(ri.filter((x) => x.isNew).map((x) => x.pretax)));
+  eq(`${range} [raw] ROAS new clients`, d.roas.newOnly.clients, new Set(ri.filter((x) => x.isNew).map((x) => x.clientId)).size, 0);
+  eq(`${range} [raw] new-customer invoices have no prior job`, ri.filter((x) => x.isNew && x.priorJobs > 0).length, 0, 0);
+  eq(`${range} [raw] attributed invoices come after an ad call`, ri.filter((x) => Date.parse(x.lastAdCallAt) > Date.parse(x.issuedDate) + 86400_000).length, 0, 0);
+}
 const since = await get('/api/ops/call-dashboard?range=since');
 const m = await get('/api/ops/metrics');
 const cac = m.cards.find((x) => x.id === 'cac');

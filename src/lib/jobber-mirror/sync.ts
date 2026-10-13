@@ -20,7 +20,7 @@ export const Q = {
     nodes { id jobNumber title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   quotes: `query MirQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) { quotes(first: $first, after: $after, filter: $filter) {
-    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total } }
+    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } }
     pageInfo { hasNextPage endCursor } } }`,
   paymentRecords: `query MirPay($first: Int!, $after: String, $filter: PaymentRecordFilterAttributes) { paymentRecords(first: $first, after: $after, filter: $filter) {
     nodes { id amount entryDate adjustmentType }
