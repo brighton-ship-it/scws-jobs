@@ -204,6 +204,22 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
       }
       report.rolling = { wide, rows: n, complete };
     }
+    // 3) Daily resumable re-sweep of ALL quotes: old quotes can be approved months after creation (e.g. #2235 created
+    //    Feb 2026, approved Oct 5), outside the 200-day rolling window. Cursor is saved so a short budget just resumes.
+    if (backfilled && left() > 45_000) {
+      const fq = st.get('rolling:quotes-full');
+      const due = opts.forceWide || !!fq?.cursor || Date.now() - (Date.parse(fq?.last_success_at || '') || 0) > 23 * 3600_000;
+      if (due) {
+        let cursor: string | null = fq?.cursor ?? null; let n = 0;
+        while (left() > 30_000) {
+          const p = await page('quotes', { createdAt: { after: BACKFILL_FROM } }, cursor);
+          n += await store(db, 'quotes', p.nodes); cursor = p.next;
+          await setState(db, 'rolling:quotes-full', { cursor, done: !cursor, ...(cursor ? {} : { last_success_at: new Date().toISOString() }) });
+          if (!cursor) break;
+        }
+        report.quotesFull = { rows: n, done: !cursor };
+      }
+    }
     return report;
   } catch (e) {
     const msg = e instanceof Error ? e.message.slice(0, 300) : 'error';

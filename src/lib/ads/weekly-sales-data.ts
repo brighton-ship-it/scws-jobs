@@ -50,7 +50,7 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
 const INVOICES = `
   query WeeklyInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
     invoices(first: $first, after: $after, filter: $filter) {
-      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
+      nodes { id invoiceStatus issuedDate amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
@@ -85,6 +85,10 @@ export const loadWeeklyInvoices = (after: string, before: string) => mirrorFirst
   paged<WeeklyInvoice>(`inv3|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } }));
 /** Quotes sent in the window may have been created earlier, so filter by created date with slack. */
 export const loadWeeklyQuotes = (createdAfter: string, createdBefore: string) => mirrorFirst<WeeklyQuote>(() => mirrorQuotes(createdAfter, createdBefore), () =>
+  paged<WeeklyQuote>(`q2|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES));
+/** Quotes for sent/approved counts in a window: a quote can be approved months after it was created (e.g. #2235 created
+ *  Feb 2026, approved Oct 5), so the mirror path reads every mirrored quote; the live fallback keeps the created-date slack. */
+export const loadWindowQuotes = (createdAfter: string, createdBefore: string) => mirrorFirst<WeeklyQuote>(() => mirrorQuotes('2025-01-01T00:00:00Z', createdBefore), () =>
   paged<WeeklyQuote>(`q2|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES));
 export const loadWeeklyJobsCreated = (after: string, before: string) => mirrorFirst<WeeklyJob>(() => mirrorJobs('created_at', after, before), () =>
   paged<WeeklyJob>(`jc2|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } }));

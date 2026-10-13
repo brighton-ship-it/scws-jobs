@@ -60,7 +60,8 @@ test('drilling/pump/service-call split and unsent converted quotes are not appro
   };
   const c = categoryTotals(input, '2026-10-05', '2026-10-09')!;
   assert.equal(c.drilling.quotesSentValue, 50000);
-  assert.equal(c.drilling.jobsBooked, 1);
+  assert.equal(c.drilling.jobsBooked, 0); // site walk = estimate visit, counted apart
+  assert.equal(c.drilling.siteVisits, 1);
   assert.equal(c.service_call.quotesApproved, 0);
   assert.equal(c.pump.quotesApproved, 1);
   const w = buildWeeklySales({ ...input, range: { range: '7', startKey: '2026-10-03', endKey: '2026-10-09', name: '7' } });

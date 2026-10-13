@@ -363,7 +363,7 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
                   ['Invoiced', usd(c.invoiced), `${c.invoiceCount} invoices`],
                   ['Last full week', lwc ? `${lwc[k].jobsBooked} booked` : '—'],
                 ] : [
-                  ['Jobs booked', String(c.jobsBooked)],
+                  ['Jobs booked', `${c.jobsBooked}${c.siteVisits ? ` +${c.siteVisits} site walk${c.siteVisits === 1 ? '' : 's'}` : ''}`, 'Jobber jobs created; site walks / site visits counted separately'],
                   ['Quotes sent', `${c.quotesSent} · ${compactUsd(c.quotesSentValue)}`],
                   ['Quote close', c.quotesSent ? `${pct(c.quotesApproved / c.quotesSent)} (${c.quotesApproved}/${c.quotesSent})` : '—', 'quotes approved ÷ quotes sent, by count'],
                   ['Call to booking', ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—', 'new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)'],
