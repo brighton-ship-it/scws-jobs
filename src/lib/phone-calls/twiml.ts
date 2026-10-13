@@ -36,3 +36,12 @@ export function buildVoicemailTwiml(baseUrl: string): string {
   <Say voice="Polly.Joanna">We did not get a message. Goodbye.</Say>
 </Response>`;
 }
+
+/** Hand the call to Mike (caller ID passes through: no callerId attr). Voicemail only if Mike also fails. */
+export function buildMikeTwiml(opts: { mike: string; baseUrl: string; line: string; notice?: boolean }): string {
+  const base = opts.baseUrl.replace(/\/$/, '');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>${opts.notice ? `\n  <Say voice="Polly.Joanna">${esc(RECORDING_NOTICE)}</Say>` : ''}
+  <Dial timeout="25" answerOnBridge="true" action="${esc(base)}/api/calls/inbound/status?line=${esc(opts.line)}&amp;stage=mike" method="POST"><Number>${esc(opts.mike)}</Number></Dial>
+</Response>`;
+}

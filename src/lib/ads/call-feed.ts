@@ -49,7 +49,7 @@ export function mergeCallFeed(input: {
   for (const r of input.recordings) {
     const t = Date.parse(r.started_at); if (!Number.isFinite(t)) continue;
     const answered = r.answered !== false && r.dial_status !== 'no-answer' && r.dial_status !== 'busy';
-    const o = r.outcome === 'booked' ? 'Booked' : !answered ? 'Missed' : r.outcome === 'voicemail_or_no_answer' && (r.duration_seconds ?? 0) < 20 ? 'Voicemail' : 'Answered';
+    const o = r.outcome === 'booked' ? 'Booked' : r.dial_status === 'mike-completed' ? 'Mike (AI)' : !answered ? 'Missed' : r.outcome === 'voicemail_or_no_answer' && (r.duration_seconds ?? 0) < 20 ? 'Voicemail' : 'Answered';
     rows.push({ at: r.started_at, name: r.caller_name ?? null, phone: formatPhone(r.caller_number), line: LINE_BY_SOURCE[r.source] ?? LINE_BY_NUMBER[digits10(r.tracking_number) ?? ''] ?? 'Tracking line',
       outcome: o, answeredBy: null, durationSeconds: r.duration_seconds ?? null, summary: firstLine(r.summary), _d: digits10(r.caller_number), _t: t });
   }

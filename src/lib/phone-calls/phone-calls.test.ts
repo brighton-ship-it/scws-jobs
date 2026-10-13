@@ -96,3 +96,9 @@ it('ported main/ransom lines', () => {
   assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', actionQuery: '?line=main' }), /status\?line=main"/);
   assert.match(buildVoicemailTwiml('https://x'), /<Record [^>]*inbound\/recording/);
 });
+
+import { buildMikeTwiml } from './twiml.ts';
+it('ported lines hand off to Mike with caller ID passthrough', () => {
+  const x = buildMikeTwiml({ mike: '+17604915348', baseUrl: 'https://x', line: 'main' });
+  assert.match(x, /<Number>\+17604915348<\/Number>/); assert.doesNotMatch(x, /callerId/); assert.match(x, /stage=mike/);
+});
