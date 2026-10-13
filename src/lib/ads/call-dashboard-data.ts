@@ -125,8 +125,8 @@ export async function loadFirstJobByPhone(phones: string[], budgetMs = 60_000, c
     else if (cached?.has(p)) out.set(p, cached.get(p)!);
     else todo.push(p);
   }
-  for (let i = 0; i < todo.length && Date.now() - t0 < budgetMs; i += 4) {
-    await Promise.all(todo.slice(i, i + 4).map(async (p) => {
+  for (let i = 0; i < todo.length && Date.now() - t0 < budgetMs; i += 2) {
+    await Promise.all(todo.slice(i, i + 2).map(async (p) => {
       try {
         const res = await jobberGraphql(CLIENT_BY_PHONE, { q: p });
         assertNoJobberErrors(res, 'dashboard client by phone');
@@ -143,9 +143,9 @@ export async function loadFirstJobByPhone(phones: string[], budgetMs = 60_000, c
 }
 
 const JOBS_CREATED_LIVE = `
-  query DashJobsCreatedLive($after: ISO8601DateTime!, $cursor: String) {
-    jobs(first: 50, after: $cursor, filter: { createdAt: { after: $after } }) {
-      nodes { id jobNumber createdAt client { phones { number } jobs(first: 25) { nodes { id createdAt } } } }
+  query DashJobsCreatedLive($filter: JobFilterAttributes, $cursor: String) {
+    jobs(first: 20, after: $cursor, filter: $filter) {
+      nodes { id jobNumber createdAt client { phones { number } jobs(first: 10) { nodes { id createdAt } } } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -155,8 +155,8 @@ export interface LiveJob { id: string; jobNumber: number | null; createdAt: stri
 export async function loadJobsCreatedSince(after: string): Promise<LiveJob[] | null> {
   try {
     const out: LiveJob[] = []; let cursor: string | null = null;
-    for (let i = 0; i < 6; i++) {
-      const res: any = await jobberGraphql(JOBS_CREATED_LIVE, { after, cursor });
+    for (let i = 0; i < 15; i++) {
+      const res: any = await jobberGraphql(JOBS_CREATED_LIVE, { filter: { createdAt: { after } }, cursor });
       assertNoJobberErrors(res, 'dashboard live jobs');
       for (const j of res.data?.jobs?.nodes ?? []) out.push({
         id: j.id, jobNumber: j.jobNumber ?? null, createdAt: j.createdAt,
@@ -166,5 +166,5 @@ export async function loadJobsCreatedSince(after: string): Promise<LiveJob[] | n
       const pi = res.data?.jobs?.pageInfo; if (!pi?.hasNextPage) break; cursor = pi.endCursor;
     }
     return out;
-  } catch { return null; }
+  } catch (e) { console.warn('[call-dashboard] live jobs failed:', e instanceof Error ? e.message : e); return null; }
 }
