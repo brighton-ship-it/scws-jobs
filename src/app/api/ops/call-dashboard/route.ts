@@ -9,7 +9,7 @@ import { authorizeOps } from '@/lib/ops-auth';
 import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
-import { loadDailySpend, loadJobMoney, loadFirstJobByPhone } from '@/lib/ads/call-dashboard-data';
+import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
 import { classifyRealLeads, LEAD_REASON_LABEL, type LeadCall } from '@/lib/ads/real-leads';
 import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
@@ -77,6 +77,34 @@ export async function GET(request: NextRequest) {
     }
     const leadPhones = Array.from(new Set(allSince.map((c) => digits10(c.caller_phone)).filter((x): x is string => !!x)));
     const firstJobP = loadFirstJobByPhone(leadPhones, 70_000).catch(() => new Map<string, number | null>());
+    // Booked today / this week (TV + header): the offline-conversion table refreshes only nightly (2:15 AM PT cron),
+    // so today's bookings were always 0. Add Jobber jobs created this week, credited with the same rules:
+    // a call (ad or Mike) from the client's phone before the job, and no Jobber job before their first call.
+    if (dash.tv) {
+      const nowB = new Date(); const wkB = ptWeekStart(nowB); const todayB = ptStartOfDay(nowB).getTime();
+      const live = await loadJobsCreatedSince(wkB.toISOString());
+      if (live) {
+        const callsByPhone = new Map<string, number[]>();
+        for (const c of [...adsCalls, ...liveCalls]) { const d = digits10(c.caller_phone); const t = Date.parse(c.started_at || ''); if (d && Number.isFinite(t)) (callsByPhone.get(d) ?? callsByPhone.set(d, []).get(d)!).push(t); }
+        const credited = new Set<string>(); const seenPhone = new Set<string>();
+        for (const j of [...live].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))) {
+          const at = Date.parse(j.createdAt);
+          const ts = j.phones.flatMap((p) => callsByPhone.get(p) ?? []);
+          if (!ts.some((t) => t <= at)) continue;
+          const first = Math.min(...ts);
+          if (j.clientJobTimes.some((t) => t < first)) continue; // existing customer
+          const key = j.phones.slice().sort().join(',');
+          if (seenPhone.has(key)) continue; // one booking per caller (matches funnel crediting)
+          seenPhone.add(key); credited.add(j.id);
+        }
+        const ids = new Set<string>(); const todayIds = new Set<string>(); const nums: Array<{ n: number | null; today: boolean }> = [];
+        for (const j of live) if (credited.has(j.id)) { ids.add(j.id); const td = Date.parse(j.createdAt) >= todayB; if (td) todayIds.add(j.id); nums.push({ n: j.jobNumber, today: td }); }
+        const convWeek = conversions.filter((c: any) => !ids.has(c.jobber_job_id) && Date.parse(c.conversion_at || '') >= wkB.getTime() && (dash.bookedCredited ?? []).some((b) => b.at === c.conversion_at));
+        dash.tv.bookedWeek = ids.size + convWeek.length;
+        dash.tv.bookedToday = todayIds.size + convWeek.filter((c: any) => Date.parse(c.conversion_at) >= todayB).length;
+        (dash.tv as any).bookedJobNumbers = nums;
+      }
+    }
     const log = await db.from('phone_call_log')
       .select('started_at, caller_phone, called_number, outcome, answered_by, duration_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at')
       .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);

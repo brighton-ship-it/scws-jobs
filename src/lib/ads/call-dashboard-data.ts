@@ -141,3 +141,30 @@ export async function loadFirstJobByPhone(phones: string[], budgetMs = 60_000, c
   }
   return out;
 }
+
+const JOBS_CREATED_LIVE = `
+  query DashJobsCreatedLive($after: ISO8601DateTime!, $cursor: String) {
+    jobs(first: 50, after: $cursor, filter: { createdAt: { after: $after } }) {
+      nodes { id jobNumber createdAt client { phones { number } jobs(first: 25) { nodes { id createdAt } } } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+export interface LiveJob { id: string; jobNumber: number | null; createdAt: string; phones: string[]; clientJobTimes: number[] }
+/** Jobber jobs created since `after` (live; the offline-conversion table only refreshes nightly). */
+export async function loadJobsCreatedSince(after: string): Promise<LiveJob[] | null> {
+  try {
+    const out: LiveJob[] = []; let cursor: string | null = null;
+    for (let i = 0; i < 6; i++) {
+      const res: any = await jobberGraphql(JOBS_CREATED_LIVE, { after, cursor });
+      assertNoJobberErrors(res, 'dashboard live jobs');
+      for (const j of res.data?.jobs?.nodes ?? []) out.push({
+        id: j.id, jobNumber: j.jobNumber ?? null, createdAt: j.createdAt,
+        phones: (j.client?.phones ?? []).map((p: any) => digits(p?.number)).filter((d: string) => d.length === 10),
+        clientJobTimes: (j.client?.jobs?.nodes ?? []).filter((x: any) => x?.id !== j.id).map((x: any) => Date.parse(x?.createdAt || '')).filter(Number.isFinite),
+      });
+      const pi = res.data?.jobs?.pageInfo; if (!pi?.hasNextPage) break; cursor = pi.endCursor;
+    }
+    return out;
+  } catch { return null; }
+}
