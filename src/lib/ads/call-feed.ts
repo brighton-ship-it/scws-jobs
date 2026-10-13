@@ -17,11 +17,14 @@ export function formatDuration(s: number | null | undefined): string {
   return m ? `${m}m ${String(r).padStart(2, '0')}s` : `${r}s`;
 }
 
+// New Google Voice forward targets (after port) show under the line they serve.
+const envLines = (k: string, label: string) => Object.fromEntries((process.env[k] ?? '').split(',').map((x) => x.replace(/\D/g, '').slice(-10)).filter((x) => x.length === 10).map((x) => [x, label]));
 const LINE_BY_NUMBER: Record<string, string> = {
+  ...envLines('PHONE_CALL_FORWARD_MAIN', 'Main'), ...envLines('PHONE_CALL_FORWARD_RANSOM', 'Ransom'),
   '7604408520': 'Main', '7607895955': 'Ransom', '9516510957': 'GBP Anza', '7602791262': 'GBP Ramona',
   '7603312502': 'Ads', '7604630493': 'Website', '7604937719': 'Direct',
 };
-const LINE_BY_SOURCE: Record<string, string> = { gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads', seo: 'Website', direct: 'Direct', main_line: 'Main' };
+const LINE_BY_SOURCE: Record<string, string> = { gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads', seo: 'Website', direct: 'Direct', main_line: 'Main', ransom_line: 'Ransom' };
 const firstLine = (s: string | null | undefined) => { const l = (s ?? '').split('\n')[0].trim(); return l ? (l.length > 180 ? `${l.slice(0, 177)}…` : l) : null; };
 
 export function buildCallFeed(input: Parameters<typeof mergeCallFeed>[0] & { limit?: number }): FeedRow[] {

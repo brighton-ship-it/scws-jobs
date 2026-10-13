@@ -85,3 +85,14 @@ it('note message + callerId + jobber hook', async () => {
   assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', callerId: '+18773863995' }), /callerId="\+18773863995"/);
   assert.doesNotMatch(bit({ shopNumbers: ['+1'], baseUrl: 'https://x' }), /callerId/);
 });
+
+import { lineFor, forwardTargets } from './config.ts';
+import { buildVoicemailTwiml } from './twiml.ts';
+it('ported main/ransom lines', () => {
+  assert.equal(lineFor('+17604408520')?.key, 'main');
+  assert.equal(lineFor('+18773863995', 'ransom')?.source, 'ransom_line');
+  assert.equal(lineFor('+18773863995', 'x'), null);
+  assert.deepEqual(forwardTargets(lineFor('+17607895955')!, { PHONE_CALL_FORWARD_RANSOM: '+17605550100, bad' } as any), ['+17605550100']);
+  assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', actionQuery: '?line=main' }), /status\?line=main"/);
+  assert.match(buildVoicemailTwiml('https://x'), /<Record [^>]*inbound\/recording/);
+});
