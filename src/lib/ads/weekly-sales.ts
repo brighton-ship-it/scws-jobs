@@ -201,7 +201,7 @@ function adClosing(input: WeeklyInput, startKey: string, endKey: string, floorKe
   return { pump: mk('pump'), drilling: mk('drilling') };
 }
 
-const RANGE_NAMES: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
+const RANGE_NAMES: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18', month: 'This month' };
 export const rangeTitle = (range: string, startKey: string, endKey: string) => `${RANGE_NAMES[range] ?? 'Selected range'}: ${md(startKey)}–${md(endKey)}`;
 
 /** Oldest PT date key the loaders must cover: the 9-week chart window or the selected range, whichever is earlier. */
@@ -256,8 +256,8 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
       'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
       'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals.',
       WORK_CATEGORY_RULE,
-      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date). Call to booking = new-customer bookings ÷ ad + Mike calls in the range (Google Ads tracked calls + Mike AI receptionist calls, de-duplicated; staff-answered Main/Ransom/GBP calls are not in the denominator). New customer = no Jobber job before their first call.',
-      `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ all calls (Google Ads calls + Mike AI receptionist calls), since ${md(floorKey)} (tracking start). By-campaign closing uses Google Ads calls only, split by drilling vs pump campaign. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
+      'Quote close rate = quotes approved ÷ quotes sent in the range, by count (approved counted by approval date, sent by sent date). Call to booking (real leads) = new-customer bookings ÷ real new leads in the range: Google Ads + Mike calls since Sep 18, one lead per caller (dated by their first call), excluding spam/robocalls/solicitors/vendors, hang-ups and short calls never reached, repeat calls, missed calls later reached, existing customers (Jobber job before their first call) and staff numbers. Any caller with a new booking always counts as a lead. New customer = no Jobber job before their first call.',
+      `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ real new leads, since ${md(floorKey)} (tracking start). Drilling vs pump: a lead's type is its booking's campaign, else its first Google Ads call's campaign; Mike-only leads count in the total only. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
   };
 }

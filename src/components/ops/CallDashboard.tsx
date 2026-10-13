@@ -178,7 +178,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
   const sub = dark ? 'text-slate-300' : 'text-slate-600';
   return (
     <>
-    <ul className={`sm:hidden ${dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}`}>
+    <ul className={`min-[769px]:hidden ${dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}`}>
       {list.length === 0 ? <li className={`px-4 py-6 text-center ${sub}`}>No calls yet</li> : list.map((r, i) => (
         <li key={i} className={`px-4 py-3 ${r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}`}>
           <div className="flex items-center justify-between gap-3">
@@ -191,7 +191,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
         </li>
       ))}
     </ul>
-    <table className={`hidden w-full table-fixed text-left sm:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
+    <table className={`hidden w-full table-fixed text-left min-[769px]:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
       <colgroup><col className="w-[22%]" /><col className="w-[31%]" /><col className="w-[16%]" /><col className="w-[17%]" /><col className="w-[14%]" /></colgroup>
       <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
       <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
@@ -275,7 +275,7 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
                   <div key={k} className="min-w-0"><dt className={`truncate text-[11px] uppercase tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
                 ))}
               </dl>
-              <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}</p>
+              <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}{r.leads != null ? <span title="new booked ÷ real new leads (one per caller; junk, repeat and existing customers excluded)"> · Call to booking (real leads) {r.leads ? `${pct(Math.min(1, r.booked / r.leads))} (${r.booked}/${r.leads})` : '—'}</span> : null}</p>
             </div>
           ))}
           {win.otherBooked != null ? <p className={`text-[11px] ${mut} ${dark ? 'xl:text-sm' : ''}`}>{win.otherBooked > 0 ? `+${win.otherBooked} booked via Mike calls · ` : ''}{win.rows.reduce((a, r) => a + r.booked, 0) + win.otherBooked} new booked total</p> : null}
@@ -294,7 +294,13 @@ function AdSplitCard({ split }: { split: NonNullable<Dashboard['adSplit']> }) {
   );
 }
 
-function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> }) {
+function leadsHint(rl: Dashboard['realLeads']): string {
+  const base = 'New-customer bookings ÷ real new leads (one per caller). Excluded: spam/robocalls/solicitors, hang-ups and short calls never reached, repeat calls, missed calls later reached, existing customers (Jobber job before the call), staff.';
+  if (!rl) return base;
+  return `${base}\n${rl.calls} ad + Mike calls → ${rl.leads} real leads.\n` + rl.excluded.filter((e) => e.count).map((e) => `− ${e.count} ${e.label}`).join('\n');
+}
+
+function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard['weekly']>; realLeads?: Dashboard['realLeads'] }) {
   const cw = weekly.weeks[weekly.weeks.length - 1];
   const prev = weekly.weeks[weekly.weeks.length - 2];
   const first = weekly.weeks[0];
@@ -302,12 +308,12 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
   const w = weekly.totals ?? cw;
   const title = weekly.totals?.title ?? `This week to date: ${cw.label}`;
   const span = w.label;
-  const rows: Array<[string, string, string?]> = [
+  const rows: Array<[string, string, string?, string?]> = [
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
     ['Quotes approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} approved`],
-    ['Call to booking', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} ad + Mike calls`],
+    ['Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads`, leadsHint(realLeads)],
     ['Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0} approved / ${w.quotesSent ?? 0} sent`],
     ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
   ];
@@ -324,11 +330,11 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
       </div>
       <div className="grid gap-4 lg:grid-cols-5">
         <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
-          {rows.map(([label, value, sub]) => (
-            <div key={label} className="min-w-0">
-              <p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+          {rows.map(([label, value, sub, hint]) => (
+            <div key={label} className="min-w-0" title={hint}>
+              <p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500">{label}</p>
               <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900">{value}</p>
-              <p className="truncate text-[11px] text-slate-400">{sub}</p>
+              <p className="text-[11px] leading-tight text-slate-400">{sub}</p>
             </div>
           ))}
         </div>
@@ -336,7 +342,7 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
           <div className="min-w-0 overflow-x-auto lg:col-span-3">
             <p className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Drilling vs pump · {span}</p>
             <table className="w-full text-left text-xs tabular-nums">
-              <thead><tr className="text-[10px] uppercase tracking-wider text-slate-400"><th className="py-1 pr-2 font-semibold">Type</th><th className="py-1 pr-2 text-right font-semibold">Quotes sent</th><th className="py-1 pr-2 text-right font-semibold">Approved</th><th className="py-1 pr-2 text-right font-semibold">Jobs booked</th><th className="py-1 pr-2 text-right font-semibold">Invoiced</th><th className="py-1 pr-2 text-right font-semibold">Last full week</th><th className="py-1 pr-2 text-right font-semibold">Call to booking</th><th className="py-1 text-right font-semibold">Quote close</th></tr></thead>
+              <thead><tr className="text-[10px] uppercase tracking-wider text-slate-400"><th className="py-1 pr-2 font-semibold">Type</th><th className="py-1 pr-2 text-right font-semibold">Quotes sent</th><th className="py-1 pr-2 text-right font-semibold">Approved</th><th className="py-1 pr-2 text-right font-semibold">Jobs booked</th><th className="py-1 pr-2 text-right font-semibold">Invoiced</th><th className="py-1 pr-2 text-right font-semibold">Last full week</th><th className="py-1 pr-2 text-right font-semibold">Call to booking (real leads)</th><th className="py-1 text-right font-semibold">Quote close</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
                 {CATS.map(([k, label]) => {
                   const c = cats[k];
@@ -348,7 +354,7 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
                       <td className="py-1 pr-2 text-right">{c.jobsBooked}</td>
                       <td className="py-1 pr-2 text-right">{usd(c.invoiced)}</td>
                       <td className="py-1 pr-2 text-right">{lwc ? usd(lwc[k].invoiced) : '—'}</td>
-                      <td className="py-1 pr-2 text-right" title="new bookings credited to an ad call ÷ Google Ads calls for that campaign type">{ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—'}</td>
+                      <td className="py-1 pr-2 text-right" title="new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)">{ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—'}</td>
                       <td className="py-1 text-right" title="quotes approved ÷ quotes sent, by count">{c.quotesSent ? `${pct(c.quotesApproved / c.quotesSent)} (${c.quotesApproved}/${c.quotesSent})` : '—'}</td></tr>
                   );
                 })}
@@ -398,7 +404,7 @@ export function CallDashboardPage() {
 
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
-          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+          {data.weekly ? <WeeklySalesCard weekly={data.weekly} realLeads={data.realLeads} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
 
           {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
 
@@ -422,6 +428,7 @@ export function CallDashboardPage() {
             <Card title="Conversion funnel" subtitle={`New-customer jobs credited to a call · ${rangeLabel}`} delay={140}>
               <Funnel stages={[
                 { label: 'Ad + Mike calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
+                ...(data.realLeads ? [{ label: 'Real new leads', value: data.realLeads.leads, color: palette.answered }] : []),
                 { label: 'Booked jobs (new)', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
                 { label: `New customers invoiced${data.roas ? ` · ${usd(data.roas.newOnly.invoiced)}` : ''}`, value: data.roas ? data.roas.newOnly.clients : null, color: palette.revenue },
                 { label: 'Paid in full', value: data.roas ? data.roas.newOnly.paidClients ?? null : null, color: palette.paid },
@@ -484,7 +491,7 @@ function BigTile({ label, range, value, sub, accent, spark, delta, delay }: { la
 
 export function CallDashboardTv() {
   const [view, setView] = useState<'since' | 'month'>('since');
-  const { data, error } = useDashboard('since', 60_000);
+  const { data, error } = useDashboard(view, 60_000);
   const tv = data?.tv;
   const tt = data?.totals;
   const s = data?.series ?? [];
@@ -495,8 +502,7 @@ export function CallDashboardTv() {
   const pt = (o: Intl.DateTimeFormatOptions) => new Date(now).toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', ...o });
   const monthRange = `${pt({ month: 'short' })} 1–${pt({ day: 'numeric' })}`;
   const sinceRange = 'Since Sep 18';
-  const showSince = view === 'since' && !!tt;
-  const mainRange = sinceRange; void monthRange; // money tiles always use the shared ROAS window
+  const mainRange = view === 'month' ? `This month · ${monthRange}` : sinceRange; // every period number follows the toggle (API range)
   const ro = data?.roas ?? null;
   const mainRev = ro ? { invoiced: ro.newOnly.invoiced, paid: ro.newOnly.paid } : null; // one strict new-customer source; '—' on failure
   const wk = data?.adSplit?.week;
@@ -538,7 +544,7 @@ export function CallDashboardTv() {
           <BigTile delay={200} accent={palette.spend} label="Ad spend" range={mainRange} value={usd(mainSpend ?? 0)} spark={s.filter((d) => !data?.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} />
           <div className="cd-rise relative flex min-h-[150px] min-w-0 flex-col items-center justify-center overflow-hidden rounded-2xl border border-slate-800 bg-gradient-to-b from-slate-900 to-slate-950 p-3" style={{ animationDelay: '240ms' }}>
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
-            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">{showSince ? 'ROAS (new customers)' : 'Ad return'}<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
+            <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">ROAS (new customers)<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
             <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={ro?.newOnly.multipleInvoiced ?? null} label="invoiced ÷ spend" /></div>
             {ro ? <p className="text-sm text-slate-400 xl:text-xl">Blended (all callers) <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
           </div>
@@ -547,10 +553,10 @@ export function CallDashboardTv() {
       {data?.weekly ? (() => {
         const ws = data.weekly.weeks; const w = data.weekly.totals ?? ws[ws.length - 1];
         const head = data.weekly.totals?.title ?? `This week to date ${w.label}`;
-        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="truncate text-[10px] font-semibold uppercase tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-base font-bold tabular-nums sm:text-lg xl:text-3xl">{v}</p>{sub ? <p className="truncate text-[10px] text-slate-500 xl:text-base">{sub}</p> : null}</div>);
+        const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-lg font-bold tabular-nums xl:text-3xl">{v}</p>{sub ? <p className="text-[10px] leading-tight text-slate-500 xl:text-base">{sub}</p> : null}</div>);
         return (
-          <div className="grid shrink-0 grid-cols-2 items-end gap-x-3 gap-y-2 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-4 lg:grid-cols-[repeat(8,minmax(0,1fr))_minmax(0,2.2fr)] xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
-            <p className="col-span-2 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 sm:col-span-4 lg:col-span-9 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
+          <div className="grid shrink-0 grid-cols-2 items-start gap-x-4 gap-y-3 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-3 md:grid-cols-5 xl:grid-cols-[repeat(9,minmax(0,1fr))_minmax(0,2.2fr)] xl:items-end xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
+            <p className="col-span-full text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
             {cell('Invoiced', usd(w.invoiced))}
             {cell('Paid on invoices', usd(w.paid), `issued ${w.label}`)}
             {cell('Cash collected', usd(w.cash), `received ${w.label}`)}
@@ -559,7 +565,8 @@ export function CallDashboardTv() {
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
             {cell('Quote close rate', pct(w.quotesSent ? (w.quotesApproved ?? 0) / w.quotesSent : null), `${w.quotesApproved ?? 0}/${w.quotesSent ?? 0} quotes`)}
-            <div className="col-span-2 mt-2 min-w-0 sm:col-span-4 lg:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
+            {cell('Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0}/${w.calls} real leads`)}
+            <div className="col-span-full mt-2 min-w-0 xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
           </div>
         );
       })() : null}

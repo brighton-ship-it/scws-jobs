@@ -9,7 +9,9 @@ import { authorizeOps } from '@/lib/ops-auth';
 import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWeeklyQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
-import { loadDailySpend, loadJobMoney } from '@/lib/ads/call-dashboard-data';
+import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
+import { classifyRealLeads, LEAD_REASON_LABEL, type LeadCall } from '@/lib/ads/real-leads';
+import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit } from '@/lib/ads/roas-view';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 
@@ -64,6 +66,45 @@ export async function GET(request: NextRequest) {
     }
     for (const c of liveCalls) c.live_booking_request = bookingIds.has((c as any)._vapi);
     const dash = buildDashboard({ calls: [...adsCalls, ...liveCalls], conversions, spend, paidByJob: null, jobMoney, range });
+    // Real leads (Call to booking denominator): every ad + Mike call since the tracking floor, one lead per caller.
+    const floorMs = Date.parse(DASH_FLOOR_ISO);
+    const allSince = [...adsCalls, ...liveCalls].filter((c) => c.started_at && Date.parse(c.started_at) >= floorMs);
+    const summaryByVapi = new Map<string, string>();
+    const mikeByPhone = new Map<string, Array<{ t: number; s: string }>>();
+    for (const r of liveRows) {
+      const s = String(r.summary || ''); summaryByVapi.set(r.vapi_call_id, s);
+      const d = digits10(r.phone); if (d) (mikeByPhone.get(d) ?? mikeByPhone.set(d, []).get(d)!).push({ t: Date.parse(r.called_at), s });
+    }
+    const leadPhones = Array.from(new Set(allSince.map((c) => digits10(c.caller_phone)).filter((x): x is string => !!x)));
+    const firstJobP = loadFirstJobByPhone(leadPhones, 70_000).catch(() => new Map<string, number | null>());
+    // Booked today / this week (TV + header): the offline-conversion table refreshes only nightly (2:15 AM PT cron),
+    // so today's bookings were always 0. Add Jobber jobs created this week, credited with the same rules:
+    // a call (ad or Mike) from the client's phone before the job, and no Jobber job before their first call.
+    if (dash.tv) {
+      const nowB = new Date(); const wkB = ptWeekStart(nowB); const todayB = ptStartOfDay(nowB).getTime();
+      const live = await loadJobsCreatedSince(wkB.toISOString());
+      if (live) {
+        const callsByPhone = new Map<string, number[]>();
+        for (const c of [...adsCalls, ...liveCalls]) { const d = digits10(c.caller_phone); const t = Date.parse(c.started_at || ''); if (d && Number.isFinite(t)) (callsByPhone.get(d) ?? callsByPhone.set(d, []).get(d)!).push(t); }
+        const credited = new Set<string>(); const seenPhone = new Set<string>();
+        for (const j of [...live].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))) {
+          const at = Date.parse(j.createdAt);
+          const ts = j.phones.flatMap((p) => callsByPhone.get(p) ?? []);
+          if (!ts.some((t) => t <= at)) continue;
+          const first = Math.min(...ts);
+          if (j.clientJobTimes.some((t) => t < first)) continue; // existing customer
+          const key = j.phones.slice().sort().join(',');
+          if (seenPhone.has(key)) continue; // one booking per caller (matches funnel crediting)
+          seenPhone.add(key); credited.add(j.id);
+        }
+        const ids = new Set<string>(); const todayIds = new Set<string>(); const nums: Array<{ n: number | null; today: boolean }> = [];
+        for (const j of live) if (credited.has(j.id)) { ids.add(j.id); const td = Date.parse(j.createdAt) >= todayB; if (td) todayIds.add(j.id); nums.push({ n: j.jobNumber, today: td }); }
+        const convWeek = conversions.filter((c: any) => !ids.has(c.jobber_job_id) && Date.parse(c.conversion_at || '') >= wkB.getTime() && (dash.bookedCredited ?? []).some((b) => b.at === c.conversion_at));
+        dash.tv.bookedWeek = ids.size + convWeek.length;
+        dash.tv.bookedToday = todayIds.size + convWeek.filter((c: any) => Date.parse(c.conversion_at) >= todayB).length;
+        (dash.tv as any).bookedJobNumbers = nums;
+      }
+    }
     const log = await db.from('phone_call_log')
       .select('started_at, caller_phone, called_number, outcome, answered_by, duration_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at')
       .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);
@@ -91,19 +132,43 @@ export async function GET(request: NextRequest) {
       ]);
       if (!invoices) invoices = await sharedInvoices(from, to); // Vercel data cache shared across instances (last good pull)
       else void rememberInvoices(from, invoices);
-      const allCalls = [...adsCalls, ...liveCalls];
+      const firstJobAt = await firstJobP;
+      const booked = new Map<string, any>();
+      for (const b of dash.bookedCredited ?? []) if (b.phone && !booked.has(b.phone)) booked.set(b.phone, b.cat);
+      const leadCalls: LeadCall[] = allSince.map((c) => {
+        const d = digits10(c.caller_phone); const t = Date.parse(c.started_at as string);
+        const text = c.live ? summaryByVapi.get((c as any)._vapi) ?? '' : (mikeByPhone.get(d ?? '') ?? []).filter((m) => Math.abs(m.t - t) < 15 * 60_000).map((m) => m.s).join(' ');
+        return { at: c.started_at as string, phone: c.caller_phone, durationSec: c.duration_seconds, cat: c.live ? null : adCategory(c.campaign_name), live: !!c.live, text, missed: (c.call_status || '').toUpperCase() === 'MISSED' };
+      });
+      const contacts = (log.data ?? []).map((r: any) => ({ at: r.started_at, phone: r.caller_phone, connected: String(r.outcome || '').startsWith('answered') || (String(r.outcome || '') === 'forwarded_ai' && (r.duration_seconds ?? 0) >= 15) }));
+      const rl = classifyRealLeads({ calls: leadCalls, contacts, firstJobAt, booked });
+      const rStartMs = Math.max(rangeStart(range, nowD).getTime(), floorMs);
+      const inWin = (iso: string, from: number) => Date.parse(iso) >= from;
+      const excluded: Record<string, number> = {};
+      for (const r of rl.reasons) if (r.reason !== 'lead' && inWin(r.at, rStartMs)) excluded[r.reason] = (excluded[r.reason] ?? 0) + 1;
+      const leadsWin = rl.leads.filter((l) => inWin(l.at, rStartMs));
+      dash.realLeads = {
+        calls: rl.reasons.filter((r) => inWin(r.at, rStartMs)).length,
+        leads: leadsWin.length,
+        pump: leadsWin.filter((l) => l.cat === 'pump').length,
+        drilling: leadsWin.filter((l) => l.cat === 'drilling').length,
+        excluded: Object.entries(LEAD_REASON_LABEL).map(([k, label]) => ({ reason: k, label, count: excluded[k] ?? 0 })),
+        unresolvedExisting: rl.unresolvedExisting,
+      };
+      const allCalls = rl.leads.map((l) => ({ started_at: l.at, live: !l.cat, campaign_name: l.cat }));
       dash.weekly = buildWeeklySales({
         now: nowD, invoices, quotes, jobsCreated, jobsCompleted, payments,
         range: { range, startKey: ptDateKey(rStart), endKey: ptDateKey(nowD), name: range },
-        callTimes: allCalls.map((c) => c.started_at).filter((t): t is string => !!t),
+        callTimes: allCalls.map((c) => c.started_at),
         // Same bookings as the funnel: conversions credited to a call (not every uploaded conversion).
         bookedAt: (dash.bookedCredited ?? []).map((b) => b.at),
-        adCalls: allCalls.filter((c) => c.started_at).map((c) => ({ at: c.started_at as string, cat: c.live ? null : adCategory(c.campaign_name) })),
+        // Real leads only (one per caller, junk/existing/repeat excluded); a lead's type follows its booking or first ad call.
+        adCalls: rl.leads.map((l) => ({ at: l.at, cat: l.cat })),
         adBooked: dash.bookedCredited ?? [],
       });
       dash.roas = buildRoasView({ invoices, adCalls: adsCalls, spend, start: new Date(dash.revenueStart), now: nowD });
       // Campaign cards use the same calculation, window and spend as the ROAS card / funnel.
-      const RN: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18' };
+      const RN: Record<string, string> = { '7': 'Last 7 days', '30': 'Last 30 days', '90': 'Last 90 days', since: 'Since Sep 18', month: 'This month' };
       const wk = ptWeekStart(nowD);
       const shared = buildSharedAdSplit({
         invoices, adCalls: adsCalls, booked: dash.bookedCredited ?? [], spend, now: nowD,
@@ -117,7 +182,11 @@ export async function GET(request: NextRequest) {
           'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call.',
         );
       }
-      if (shared) dash.adSplit = shared;
+      if (shared) {
+        dash.adSplit = shared;
+        const wStart = { since: Math.max(new Date(dash.revenueStart).getTime(), floorMs), week: Math.max(wk.getTime(), floorMs) } as const;
+        for (const k of ['since', 'week'] as const) for (const r of (shared as any)[k]?.rows ?? []) r.leads = rl.leads.filter((l) => l.cat === r.category && inWin(l.at, wStart[k])).length;
+      }
       else if (dash.adSplit) blankSplitMoney(dash);
     } catch (e) {
       notes.push(`weekly sales: ${e instanceof Error ? e.message : 'error'}`);
