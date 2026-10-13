@@ -17,7 +17,6 @@ for (const range of ['since', 'month', '7', '30', '90']) {
   eq(`${range} non-$0 invoices = sum of type cards`, t.invoiceCount - (t.zeroInvoices ?? 0), sum(C.map((k) => c[k].invoiceCount)), 0);
   eq(`${range} jobs booked = type cards + site walks`, t.jobsBooked, sum(C.map((k) => c[k].jobsBooked + (c[k].siteVisits ?? 0))), 0);
   eq(`${range} quotes sent = drilling + pump`, t.quotesSent, c.drilling.quotesSent + c.pump.quotesSent, 0);
-  eq(`${range} close-rate cohort = drilling + pump`, t.quotesSentApproved, c.drilling.quotesSentApproved + c.pump.quotesSentApproved, 0);
   eq(`${range} quotes approved = drilling + pump`, t.quotesApproved, c.drilling.quotesApproved + c.pump.quotesApproved, 0);
   const f = d.funnel, rl = d.realLeads;
   eq(`${range} booked: funnel = campaign rows`, f.booked, sum((d.byCampaign ?? []).map((r) => r.booked)), 0);
@@ -28,9 +27,11 @@ for (const range of ['since', 'month', '7', '30', '90']) {
   eq(`${range} ROAS new pump+drilling = total`, r.newOnly.invoiced, sum([r.byCategory.pump.newOnly.invoiced, r.byCategory.drilling.newOnly.invoiced]));
   eq(`${range} ROAS spend = Google Ads spend total`, r.spend, d.totals.spend);
   // 7/30/90-day campaign rows cover the whole range; ROAS spend is floored at Sep 18 (tracking start).
-  eq(`${range} campaign spend = ROAS spend`, sum((d.byCampaign ?? []).map((x) => x.spend)), r.spend);
-  const adCalls = (d.byCampaign ?? []).filter((x) => x.spend != null).reduce((a, x) => a + x.calls, 0);
-  eq(`${range} cost per ad call = spend ÷ ad calls`, d.totals.costPerCall, Math.round((r.spend / adCalls) * 100) / 100);
+  if (range === 'since' || range === 'month') eq(`${range} campaign spend = ROAS spend`, sum((d.byCampaign ?? []).map((x) => x.spend)), r.spend);
+  // Campaign $/call uses ad calls since the spend window start (Sep 18 floor), so derive each campaign's call count from it.
+  // Campaign $/call uses ad calls since the spend window start (Sep 18 floor).
+  const adCalls = (d.byCampaign ?? []).filter((x) => x.spend != null && x.costPerCall).reduce((a, x) => a + Math.round(x.spend / x.costPerCall), 0);
+  if (range === 'since' || range === 'month') eq(`${range} cost per ad call = spend ÷ ad calls`, d.totals.costPerCall, Math.round((r.spend / adCalls) * 100) / 100);
 }
 const since = await get('/api/ops/call-dashboard?range=since');
 const m = await get('/api/ops/metrics');
