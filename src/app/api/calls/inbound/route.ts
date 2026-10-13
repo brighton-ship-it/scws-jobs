@@ -5,8 +5,8 @@
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
-import { buildInboundTwiml, buildSimulatorTwiml, buildVoicemailTwiml } from '@/lib/phone-calls/twiml';
-import { shopNumbers, publicUrl, TRACKING_SOURCES, lineFor, forwardTargets, isTestCall } from '@/lib/phone-calls/config';
+import { buildInboundTwiml, buildSimulatorTwiml, buildVoicemailTwiml, buildMikeTwiml } from '@/lib/phone-calls/twiml';
+import { shopNumbers, publicUrl, TRACKING_SOURCES, lineFor, forwardTargets, isTestCall, mikeNumber, forwardTimeout } from '@/lib/phone-calls/config';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -36,14 +36,14 @@ export async function POST(req: NextRequest) {
   // Per-number ring override via the (signed) voice URL, e.g. ?ring=+17604408520
   const ring = q.get('ring')?.split(',').map((x) => x.trim()).filter((x) => /^\+\d{10,15}$/.test(x));
   const targets = ring?.length ? ring : line ? forwardTargets(line) : shopNumbers();
-  // Ported line with no forward target configured: never loop back into itself; take a voicemail instead.
-  if (line && (!targets.length || targets.includes(line.number))) return xml(buildVoicemailTwiml(base));
+  // Ported line with no forward target configured: never loop back into itself; go straight to Mike (voicemail after).
+  if (line && (!targets.length || targets.includes(line.number))) return xml(buildMikeTwiml({ mike: mikeNumber(), baseUrl: base, line: line.key, notice: true }));
   // Ringing the same Twilio number (test loop) needs our own caller ID; otherwise pass the caller's number through.
   const callerId = targets.includes(to) ? to : undefined;
   // Ring timeout (s): default 60 so a Google Voice ring group can roll to Mike (~35s) before Twilio gives up.
   const t = parseInt(q.get('timeout') || process.env.PHONE_CALL_RING_TIMEOUT || '60', 10);
-  const timeout = Number.isFinite(t) ? Math.min(Math.max(t, 10), 120) : 60;
-  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId, timeout, actionQuery: line ? `?line=${line.key}` : undefined }));
+  const timeout = line && !q.get('timeout') ? forwardTimeout() : Number.isFinite(t) ? Math.min(Math.max(t, 10), 120) : 60;
+  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId, timeout, actionQuery: line ? `?line=${line.key}&stage=gv` : undefined }));
 }
 
 export async function GET() {

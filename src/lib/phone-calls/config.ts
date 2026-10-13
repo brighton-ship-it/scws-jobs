@@ -39,3 +39,9 @@ export function forwardTargets(line: { forwardEnv: string }, env: NodeJS.Process
 /** Our own Twilio numbers: calls FROM these are test traffic (never real customers). Excluded from dashboards + Jobber. */
 export const TEST_CALLERS = ['+17608237963', '+18773863995'];
 export const isTestCall = (from: string | null | undefined, testParam?: string | null) => testParam === '1' || TEST_CALLERS.includes(from ?? '');
+
+/** Mike (AI receptionist): ported lines hand off here when the new GV number doesn't answer (or no forward set). */
+export const MIKE_NUMBER = '+17604915348';
+export const mikeNumber = (env: NodeJS.ProcessEnv = process.env) => (/^\+\d{10,15}$/.test(env.PHONE_CALL_MIKE_NUMBER?.trim() ?? '') ? env.PHONE_CALL_MIKE_NUMBER!.trim() : MIKE_NUMBER);
+/** Seconds to ring the new GV number before handing to Mike (GV ring group used ~35s; faster per Brighton). */
+export const forwardTimeout = (env: NodeJS.ProcessEnv = process.env) => { const t = parseInt(env.PHONE_CALL_FORWARD_TIMEOUT || '20', 10); return Number.isFinite(t) ? Math.min(Math.max(t, 10), 60) : 20; };
