@@ -30,7 +30,7 @@ export const Q = {
     pageInfo { hasNextPage endCursor } } }`,
 } as const;
 export type Field = keyof typeof Q;
-const PAGE: Record<Field, number> = { invoices: 50, jobs: 50, quotes: 100, paymentRecords: 100, timeSheetEntries: 100 };
+const PAGE: Record<Field, number> = { invoices: 25, jobs: 25, quotes: 100, paymentRecords: 100, timeSheetEntries: 100 };
 /** Backfill filter (Jobber started Jan 31 2025; pull from Jan 1 2025 to be safe). Unfiltered for jobs so every client job time is known. */
 const BACKFILL_FROM = '2025-01-01T00:00:00Z';
 const backfillFilter = (f: Field) => ({
@@ -75,8 +75,11 @@ async function page(field: Field, filter: unknown, after: string | null) {
     }
     const msg = res?.errors?.[0]?.message as string | undefined;
     if (msg) {
-      if (attempt >= 5 || !/throttl|rate|cost/i.test(msg)) throw new Error(`${field}: ${msg}`);
-      await sleep(3000 * (attempt + 1)); continue;
+      if (attempt >= 8 || !/throttl|rate|cost/i.test(msg)) throw new Error(`${field}: ${msg}`);
+      // Wait exactly long enough for the bucket to refill to this query's cost (+ headroom).
+      const c = res?.extensions?.cost; const ts = c?.throttleStatus;
+      const need = ts && c?.requestedQueryCost ? ((c.requestedQueryCost + 1000 - ts.currentlyAvailable) / (ts.restoreRate || 500)) * 1000 : 5000 * (attempt + 1);
+      await sleep(Math.min(20_000, Math.max(2000, need))); continue;
     }
     // Leave headroom for the receptionist / booking calls sharing this Jobber app.
     const ts = res?.extensions?.cost?.throttleStatus;
@@ -197,6 +200,7 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
     return report;
   } catch (e) {
     const msg = e instanceof Error ? e.message.slice(0, 300) : 'error';
+    if (/throttl/i.test(msg)) { report.stopped = msg; return report; } // progress is saved per page; resume next run
     await setState(db, 'rolling', { last_error: msg }).catch(() => {});
     throw e;
   } finally {
