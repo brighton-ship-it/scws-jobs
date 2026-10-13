@@ -282,26 +282,74 @@ export async function runOfflineImport(input: {
     return result;
   }
 
-  const partial =
-    uploadResult.body &&
-    typeof uploadResult.body === 'object' &&
-    'partialFailureError' in (uploadResult.body as Record<string, unknown>);
-  const ok = uploadResult.ok && !partial;
+  const failures = parsePartialFailure(uploadResult.body);
+  // Index into plan.toUpload; 'uploaded' rows in plan.rows are in the same order.
+  let uploadIndex = 0;
 
   for (const row of plan.rows) {
-    const saved =
-      row.status === 'uploaded' && !ok
-        ? {
-            ...row,
-            status: 'error' as const,
-            error: `Google Ads upload HTTP ${uploadResult.status}`,
-            google_response: uploadResult.body,
-          }
-        : { ...row, google_response: row.status === 'uploaded' ? uploadResult.body : undefined };
+    let saved: OfflinePlanRow;
+    if (row.status !== 'uploaded') {
+      saved = row;
+    } else {
+      const index = uploadIndex++;
+      let failure: string | null = null;
+      if (!uploadResult.ok) failure = `Google Ads upload HTTP ${uploadResult.status}`;
+      else if (failures.all) failure = failures.all;
+      else if (failures.byIndex.has(index)) failure = failures.byIndex.get(index)!;
+      saved = failure
+        ? { ...row, status: 'error' as const, error: failure, google_response: uploadResult.body }
+        : { ...row, google_response: uploadResult.body };
+    }
     await input.save(saved);
     if (saved.status === 'uploaded') result.uploaded += 1;
     else if (saved.status === 'error') result.errors.push(`${saved.jobber_job_id}: ${saved.error}`);
     else if (saved.status === 'skipped') result.skipped += 1;
   }
   return result;
+}
+
+/**
+ * Reads Google Ads `partialFailureError` (REST JSON) into per-conversion messages keyed by
+ * the conversion's index in the request. `all` is set when a partial failure exists but no
+ * row index can be read from it, so every row is treated as failed (and stays retryable).
+ */
+export function parsePartialFailure(body: unknown): { byIndex: Map<number, string>; all: string | null } {
+  const byIndex = new Map<number, string>();
+  if (!body || typeof body !== 'object') return { byIndex, all: null };
+  const pfe = (body as Record<string, unknown>).partialFailureError as
+    | { code?: number; message?: string; details?: unknown[] }
+    | null
+    | undefined;
+  if (!pfe || typeof pfe !== 'object') return { byIndex, all: null };
+  if (!pfe.code && !pfe.message && !(pfe.details && pfe.details.length)) return { byIndex, all: null };
+
+  const add = (index: number, message: string) => {
+    const prev = byIndex.get(index);
+    byIndex.set(index, prev ? `${prev}; ${message}` : message);
+  };
+  for (const detail of pfe.details ?? []) {
+    const errors = (detail as { errors?: unknown[] })?.errors ?? [];
+    for (const err of errors) {
+      const e = err as {
+        message?: string;
+        errorCode?: Record<string, unknown>;
+        location?: { fieldPathElements?: Array<{ fieldName?: string; index?: number }> };
+      };
+      const el = e.location?.fieldPathElements?.find(
+        (f) => (f.fieldName === 'conversions' || f.fieldName === 'conversion_adjustments') && typeof f.index === 'number'
+      );
+      if (!el) continue;
+      const code = e.errorCode ? Object.values(e.errorCode).join(',') : '';
+      add(el.index as number, [code, e.message].filter(Boolean).join(': ') || 'partial failure');
+    }
+  }
+  if (byIndex.size === 0 && pfe.message) {
+    // Fallback: "... at conversions[3].gclid, ..." in the top-level message.
+    for (const part of pfe.message.split(/,\s*(?=[^,]*conversions\[)/)) {
+      const m = /conversions\[(\d+)\]/.exec(part);
+      if (m) add(Number(m[1]), part.trim());
+    }
+  }
+  if (byIndex.size === 0) return { byIndex, all: pfe.message || `partial failure (code ${pfe.code ?? '?'})` };
+  return { byIndex, all: null };
 }
