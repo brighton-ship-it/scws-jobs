@@ -356,7 +356,7 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
               {CATS.map(([k, label]) => {
                 const c = cats[k];
                 const ac = k === 'service_call' ? null : cab?.[k];
-                const accent = k === 'drilling' ? 'border-amber-400' : k === 'pump' ? 'border-sky-500' : 'border-violet-500';
+                const accent = k === 'drilling' ? 'border-l-amber-400' : k === 'pump' ? 'border-l-sky-500' : 'border-l-violet-500';
                 const svc = k === 'service_call';
                 const lines: Array<[string, string, string?]> = svc ? [
                   ['Completed', String(c.jobsCompleted ?? 0)],
