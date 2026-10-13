@@ -15,10 +15,11 @@ const RANGES = [
 
 const when = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '—';
+const hm = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' }) : '—');
 const clock = (iso: string | null | undefined) =>
   iso ? new Date(iso).toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit', second: '2-digit' }) : '—';
 
-type Live = { generatedAt?: string };
+type Live = { generatedAt?: string; jobberDataAsOf?: string | null };
 
 function useDashboard(range: string, refreshMs: number | null) {
   // One cached payload per period. A response only ever lands in its own period's slot, and the page shows
@@ -395,7 +396,7 @@ export function CallDashboardPage() {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="mr-auto">
           <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Call performance</h1>
-          <p className="text-xs text-slate-500">Google Ads calls, AI receptionist and closed-loop revenue · Pacific time</p>
+          <p className="text-xs text-slate-500">Google Ads calls, AI receptionist and closed-loop revenue · Pacific time{(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <span className="text-slate-400"> · data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</span> : null}</p>
         </div>
         <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
         <div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Date range">
@@ -537,6 +538,7 @@ export function CallDashboardTv() {
           <p className="order-first shrink-0 text-2xl font-bold tabular-nums sm:order-last xl:text-5xl">{clockStr}</p>
         </div>
       </div>
+      {(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <p className="-mt-1 text-right text-[10px] text-slate-500 xl:text-sm">data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</p> : null}
       {!data && !error ? <p className="text-sm text-slate-400 xl:text-xl" aria-live="polite">Loading {view === 'month' ? 'this month' : 'since Sep 18'} numbers…</p> : null}
       {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
       {tv ? (

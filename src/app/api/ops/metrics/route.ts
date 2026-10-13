@@ -12,6 +12,7 @@ import { loadWeeklyInvoices, loadWeeklyQuotes } from '@/lib/ads/weekly-sales-dat
 import { buildRoasView } from '@/lib/ads/roas-view';
 import { loadHistoryInvoices, loadCompletedJobCosts, loadTimesheets } from '@/lib/ads/metrics-data';
 import { buildMetrics } from '@/lib/ads/metrics';
+import { mirrorState } from '@/lib/jobber-mirror/read';
 import qboHistory from '@/data/qbo-ltv-history.json';
 import type { QboHistory } from '@/lib/ads/ltv-full';
 
@@ -31,12 +32,13 @@ export async function GET(request: NextRequest) {
   try {
     const debug = request.nextUrl.searchParams.get('debug') === '1';
     let payload: any;
-    if (debug) payload = await computeMetrics(true);
+    const ms = await mirrorState();
+    if (debug || ms.ready) payload = await computeMetrics(debug); // Supabase mirror: fast, no cache needed
     else {
       try { payload = await cachedMetrics(); }
       catch { payload = lastPartial ?? await computeMetrics(false); } // a load failed: serve the partial result uncached
     }
-    return finish(NextResponse.json(payload));
+    return finish(NextResponse.json({ ...payload, dataAsOf: ms.ready ? ms.asOf : payload.generatedAt, source: ms.ready ? 'mirror' : 'jobber' }));
   } catch (error) {
     console.error('[ops-metrics]', error instanceof Error ? error.message : 'error');
     return finish(NextResponse.json({ error: 'Failed to load metrics' }, { status: 500 }));

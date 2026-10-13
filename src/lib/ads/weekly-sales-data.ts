@@ -1,5 +1,6 @@
 /** Jobber loaders for the weekly sales strip. Each loader fails independently (null) and is cached 10 min. */
 import { assertNoJobberErrors, jobberGraphql, type JobberGraphqlResult } from '../jobber/client.ts';
+import { mirrorInvoices, mirrorQuotes, mirrorJobs, mirrorPayments } from '../jobber-mirror/read.ts';
 import type { WeeklyInvoice, WeeklyQuote, WeeklyJob, WeeklyPayment } from './weekly-sales.ts';
 
 const TTL_MS = 10 * 60_000;
@@ -75,15 +76,20 @@ const JOBS = `
     }
   }`;
 
-export const loadWeeklyInvoices = (after: string, before: string) =>
-  paged<WeeklyInvoice>(`inv3|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } });
+/** Supabase mirror first (fast); live Jobber only when the mirror is not ready. */
+const mirrorFirst = async <T>(m: () => Promise<any[] | null>, live: () => Promise<T[] | null>): Promise<T[] | null> => {
+  try { const r = await m(); if (r) return r as T[]; } catch (e) { console.warn('[weekly-sales] mirror read failed:', e instanceof Error ? e.message : e); }
+  return live();
+};
+export const loadWeeklyInvoices = (after: string, before: string) => mirrorFirst<WeeklyInvoice>(() => mirrorInvoices(after, before), () =>
+  paged<WeeklyInvoice>(`inv3|${after}`, INVOICES, 'invoices', { filter: { issuedDate: { after, before } } }));
 /** Quotes sent in the window may have been created earlier, so filter by created date with slack. */
-export const loadWeeklyQuotes = (createdAfter: string, createdBefore: string) =>
-  paged<WeeklyQuote>(`q2|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES);
-export const loadWeeklyJobsCreated = (after: string, before: string) =>
-  paged<WeeklyJob>(`jc2|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } });
-export const loadWeeklyJobsCompleted = (after: string, before: string) =>
-  paged<WeeklyJob>(`jd|${after}`, JOBS, 'jobs', { filter: { completedAt: { after, before } } });
+export const loadWeeklyQuotes = (createdAfter: string, createdBefore: string) => mirrorFirst<WeeklyQuote>(() => mirrorQuotes(createdAfter, createdBefore), () =>
+  paged<WeeklyQuote>(`q2|${createdAfter}`, QUOTES, 'quotes', { filter: { createdAt: { after: createdAfter, before: createdBefore } } }, QUOTE_MAX_PAGES));
+export const loadWeeklyJobsCreated = (after: string, before: string) => mirrorFirst<WeeklyJob>(() => mirrorJobs('created_at', after, before), () =>
+  paged<WeeklyJob>(`jc2|${after}`, JOBS, 'jobs', { filter: { createdAt: { after, before } } }));
+export const loadWeeklyJobsCompleted = (after: string, before: string) => mirrorFirst<WeeklyJob>(() => mirrorJobs('completed_at', after, before), () =>
+  paged<WeeklyJob>(`jd|${after}`, JOBS, 'jobs', { filter: { completedAt: { after, before } } }));
 /** Payment records by payment received (entry) date, regardless of which week the invoice was issued. */
-export const loadWeeklyPayments = (after: string, before: string) =>
-  paged<WeeklyPayment>(`pay|${after}`, PAYMENTS, 'paymentRecords', { filter: { entryDate: { after, before } } }, PAYMENT_MAX_PAGES);
+export const loadWeeklyPayments = (after: string, before: string) => mirrorFirst<WeeklyPayment>(() => mirrorPayments(after, before), () =>
+  paged<WeeklyPayment>(`pay|${after}`, PAYMENTS, 'paymentRecords', { filter: { entryDate: { after, before } } }, PAYMENT_MAX_PAGES));
