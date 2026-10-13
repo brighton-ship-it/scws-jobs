@@ -12,6 +12,8 @@ import { loadWeeklyInvoices, loadWeeklyQuotes } from '@/lib/ads/weekly-sales-dat
 import { buildRoasView } from '@/lib/ads/roas-view';
 import { loadHistoryInvoices, loadCompletedJobCosts, loadTimesheets } from '@/lib/ads/metrics-data';
 import { buildMetrics } from '@/lib/ads/metrics';
+import qboHistory from '@/data/qbo-ltv-history.json';
+import type { QboHistory } from '@/lib/ads/ltv-full';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
@@ -48,7 +50,7 @@ const cachedMetrics = unstable_cache(async () => {
   const d = p.diag;
   if (d.historyError || d.sinceInvoices == null || d.quotes == null || d.costError) { lastPartial = p; throw new Error('partial metrics: not cached'); }
   return p;
-}, ['ops-metrics-v1'], { revalidate: 1800 });
+}, ['ops-metrics-v2'], { revalidate: 1800 });
 
 async function computeMetrics(debug: boolean) {
     const db = createServiceClient() as any;
@@ -73,6 +75,7 @@ async function computeMetrics(debug: boolean) {
     const cards = buildMetrics({
       now, histFrom, history, roasSince, sinceLabel: 'Since Sep 18, 2026', quotes, quotesFrom, costs, costFrom, time, timeFrom,
       qboConnected: !qbo.error && (qbo.data ?? []).length > 0,
+      qbo: qboHistory as unknown as QboHistory,
     });
     const diag = {
       historyInvoices: history.rows?.length ?? null, historyError: history.error ?? null, historyTruncated: !!history.truncated,
