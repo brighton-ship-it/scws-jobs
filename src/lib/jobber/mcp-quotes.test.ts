@@ -1,13 +1,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assertDraftQuoteLineEdits,
   assertQuoteIsDraftUnsent,
   assertQuoteUnchangedExceptSalesperson,
   buildDraftQuoteEditAttributes,
   buildSalespersonOnlyEditAttributes,
   getClientById,
+  parseQuoteLineEdits,
   quoteEditUsedForbiddenFields,
   setQuoteSalesperson,
+  toJobberEditLineItems,
   updateUnsentQuoteDraft,
 } from './mcp-quotes.ts';
 import { BRIGHTON_SALESPERSON_ID } from './quotes.ts';
@@ -393,6 +396,156 @@ describe('setQuoteSalesperson', () => {
     assert.equal(result.quote.salesperson?.id, BRIGHTON_SALESPERSON_ID);
     assert.equal(result.quote.quoteStatus, 'converted');
     assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+    assert.equal(bodies.some((body) => body.includes('quoteCreateLineItems')), false);
+  });
+});
+
+const DRAFT_LINES = {
+  id: 'quote-1',
+  quoteNumber: 4401,
+  title: 'Old title',
+  quoteStatus: 'draft',
+  sentAt: null,
+  lineItems: {
+    nodes: [
+      { id: 'li-1', name: 'Pump', quantity: 1, unitPrice: 100, taxable: true, optional: false },
+      { id: 'li-2', name: 'Labor', quantity: 1, unitPrice: 200, taxable: false, optional: true },
+    ],
+  },
+};
+
+describe('draft quote line edits', () => {
+  it('maps an edit onto QuoteEditLineItemAttributes without saveToProductsAndServices', () => {
+    const edits = parseQuoteLineEdits([
+      {
+        lineItemId: ' li-1 ',
+        name: 'Pump revised',
+        description: '',
+        quantity: 2,
+        unitPrice: 80,
+        taxable: false,
+        optional: false,
+      },
+    ]);
+    assert.deepEqual(toJobberEditLineItems(edits), [
+      {
+        lineItemId: 'li-1',
+        name: 'Pump revised',
+        description: '',
+        quantity: 2,
+        unitPrice: 80,
+        taxable: false,
+        optional: false,
+      },
+    ]);
+    assert.equal(JSON.stringify(toJobberEditLineItems(edits)).includes('saveToProductsAndServices'), false);
+    assert.throws(() => parseQuoteLineEdits([{ lineItemId: 'li-1' }]), /must change/);
+    assert.throws(
+      () => parseQuoteLineEdits([{ lineItemId: 'li-1', name: 'X', productOrServiceId: 'p' }]),
+      /cannot be changed/
+    );
+    assert.throws(
+      () => parseQuoteLineEdits([{ lineItemId: 'li-1', optional: false, recommended: true }]),
+      /must stay optional/
+    );
+  });
+
+  it('refuses deleting every line and lines that are not on the quote', () => {
+    assert.throws(
+      () => assertDraftQuoteLineEdits(DRAFT_LINES, { removes: ['li-1', 'li-2'] }),
+      /every line item/
+    );
+    assert.doesNotThrow(() =>
+      assertDraftQuoteLineEdits(DRAFT_LINES, { removes: ['li-1', 'li-2'], addCount: 1 })
+    );
+    assert.throws(() => assertDraftQuoteLineEdits(DRAFT_LINES, { removes: ['missing'] }), /not on quote 4401/);
+    assert.throws(
+      () => assertDraftQuoteLineEdits(DRAFT_LINES, { updates: [{ lineItemId: 'li-1', name: 'X' }], removes: ['li-1'] }),
+      /edited and deleted/
+    );
+  });
+
+  it('edits and deletes draft lines, adding a replacement before the delete', async () => {
+    const bodies: string[] = [];
+    const order: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const parsed = JSON.parse(body || '{}') as { query?: string; variables?: Record<string, unknown> };
+      const query = parsed.query || '';
+      if (query.includes('McpQuoteById')) {
+        return jsonResponse({ data: { quote: DRAFT_LINES } });
+      }
+      if (query.includes('quoteCreateLineItems')) order.push('create');
+      if (query.includes('quoteEditLineItems')) order.push('edit');
+      if (query.includes('quoteDeleteLineItems')) order.push('delete');
+      if (query.includes('McpQuoteEditLineItems')) {
+        return jsonResponse({
+          data: { quoteEditLineItems: { modifiedLineItems: [{ id: 'li-2' }], userErrors: [] } },
+        });
+      }
+      if (query.includes('McpQuoteDeleteLineItems')) {
+        return jsonResponse({
+          data: { quoteDeleteLineItems: { deletedLineItems: [{ id: 'li-1' }], userErrors: [] } },
+        });
+      }
+      if (query.includes('McpQuoteCreateLineItems')) {
+        return jsonResponse({
+          data: { quoteCreateLineItems: { createdLineItems: [{ id: 'li-3' }], userErrors: [] } },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+
+    await updateUnsentQuoteDraft(
+      {
+        quoteId: 'quote-1',
+        addLineItems: [{ name: 'Replacement', quantity: 1, unitPrice: 50, taxable: true }],
+        updateLineItems: [{ lineItemId: 'li-2', name: 'Labor revised', optional: true, recommended: true }],
+        removeLineItemIds: ['li-1'],
+      },
+      { fetchImpl, token: 'test' }
+    );
+
+    assert.deepEqual(order, ['create', 'edit', 'delete']);
+    const editBody = JSON.parse(
+      bodies.find((body) => (JSON.parse(body) as { query?: string }).query?.includes('quoteEditLineItems')) || '{}'
+    ) as { variables?: { lineItems?: Array<Record<string, unknown>> } };
+    assert.deepEqual(editBody.variables?.lineItems, [
+      { lineItemId: 'li-2', name: 'Labor revised', optional: true, recommended: true },
+    ]);
+    const deleteBody = JSON.parse(
+      bodies.find((body) => (JSON.parse(body) as { query?: string }).query?.includes('quoteDeleteLineItems')) || '{}'
+    ) as { variables?: { lineItemIds?: string[] } };
+    assert.deepEqual(deleteBody.variables?.lineItemIds, ['li-1']);
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+    assert.equal(bodies.some((body) => body.includes('saveToProductsAndServices') && body.includes('quoteEditLineItems')), false);
+  });
+
+  it('refuses line edits on a sent quote before any line mutation', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      bodies.push(String(init?.body || ''));
+      return jsonResponse({
+        data: {
+          quote: {
+            ...DRAFT_LINES,
+            quoteStatus: 'awaiting_response',
+            sentAt: '2026-09-01T00:00:00Z',
+          },
+        },
+      });
+    };
+    await assert.rejects(
+      () =>
+        updateUnsentQuoteDraft(
+          { quoteId: 'quote-1', updateLineItems: [{ lineItemId: 'li-1', name: 'Nope' }], removeLineItemIds: ['li-2'] },
+          { fetchImpl, token: 'test' }
+        ),
+      /only unsent drafts/
+    );
+    assert.equal(bodies.some((body) => body.includes('quoteEditLineItems')), false);
+    assert.equal(bodies.some((body) => body.includes('quoteDeleteLineItems')), false);
     assert.equal(bodies.some((body) => body.includes('quoteCreateLineItems')), false);
   });
 });

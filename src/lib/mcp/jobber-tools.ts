@@ -26,6 +26,7 @@ import {
 import {
   getClientById,
   getQuoteById,
+  parseQuoteLineEdits,
   searchProducts,
   searchQuotes,
   setQuoteSalesperson,
@@ -56,7 +57,7 @@ import {
   parseCreateVisitArgs,
 } from '../jobber/mcp-job-writes.ts';
 import { cancelJob, cancelVisit, rescheduleVisit } from '../jobber/mcp-job-cancel.ts';
-import { createNote, parseCreateNoteArgs } from '../jobber/mcp-notes.ts';
+import { createNote, listNotes, parseCreateNoteArgs, parseListNotesArgs } from '../jobber/mcp-notes.ts';
 import { assertNoNotifyArgs } from '../jobber/mcp-notify.ts';
 import { createRequest } from '../jobber/mcp-request-writes.ts';
 import { getRequest, searchRequests } from '../jobber/mcp-requests.ts';
@@ -72,7 +73,7 @@ import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.9.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.10.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -133,7 +134,8 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, and visible fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
-  'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. set_quote_salesperson changes only the salesperson on a quote in any status and never contacts the customer. Quote reads include salesperson id and name.',
+  'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. It can add, edit, or delete line items on an unsent draft only (quoteEditLineItems / quoteDeleteLineItems) and refuses a non-draft quote or a delete that would leave no lines. set_quote_salesperson changes only the salesperson on a quote in any status and never contacts the customer. Quote reads include salesperson id and name.',
+  'list_notes reads note text (message, author, created time, attachment file names and URLs) for a job including notes on its visits, or for a client, quote, or request. Read-only.',
   'search_jobs and get_job accept includeVisits (default false) for visit times and assigned technician names. That path skips photos and caps the Jobber page at 10. search_invoices and get_invoice accept includeJobs (default false) for linked job ids and job numbers.',
 ].join(' ');
 
@@ -372,7 +374,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'update_quote_draft',
     description:
-      'Update an UNSENT draft quote (title, message, salesperson, and/or add line items). Refuses sent/approved/converted quotes. salespersonId is sent on quoteEdit; the tool re-reads the quote and errors if Jobber did not change the salesperson.',
+      'Update an UNSENT draft quote: title, message, salesperson, add line items, edit existing line items, and/or delete line items. Refuses sent, approved, converted, and any non-draft quote. Never sends the quote. salespersonId is sent on quoteEdit; the tool re-reads the quote and errors if Jobber did not change the salesperson. Line edits use quoteEditLineItems (lineItemId plus only the fields you pass). Deletes use quoteDeleteLineItems and refuse to remove every line.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -391,6 +393,38 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
             'Jobber user id. Omit to leave the salesperson unchanged. The response salesperson must match this id or the tool errors.',
         },
         addLineItems: { type: 'array', items: LINE_ITEM_SCHEMA },
+        updateLineItems: {
+          type: 'array',
+          description:
+            'Edit existing lines on an unsent draft. lineItemId comes from get_quote. Only fields you pass are changed. optional false makes the line required.',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['lineItemId'],
+            properties: {
+              lineItemId: { type: 'string', description: 'Encoded quote line item id from get_quote.' },
+              name: { type: 'string' },
+              description: { type: 'string' },
+              quantity: { type: 'number' },
+              unitPrice: { type: 'number', description: 'Street sell price. Do not invent a 60% GP raise.' },
+              taxable: { type: 'boolean' },
+              optional: {
+                type: 'boolean',
+                description: 'true = the client can skip this line. false = required line. Omit to leave unchanged.',
+              },
+              recommended: {
+                type: 'boolean',
+                description: 'Pre-select an optional line in Client Hub. Must stay optional.',
+              },
+            },
+          },
+        },
+        removeLineItemIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Encoded line item ids to delete from an unsent draft. Refuses when that would leave the quote with no line items. Does not send the quote.',
+        },
       },
     },
   },
@@ -843,6 +877,31 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'list_notes',
+    description:
+      'Read note text on a Jobber job (including notes posted on its visits), client, quote, or request. Returns message, author, created time, and attachment file names and URLs. Read-only. Does not email or text the client. Pass exactly one of jobId, jobNumber, clientId, quoteId, or requestId. Optional visitId, with a job, limits visit notes to that visit.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        jobId: { type: 'string', description: 'Encoded Jobber job id.' },
+        jobNumber: { type: 'string', description: 'Job number, for example 3599, when the encoded id is unknown.' },
+        clientId: { type: 'string', description: 'Encoded Jobber client id.' },
+        quoteId: { type: 'string', description: 'Encoded Jobber quote id.' },
+        requestId: { type: 'string', description: 'Encoded Jobber request id.' },
+        visitId: {
+          type: 'string',
+          description:
+            'Optional encoded visit id. Only with a job. Returns that visit’s notes plus the job notes. Omit to include notes from the job and each of its visits.',
+        },
+        first: {
+          type: 'number',
+          description: 'Notes to read per connection. Default 25, max 50. Newest first when Jobber accepts the sort.',
+        },
+      },
+    },
+  },
+  {
     name: 'create_note',
     description:
       'Add a note to a client, request, job, or quote. Uses clientCreateNote, requestCreateNote, jobCreateNote, or quoteCreateNote. Pass exactly one id. Does not email or text the client.',
@@ -1107,6 +1166,7 @@ function summarizeQuote(quote: JobberQuoteDetail) {
         description: line.description ?? null,
         quantity: line.quantity ?? null,
         unitPrice: line.unitPrice ?? null,
+        taxable: typeof line.taxable === 'boolean' ? line.taxable : null,
         optional: typeof line.optional === 'boolean' ? line.optional : null,
         recommended: typeof line.recommended === 'boolean' ? line.recommended : null,
       })),
@@ -1239,6 +1299,12 @@ export async function callJobberMcpTool(
         const addLineItems = Array.isArray(args.addLineItems)
           ? parseLineItems(args.addLineItems, 'addLineItems')
           : undefined;
+        const updateLineItems = Array.isArray(args.updateLineItems)
+          ? parseQuoteLineEdits(args.updateLineItems)
+          : undefined;
+        const removeLineItemIds = Array.isArray(args.removeLineItemIds)
+          ? parseRemoveLineItemIds(args.removeLineItemIds)
+          : undefined;
         const quote = await updateUnsentQuoteDraft(
           {
             quoteId: requiredString(args, 'quoteId'),
@@ -1247,13 +1313,15 @@ export async function callJobberMcpTool(
             taxRateId: optionalString(args, 'taxRateId'),
             salespersonId: optionalString(args, 'salespersonId'),
             addLineItems,
+            updateLineItems,
+            removeLineItemIds,
           },
           deps
         );
         return textResult({
           draft: true,
           sentAt: quote.sentAt ?? null,
-          note: 'Draft stays unsent. This tool cannot send the quote to the customer.',
+          note: 'Draft stays unsent. Line edits and deletes ran only because the quote was still an unsent draft. This tool cannot send the quote to the customer.',
           quote: summarizeQuote(quote),
         });
       }
@@ -1264,6 +1332,8 @@ export async function callJobberMcpTool(
           'message',
           'lineItems',
           'addLineItems',
+          'updateLineItems',
+          'removeLineItemIds',
           'taxRateId',
           'status',
           'quoteStatus',
@@ -1612,6 +1682,17 @@ export async function callJobberMcpTool(
           note: created.scheduledAssessment
             ? 'Created with requestCreate and an assessment schedule. notifyTeam is false. Nothing was emailed or texted.'
             : 'Created with requestCreate. No assessment was scheduled. Nothing was emailed or texted.',
+        });
+      }
+      case 'list_notes': {
+        const listed = await listNotes(parseListNotesArgs(args), deps);
+        return textResult({
+          ...listed,
+          note: listed.visitNotesError
+            ? `Read-only. Job notes are included. Visit notes could not be read: ${listed.visitNotesError} Nothing was emailed or texted.`
+            : listed.truncated
+              ? 'Read-only. Some notes or visits were not included (pass a larger first, max 50, or a visitId). Nothing was emailed or texted.'
+              : 'Read-only. Nothing was emailed or texted.',
         });
       }
       case 'create_note': {
