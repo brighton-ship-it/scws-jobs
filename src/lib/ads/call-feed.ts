@@ -10,6 +10,8 @@ export interface FeedRow {
   /** Shop Voice outbound attempts in the selected period, plus who placed the last one. */
   outreach?: string | null;
   goingCold?: boolean;
+  /** Automated Mike callback for this call, e.g. "Mike tried 4:21 PM, voicemail". */
+  mike?: string | null;
 }
 
 export function formatPhone(p: string | null | undefined): string {
