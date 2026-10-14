@@ -273,6 +273,9 @@ export function adCategory(campaign: string | null | undefined): AdCategory | nu
 /** Shown when a Mike/Sarah call has no original dialed number on the log or a recording. */
 export const AI_UNKNOWN_SOURCE = 'Unknown (AI-handled)';
 
+/** Keyword and campaign tables: a call that is not a Google Ads call. */
+export const NOT_FROM_ADS = 'Not from ads';
+
 /** Customer-facing lines. The AI forward target (760-491-5348) is not a source. */
 const AI_LINE_SOURCE: Record<string, string> = {
   '7604408520': 'Main',
@@ -296,8 +299,10 @@ export interface DialedSourceHint {
   /** Original dialed number: Voice called_number, or the recording's tracking number. */
   dialedNumber?: string | null;
   recordingSource?: string | null;
-  /** Google Ads campaign already linked on the call log. Not the '(Mike live call)' placeholder. */
+  /** Google Ads campaign already linked on the call log or an ads_calls row. Not the '(Mike live call)' placeholder. */
   campaignName?: string | null;
+  keyword?: string | null;
+  adGroupName?: string | null;
   vapiCallId?: string | null;
 }
 
@@ -322,37 +327,60 @@ function realCampaignName(name: string | null | undefined): string | null {
   return n;
 }
 
+function trimmedField(value: string | null | undefined): string | null {
+  const n = (value ?? '').trim();
+  return n || null;
+}
+
+function hintHasAttribution(hint: DialedSourceHint): boolean {
+  return !!(
+    sourceFromDialed(hint.dialedNumber, hint.recordingSource)
+    || realCampaignName(hint.campaignName)
+    || trimmedField(hint.keyword)
+    || trimmedField(hint.adGroupName)
+  );
+}
+
 /**
- * Move Mike/Sarah calls off the '(Mike live call)' bucket onto the line the customer dialed.
+ * Move Mike/Sarah calls off their own source and keyword rows onto the line the customer dialed.
  * A tracking-number recording beats the Voice ring-group destination (often Main).
- * No dialed number → 'Unknown (AI-handled)'.
+ * Keyword, ad group, and campaign are copied from any matching hint (call log or ads_calls),
+ * even when a different hint supplied the dialed number.
+ * No dialed number → 'Unknown (AI-handled)'. Grouping labels calls with no ad fields 'Not from ads'.
  */
 export function attributeAiHandledCalls<T extends DashCall & { _vapi?: string }>(calls: T[], hints: DialedSourceHint[]): T[] {
   return calls.map((call) => {
     if (!isAiPlaceholder(call)) return call;
     const phone = digits10(call.caller_phone);
     const t = Date.parse(call.started_at || '');
-    let best: DialedSourceHint | null = null;
-    let bestScore = -1;
+    const matched: DialedSourceHint[] = [];
     for (const hint of hints) {
-      const source = sourceFromDialed(hint.dialedNumber, hint.recordingSource);
-      const campaign = realCampaignName(hint.campaignName);
-      if (!source && !campaign) continue;
+      if (!hintHasAttribution(hint)) continue;
       const hintPhone = digits10(hint.callerPhone);
       const hintAt = Date.parse(hint.at);
       const idMatch = !!(call._vapi && hint.vapiCallId && hint.vapiCallId === call._vapi);
       const timeMatch = !!phone && phone === hintPhone && Number.isFinite(t) && Number.isFinite(hintAt) && Math.abs(hintAt - t) <= 10 * 60_000;
-      if (!idMatch && !timeMatch) continue;
-      const specific = source && source !== 'Main' && source !== 'Ransom' ? 10 : source ? 5 : 0;
-      const score = specific + (campaign ? 4 : 0) + (idMatch ? 3 : 0);
+      if (idMatch || timeMatch) matched.push(hint);
+    }
+    let best: DialedSourceHint | null = null;
+    let bestScore = -1;
+    for (const hint of matched) {
+      const source = sourceFromDialed(hint.dialedNumber, hint.recordingSource);
+      if (!source) continue;
+      const specific = source !== 'Main' && source !== 'Ransom' ? 10 : 5;
+      const score = specific + (realCampaignName(hint.campaignName) ? 4 : 0) + (call._vapi && hint.vapiCallId === call._vapi ? 3 : 0);
       if (score > bestScore) { best = hint; bestScore = score; }
     }
     const source = best ? sourceFromDialed(best.dialedNumber, best.recordingSource) : null;
-    const campaign = realCampaignName(best?.campaignName);
+    const campaign = matched.map((h) => realCampaignName(h.campaignName)).find((n): n is string => !!n) ?? null;
+    const keyword = matched.map((h) => trimmedField(h.keyword)).find((n): n is string => !!n) ?? null;
+    const adGroup = matched.map((h) => trimmedField(h.adGroupName)).find((n): n is string => !!n) ?? null;
     return {
       ...call,
       call_source: source ?? AI_UNKNOWN_SOURCE,
       campaign_name: campaign,
+      keyword,
+      ad_group_name: adGroup,
     };
   });
 }
@@ -367,16 +395,26 @@ function trackingSourceKey(c: DashCall): string {
   return src || (c.caller_area_code ? `area ${c.caller_area_code}` : '');
 }
 
-function hasRealCampaign(c: DashCall): boolean {
-  const n = (c.campaign_name ?? '').trim();
-  return !!n && !n.startsWith('(');
+/** Google Ads call, including an AI-handled call whose log or ads row carried a campaign, keyword, or ad group. */
+function isFromAds(c: DashCall): boolean {
+  if (realCampaignName(c.campaign_name)) return true;
+  if (trimmedField(c.keyword) || trimmedField(c.ad_group_name)) return true;
+  const src = (c.call_source ?? '').trim().toLowerCase();
+  return src === 'ads' || src === 'ad' || src === 'google_ads';
 }
 
-/** Keep real campaigns. Drop the '(Mike live call)' placeholder and live calls with no campaign. */
-function countsAsCampaign(c: DashCall): boolean {
-  if (hasRealCampaign(c)) return true;
-  if (c.live) return false;
-  return !(c.campaign_name ?? '').trim().startsWith('(');
+/** Keyword, else ad group. Calls that are not from Google Ads share one row instead of '(none)'. */
+function keywordGroupKey(c: DashCall): string {
+  const kw = trimmedField(c.keyword);
+  if (kw) return kw;
+  const ag = trimmedField(c.ad_group_name);
+  if (ag) return `ad group: ${ag}`;
+  return isFromAds(c) ? '' : NOT_FROM_ADS;
+}
+
+/** Real campaign name. Calls that are not from Google Ads share one row instead of '(none)'. */
+function campaignGroupKey(c: DashCall): string {
+  return realCampaignName(c.campaign_name) ?? (isFromAds(c) ? '' : NOT_FROM_ADS);
 }
 
 export function buildAdSplit(input: {
@@ -675,17 +713,12 @@ export function buildDashboard(input: {
       multipleInvoiced: ratio(invoicedValue, spend),
       multiplePaid: paidValue == null ? null : ratio(paidValue, spend),
     },
-    byCampaign: group(decorated.filter(countsAsCampaign), (c) => c.campaign_name || '', spendByCampaign, bookedInWin.filter((b) => countsAsCampaign(b.call))).map((r) => {
+    byCampaign: group(decorated, campaignGroupKey, spendByCampaign, bookedInWin).map((r) => {
       if (r.spend == null) return r;
-      const n = decorated.filter((c) => (c.campaign_name || '') === r.key && inRange(c.started_at, revStart)).length;
+      const n = decorated.filter((c) => campaignGroupKey(c) === r.key && inRange(c.started_at, revStart)).length;
       return { ...r, costPerCall: n ? round(r.spend / n) : null }; // spend and calls over the same days
     }),
-    byKeyword: group(
-      decorated.filter((c) => !(c.live && !c.keyword && !c.ad_group_name)),
-      (c) => c.keyword || (c.ad_group_name ? `ad group: ${c.ad_group_name}` : ''),
-      undefined,
-      bookedInWin.filter((b) => !(b.call.live && !b.call.keyword && !b.call.ad_group_name)),
-    ),
+    byKeyword: group(decorated, keywordGroupKey, undefined, bookedInWin),
     byTrackingNumber: group(decorated, trackingSourceKey, undefined, bookedInWin),
     recent,
     tv: {

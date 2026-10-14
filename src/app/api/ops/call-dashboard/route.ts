@@ -86,9 +86,15 @@ export async function GET(request: NextRequest) {
     const dialedHints: DialedSourceHint[] = [
       ...inboundLog.map((r: any) => ({
         at: r.started_at, callerPhone: r.caller_phone, dialedNumber: r.called_number,
-        campaignName: r.campaign_name, vapiCallId: r.receptionist_call_id,
+        campaignName: r.campaign_name, keyword: r.keyword, vapiCallId: r.receptionist_call_id,
       })),
       ...recordingHints.hints,
+      // ads_calls carry keyword and ad group. Nearby Mike rows were already dropped as duplicates;
+      // this still fills a call the log linked by phone and time but did not copy the ad group onto.
+      ...adsCalls.map((c) => ({
+        at: c.started_at || '', callerPhone: c.caller_phone, campaignName: c.campaign_name,
+        keyword: c.keyword, adGroupName: c.ad_group_name,
+      })),
     ];
     const liveCalls = attributeAiHandledCalls(mergeLiveCalls(adsCalls, liveRows), dialedHints);
     let bookingIds = new Set<string>();
@@ -302,7 +308,7 @@ async function rememberInvoices(from: string, rows: unknown[]) {
   try { await unstable_cache(async () => rows, invKey(from), { revalidate: 3600, tags: ['dash-invoices'] })(); } catch { /* best effort */ }
 }
 
-const LOG_COLUMNS = 'voice_call_key, started_at, direction, caller_phone, called_number, ring_group, outcome, answered_by, duration_seconds, ring_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at';
+const LOG_COLUMNS = 'voice_call_key, started_at, direction, caller_phone, called_number, ring_group, outcome, answered_by, duration_seconds, ring_seconds, client_name, customer_id, jobber_client_id, campaign_name, keyword, receptionist_call_id, synced_at';
 
 /** Original dialed number from recorded tracking lines, for Mike/Sarah source attribution. */
 async function loadRecordingHints(db: any, since: string): Promise<{ hints: DialedSourceHint[]; note: string | null }> {

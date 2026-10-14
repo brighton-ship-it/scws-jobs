@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  AI_UNKNOWN_SOURCE, attributeAiHandledCalls, buildDashboard, hashPhone, maskPhone, mergeLiveCalls, parseRange, ptStartOfDay, isAnswered, rangeStart, type DashCall,
+  AI_UNKNOWN_SOURCE, NOT_FROM_ADS, attributeAiHandledCalls, buildDashboard, hashPhone, maskPhone, mergeLiveCalls, parseRange, ptStartOfDay, isAnswered, rangeStart, type DashCall,
 } from './call-dashboard.ts';
 
 const now = new Date('2026-10-09T20:00:00Z'); // 1pm PT Fri
@@ -203,55 +203,100 @@ test('adSplit separates pump and drilling by campaign', () => {
   assert.equal(d.adSplit!.week.rows[1].booked, 1);
 });
 
-test('Mike and Sarah calls count on the dialed source, including bookings', () => {
+test('Mike and Sarah calls count on the dialed source, keyword, and campaign, including bookings', () => {
   const yelp = '7605550101';
   const ads = '7605550102';
   const older = '7605550103';
   const shop = '7605550104';
+  const groupOnly = '7605550105';
   const live = mergeLiveCalls([], [
     { vapi_call_id: 'v-yelp', phone: yelp, duration_sec: 80, called_at: '2026-10-09T18:00:00Z' },
     { vapi_call_id: 'v-ads', phone: ads, duration_sec: 90, called_at: '2026-10-09T18:05:00Z' },
     { vapi_call_id: 'v-old', phone: older, duration_sec: 70, called_at: '2026-10-09T18:10:00Z' },
     { vapi_call_id: 'v-main', phone: shop, duration_sec: 40, called_at: '2026-10-09T18:12:00Z' },
+    { vapi_call_id: 'v-group', phone: groupOnly, duration_sec: 55, called_at: '2026-10-09T18:20:00Z' },
   ]);
   assert.equal(live[0].call_source, 'Mike (AI receptionist)');
+  // Recording supplies the dialed line; the call log / ads row supplies keyword and ad group.
   const attributed = attributeAiHandledCalls(live, [
     { at: '2026-10-09T18:00:05Z', callerPhone: '+1 (760) 555-0101', dialedNumber: '+17604408520', vapiCallId: 'v-yelp' },
     { at: '2026-10-09T18:00:00Z', callerPhone: yelp, dialedNumber: '+17608914264', recordingSource: 'yelp' },
-    { at: '2026-10-09T18:05:00Z', callerPhone: ads, dialedNumber: '+17603312502', campaignName: 'Leads-Search-1', recordingSource: 'google_ads' },
+    { at: '2026-10-09T18:05:00Z', callerPhone: ads, dialedNumber: '+17603312502', recordingSource: 'google_ads' },
+    { at: '2026-10-09T18:05:10Z', callerPhone: ads, campaignName: 'Leads-Search-1', keyword: 'well pump repair', adGroupName: 'Pump Service' },
     { at: '2026-10-09T18:12:00Z', callerPhone: shop, dialedNumber: '+17604408520', vapiCallId: 'v-main' },
+    { at: '2026-10-09T18:20:00Z', callerPhone: groupOnly, dialedNumber: '+17603312502', campaignName: 'Leads-Search-1', adGroupName: 'Emergency' },
   ]);
-  assert.equal(attributed.find((c) => c._vapi === 'v-yelp')?.call_source, 'Yelp');
-  assert.equal(attributed.find((c) => c._vapi === 'v-ads')?.call_source, 'Ads');
-  assert.equal(attributed.find((c) => c._vapi === 'v-ads')?.campaign_name, 'Leads-Search-1');
-  assert.equal(attributed.find((c) => c._vapi === 'v-old')?.call_source, AI_UNKNOWN_SOURCE);
-  assert.equal(attributed.find((c) => c._vapi === 'v-old')?.campaign_name, null);
-  assert.equal(attributed.find((c) => c._vapi === 'v-main')?.call_source, 'Main');
+  const yelpCall = attributed.find((c) => c._vapi === 'v-yelp');
+  const adsCall = attributed.find((c) => c._vapi === 'v-ads');
+  const oldCall = attributed.find((c) => c._vapi === 'v-old');
+  const mainCall = attributed.find((c) => c._vapi === 'v-main');
+  const groupCall = attributed.find((c) => c._vapi === 'v-group');
+  assert.equal(yelpCall?.call_source, 'Yelp');
+  assert.equal(yelpCall?.keyword, null);
+  assert.equal(adsCall?.call_source, 'Ads');
+  assert.equal(adsCall?.campaign_name, 'Leads-Search-1');
+  assert.equal(adsCall?.keyword, 'well pump repair');
+  assert.equal(adsCall?.ad_group_name, 'Pump Service');
+  assert.equal(oldCall?.call_source, AI_UNKNOWN_SOURCE);
+  assert.equal(oldCall?.campaign_name, null);
+  assert.equal(oldCall?.keyword, null);
+  assert.equal(mainCall?.call_source, 'Main');
+  assert.equal(groupCall?.call_source, 'Ads');
+  assert.equal(groupCall?.keyword, null);
+  assert.equal(groupCall?.ad_group_name, 'Emergency');
   assert.equal(attributed.some((c) => c.call_source === 'Mike (AI receptionist)' || c.campaign_name === '(Mike live call)'), false);
+  const sarah = attributeAiHandledCalls([{
+    ...live[0], _vapi: 'v-sarah', caller_phone: '7605550111', started_at: '2026-10-09T18:30:00Z',
+    call_source: 'Sarah (AI receptionist)', campaign_name: '(Sarah live call)',
+  }], [{ at: '2026-10-09T18:30:00Z', callerPhone: '7605550111', dialedNumber: '+17604540365', recordingSource: 'apple_maps', keyword: '  ' }]);
+  assert.equal(sarah[0].call_source, 'Apple Maps');
+  assert.equal(sarah[0].campaign_name, null);
+  assert.equal(sarah[0].keyword, null);
 
   const d = buildDashboard({
     now, range: '7',
     calls: [
       ...attributed,
-      call({ caller_phone: '9515557777', call_source: 'AD', campaign_name: 'Leads-Search-1' }),
+      call({ caller_phone: '9515557777', call_source: 'AD', campaign_name: 'Leads-Search-1', keyword: 'well pump repair' }),
+      call({ caller_phone: '7605550188', call_source: 'GBP Anza', campaign_name: null, keyword: null, ad_group_name: null }),
     ],
-    conversions: [{
-      jobber_job_id: 'j-yelp', conversion_at: '2026-10-09T19:00:00Z', value_usd: 200,
-      payload: { conversion: { user_identifiers: [{ hashed_phone_number: hashPhone(yelp) }] }, stages: { booking: 200 } },
-    }],
+    conversions: [
+      {
+        jobber_job_id: 'j-yelp', conversion_at: '2026-10-09T19:00:00Z', value_usd: 200,
+        payload: { conversion: { user_identifiers: [{ hashed_phone_number: hashPhone(yelp) }] }, stages: { booking: 200 } },
+      },
+      {
+        jobber_job_id: 'j-ads', conversion_at: '2026-10-09T19:10:00Z', value_usd: 400,
+        payload: { conversion: { user_identifiers: [{ hashed_phone_number: hashPhone(ads) }] }, stages: { booking: 400 } },
+      },
+    ],
     spend: [{ date: '2026-10-08', campaign: 'Leads-Search-1', costUsd: 50, clicks: 4 }],
     paidByJob: null,
   });
   const src = (key: string) => d.byTrackingNumber.find((r) => r.key === key);
+  const camp = (key: string) => d.byCampaign.find((r) => r.key === key);
+  const kw = (key: string) => d.byKeyword.find((r) => r.key === key);
   assert.equal(src('Yelp')?.calls, 1);
   assert.equal(src('Yelp')?.booked, 1);
-  assert.equal(src('Ads')?.calls, 1);
-  assert.equal(src('Ads')?.booked, 0);
+  assert.equal(src('Ads')?.calls, 2);
+  assert.equal(src('Ads')?.booked, 1);
   assert.equal(src(AI_UNKNOWN_SOURCE)?.calls, 1);
   assert.equal(src('Main')?.calls, 1);
-  assert.equal(d.byTrackingNumber.some((r) => r.key === '(Mike live call)' || r.key === 'Mike (AI receptionist)'), false);
-  assert.equal(d.byCampaign.some((r) => r.key === '(Mike live call)'), false);
-  assert.equal(d.byCampaign.find((r) => r.key === 'Leads-Search-1')?.calls, 2);
+  assert.equal(src('GBP Anza')?.calls, 1);
+  assert.equal(camp('Leads-Search-1')?.calls, 3);
+  assert.equal(camp('Leads-Search-1')?.booked, 1);
+  // Yelp, unresolved, Main, and the plain GBP call are not ad calls.
+  assert.equal(camp(NOT_FROM_ADS)?.calls, 4);
+  assert.equal(camp(NOT_FROM_ADS)?.booked, 1);
+  assert.equal(kw('well pump repair')?.calls, 2);
+  assert.equal(kw('well pump repair')?.booked, 1);
+  assert.equal(kw('ad group: Emergency')?.calls, 1);
+  assert.equal(kw('ad group: Emergency')?.booked, 0);
+  assert.equal(kw(NOT_FROM_ADS)?.calls, 4);
+  assert.equal(kw(NOT_FROM_ADS)?.booked, 1);
+  for (const rows of [d.byTrackingNumber, d.byCampaign, d.byKeyword]) {
+    assert.equal(rows.some((r) => r.key === '(none)' || r.key === '(Mike live call)' || r.key === 'Mike (AI receptionist)' || r.key === 'Sarah (AI receptionist)'), false);
+  }
 });
 
 test('sales headline totals follow the selected range, weeks unchanged', async () => {
