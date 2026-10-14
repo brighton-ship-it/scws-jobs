@@ -20,7 +20,7 @@ export const Q = {
     nodes { id jobNumber title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   quotes: `query MirQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) { quotes(first: $first, after: $after, filter: $filter) {
-    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } }
+    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name phones { number } } }
     pageInfo { hasNextPage endCursor } } }`,
   paymentRecords: `query MirPay($first: Int!, $after: String, $filter: PaymentRecordFilterAttributes) { paymentRecords(first: $first, after: $after, filter: $filter) {
     nodes { id amount entryDate adjustmentType }
@@ -123,7 +123,7 @@ export function rowsFor(field: Field, nodes: any[]) {
       break;
     case 'quotes':
       table = 'jobber_quotes';
-      rows = nodes.map((n) => ({ id: n.id, quote_status: n.quoteStatus ?? null, created_at: n.createdAt ?? null, jobber_updated_at: n.updatedAt ?? null, data: n, synced_at: now }));
+      rows = nodes.map((n) => { addClient(n.client); return { id: n.id, quote_status: n.quoteStatus ?? null, created_at: n.createdAt ?? null, jobber_updated_at: n.updatedAt ?? null, data: n, synced_at: now }; });
       break;
     case 'paymentRecords':
       table = 'jobber_payments';

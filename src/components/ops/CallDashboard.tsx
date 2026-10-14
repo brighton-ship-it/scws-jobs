@@ -186,6 +186,43 @@ function OutcomePill({ o, by, dark = false }: { o: string; by?: string | null; d
     : (dark ? 'bg-slate-200 text-slate-900' : 'bg-slate-700 text-white');
   return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{who ? `${o} · ${who}` : o}</span>;
 }
+function CallbackLine({ text, dark }: { text: string; dark: boolean }) {
+  const called = text.startsWith('Called back');
+  const cls = called ? (dark ? 'text-emerald-300' : 'text-emerald-700') : (dark ? 'text-amber-300' : 'text-amber-800');
+  return <div className={`mt-1 break-words text-xs font-medium leading-snug xl:text-sm ${cls}`}>{text}</div>;
+}
+
+function NeedsCallbackList({ view, rangeLabel, dark = false, limit }: { view: Dashboard['needsCallback']; rangeLabel: string; dark?: boolean; limit: number }) {
+  const count = view?.count ?? 0;
+  const rows = view?.rows ?? [];
+  const shown = rows.slice(0, limit);
+  const ink = dark ? 'text-white' : 'text-slate-900';
+  const sub = dark ? 'text-slate-300' : 'text-slate-600';
+  const rule = dark ? 'divide-slate-800' : 'divide-slate-200';
+  return (
+    <div>
+      <p className={`text-3xl font-bold tabular-nums xl:text-5xl ${ink}`} data-needs-callback-count={view ? count : undefined}>{view ? String(count) : '—'}</p>
+      <p className={`mt-0.5 text-xs ${sub}`}>{rangeLabel}</p>
+      {shown.length === 0 ? <p className={`mt-3 text-sm ${sub}`}>{view ? 'No callbacks waiting in this period.' : ' '}</p> : (
+        <ul className={`mt-3 divide-y ${rule}`}>
+          {shown.map((r, i) => (
+            <li key={`${r.at}-${r.phone}-${i}`} className="py-2.5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className={`break-words font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
+                  <div className={`break-words text-sm ${sub}`}>{r.name ? <><a href={`tel:${r.phone}`}>{r.phone}</a> · </> : null}{r.line} · {r.outcome}</div>
+                </div>
+                <span className={`shrink-0 text-sm tabular-nums ${sub}`}>{feedTime(r.at)}</span>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+      {count > shown.length ? <p className={`mt-2 text-xs ${sub}`}>Showing {shown.length} of {count}</p> : null}
+    </div>
+  );
+}
+
 export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; dark?: boolean; max?: number }) {
   const list = max ? rows.slice(0, max) : rows;
   const head = dark ? 'text-slate-400' : 'text-slate-500';
@@ -203,6 +240,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
           <div className={`mt-1 break-words text-base font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
           <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}</div>
           {r.summary ? <div className={`mt-1 text-sm ${sub}`}>{r.summary}</div> : null}
+          {r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}
         </li>
       ))}
     </ul>
@@ -219,7 +257,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
               {r.summary ? <div className={`truncate text-sm ${sub}`} title={r.summary}>{r.summary}</div> : null}
             </td>
             <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}</td>
-            <td className="overflow-hidden px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} /></td>
+            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} />{r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}</td>
             <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${ink}`}>{fmtDur(r.durationSeconds)}</td>
           </tr>
         ))}
@@ -484,6 +522,10 @@ export function CallDashboardPage() {
             </Card>
           </div>
 
+          <Card title="Needs callback" subtitle="Missed, voicemail, and Mike calls with no callback yet. Skips hang-ups under 10s, spam, vendors, AI bookings, and numbers with a Jobber quote, request, or job created after the call." delay={200}>
+            <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} limit={12} />
+          </Card>
+
           <div className="grid gap-4 lg:grid-cols-5">
             <Card title="Conversion funnel" subtitle={`New-customer jobs credited to a call · ${rangeLabel}`} delay={140}>
               <Funnel stages={[
@@ -641,6 +683,11 @@ export function CallDashboardTv() {
           <AdSplitBlocks dark split={data.adSplit} />
         </div>
       ) : null}
+      <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Needs callback">
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Needs callback</p>
+        <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · no callback yet · {mainRange}</p>
+        <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} limit={6} />
+      </div>
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Recent calls</p>
         {data?.callFeed ? <CallFeedTable dark rows={data.callFeed} max={6} /> : <p className="text-slate-500">{tv ? 'No recent calls' : ' '}</p>}

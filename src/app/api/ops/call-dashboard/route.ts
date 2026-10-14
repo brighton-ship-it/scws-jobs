@@ -15,6 +15,8 @@ import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
+import { annotateFeed, callbackCandidates, callbackSources, indexWorkTimes, needsCallback } from '@/lib/ads/callbacks';
+import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
 export const dynamic = 'force-dynamic';
@@ -38,6 +40,13 @@ export async function GET(request: NextRequest) {
   try {
     const db = createServiceClient() as any;
     const since = new Date(Date.now() - 95 * 86400_000).toISOString();
+    const nowDash = new Date();
+    const fromMs = Math.max(rangeStart(range, nowDash).getTime(), Date.parse(DASH_FLOOR_ISO));
+    const liveOutP = unstable_cache(
+      () => loadLiveOutbound(new Date(fromMs).toISOString()),
+      ['live-outbound-v1', new Date(fromMs).toISOString().slice(0, 10)],
+      { revalidate: 600 },
+    )().catch((error: unknown) => ({ rows: [] as any[], notes: [`outbound: ${error instanceof Error ? error.message : 'error'}`] }));
     const [calls, convs, spend, live] = await Promise.all([
       db.from('ads_calls')
         .select('started_at, duration_seconds, campaign_name, ad_group_name, keyword, caller_area_code, caller_phone, call_status, call_source, customer_id, jobber_client_id')
@@ -111,18 +120,40 @@ export async function GET(request: NextRequest) {
         (dash.tv as any).bookedJobNumbers = nums;
       }
     }
-    const log = await db.from('phone_call_log')
-      .select('started_at, caller_phone, called_number, outcome, answered_by, duration_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at')
-      .gte('started_at', since).order('started_at', { ascending: false }).limit(1000);
+    const log = await loadPhoneCallLog(db, since);
+    let inboundLog: any[] = [];
+    let outboundLog: any[] = [];
     if (log.error) notes.push(`call log: ${log.error.message}`);
-    else { log.data = (log.data ?? []).filter((r: any) => !isOwnNumber(r.caller_phone)); dash.callLog = buildCallLogView(log.data, new Date()); }
+    else {
+      inboundLog = (log.data ?? []).filter((r: any) => r.direction !== 'outbound' && !isOwnNumber(r.caller_phone));
+      outboundLog = (log.data ?? []).filter((r: any) => r.direction === 'outbound' && !isOwnNumber(r.caller_phone));
+      dash.callLog = buildCallLogView(inboundLog, nowDash);
+    }
     try {
       const recs = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name')
         .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995)').order('started_at', { ascending: false }).limit(100);
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
-      const merged = mergeCallFeed({ log: log.data ?? [], recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone)), bookedMike: bookingIds });
-      dash.callFeed = merged.slice(0, 40);
+      const merged = mergeCallFeed({ log: inboundLog, recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone)), bookedMike: bookingIds });
+      const liveOut = await liveOutP;
+      notes.push(...liveOut.notes);
+      const outboundByKey = new Map<string, any>();
+      for (const r of outboundLog) if (r.voice_call_key) outboundByKey.set(r.voice_call_key, r);
+      for (const r of liveOut.rows) if (r.voice_call_key && !outboundByKey.has(r.voice_call_key)) outboundByKey.set(r.voice_call_key, r);
+      const outboundAll = Array.from(outboundByKey.values());
+      const sources = callbackSources({ log: [...inboundLog, ...outboundAll], recordings: recs.data ?? [] });
+      dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash);
+      try {
+        const loaded = await loadWorkRows(db, new Date(fromMs).toISOString());
+        if (loaded.note) notes.push(loaded.note);
+        const candidates = callbackCandidates({
+          log: inboundLog,
+          recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)),
+          mike: liveRows,
+          bookedMike: bookingIds,
+        });
+        dash.needsCallback = needsCallback({ candidates, sources, work: indexWorkTimes(loaded.rows), fromMs, now: nowDash });
+      } catch (error) { notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`); }
       // Main page header and TV "today" tiles share this one count across every line.
       if (dash.callLog) dash.callLog.today = feedToday(merged, ptStartOfDay(new Date()).getTime());
     } catch (e) { notes.push(`call feed: ${e instanceof Error ? e.message : 'error'}`); }
@@ -150,7 +181,7 @@ export async function GET(request: NextRequest) {
         const text = c.live ? summaryByVapi.get((c as any)._vapi) ?? '' : (mikeByPhone.get(d ?? '') ?? []).filter((m) => Math.abs(m.t - t) < 15 * 60_000).map((m) => m.s).join(' ');
         return { at: c.started_at as string, phone: c.caller_phone, durationSec: c.duration_seconds, cat: c.live ? null : adCategory(c.campaign_name), live: !!c.live, text, missed: (c.call_status || '').toUpperCase() === 'MISSED' };
       });
-      const contacts = (log.data ?? []).map((r: any) => ({ at: r.started_at, phone: r.caller_phone, connected: String(r.outcome || '').startsWith('answered') || (String(r.outcome || '') === 'forwarded_ai' && (r.duration_seconds ?? 0) >= 15) }));
+      const contacts = inboundLog.map((r: any) => ({ at: r.started_at, phone: r.caller_phone, connected: String(r.outcome || '').startsWith('answered') || (String(r.outcome || '') === 'forwarded_ai' && (r.duration_seconds ?? 0) >= 15) }));
       const rl = classifyRealLeads({ calls: leadCalls, contacts, firstJobAt, booked });
       const rStartMs = Math.max(rangeStart(range, nowD).getTime(), floorMs);
       const inWin = (iso: string, from: number) => Date.parse(iso) >= from;
@@ -221,6 +252,7 @@ export async function GET(request: NextRequest) {
     if (!dash.roas && dash.adSplit) blankSplitMoney(dash);
     strictMoneyOnly(dash);
     dropStaleFields(dash);
+    dash.gaps.push('Outbound callbacks: staff Voice lines come from VOICE_STAFF_LINES (defaults Liz 619-320-8264, Shanicey 442-227-2898, Brighton by email). Liz’s Voice number shows only about 3 outbound calls in 7 days, so she likely calls from a phone that is not in the Voice audit log. Those callbacks stay missing until that phone is a logged Voice or Twilio line and is added to VOICE_STAFF_LINES.');
     dash.gaps.push(...notes);
     const ms = await mirrorState();
     return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) }));
@@ -248,6 +280,61 @@ async function sharedInvoices(from: string, to: string) {
 }
 async function rememberInvoices(from: string, rows: unknown[]) {
   try { await unstable_cache(async () => rows, invKey(from), { revalidate: 3600, tags: ['dash-invoices'] })(); } catch { /* best effort */ }
+}
+
+const LOG_COLUMNS = 'voice_call_key, started_at, direction, caller_phone, called_number, ring_group, outcome, answered_by, duration_seconds, ring_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at';
+
+async function loadPhoneCallLog(db: any, since: string) {
+  const rows: any[] = [];
+  for (let from = 0; from < 6000; from += 1000) {
+    const q = await db.from('phone_call_log').select(LOG_COLUMNS).gte('started_at', since).order('started_at', { ascending: false }).range(from, from + 999);
+    if (q.error) return { data: rows, error: q.error };
+    rows.push(...(q.data ?? []));
+    if ((q.data ?? []).length < 1000) break;
+  }
+  return { data: rows, error: null as null };
+}
+
+async function pageSince(db: any, table: string, columns: string, sinceIso: string) {
+  const rows: any[] = [];
+  for (let from = 0; from < 5000; from += 1000) {
+    const q = await db.from(table).select(columns).gte('created_at', sinceIso).order('created_at', { ascending: false }).range(from, from + 999);
+    if (q.error) return { rows, error: q.error.message as string };
+    rows.push(...(q.data ?? []));
+    if ((q.data ?? []).length < 1000) break;
+  }
+  return { rows, error: null as string | null };
+}
+
+function clientPhones(client: any): string[] {
+  if (!client) return [];
+  const raw = client.phones_digits ?? client.phones ?? [];
+  return raw.map((p: any) => digits10(typeof p === 'string' ? p : p?.number)).filter((d: string | null): d is string => !!d);
+}
+
+/** Jobber jobs, quotes (when the mirror stored client phones), and booking requests created in the window. */
+async function loadWorkRows(db: any, sinceIso: string): Promise<{ rows: Array<{ phone: string | null; at: string }>; note: string | null }> {
+  const out: Array<{ phone: string | null; at: string }> = [];
+  const notes: string[] = [];
+  const jobs = await pageSince(db, 'jobber_jobs', 'client_id, created_at', sinceIso);
+  if (jobs.error) notes.push(`callback jobs: ${jobs.error}`);
+  else {
+    const ids = Array.from(new Set(jobs.rows.map((j) => j.client_id).filter(Boolean))) as string[];
+    const phones = new Map<string, string[]>();
+    for (let i = 0; i < ids.length; i += 150) {
+      const c = await db.from('jobber_clients').select('id, phones_digits').in('id', ids.slice(i, i + 150));
+      if (c.error) { notes.push(`callback clients: ${c.error.message}`); continue; }
+      for (const r of c.data ?? []) phones.set(r.id, r.phones_digits ?? []);
+    }
+    for (const j of jobs.rows) for (const p of phones.get(j.client_id) ?? []) if (j.created_at) out.push({ phone: p, at: j.created_at });
+  }
+  const quotes = await pageSince(db, 'jobber_quotes', 'created_at, data', sinceIso);
+  if (quotes.error) notes.push(`callback quotes: ${quotes.error}`);
+  else for (const q of quotes.rows) for (const p of clientPhones(q.data?.client)) if (q.created_at) out.push({ phone: p, at: q.created_at });
+  const reqs = await pageSince(db, 'booking_requests', 'phone, created_at', sinceIso);
+  if (reqs.error) notes.push(`callback requests: ${reqs.error}`);
+  else for (const r of reqs.rows) if (r.created_at && !isOwnNumber(r.phone)) out.push({ phone: r.phone, at: r.created_at });
+  return { rows: out, note: notes.length ? notes.join('; ') : null };
 }
 
 /** Never show the old per-booking matching: if the shared Jobber calculation is unavailable, hide money on the campaign cards. */

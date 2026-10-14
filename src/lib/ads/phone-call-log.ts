@@ -1,5 +1,5 @@
 /**
- * Inbound call log built from the Google Workspace Voice audit log (Reports API, app=voice).
+ * Call log built from the Google Workspace Voice audit log (Reports API, app=voice).
  * Metadata only. Pure functions, no network.
  *
  * What the log provides (verified 2026-10-10):
@@ -8,10 +8,15 @@
  *  - INCOMING_CALL_RECEIVED: one per ringing user leg (actor email), same DISTRIBUTION_ID;
  *    a leg with duration > 0 is the person who answered.
  *  - RING_GROUP_OUTGOING_CALL_MADE to the Sarah/Mike Vapi number: the call was forwarded to the AI.
+ *  - OUTGOING_CALL_PLACED (and the other user outbound names): a staff member dialed out
+ *    from their own Voice number. PARAM_SOURCE is that line, PARAM_DESTINATION is who they called,
+ *    actor email is the staff user. Ring-group forwards are not staff callbacks.
  * It has NO voicemail event and no user display names (email only). Events lag the call by a
  * few minutes and per-user legs can appear later than the ring-group event.
  */
 import { normalizePhone } from './book-job.ts';
+import { isOwnNumber } from './real-leads.ts';
+import { staffLabel, staffLines, type StaffLine } from './staff-lines.ts';
 
 export const MIKE_FORWARD_NUMBER = '+17604915348';
 export const MAIN_LINE = '+17604408520';
@@ -20,7 +25,7 @@ export type CallOutcome = 'answered' | 'missed' | 'forwarded_ai' | 'voicemail' |
 export interface PhoneLogRow {
   voice_call_key: string;
   started_at: string;
-  direction: 'inbound';
+  direction: 'inbound' | 'outbound';
   caller_phone: string | null;
   called_number: string | null;
   ring_group: string | null;
@@ -59,7 +64,18 @@ const sec = (v: string | undefined): number | null => {
   return Number.isFinite(n) ? Math.round(n / 1000) : null;
 };
 
-export function parsePhoneCallLog(payload: unknown): PhoneLogRow[] {
+const OUTBOUND_NAMES = new Set([
+  'OUTGOING_CALL_PLACED', 'OUTGOING_CALL_MADE', 'USER_OUTGOING_CALL', 'OUTGOING_CALL',
+]);
+
+/** User dial-out. Ring-group forwards (the AI handoff) are not staff callbacks. */
+export function isUserOutboundEvent(name: string): boolean {
+  if (!name || name.startsWith('RING_GROUP')) return false;
+  if (OUTBOUND_NAMES.has(name)) return true;
+  return name.includes('OUTGOING') && name.includes('CALL');
+}
+
+export function parsePhoneCallLog(payload: unknown, lines: StaffLine[] = staffLines()): PhoneLogRow[] {
   const events = flatten(payload);
   const legsById = new Map<string, Ev[]>();
   const forwards: Ev[] = [];
@@ -119,6 +135,36 @@ export function parsePhoneCallLog(payload: unknown): PhoneLogRow[] {
     const first = legs.sort((a: Ev, b: Ev) => b.time.localeCompare(a.time))[0];
     const row = build(first, id, legs, null);
     rows.push(row);
+  }
+  const pick = (p: Params, ...names: string[]) => {
+    for (const n of names) { const v = p.get(n); if (v) return v; }
+    return null;
+  };
+  const seenOut = new Set<string>();
+  for (const e of events) {
+    if (!isUserOutboundEvent(e.name)) continue;
+    const dest = pick(e.p, 'PARAM_DESTINATION', 'DESTINATION', 'CALL_DESTINATION');
+    const source = pick(e.p, 'PARAM_SOURCE', 'SOURCE', 'CALL_SOURCE');
+    // Destination is who was called. Skip forwards to our own lines (Mike, the shop, staff).
+    if (!dest || isOwnNumber(dest)) continue;
+    const id = e.p.get('PARAM_DISTRIBUTION_ID') || e.qualifier || `${e.time}|${dest}|${e.email ?? source ?? ''}`;
+    const key = `out:${id}`;
+    if (seenOut.has(key)) continue;
+    seenOut.add(key);
+    const duration = sec(pick(e.p, 'PARAM_DURATION', 'DURATION') ?? undefined);
+    rows.push({
+      voice_call_key: key,
+      started_at: e.time,
+      direction: 'outbound',
+      caller_phone: dest,
+      called_number: source,
+      ring_group: staffLabel(e.email, source, lines),
+      duration_seconds: duration,
+      ring_seconds: sec(e.p.get('PARAM_RING_DURATION')),
+      outcome: (duration ?? 0) > 0 ? 'answered' : 'missed',
+      answered_by: e.email,
+      legs: [],
+    });
   }
   return rows.filter((r) => r.caller_phone);
 }
