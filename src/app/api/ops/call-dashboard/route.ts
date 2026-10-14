@@ -15,8 +15,7 @@ import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
-import { annotateFeed, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, needsCallback, voiceAttempts, type PastDueClient } from '@/lib/ads/callbacks';
-import { missingColumnName } from '@/lib/ads/optional-column';
+import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, needsCallback, requestResolvesCallback, voiceAttempts, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
@@ -100,8 +99,8 @@ export async function GET(request: NextRequest) {
     let bookingIds = new Set<string>();
     const ids = liveRows.map((r: { vapi_call_id: string }) => r.vapi_call_id).slice(0, 600);
     for (let i = 0; i < ids.length; i += 150) {
-      const br = await db.from('booking_requests').select('vapi_call_id').in('vapi_call_id', ids.slice(i, i + 150));
-      if (!br.error) for (const r of br.data ?? []) bookingIds.add(r.vapi_call_id);
+      const br = await db.from('booking_requests').select('vapi_call_id, source').in('vapi_call_id', ids.slice(i, i + 150));
+      if (!br.error) for (const r of br.data ?? []) if (r.vapi_call_id && requestResolvesCallback(r.source)) bookingIds.add(r.vapi_call_id);
     }
     for (const c of liveCalls) c.live_booking_request = bookingIds.has((c as any)._vapi);
     const dash = buildDashboard({ calls: [...adsCalls, ...liveCalls], conversions, spend, paidByJob: null, jobMoney, range });
@@ -360,9 +359,10 @@ function clientPhones(client: any): string[] {
  */
 async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; note: string | null }> {
   const probe = await db.from('jobber_invoices').select('balance').limit(1);
-  const missingBalance = missingColumnName(probe.error) === 'balance';
-  if (probe.error && !missingBalance) return { clients: [], note: `invoices: ${probe.error.message}` };
-  const hasBalanceColumn = !missingBalance;
+  // A missing column is normal (Postgres 42703 or PostgREST PGRST204). Do not blank the card for that.
+  const hasBalanceColumn = !probe.error;
+  const notes: string[] = [];
+  if (probe.error && !balanceColumnMissing(probe.error)) notes.push(`invoice balance: ${probe.error.message}`);
   const select = hasBalanceColumn
     ? 'client_id, issued_date, invoice_status, balance'
     : 'client_id, issued_date, invoice_status, data';
@@ -371,18 +371,20 @@ async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; 
     let q = db.from('jobber_invoices').select(select).order('issued_date', { ascending: true });
     q = hasBalanceColumn ? q.gt('balance', 0) : q.in('invoice_status', ['past_due', 'awaiting_payment']);
     const res = await q.range(from, from + 999);
-    if (res.error) return { clients: [], note: `invoices: ${res.error.message}` };
+    if (res.error) return { clients: [], note: [`invoices: ${res.error.message}`, ...notes].join('; ') };
     invoices.push(...(res.data ?? []));
     if ((res.data ?? []).length < 1000) break;
   }
-  const ids = Array.from(new Set(invoices.map((i) => i.client_id).filter(Boolean))) as string[];
+  // Page clients instead of id=in.(...), because Jobber ids are base64 and end with "=".
+  const want = new Set(invoices.map((i) => i.client_id).filter(Boolean));
   const clients: Array<{ id: string; name: string | null; phones_digits: string[] | null }> = [];
-  for (let i = 0; i < ids.length; i += 150) {
-    const c = await db.from('jobber_clients').select('id, name, phones_digits').in('id', ids.slice(i, i + 150));
-    if (c.error) return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: `invoice clients: ${c.error.message}` };
-    clients.push(...(c.data ?? []));
+  for (let from = 0; from < 8000; from += 1000) {
+    const c = await db.from('jobber_clients').select('id, name, phones_digits').order('id', { ascending: true }).range(from, from + 999);
+    if (c.error) return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: [`invoice clients: ${c.error.message}`, ...notes].filter(Boolean).join('; ') };
+    for (const row of c.data ?? []) if (want.has(row.id)) clients.push(row);
+    if ((c.data ?? []).length < 1000) break;
   }
-  return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: null };
+  return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: notes.length ? notes.join('; ') : null };
 }
 
 /** Jobber jobs, quotes (when the mirror stored client phones), and booking requests created in the window. */
@@ -404,9 +406,9 @@ async function loadWorkRows(db: any, sinceIso: string): Promise<{ rows: Array<{ 
   const quotes = await pageSince(db, 'jobber_quotes', 'created_at, data', sinceIso);
   if (quotes.error) notes.push(`callback quotes: ${quotes.error}`);
   else for (const q of quotes.rows) for (const p of clientPhones(q.data?.client)) if (q.created_at) out.push({ phone: p, at: q.created_at });
-  const reqs = await pageSince(db, 'booking_requests', 'phone, created_at', sinceIso);
+  const reqs = await pageSince(db, 'booking_requests', 'phone, created_at, source', sinceIso);
   if (reqs.error) notes.push(`callback requests: ${reqs.error}`);
-  else for (const r of reqs.rows) if (r.created_at && !isOwnNumber(r.phone)) out.push({ phone: r.phone, at: r.created_at });
+  else for (const r of reqs.rows) if (r.created_at && requestResolvesCallback(r.source) && !isOwnNumber(r.phone)) out.push({ phone: r.phone, at: r.created_at });
   return { rows: out, note: notes.length ? notes.join('; ') : null };
 }
 

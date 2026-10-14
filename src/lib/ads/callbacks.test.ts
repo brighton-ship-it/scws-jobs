@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  annotateFeed, callbackCandidates, callbackSources, firstCallback, formatCallbackStatus,
+  annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, firstCallback, formatCallbackStatus,
   groupPastDueClients, handlingCallback, hasWorkAfter, indexWorkTimes, isHangupUnder10s, needsCallback,
-  OUTREACH_TOOLTIP, summarizeOutreach, voiceAttempts,
+  OUTREACH_TOOLTIP, requestResolvesCallback, summarizeOutreach, voiceAttempts,
 } from './callbacks.ts';
 import { DEFAULT_STAFF_LINES, staffLines, staffLabel } from './staff-lines.ts';
 import { parseTwilioOutbound } from './twilio-outbound.ts';
@@ -292,6 +292,57 @@ test('balance column decides unpaid; status is the fallback', () => {
   });
   assert.deepEqual(openOnly.invoices.rows.map((r) => r.name), ['Owes']);
   assert.equal(openOnly.leads.count, 0);
+});
+
+test('production shapes: a phone intake is not a booking, and past-due invoices still list', () => {
+  assert.equal(balanceColumnMissing({ code: '42703', message: 'column jobber_invoices.balance does not exist' }), true);
+  assert.equal(balanceColumnMissing({
+    code: 'PGRST204',
+    message: "Could not find the 'balance' column of 'jobber_invoices' in the schema cache",
+  }), true);
+  assert.equal(balanceColumnMissing({ code: '42501', message: 'permission denied for table jobber_invoices' }), false);
+  assert.equal(balanceColumnMissing(null), false);
+  assert.equal(requestResolvesCallback('phone'), false);
+  assert.equal(requestResolvesCallback('PHONE'), false);
+  assert.equal(requestResolvesCallback('website'), true);
+
+  const clientId = 'Z2lkOi8vSm9iYmVyL0NsaWVudC8xMjM=';
+  const pastDue = groupPastDueClients(
+    [{
+      client_id: clientId,
+      issued_date: '2026-08-15T17:00:00.000Z',
+      invoice_status: 'past_due',
+      data: { amounts: { subtotal: 1100, total: 1200, taxAmount: 100, paymentsTotal: 200, discountAmount: 0 } },
+    }],
+    [{ id: clientId, name: 'Ada Wells', phones_digits: ['7605551212'] }],
+    { hasBalanceColumn: false },
+  );
+  assert.equal(pastDue.length, 1);
+  assert.equal(pastDue[0].balance, 1000);
+  assert.equal(pastDue[0].pastDue, true);
+  assert.deepEqual(pastDue[0].phones, ['7605551212']);
+
+  const log = [
+    { direction: 'inbound', outcome: 'forwarded_ai', started_at: '2026-10-10T18:00:00Z', caller_phone: '+1 (760) 555-3434', duration_seconds: 95, ring_seconds: 8, receptionist_call_id: 'vapi-ada', client_name: 'Ada Caller' },
+    { direction: 'inbound', outcome: 'forwarded_ai', started_at: '2026-10-11T18:00:00Z', caller_phone: '7605555656', duration_seconds: 80, receptionist_call_id: 'vapi-job', client_name: 'Got a job' },
+  ];
+  const candidates = callbackCandidates({ log, recordings: [], mike: [], bookedMike: new Set(['vapi-ada']) });
+  // vapi-ada is only on a source=phone intake row, so the route does not pass it as booked.
+  const open = callbackCandidates({ log, recordings: [], mike: [], bookedMike: new Set(requestResolvesCallback('phone') ? ['vapi-ada'] : []) });
+  assert.equal(open.find((c) => c.name === 'Ada Caller')?.aiBooked, false);
+  assert.equal(candidates.find((c) => c.name === 'Ada Caller')?.aiBooked, true);
+  const requests = [
+    { source: 'phone', status: 'pending', service_type: 'Phone Inquiry', phone: '(760) 555-3434', created_at: '2026-10-10T18:01:00Z' },
+    { source: 'website', status: 'pending', service_type: 'new_well', phone: '7605555656', created_at: '2026-10-11T19:00:00Z' },
+  ];
+  const work = indexWorkTimes(requests.filter((r) => requestResolvesCallback(r.source)).map((r) => ({ phone: r.phone, at: r.created_at })));
+  const view = needsCallback({ candidates: open, sources: [], work, fromMs, now, pastDue });
+  assert.deepEqual(view.leads.rows.map((r) => r.name), ['Ada Caller']);
+  assert.equal(view.invoices.count, 1);
+  assert.equal(view.invoices.rows[0].name, 'Ada Wells');
+  assert.equal(view.invoices.rows[0].balance, 1000);
+  assert.equal(view.invoices.rows[0].outcome, 'Past due');
+  assert.equal(view.leads.rows.some((r) => r.name === 'Got a job'), false);
 });
 
 test('staff line list is configurable', () => {

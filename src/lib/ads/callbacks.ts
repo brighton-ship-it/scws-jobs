@@ -314,6 +314,29 @@ function invoiceUnpaid(inv: MirrorInvoice, hasBalanceColumn: boolean): boolean {
 }
 
 /**
+ * True when jobber_invoices has no balance column.
+ * PostgREST says PGRST204 ("Could not find the 'balance' column").
+ * Postgres says 42703 ("column jobber_invoices.balance does not exist").
+ */
+export function balanceColumnMissing(
+  error: { code?: string | number | null; message?: string | null; details?: string | null; hint?: string | null } | null | undefined,
+): boolean {
+  if (!error) return false;
+  const text = [error.message, error.details, error.hint].filter((part) => !!part).join(' ');
+  if (!/balance/i.test(text)) return false;
+  const code = String(error.code ?? '');
+  return code === '42703' || code === 'PGRST204' || /does not exist|schema cache|could not find/i.test(text);
+}
+
+/**
+ * A website form after the call means they already reached us.
+ * source=phone is the row Mike files for the call itself (Phone Inquiry, Callback, Emergency), not a booking.
+ */
+export function requestResolvesCallback(source: string | null | undefined): boolean {
+  return (source ?? '').trim().toLowerCase() !== 'phone';
+}
+
+/**
  * One row per client with an unpaid invoice.
  * Balance column (when present): unpaid means balance > 0.
  * Otherwise: past_due or awaiting_payment. pastDue is true only for past_due, so those
