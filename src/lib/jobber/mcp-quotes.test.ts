@@ -6,9 +6,11 @@ import {
   assertQuoteUnchangedExceptSalesperson,
   buildDraftQuoteEditAttributes,
   buildSalespersonOnlyEditAttributes,
+  deleteUnsentQuoteDraft,
   getClientById,
   parseQuoteLineEdits,
   quoteEditUsedForbiddenFields,
+  quoteNumbersMatch,
   setQuoteSalesperson,
   toJobberEditLineItems,
   updateUnsentQuoteDraft,
@@ -547,5 +549,246 @@ describe('draft quote line edits', () => {
     assert.equal(bodies.some((body) => body.includes('quoteEditLineItems')), false);
     assert.equal(bodies.some((body) => body.includes('quoteDeleteLineItems')), false);
     assert.equal(bodies.some((body) => body.includes('quoteCreateLineItems')), false);
+  });
+});
+
+const DRAFT_QUOTE_ID = 'Z2lkOi8vSm9iYmVyL1F1b3RlLzE';
+
+function draftQuote(overrides: Record<string, unknown> = {}) {
+  return {
+    id: DRAFT_QUOTE_ID,
+    quoteNumber: 4401,
+    quoteStatus: 'draft',
+    sentAt: null,
+    ...overrides,
+  };
+}
+
+describe('deleteUnsentQuoteDraft', () => {
+  it('matches quote numbers and refuses a non-draft before any mutation', async () => {
+    assert.equal(quoteNumbersMatch(4401, '4401'), true);
+    assert.equal(quoteNumbersMatch('#4401', '4401'), true);
+    assert.equal(quoteNumbersMatch('4401', '4402'), false);
+
+    for (const overrides of [
+      { quoteStatus: 'awaiting_response', sentAt: '2026-09-01T00:00:00Z' },
+      { quoteStatus: 'approved', sentAt: '2026-09-01T00:00:00Z' },
+      { quoteStatus: 'converted', sentAt: '2026-09-01T00:00:00Z' },
+      { quoteStatus: 'archived', sentAt: null },
+      { quoteStatus: 'changes_requested', sentAt: '2026-09-01T00:00:00Z' },
+      { quoteStatus: 'draft', sentAt: '2026-09-01T00:00:00Z' },
+    ]) {
+      const bodies: string[] = [];
+      const fetchImpl: typeof fetch = async (_url, init) => {
+        bodies.push(String(init?.body || ''));
+        return jsonResponse({ data: { quote: draftQuote(overrides) } });
+      };
+      await assert.rejects(
+        () => deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID }, { fetchImpl, token: 'test' }),
+        /only an unsent draft/
+      );
+      assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
+    }
+  });
+
+  it('deletes a draft with quoteDelete and reports that method', async () => {
+    let reads = 0;
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('McpQuoteById')) {
+        reads += 1;
+        return jsonResponse({
+          data: { quote: reads === 1 ? draftQuote() : null },
+        });
+      }
+      if (query.includes('quoteDelete')) {
+        return jsonResponse({
+          data: { quoteDelete: { deletedQuote: { id: DRAFT_QUOTE_ID }, userErrors: [] } },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+    const result = await deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID }, { fetchImpl, token: 'test' });
+    assert.equal(result.method, 'quoteDelete');
+    assert.equal(result.deleted, true);
+    assert.equal(result.archived, false);
+    assert.equal(result.sent, false);
+    assert.equal(result.notified, false);
+    assert.equal(result.quoteStatus, null);
+    assert.equal(result.quoteNumber, 4401);
+    assert.equal(bodies.some((body) => body.includes('quoteArchive')), false);
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+    assert.equal(bodies.some((body) => /transitionQuoteTo/.test(body)), false);
+  });
+
+  it('falls through to quoteArchive only when quoteDelete is not in the schema', async () => {
+    let reads = 0;
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('McpQuoteById')) {
+        reads += 1;
+        return jsonResponse({
+          data: {
+            quote: reads === 1 ? draftQuote() : draftQuote({ quoteStatus: 'archived' }),
+          },
+        });
+      }
+      if (query.includes('quoteDelete')) {
+        return jsonResponse({
+          errors: [{ message: 'Cannot query field "quoteDelete" on type "Mutation".' }],
+        });
+      }
+      if (query.includes('quoteArchive')) {
+        return jsonResponse({
+          data: { quoteArchive: { quote: { id: DRAFT_QUOTE_ID, quoteStatus: 'archived' }, userErrors: [] } },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+    const result = await deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID }, { fetchImpl, token: 'test' });
+    assert.equal(result.method, 'quoteArchive');
+    assert.equal(result.deleted, false);
+    assert.equal(result.archived, true);
+    assert.equal(result.quoteStatus, 'archived');
+    assert.equal(result.sent, false);
+    assert.equal(bodies.filter((body) => body.includes('quoteDelete')).length, 1);
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
+  });
+
+  it('does not archive when quoteDelete returns userErrors', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('McpQuoteById')) return jsonResponse({ data: { quote: draftQuote() } });
+      if (query.includes('quoteDelete')) {
+        return jsonResponse({
+          data: { quoteDelete: { deletedQuote: null, userErrors: [{ message: 'Quote cannot be deleted' }] } },
+        });
+      }
+      return jsonResponse({ data: {} });
+    };
+    await assert.rejects(
+      () => deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID }, { fetchImpl, token: 'test' }),
+      /No other mutation was tried/
+    );
+    assert.equal(bodies.some((body) => body.includes('quoteArchive')), false);
+  });
+
+  it('retries quoteDelete with an input argument, then without deletedQuote', async () => {
+    let reads = 0;
+    const seen: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('McpQuoteById')) {
+        reads += 1;
+        return jsonResponse({ data: { quote: reads === 1 ? draftQuote() : null } });
+      }
+      if (query.includes('quoteDelete')) {
+        seen.push(query.includes('deletedQuote') ? 'selected' : 'bare');
+        if (!query.includes('input:')) {
+          return jsonResponse({
+            errors: [{ message: 'Unknown argument "quoteId" on field "Mutation.quoteDelete".' }],
+          });
+        }
+        if (query.includes('deletedQuote')) {
+          return jsonResponse({
+            errors: [{ message: 'Cannot query field "deletedQuote" on type "QuoteDeletePayload".' }],
+          });
+        }
+        return jsonResponse({ data: { quoteDelete: { userErrors: [] } } });
+      }
+      return jsonResponse({ data: {} });
+    };
+    const result = await deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID }, { fetchImpl, token: 'test' });
+    assert.equal(result.method, 'quoteDelete');
+    assert.equal(result.deleted, true);
+    assert.deepEqual(seen, ['selected', 'selected', 'bare']);
+  });
+
+  it('looks up one quote number and refuses an ambiguous number', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('McpQuotesSearch')) {
+        return jsonResponse({
+          data: {
+            quotes: {
+              nodes: [
+                draftQuote(),
+                draftQuote({ id: 'Z2lkOi8vSm9iYmVyL1F1b3RlLzI' }),
+              ],
+            },
+          },
+        });
+      }
+      return jsonResponse({ data: { clients: { nodes: [] } } });
+    };
+    await assert.rejects(
+      () => deleteUnsentQuoteDraft({ quoteNumber: '4401' }, { fetchImpl, token: 'test' }),
+      /matches 2 quotes/
+    );
+    assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
+
+    let reads = 0;
+    const fetchOne: typeof fetch = async (_url, init) => {
+      const query = (JSON.parse(String(init?.body || '')) as { query?: string }).query || '';
+      if (query.includes('McpQuotesSearch')) {
+        return jsonResponse({ data: { quotes: { nodes: [draftQuote()] } } });
+      }
+      if (query.includes('McpQuoteById')) {
+        reads += 1;
+        return jsonResponse({ data: { quote: reads === 1 ? draftQuote() : null } });
+      }
+      if (query.includes('quoteDelete')) {
+        return jsonResponse({ data: { quoteDelete: { deletedQuote: { id: DRAFT_QUOTE_ID }, userErrors: [] } } });
+      }
+      return jsonResponse({ data: { clients: { nodes: [] } } });
+    };
+    const result = await deleteUnsentQuoteDraft({ quoteNumber: '#4401' }, { fetchImpl: fetchOne, token: 'test' });
+    assert.equal(result.method, 'quoteDelete');
+    assert.equal(result.deleted, true);
+
+    await assert.rejects(
+      () => deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID, quoteNumber: '4401' }, { token: 'test' }),
+      /not both/
+    );
+    await assert.rejects(
+      () => deleteUnsentQuoteDraft({ quoteId: '4401' }, { token: 'test' }),
+      /encoded Jobber id/
+    );
+  });
+
+  it('does not mark a draft awaiting response when archive is also missing', async () => {
+    const bodies: string[] = [];
+    const fetchImpl: typeof fetch = async (_url, init) => {
+      const body = String(init?.body || '');
+      bodies.push(body);
+      const query = (JSON.parse(body) as { query?: string }).query || '';
+      if (query.includes('McpQuoteById')) return jsonResponse({ data: { quote: draftQuote() } });
+      if (query.includes('quoteDelete')) {
+        return jsonResponse({ errors: [{ message: 'Cannot query field "quoteDelete" on type "Mutation".' }] });
+      }
+      if (query.includes('quoteArchive')) {
+        return jsonResponse({ errors: [{ message: 'Cannot query field "quoteArchive" on type "Mutation".' }] });
+      }
+      return jsonResponse({ data: {} });
+    };
+    await assert.rejects(
+      () => deleteUnsentQuoteDraft({ quoteId: DRAFT_QUOTE_ID }, { fetchImpl, token: 'test' }),
+      /no quoteDelete or quoteArchive/
+    );
+    assert.equal(bodies.some((body) => /transitionQuoteTo/.test(body)), false);
+    assert.ok(bodies.every((body) => !quoteEditUsedForbiddenFields(body)));
   });
 });
