@@ -15,7 +15,8 @@ import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
-import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, needsCallback, requestResolvesCallback, voiceAttempts, type PastDueClient } from '@/lib/ads/callbacks';
+import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
+import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
@@ -162,9 +163,25 @@ export async function GET(request: NextRequest) {
       if (past.note) notes.push(past.note);
       const pastDuePhones = new Set(past.clients.flatMap((c) => c.phones));
       try {
-        const loaded = await loadWorkRows(db, new Date(fromMs).toISOString());
+        const sinceIso = new Date(fromMs).toISOString();
+        const loaded = await loadWorkRows(db, sinceIso);
         if (loaded.note) notes.push(loaded.note);
-        const work = indexWorkTimes(loaded.rows);
+        const texts = await loadCollectionTexts(db);
+        if (texts.note) notes.push(texts.note);
+        const jobber = await unstable_cache(
+          () => loadJobberFollowUp(sinceIso),
+          ['jobber-followup-v1', sinceIso.slice(0, 10)],
+          { revalidate: 600 },
+        )().catch((error: unknown) => ({
+          work: [] as Array<{ phone: string | null; at: string }>,
+          invoices: [] as Array<{ id: string; number: string | null; dueAt: string | null; comms: CollectionEvent[] }>,
+          channels: { jobberTexts: false, emails: false },
+          notes: [`jobber follow-up: ${error instanceof Error ? error.message : 'error'}`],
+        }));
+        notes.push(...jobber.notes);
+        let open = listOpenInvoices(past.invoices, past.clientRows, { hasBalanceColumn: past.hasBalanceColumn });
+        open = applyInvoiceExtras(open, jobber.invoices);
+        const work = indexWorkTimes([...loaded.rows, ...jobber.work]);
         const candidates = callbackCandidates({
           log: inboundLog,
           recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)),
@@ -172,7 +189,20 @@ export async function GET(request: NextRequest) {
           bookedMike: bookingIds,
         });
         dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work });
-        const queues = needsCallback({ candidates, sources, work, fromMs, now: nowDash, attempts, pastDue: past.clients });
+        const queues = needsCallback({
+          candidates, sources, work, fromMs, now: nowDash, attempts,
+          openInvoices: open,
+          inbound: [
+            ...inboundLog.map((r: any) => ({ at: r.started_at, phone: r.caller_phone ?? null })),
+            ...(recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number ?? null })),
+            ...(mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone)).map((r: any) => ({ at: r.called_at, phone: r.phone ?? null })),
+          ],
+          collections: [
+            ...texts.events,
+            ...jobber.invoices.flatMap((inv) => inv.comms),
+          ],
+          channels: { calls: !log.error, appTexts: texts.ok, jobberTexts: jobber.channels.jobberTexts, emails: jobber.channels.emails },
+        });
         dash.needsCallback = queues.leads;
         dash.invoiceFollowUp = queues.invoices;
       } catch (error) {
@@ -357,21 +387,21 @@ function clientPhones(client: any): string[] {
  * Balance > 0 when jobber_invoices.balance exists; otherwise past_due or awaiting_payment.
  * Attempt counts still use the period.
  */
-async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; note: string | null }> {
+async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; invoices: Array<Record<string, unknown>>; clientRows: Array<{ id: string; name: string | null; phones_digits: string[] | null }>; hasBalanceColumn: boolean; note: string | null }> {
   const probe = await db.from('jobber_invoices').select('balance').limit(1);
   // A missing column is normal (Postgres 42703 or PostgREST PGRST204). Do not blank the card for that.
   const hasBalanceColumn = !probe.error;
   const notes: string[] = [];
   if (probe.error && !balanceColumnMissing(probe.error)) notes.push(`invoice balance: ${probe.error.message}`);
   const select = hasBalanceColumn
-    ? 'client_id, issued_date, invoice_status, balance'
-    : 'client_id, issued_date, invoice_status, data';
+    ? 'id, client_id, issued_date, invoice_status, balance, data'
+    : 'id, client_id, issued_date, invoice_status, data';
   const invoices: Array<Record<string, unknown>> = [];
   for (let from = 0; from < 4000; from += 1000) {
     let q = db.from('jobber_invoices').select(select).order('issued_date', { ascending: true });
     q = hasBalanceColumn ? q.gt('balance', 0) : q.in('invoice_status', ['past_due', 'awaiting_payment']);
     const res = await q.range(from, from + 999);
-    if (res.error) return { clients: [], note: [`invoices: ${res.error.message}`, ...notes].join('; ') };
+    if (res.error) return { clients: [], invoices: [], clientRows: [], hasBalanceColumn, note: [`invoices: ${res.error.message}`, ...notes].join('; ') };
     invoices.push(...(res.data ?? []));
     if ((res.data ?? []).length < 1000) break;
   }
@@ -380,36 +410,97 @@ async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; 
   const clients: Array<{ id: string; name: string | null; phones_digits: string[] | null }> = [];
   for (let from = 0; from < 8000; from += 1000) {
     const c = await db.from('jobber_clients').select('id, name, phones_digits').order('id', { ascending: true }).range(from, from + 999);
-    if (c.error) return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: [`invoice clients: ${c.error.message}`, ...notes].filter(Boolean).join('; ') };
+    if (c.error) return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), invoices, clientRows: clients, hasBalanceColumn, note: [`invoice clients: ${c.error.message}`, ...notes].filter(Boolean).join('; ') };
     for (const row of c.data ?? []) if (want.has(row.id)) clients.push(row);
     if ((c.data ?? []).length < 1000) break;
   }
-  return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: notes.length ? notes.join('; ') : null };
+  return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), invoices, clientRows: clients, hasBalanceColumn, note: notes.length ? notes.join('; ') : null };
 }
 
-/** Jobber jobs, quotes (when the mirror stored client phones), and booking requests created in the window. */
+function applyInvoiceExtras(open: OpenInvoice[], extras: Array<{ id: string; number: string | null; dueAt: string | null }>): OpenInvoice[] {
+  const byId = new Map(extras.map((row) => [row.id, row]));
+  return open.map((inv) => {
+    const extra = byId.get(inv.id);
+    if (!extra) return inv;
+    return { ...inv, number: inv.number ?? extra.number, dueAt: inv.dueAt ?? extra.dueAt };
+  });
+}
+
+async function loadCollectionTexts(db: any): Promise<{ events: CollectionEvent[]; ok: boolean; note: string | null }> {
+  const events: CollectionEvent[] = [];
+  for (let from = 0; from < 5000; from += 1000) {
+    const q = await db.from('collection_sms_log').select('created_at, client_id, invoice_numbers, status').eq('status', 'sent').order('created_at', { ascending: false }).range(from, from + 999);
+    if (q.error) return { events: [], ok: false, note: `collection texts: ${q.error.message}` };
+    for (const row of q.data ?? []) {
+      if (!row.created_at) continue;
+      events.push({
+        at: row.created_at,
+        channel: 'text',
+        source: 'app_sms',
+        clientId: row.client_id ?? null,
+        invoiceNumbers: Array.isArray(row.invoice_numbers) ? row.invoice_numbers.map(String) : [],
+      });
+    }
+    if ((q.data ?? []).length < 1000) break;
+  }
+  return { events, ok: true, note: null };
+}
+
+async function clientPhoneMap(db: any): Promise<{ phones: Map<string, string[]>; note: string | null }> {
+  const phones = new Map<string, string[]>();
+  for (let from = 0; from < 8000; from += 1000) {
+    const c = await db.from('jobber_clients').select('id, phones_digits').order('id', { ascending: true }).range(from, from + 999);
+    if (c.error) return { phones, note: `callback clients: ${c.error.message}` };
+    for (const row of c.data ?? []) phones.set(row.id, row.phones_digits ?? []);
+    if ((c.data ?? []).length < 1000) break;
+  }
+  return { phones, note: null };
+}
+
+/** Jobs (any status in the mirror), quotes, invoices, visits, and website requests on or after the call. */
 async function loadWorkRows(db: any, sinceIso: string): Promise<{ rows: Array<{ phone: string | null; at: string }>; note: string | null }> {
   const out: Array<{ phone: string | null; at: string }> = [];
   const notes: string[] = [];
-  const jobs = await pageSince(db, 'jobber_jobs', 'client_id, created_at', sinceIso);
+  const clients = await clientPhoneMap(db);
+  if (clients.note) notes.push(clients.note);
+  const jobs = await pageSince(db, 'jobber_jobs', 'client_id, created_at, data', sinceIso);
   if (jobs.error) notes.push(`callback jobs: ${jobs.error}`);
-  else {
-    const ids = Array.from(new Set(jobs.rows.map((j) => j.client_id).filter(Boolean))) as string[];
-    const phones = new Map<string, string[]>();
-    for (let i = 0; i < ids.length; i += 150) {
-      const c = await db.from('jobber_clients').select('id, phones_digits').in('id', ids.slice(i, i + 150));
-      if (c.error) { notes.push(`callback clients: ${c.error.message}`); continue; }
-      for (const r of c.data ?? []) phones.set(r.id, r.phones_digits ?? []);
+  else for (const j of jobs.rows) {
+    const phones = clients.phones.get(j.client_id) ?? [];
+    if (j.created_at) for (const p of phones) out.push({ phone: p, at: j.created_at });
+    for (const visit of j.data?.visits?.nodes ?? []) {
+      const at = visit?.createdAt || visit?.startAt;
+      if (at) for (const p of phones) out.push({ phone: p, at });
     }
-    for (const j of jobs.rows) for (const p of phones.get(j.client_id) ?? []) if (j.created_at) out.push({ phone: p, at: j.created_at });
   }
   const quotes = await pageSince(db, 'jobber_quotes', 'created_at, data', sinceIso);
   if (quotes.error) notes.push(`callback quotes: ${quotes.error}`);
-  else for (const q of quotes.rows) for (const p of clientPhones(q.data?.client)) if (q.created_at) out.push({ phone: p, at: q.created_at });
+  else for (const q of quotes.rows) {
+    const phones = new Set<string>([...clientPhones(q.data?.client), ...(clients.phones.get(q.data?.client?.id) ?? [])]);
+    if (q.created_at) for (const p of phones) out.push({ phone: p, at: q.created_at });
+  }
+  const invoices = await pageIssued(db, sinceIso);
+  if (invoices.error) notes.push(`callback invoices: ${invoices.error}`);
+  else for (const inv of invoices.rows) {
+    const at = inv.issued_date || inv.data?.createdAt;
+    if (!at) continue;
+    for (const p of clients.phones.get(inv.client_id) ?? []) out.push({ phone: p, at });
+  }
   const reqs = await pageSince(db, 'booking_requests', 'phone, created_at, source', sinceIso);
   if (reqs.error) notes.push(`callback requests: ${reqs.error}`);
   else for (const r of reqs.rows) if (r.created_at && requestResolvesCallback(r.source) && !isOwnNumber(r.phone)) out.push({ phone: r.phone, at: r.created_at });
   return { rows: out, note: notes.length ? notes.join('; ') : null };
+}
+
+async function pageIssued(db: any, sinceIso: string) {
+  const rows: any[] = [];
+  for (let from = 0; from < 5000; from += 1000) {
+    const q = await db.from('jobber_invoices').select('client_id, issued_date, data').gte('issued_date', sinceIso).order('issued_date', { ascending: false }).range(from, from + 999);
+    if (q.error) return { rows, error: q.error.message as string };
+    rows.push(...(q.data ?? []));
+    if ((q.data ?? []).length < 1000) break;
+  }
+  return { rows, error: null as string | null };
 }
 
 /** Never show the old per-booking matching: if the shared Jobber calculation is unavailable, hide money on the campaign cards. */

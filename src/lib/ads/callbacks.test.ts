@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, firstCallback, formatCallbackStatus,
-  groupPastDueClients, handlingCallback, hasWorkAfter, indexWorkTimes, isHangupUnder10s, needsCallback,
+  annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, calledAfterInvoice, firstCallback, formatCallbackStatus,
+  formatCollectionAttempts, groupPastDueClients, handlingCallback, hasWorkAfter, hasWorkOnOrAfter, indexWorkTimes, isHangupUnder10s, listOpenInvoices, needsCallback,
   OUTREACH_TOOLTIP, requestResolvesCallback, summarizeOutreach, voiceAttempts,
 } from './callbacks.ts';
 import { DEFAULT_STAFF_LINES, staffLines, staffLabel } from './staff-lines.ts';
@@ -137,7 +137,7 @@ test('shop Voice attempts count, name the last caller, and flag going cold', () 
   const owen = view.invoices.rows.find((r) => r.name === 'Owen');
   assert.equal(owen?.outcome, 'Past due');
   assert.equal(owen?.phone, '(760) 333-0004');
-  assert.equal(owen?.outreach, 'No Voice attempts yet');
+  assert.equal(owen?.outreach, '0 calls · texts unavailable · email unavailable');
   assert.equal(owen?.goingCold, true);
   assert.equal(view.invoices.count, 1);
   assert.equal(view.leads.rows.some((r) => r.name === 'Owen'), false);
@@ -241,28 +241,34 @@ test('invoice follow-up is separate from new leads and keeps attempt counts', ()
   );
   const view = needsCallback({
     candidates, sources: callbackSources({ log }), work: indexWorkTimes([]), fromMs, now, attempts, pastDue: invoices,
+    inbound: log.filter((r) => r.direction !== 'outbound').map((r) => ({ at: r.started_at, phone: r.caller_phone })),
   });
   assert.deepEqual(view.leads.rows.map((r) => r.name).sort(), ['New lead', 'Paid caller']);
   assert.equal(view.leads.rows.some((r) => r.phone.includes('555-0002')), false);
-  const names = view.invoices.rows.map((r) => r.name);
-  assert.deepEqual(names.filter((n) => n === 'Quiet Open' || n === 'Paid'), []);
+  assert.equal(view.invoices.rows.some((r) => r.name === 'Paid'), false);
+  assert.deepEqual(view.invoices.rows.map((r) => r.name), ['No Water', 'Owen', 'Invoice Caller', 'Quiet Open']);
   const noWater = view.invoices.rows.find((r) => r.name === 'No Water');
-  assert.equal(noWater?.alsoCalledIn, true);
+  assert.equal(noWater?.calledAfter, 'Called us Oct 14, 9:10 AM (after invoice)');
+  assert.equal(noWater?.alsoCalledIn, false);
   assert.equal(noWater?.balance, 400);
   assert.equal(noWater?.outcome, 'Awaiting payment');
   assert.equal(noWater?.pastDue, false);
-  assert.equal(noWater?.outreach, 'No Voice attempts yet');
+  assert.equal(noWater?.outreach, '0 calls · texts unavailable · email unavailable');
   assert.equal(noWater?.goingCold, true);
   const inv = view.invoices.rows.find((r) => r.name === 'Invoice Caller');
-  assert.equal(inv?.alsoCalledIn, false);
+  assert.equal(inv?.calledAfter, 'Called us Oct 14, 9:20 AM (after invoice)');
   assert.equal(inv?.pastDue, true);
   assert.equal(inv?.balance, 80);
   assert.equal(inv?.goingCold, true);
+  const quiet = view.invoices.rows.find((r) => r.name === 'Quiet Open');
+  assert.equal(quiet?.calledAfter, null);
+  assert.equal(quiet?.balance, 40);
   const owen = view.invoices.rows.find((r) => r.name === 'Owen');
   assert.equal(owen?.phone, '(760) 555-0005');
   assert.equal(owen?.balance, 150);
-  assert.match(owen?.outreach ?? '', /^1 attempt, last/);
-  assert.match(owen?.outreach ?? '', /Liz/);
+  assert.match(owen?.outreach ?? '', /^1 call · /);
+  assert.match(owen?.outreach ?? '', /last: call by Liz Oct 14/);
+  assert.equal(view.invoices.totalOwed, 670);
   assert.equal(view.invoices.rows.some((r) => r.name === 'No Water' && view.leads.rows.some((l) => l.phone === r.phone)), false);
 });
 
@@ -343,6 +349,100 @@ test('production shapes: a phone intake is not a booking, and past-due invoices 
   assert.equal(view.invoices.rows[0].balance, 1000);
   assert.equal(view.invoices.rows[0].outcome, 'Past due');
   assert.equal(view.leads.rows.some((r) => r.name === 'Got a job'), false);
+});
+
+test('shop work on the call date, including a cancelled job, drops the lead', () => {
+  const callAt = '2026-10-11T23:10:30Z'; // 4:10 PM PT Oct 11
+  const log = [
+    { direction: 'inbound', outcome: 'forwarded_ai', started_at: callAt, caller_phone: '+16198557276', duration_seconds: 125, client_name: 'Cecilia Catlin' },
+    { direction: 'inbound', outcome: 'forwarded_ai', started_at: '2026-10-11T20:00:00Z', caller_phone: '+17605550111', duration_seconds: 40, client_name: 'Same day job' },
+    { direction: 'inbound', outcome: 'missed', started_at: '2026-10-10T18:00:00Z', caller_phone: '+17605550222', duration_seconds: 0, ring_seconds: 20, client_name: 'Still waiting' },
+  ];
+  const work = indexWorkTimes([
+    { phone: '6198557276', at: '2026-10-12T17:00:00Z' },
+    { phone: '7605550111', at: '2026-10-11T16:00:00Z' },
+  ]);
+  assert.equal(hasWorkOnOrAfter('6198557276', callAt, work), true);
+  assert.equal(hasWorkAfter('7605550111', '2026-10-11T20:00:00Z', work), false);
+  assert.equal(hasWorkOnOrAfter('7605550111', '2026-10-11T20:00:00Z', work), true);
+  const view = needsCallback({
+    candidates: callbackCandidates({ log, recordings: [], mike: [] }),
+    sources: [], work, fromMs, now,
+  });
+  assert.deepEqual(view.leads.rows.map((r) => r.name), ['Still waiting']);
+});
+
+test('open invoices list every past-due and awaiting invoice, with collection counts and only a later call', () => {
+  const issued = '2026-10-01T17:00:00Z';
+  const open = listOpenInvoices(
+    [
+      { id: 'I1', client_id: 'C1', issued_date: issued, invoice_status: 'past_due', data: { invoiceNumber: '5806', dueDate: '2026-10-08T17:00:00Z', amounts: { total: 800, paymentsTotal: 0 } } },
+      { id: 'I2', client_id: 'C1', issued_date: '2026-10-12T17:00:00Z', invoice_status: 'awaiting_payment', data: { invoiceNumber: 5807, dueDate: '2026-10-20T17:00:00Z', amounts: { total: 50, paymentsTotal: 10 } } },
+      { id: 'I3', client_id: 'C2', issued_date: issued, invoice_status: 'paid', data: { invoiceNumber: '1', amounts: { total: 10, paymentsTotal: 0 } } },
+      { id: 'I4', client_id: 'C3', issued_date: issued, invoice_status: 'past_due', data: { invoiceNumber: '9', dueDate: '2026-09-01T17:00:00Z', amounts: { total: 2000, paymentsTotal: 500 } } },
+    ],
+    [
+      { id: 'C1', name: 'Kevin and Dominique Cardinal', phones_digits: ['7608038863', '(760) 555-0199'] },
+      { id: 'C2', name: 'Paid', phones_digits: ['7605550004'] },
+      { id: 'C3', name: 'Big balance', phones_digits: [] },
+    ],
+  );
+  assert.deepEqual(open.map((r) => r.number), ['5806', '5807', '9']);
+  const before = '2026-09-20T18:00:00Z';
+  const after = '2026-10-13T21:14:00Z';
+  assert.equal(calledAfterInvoice(['7608038863'], issued, [{ at: before, phone: '7608038863' }]), null);
+  assert.equal(calledAfterInvoice(['7608038863'], issued, [
+    { at: before, phone: '7608038863' },
+    { at: after, phone: '+1 (760) 803-8863' },
+  ]), 'Called us Oct 13, 2:14 PM (after invoice)');
+  const label = formatCollectionAttempts({
+    phones: ['7608038863', '7605550199'],
+    clientId: 'C1',
+    invoiceNumber: '5806',
+    sinceIso: issued,
+    channels: { calls: true, appTexts: true, jobberTexts: true, emails: true },
+    events: [
+      { at: '2026-09-01T18:00:00Z', channel: 'call', source: 'voice', phone: '7608038863', by: 'Liz' },
+      { at: '2026-10-10T18:00:00Z', channel: 'call', source: 'voice', phone: '7608038863', by: 'Liz' },
+      { at: '2026-10-11T18:00:00Z', channel: 'call', source: 'voice', phone: '7605550199', by: 'Shanicey' },
+      { at: '2026-10-12T18:00:00Z', channel: 'call', source: 'voice', phone: '7608038863', by: 'Brighton' },
+      { at: '2026-10-09T18:00:00Z', channel: 'text', source: 'app_sms', clientId: 'C1', invoiceNumbers: ['5806'] },
+      { at: '2026-10-12T20:00:00Z', channel: 'text', source: 'jobber_sms', clientId: 'C1', by: 'Liz' },
+      { at: '2026-10-08T18:00:00Z', channel: 'email', source: 'jobber_email', clientId: 'C1', by: 'Liz' },
+    ],
+  });
+  assert.equal(label, '3 calls · 2 texts · 1 email · Gmail unavailable · last: text by Liz Oct 12');
+  const unavailable = formatCollectionAttempts({
+    phones: ['7608038863'], clientId: 'C1', invoiceNumber: '5806', sinceIso: issued,
+    channels: { calls: true, appTexts: true, jobberTexts: false, emails: false },
+    events: [{ at: '2026-10-09T18:00:00Z', channel: 'text', source: 'app_sms', clientId: 'C1' }],
+  });
+  assert.equal(unavailable, '0 calls · 1 text · Jobber texts unavailable · email unavailable · last: text Oct 9');
+  const view = needsCallback({
+    candidates: callbackCandidates({
+      log: [{ direction: 'inbound', outcome: 'forwarded_ai', started_at: before, caller_phone: '7608038863', duration_seconds: 80, client_name: 'Kevin and Dominique Cardinal' }],
+      recordings: [], mike: [],
+    }),
+    sources: [], work: indexWorkTimes([]), fromMs, now,
+    openInvoices: open,
+    inbound: [{ at: before, phone: '7608038863' }, { at: after, phone: '7608038863' }],
+    channels: { calls: true, appTexts: true, jobberTexts: false, emails: false },
+    collections: [{ at: '2026-10-09T18:00:00Z', channel: 'text', source: 'app_sms', clientId: 'C1', invoiceNumbers: ['5806'] }],
+  });
+  assert.equal(view.leads.count, 0);
+  assert.equal(view.invoices.count, 3);
+  assert.equal(view.invoices.rows[0].name, 'Big balance');
+  assert.equal(view.invoices.rows[0].balance, 1500);
+  assert.equal(view.invoices.rows[0].phone, 'No phone on file');
+  assert.equal(view.invoices.rows[0].daysPastDue != null && view.invoices.rows[0].daysPastDue > 0, true);
+  const cardinal = view.invoices.rows.find((r) => r.invoiceNumber === '5806');
+  assert.equal(cardinal?.calledAfter, 'Called us Oct 13, 2:14 PM (after invoice)');
+  assert.equal(cardinal?.alsoCalledIn, false);
+  assert.match(cardinal?.outreach ?? '', /1 text · Jobber texts unavailable · email unavailable/);
+  const later = view.invoices.rows.find((r) => r.invoiceNumber === '5807');
+  assert.equal(later?.calledAfter, 'Called us Oct 13, 2:14 PM (after invoice)');
+  assert.equal(later?.daysPastDue, 0);
+  assert.equal(view.invoices.totalOwed, 800 + 40 + 1500);
 });
 
 test('staff line list is configurable', () => {

@@ -14,10 +14,10 @@ const DAY = 86400_000;
 const CLIENT_FIELDS = 'client { id name companyName createdAt phones { number } }';
 export const Q = {
   invoices: `query MirInv($first: Int!, $after: String, $filter: InvoiceFilterAttributes) { invoices(first: $first, after: $after, filter: $filter) {
-    nodes { id invoiceStatus issuedDate subject updatedAt amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 5) { nodes { id title } } ${CLIENT_FIELDS} }
+    nodes { id invoiceNumber invoiceStatus issuedDate dueDate subject updatedAt amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 5) { nodes { id title } } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   jobs: `query MirJobs($first: Int!, $after: String, $filter: JobFilterAttributes) { jobs(first: $first, after: $after, filter: $filter) {
-    nodes { id jobNumber title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
+    nodes { id jobNumber jobStatus title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   quotes: `query MirQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) { quotes(first: $first, after: $after, filter: $filter) {
     nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name phones { number } } }
@@ -53,7 +53,10 @@ export function rollingTasks(now: Date, wide: boolean): Array<{ field: Field; fi
     { field: 'quotes', filter: { status: 'approved' } },
     { field: 'quotes', filter: { status: 'converted' } }, // hourly: old quote approved and converted at once
     { field: 'jobs', filter: { createdAt: w(60) } },
+    { field: 'jobs', filter: { status: 'archived', createdAt: w(60) } },
     { field: 'jobs', filter: { completedAt: w(95) } },
+    { field: 'invoices', filter: { invoiceStatus: ['past_due'] } },
+    { field: 'invoices', filter: { invoiceStatus: ['awaiting_payment'] } },
     { field: 'timeSheetEntries', filter: { startAt: w(35) } },
   ] : [
     { field: 'invoices', filter: { issuedDate: w(21) } },
@@ -62,7 +65,10 @@ export function rollingTasks(now: Date, wide: boolean): Array<{ field: Field; fi
     // Old quotes approved today (e.g. #3726, created Jul, approved Oct 12) land within one 10-min run.
     { field: 'quotes', filter: { status: 'approved' } },
     { field: 'jobs', filter: { createdAt: w(14) } },
+    { field: 'jobs', filter: { status: 'archived', createdAt: w(14) } },
     { field: 'jobs', filter: { completedAt: w(14) } },
+    { field: 'invoices', filter: { invoiceStatus: ['past_due'] } },
+    { field: 'invoices', filter: { invoiceStatus: ['awaiting_payment'] } },
     { field: 'timeSheetEntries', filter: { startAt: w(3) } },
   ];
 }
@@ -194,11 +200,19 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
       for (const t of rollingTasks(now, wide)) {
         let cursor: string | null = null;
         if (t.field === 'timeSheetEntries' && st.get('backfill:timeSheetEntries')?.last_error === 'permission') continue;
-        do {
-          if (left() < 15_000) { complete = false; break; }
-          const p = await page(t.field, t.filter, cursor);
-          n += await store(db, t.field, p.nodes); cursor = p.next;
-        } while (cursor);
+        const optional = (t.filter as { status?: string }).status === 'archived' || 'invoiceStatus' in t.filter;
+        try {
+          do {
+            if (left() < 15_000) { complete = false; break; }
+            const p = await page(t.field, t.filter, cursor);
+            n += await store(db, t.field, p.nodes); cursor = p.next;
+          } while (cursor);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'error';
+          if (!optional || /throttl/i.test(msg)) throw e;
+          report[`skip:${t.field}`] = msg.slice(0, 180);
+          continue;
+        }
         if (!complete) break;
       }
       if (complete) {

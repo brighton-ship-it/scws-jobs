@@ -54,7 +54,16 @@ export interface NeedsCallbackRow {
   pastDue: boolean;
   /** Sum of unpaid invoice balances, when the mirror can show one. */
   balance?: number | null;
-  /** Invoice client also placed an inbound call that is not clearly about the invoice. */
+  /** Jobber invoice number, when the mirror or a Jobber read has one. */
+  invoiceNumber?: string | null;
+  /** Whole Pacific days after the due date. Null when the due date is unknown. */
+  daysPastDue?: number | null;
+  /**
+   * Latest inbound call strictly after this invoice was issued.
+   * The call that led to the invoice is not shown.
+   */
+  calledAfter?: string | null;
+  /** @deprecated Replaced by calledAfter. Always false so the old "Also called in" words are not shown. */
   alsoCalledIn?: boolean;
 }
 
@@ -86,21 +95,70 @@ export interface PastDueClient {
    * Omitted on older rows, which were past-due only and still appear without a call.
    */
   pastDue?: boolean;
+  /** past_due and awaiting_payment are open. paid is not, even if a balance column is leftover. */
+  status?: 'past_due' | 'awaiting_payment' | 'paid';
+}
+
+export interface OpenInvoice {
+  id: string;
+  number: string | null;
+  clientId: string;
+  name: string | null;
+  phones: string[];
+  issuedAt: string;
+  dueAt: string | null;
+  status: 'past_due' | 'awaiting_payment';
+  balance: number | null;
+}
+
+export interface InboundTouch {
+  at: string;
+  phone: string | null;
+}
+
+export interface CollectionEvent {
+  at: string;
+  channel: 'call' | 'text' | 'email';
+  source: 'voice' | 'app_sms' | 'jobber_sms' | 'jobber_email';
+  by?: string | null;
+  phone?: string | null;
+  clientId?: string | null;
+  invoiceNumbers?: string[] | null;
+}
+
+export interface CollectionChannels {
+  /** Shop Google Voice outbound calls. */
+  calls: boolean;
+  /** A2P invoice texts in collection_sms_log. */
+  appTexts: boolean;
+  /** Jobber invoice SMS / text reminders. */
+  jobberTexts: boolean;
+  /** Jobber invoice emails. Gmail collection mail is not in the app. */
+  emails: boolean;
 }
 
 export interface MirrorInvoice {
+  id?: string | null;
   client_id?: string | null;
   issued_date?: string | null;
   invoice_status?: string | null;
   /** Set only when jobber_invoices has a balance column. Numeric columns may arrive as strings. */
   balance?: number | string | null;
+  invoice_number?: string | number | null;
+  due_date?: string | null;
   amounts?: { total?: number | null; paymentsTotal?: number | null; invoiceBalance?: number | null } | null;
-  data?: { amounts?: { total?: number | null; paymentsTotal?: number | null; invoiceBalance?: number | null } | null } | null;
+  data?: {
+    invoiceNumber?: string | number | null;
+    dueDate?: string | null;
+    amounts?: { total?: number | null; paymentsTotal?: number | null; invoiceBalance?: number | null } | null;
+  } | null;
 }
 
 export interface NeedsCallbackView {
   count: number;
   rows: NeedsCallbackRow[];
+  /** Sum of known open-invoice balances. Invoice card only. */
+  totalOwed?: number | null;
 }
 
 const SOURCE_LINE: Record<string, string> = {
@@ -348,7 +406,7 @@ export function groupPastDueClients(
   opts?: { hasBalanceColumn?: boolean },
 ): PastDueClient[] {
   const hasBalanceColumn = opts?.hasBalanceColumn ?? invoices.some((inv) => Object.prototype.hasOwnProperty.call(inv, 'balance'));
-  const grouped = new Map<string, { issuedAt: string; balance: number | null; pastDue: boolean }>();
+  const grouped = new Map<string, { issuedAt: string; balance: number | null; pastDue: boolean; status: 'past_due' | 'awaiting_payment' | 'paid' }>();
   for (const inv of invoices) {
     if (!inv.client_id || !inv.issued_date || !invoiceUnpaid(inv, hasBalanceColumn)) continue;
     if (!Number.isFinite(Date.parse(inv.issued_date))) continue;
@@ -357,8 +415,14 @@ export function groupPastDueClients(
     const add = owed != null && owed > 0 ? owed : null;
     const balance = add == null ? (prev?.balance ?? null) : Math.round(((prev?.balance ?? 0) + add) * 100) / 100;
     const issuedAt = !prev || Date.parse(inv.issued_date) < Date.parse(prev.issuedAt) ? inv.issued_date : prev.issuedAt;
-    const pastDue = (prev?.pastDue ?? false) || invoiceStatus(inv) === 'past_due';
-    grouped.set(inv.client_id, { issuedAt, balance, pastDue });
+    const statusName = invoiceStatus(inv);
+    const nextStatus = statusName === 'past_due' || prev?.status === 'past_due'
+      ? 'past_due'
+      : statusName === 'awaiting_payment' || prev?.status === 'awaiting_payment'
+        ? 'awaiting_payment'
+        : 'paid';
+    const pastDue = nextStatus === 'past_due';
+    grouped.set(inv.client_id, { issuedAt, balance, pastDue, status: nextStatus });
   }
   const byId = new Map(clients.map((c) => [c.id, c]));
   const out: PastDueClient[] = [];
@@ -366,7 +430,72 @@ export function groupPastDueClients(
     const client = byId.get(id);
     const phones = (client?.phones_digits ?? []).map((p) => digits10(p)).filter((p): p is string => !!p);
     if (!phones.length) continue;
-    out.push({ id, name: client?.name ?? null, phones, issuedAt: row.issuedAt, balance: row.balance, pastDue: row.pastDue });
+    out.push({ id, name: client?.name ?? null, phones, issuedAt: row.issuedAt, balance: row.balance, pastDue: row.pastDue, status: row.status });
+  }
+  return out;
+}
+
+function invoiceNumberOf(inv: MirrorInvoice): string | null {
+  const raw = inv.invoice_number ?? inv.data?.invoiceNumber ?? null;
+  if (raw == null || raw === '') return null;
+  return String(raw);
+}
+
+function invoiceDueOf(inv: MirrorInvoice): string | null {
+  const raw = inv.due_date ?? inv.data?.dueDate ?? null;
+  return raw ? String(raw) : null;
+}
+
+/** One open invoice per past_due or awaiting_payment row with something owed, or an unknown amount. */
+export function listOpenInvoices(
+  invoices: MirrorInvoice[],
+  clients: Array<{ id: string; name?: string | null; phones_digits?: string[] | null }>,
+  opts?: { hasBalanceColumn?: boolean },
+): OpenInvoice[] {
+  const hasBalanceColumn = opts?.hasBalanceColumn ?? invoices.some((inv) => Object.prototype.hasOwnProperty.call(inv, 'balance'));
+  const byId = new Map(clients.map((c) => [c.id, c]));
+  const out: OpenInvoice[] = [];
+  for (const inv of invoices) {
+    if (!inv.client_id || !inv.issued_date || !Number.isFinite(Date.parse(inv.issued_date))) continue;
+    const statusName = invoiceStatus(inv);
+    if (statusName !== 'past_due' && statusName !== 'awaiting_payment') continue;
+    if (!invoiceUnpaid(inv, hasBalanceColumn)) continue;
+    const owed = invoiceOwed(inv, hasBalanceColumn);
+    if (owed != null && owed <= 0) continue;
+    const client = byId.get(inv.client_id);
+    const phones = (client?.phones_digits ?? []).map((p) => digits10(p)).filter((p): p is string => !!p);
+    const id = inv.id || `${inv.client_id}:${inv.issued_date}`;
+    out.push({
+      id: String(id),
+      number: invoiceNumberOf(inv),
+      clientId: inv.client_id,
+      name: client?.name ?? null,
+      phones,
+      issuedAt: inv.issued_date,
+      dueAt: invoiceDueOf(inv),
+      status: statusName,
+      balance: owed != null && owed > 0 ? owed : null,
+    });
+  }
+  return out;
+}
+
+function openInvoicesFromClients(clients: PastDueClient[]): OpenInvoice[] {
+  const out: OpenInvoice[] = [];
+  for (const client of clients) {
+    const status = client.status ?? (client.pastDue === false ? 'awaiting_payment' : 'past_due');
+    if (status !== 'past_due' && status !== 'awaiting_payment') continue;
+    out.push({
+      id: client.id,
+      number: null,
+      clientId: client.id,
+      name: client.name,
+      phones: client.phones,
+      issuedAt: client.issuedAt,
+      dueAt: null,
+      status,
+      balance: client.balance ?? null,
+    });
   }
   return out;
 }
@@ -403,6 +532,127 @@ export function hasWorkAfter(phone: string | null, afterIso: string, work: Map<s
   const after = Date.parse(afterIso);
   if (!p || !Number.isFinite(after)) return false;
   return (work.get(p) ?? []).some((t) => t > after);
+}
+
+const PT = 'America/Los_Angeles';
+
+export function ptDayKeyFromIso(iso: string): string | null {
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t)) return null;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: PT }).format(new Date(t));
+}
+
+/** Shop work on the call's Pacific calendar day, or any later day. A cancelled job still counts. */
+export function hasWorkOnOrAfter(phone: string | null, callIso: string, work: Map<string, number[]>): boolean {
+  const p = digits10(phone);
+  const callDay = ptDayKeyFromIso(callIso);
+  if (!p || !callDay) return false;
+  return (work.get(p) ?? []).some((t) => {
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: PT }).format(new Date(t));
+    return day >= callDay;
+  });
+}
+
+export function daysPastDue(dueAt: string | null | undefined, now: Date): number | null {
+  if (!dueAt) return null;
+  const due = Date.parse(dueAt);
+  if (!Number.isFinite(due)) return null;
+  const dueDay = new Intl.DateTimeFormat('en-CA', { timeZone: PT }).format(new Date(due));
+  const nowDay = new Intl.DateTimeFormat('en-CA', { timeZone: PT }).format(now);
+  const days = Math.round((Date.parse(`${nowDay}T00:00:00Z`) - Date.parse(`${dueDay}T00:00:00Z`)) / 86400000);
+  return days > 0 ? days : 0;
+}
+
+/** Latest inbound call strictly after the invoice was issued. Earlier service calls are ignored. */
+export function calledAfterInvoice(
+  phones: string[],
+  issuedAt: string,
+  inbound: InboundTouch[],
+): string | null {
+  const issued = Date.parse(issuedAt);
+  const want = new Set(phones.map((p) => digits10(p)).filter((p): p is string => !!p));
+  let best = -1;
+  for (const call of inbound) {
+    const p = digits10(call.phone);
+    const t = Date.parse(call.at);
+    if (!p || !want.has(p) || !Number.isFinite(t) || !Number.isFinite(issued) || t <= issued) continue;
+    if (t > best) best = t;
+  }
+  if (best < 0) return null;
+  const d = new Date(best);
+  const date = d.toLocaleDateString('en-US', { timeZone: PT, month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString('en-US', { timeZone: PT, hour: 'numeric', minute: '2-digit' });
+  return `Called us ${date}, ${time} (after invoice)`;
+}
+
+function countWord(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+function collectionWhen(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-US', { timeZone: PT, month: 'short', day: 'numeric' });
+}
+
+/**
+ * Collection attempts since the invoice was issued.
+ * A channel that could not be read is "unavailable", never a fake 0.
+ * Gmail is not logged: when Jobber emails are readable the label still says Gmail is unavailable.
+ */
+export function formatCollectionAttempts(input: {
+  events: CollectionEvent[];
+  phones: string[];
+  clientId: string;
+  invoiceNumber: string | null;
+  sinceIso: string;
+  channels: CollectionChannels;
+}): string {
+  const since = Date.parse(input.sinceIso);
+  const phones = new Set(input.phones.map((p) => digits10(p)).filter((p): p is string => !!p));
+  const num = (input.invoiceNumber ?? '').trim();
+  const matched = input.events.filter((event) => {
+    const t = Date.parse(event.at);
+    if (!Number.isFinite(t) || (Number.isFinite(since) && t < since)) return false;
+    const phone = digits10(event.phone);
+    const phoneOk = !!phone && phones.has(phone);
+    if (event.channel === 'call') return phoneOk;
+    const clientOk = !!event.clientId && event.clientId === input.clientId;
+    const invoiceOk = !!num && (event.invoiceNumbers ?? []).some((n) => String(n).trim() === num);
+    return clientOk || invoiceOk || phoneOk;
+  }).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+
+  const calls = matched.filter((event) => event.channel === 'call');
+  const appTexts = matched.filter((event) => event.source === 'app_sms');
+  const jobberTexts = matched.filter((event) => event.source === 'jobber_sms');
+  const emails = matched.filter((event) => event.channel === 'email');
+  const parts: string[] = [];
+  parts.push(input.channels.calls ? countWord(calls.length, 'call', 'calls') : 'calls unavailable');
+  if (input.channels.appTexts && input.channels.jobberTexts) {
+    parts.push(countWord(appTexts.length + jobberTexts.length, 'text', 'texts'));
+  } else if (input.channels.appTexts) {
+    parts.push(`${countWord(appTexts.length, 'text', 'texts')} · Jobber texts unavailable`);
+  } else if (input.channels.jobberTexts) {
+    parts.push(`${countWord(jobberTexts.length, 'text', 'texts')} · app texts unavailable`);
+  } else {
+    parts.push('texts unavailable');
+  }
+  parts.push(input.channels.emails
+    ? `${countWord(emails.length, 'email', 'emails')} · Gmail unavailable`
+    : 'email unavailable');
+
+  const visible = matched.filter((event) => {
+    if (event.channel === 'call') return input.channels.calls;
+    if (event.source === 'app_sms') return input.channels.appTexts;
+    if (event.source === 'jobber_sms') return input.channels.jobberTexts;
+    if (event.channel === 'email') return input.channels.emails;
+    return false;
+  });
+  const last = visible[visible.length - 1];
+  if (last) {
+    const kind = last.channel === 'call' ? 'call' : last.channel === 'text' ? 'text' : 'email';
+    parts.push(`last: ${kind}${last.by ? ` by ${last.by}` : ''} ${collectionWhen(last.at)}`);
+  }
+  return parts.join(' · ');
 }
 
 const textBlob = (name: string | null, summary: string | null) => `${summary ?? ''}\n${name ?? ''}`;
@@ -525,7 +775,7 @@ export function annotateFeed(
   const work = extra?.work ?? new Map<string, number[]>();
   return rows.map((row) => {
     const needsOutcome = feedNeedsCallback(row.outcome);
-    const resolved = row.outcome === 'Booked' || (needsOutcome && hasWorkAfter(row.phone, row.at, work));
+    const resolved = row.outcome === 'Booked' || (needsOutcome && hasWorkOnOrAfter(row.phone, row.at, work));
     const needs = needsOutcome && !resolved;
     const match = needs ? handlingCallback(row.phone, row.at, sources) : null;
     const outreach = summarizeOutreach({
@@ -549,8 +799,6 @@ export function annotateFeed(
   });
 }
 
-const NEEDS_CAP = 100;
-
 export interface CallbackQueues {
   leads: NeedsCallbackView;
   invoices: NeedsCallbackView;
@@ -560,14 +808,16 @@ function queue(rows: NeedsCallbackRow[]): NeedsCallbackView {
   const byUrgency = (a: NeedsCallbackRow, b: NeedsCallbackRow) =>
     Number(b.goingCold) - Number(a.goingCold) || Date.parse(b.at) - Date.parse(a.at);
   const sorted = [...rows].sort(byUrgency);
-  return { count: sorted.length, rows: sorted.slice(0, NEEDS_CAP) };
+  return { count: sorted.length, rows: sorted };
 }
 
+const CLOSED_CHANNELS: CollectionChannels = { calls: true, appTexts: false, jobberTexts: false, emails: false };
+
 /**
- * New leads stay on `leads` (same exclusions as before, including AI bookings and later
- * quote/request/job). Callers who match an unpaid invoice go to `invoices` only.
- * Past-due clients are listed even when they never called. Awaiting-payment clients
- * appear only when they called.
+ * New leads stay on `leads`. A Jobber request, quote, job (including cancelled), visit,
+ * or invoice on the call's Pacific day or later takes them off. Callers who match an
+ * open invoice go to `invoices` only.
+ * Every awaiting_payment and past_due invoice is listed, whether or not the client called.
  */
 export function needsCallback(input: {
   candidates: CallbackCandidate[];
@@ -577,35 +827,41 @@ export function needsCallback(input: {
   now?: Date;
   attempts?: OutreachAttempt[];
   pastDue?: PastDueClient[];
+  openInvoices?: OpenInvoice[];
+  inbound?: InboundTouch[];
+  collections?: CollectionEvent[];
+  channels?: CollectionChannels;
 }): CallbackQueues {
   const now = input.now ?? new Date();
   const attempts = input.attempts ?? [];
-  const pastDue = input.pastDue ?? [];
-  const invoiceByPhone = new Map<string, PastDueClient>();
-  for (const client of pastDue) {
-    for (const p of client.phones) {
-      const d = digits10(p);
-      if (d && !invoiceByPhone.has(d)) invoiceByPhone.set(d, client);
-    }
+  const open = input.openInvoices ?? openInvoicesFromClients(input.pastDue ?? []);
+  const channels = input.channels ?? CLOSED_CHANNELS;
+  const inbound = input.inbound ?? [];
+  const collections: CollectionEvent[] = [
+    ...attempts.map((attempt) => ({
+      at: attempt.at,
+      channel: 'call' as const,
+      source: 'voice' as const,
+      by: attempt.staff,
+      phone: attempt.phone,
+    })),
+    ...(input.collections ?? []).filter((event) => event.channel !== 'call'),
+  ];
+  const invoicePhones = new Set<string>();
+  for (const inv of open) for (const p of inv.phones) {
+    const d = digits10(p);
+    if (d) invoicePhones.add(d);
   }
-  const callsByClient = new Map<string, CallbackCandidate[]>();
   const leads: NeedsCallbackRow[] = [];
   const seen = new Set<string>();
   for (const c of input.candidates) {
     const t = Date.parse(c.at);
     const phone = digits10(c.phone);
     if (!phone || !Number.isFinite(t) || t < input.fromMs || t > now.getTime()) continue;
-    // AI booked a service call, or the call is junk: this number does not need a callback.
     if (c.aiBooked || c.spam || c.vendor) continue;
     if (isHangupUnder10s(c.durationSeconds, c.ringSeconds)) continue;
-    const client = invoiceByPhone.get(phone);
-    if (client) {
-      const list = callsByClient.get(client.id) ?? [];
-      list.push(c);
-      callsByClient.set(client.id, list);
-      continue;
-    }
-    if (hasWorkAfter(c.phone, c.at, input.work)) continue;
+    if (invoicePhones.has(phone)) continue;
+    if (hasWorkOnOrAfter(c.phone, c.at, input.work)) continue;
     if (handlingCallback(c.phone, c.at, input.sources)) continue;
     if (seen.has(phone)) continue;
     seen.add(phone);
@@ -627,45 +883,48 @@ export function needsCallback(input: {
     });
   }
   const invoices: NeedsCallbackRow[] = [];
-  for (const client of pastDue) {
-    const calls = (callsByClient.get(client.id) ?? []).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
-    const includeWithoutCall = client.pastDue !== false;
-    if (!includeWithoutCall && calls.length === 0) continue;
-    const phone = digits10(calls[0]?.phone) ?? bestPastDuePhone(client.phones, attempts, input.fromMs, now);
-    if (!phone || seen.has(phone)) {
-      const existing = phone ? invoices.find((r) => digits10(r.phone) === phone) : undefined;
-      if (existing) {
-        const invoice = summarizeOutreach({
-          phone, attempts, fromMs: input.fromMs, now, anchorAt: client.issuedAt,
-          connected: !!handlingCallback(phone, client.issuedAt, input.sources),
-          booked: hasWorkAfter(phone, client.issuedAt, input.work),
-          trackCold: true,
-        });
-        if (invoice.goingCold) existing.goingCold = true;
-      }
-      continue;
-    }
-    seen.add(phone);
-    const isPastDue = client.pastDue !== false;
-    const outreach = summarizeOutreach({
-      phone, attempts, fromMs: input.fromMs, now, anchorAt: client.issuedAt,
-      connected: !!handlingCallback(phone, client.issuedAt, input.sources),
-      booked: hasWorkAfter(phone, client.issuedAt, input.work),
+  let totalOwed = 0;
+  let owedKnown = false;
+  for (const inv of open) {
+    const phone = inv.phones[0] ?? bestPastDuePhone(inv.phones, attempts, input.fromMs, now);
+    const isPastDue = inv.status === 'past_due';
+    const owed = inv.balance;
+    if (owed != null && owed > 0) { totalOwed += owed; owedKnown = true; }
+    const cold = phone ? summarizeOutreach({
+      phone, attempts, fromMs: Date.parse(inv.issuedAt), now, anchorAt: inv.issuedAt,
+      connected: !!handlingCallback(phone, inv.issuedAt, input.sources),
+      booked: hasWorkOnOrAfter(phone, inv.issuedAt, input.work),
       trackCold: true,
-    });
+    }) : null;
     invoices.push({
-      at: calls[0]?.at ?? client.issuedAt,
-      phone: formatPhone(phone),
-      name: client.name,
+      at: inv.issuedAt,
+      phone: phone ? formatPhone(phone) : 'No phone on file',
+      name: inv.name,
       line: 'Invoice',
       outcome: isPastDue ? 'Past due' : 'Awaiting payment',
       durationSeconds: null,
-      outreach: outreach.label,
-      goingCold: outreach.goingCold,
+      outreach: formatCollectionAttempts({
+        events: collections, phones: inv.phones, clientId: inv.clientId,
+        invoiceNumber: inv.number, sinceIso: inv.issuedAt, channels,
+      }),
+      goingCold: cold?.goingCold ?? false,
       pastDue: isPastDue,
-      balance: client.balance ?? null,
-      alsoCalledIn: calls.some((c) => !obviouslyAboutInvoice(c.name, c.summary)),
+      balance: owed,
+      invoiceNumber: inv.number,
+      daysPastDue: daysPastDue(inv.dueAt, now),
+      calledAfter: calledAfterInvoice(inv.phones, inv.issuedAt, inbound),
+      alsoCalledIn: false,
     });
   }
-  return { leads: queue(leads), invoices: queue(invoices) };
+  invoices.sort((a, b) => (b.balance ?? -1) - (a.balance ?? -1)
+    || (b.daysPastDue ?? -1) - (a.daysPastDue ?? -1)
+    || Date.parse(b.at) - Date.parse(a.at));
+  return {
+    leads: queue(leads),
+    invoices: {
+      count: invoices.length,
+      rows: invoices,
+      totalOwed: owedKnown ? Math.round(totalOwed * 100) / 100 : null,
+    },
+  };
 }
