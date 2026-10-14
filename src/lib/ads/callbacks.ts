@@ -52,6 +52,10 @@ export interface NeedsCallbackRow {
   outreach: string;
   goingCold: boolean;
   pastDue: boolean;
+  /** Sum of unpaid invoice balances, when the mirror can show one. */
+  balance?: number | null;
+  /** Invoice client also placed an inbound call that is not clearly about the invoice. */
+  alsoCalledIn?: boolean;
 }
 
 export interface OutreachAttempt {
@@ -73,8 +77,25 @@ export interface PastDueClient {
   id: string;
   name: string | null;
   phones: string[];
-  /** Earliest past-due invoice issue time. Anchor for the 3-day cold clock. */
+  /** Earliest unpaid invoice issue time. Anchor for the 3-day cold clock. */
   issuedAt: string;
+  /** Sum of balances owed. Null when the mirror has no amount to show. */
+  balance?: number | null;
+  /**
+   * True when the client has a past-due invoice and should be listed with no inbound call.
+   * Omitted on older rows, which were past-due only and still appear without a call.
+   */
+  pastDue?: boolean;
+}
+
+export interface MirrorInvoice {
+  client_id?: string | null;
+  issued_date?: string | null;
+  invoice_status?: string | null;
+  /** Set only when jobber_invoices has a balance column. Numeric columns may arrive as strings. */
+  balance?: number | string | null;
+  amounts?: { total?: number | null; paymentsTotal?: number | null; invoiceBalance?: number | null } | null;
+  data?: { amounts?: { total?: number | null; paymentsTotal?: number | null; invoiceBalance?: number | null } | null } | null;
 }
 
 export interface NeedsCallbackView {
@@ -115,8 +136,21 @@ export function formatCallbackStatus(
   return `Called back ${when} PT, ${formatDuration(match.durationSeconds)}`;
 }
 
+/** Missed, voicemail, or the AI receptionist (Mike / Sarah). A live answer or a booking does not. */
 export function feedNeedsCallback(outcome: string): boolean {
-  return outcome === 'Missed' || outcome === 'Voicemail' || outcome.startsWith('Mike');
+  if (outcome === 'Booked' || outcome === 'Answered' || outcome.startsWith('Answered')) return false;
+  return outcome === 'Missed' || outcome === 'Voicemail' || /^(Mike|Sarah)\b/.test(outcome);
+}
+
+const INVOICE_TALK = /\b(invoice|invoices|past[-\s]?due|balance|payment|payments|collection|collections|amount due|unpaid|billing)\b/i;
+const SERVICE_TALK = /\b(no water|pressure|pump|well|drill|quote|estimate|install|service call)\b/i;
+
+/** True when the call text is about the invoice and not also a new job. Empty text is not obvious. */
+export function obviouslyAboutInvoice(name: string | null, summary: string | null): boolean {
+  const text = `${summary ?? ''}\n${name ?? ''}`.trim();
+  if (!text || !INVOICE_TALK.test(text)) return false;
+  if (SERVICE_TALK.test(text)) return false;
+  return true;
 }
 
 function byPhone<T extends { phone: string | null; at: string }>(rows: T[]): Map<string, T[]> {
@@ -244,24 +278,72 @@ export function summarizeOutreach(input: {
   return { attempts: inWindow.length, lastAt: last?.at ?? null, lastBy: last?.staff ?? null, label, goingCold };
 }
 
+function invoiceStatus(inv: MirrorInvoice): string {
+  return String(inv.invoice_status ?? '').toLowerCase().replace(/\s+/g, '_');
+}
+
+function invoiceAmounts(inv: MirrorInvoice) {
+  return inv.amounts ?? inv.data?.amounts ?? null;
+}
+
+/** Balance from the column, or from amounts when the column is absent. Null if unknown. */
+export function invoiceOwed(inv: MirrorInvoice, hasBalanceColumn: boolean): number | null {
+  if (hasBalanceColumn) {
+    if (inv.balance == null || inv.balance === '') return null;
+    const n = typeof inv.balance === 'number' ? inv.balance : Number(inv.balance);
+    return Number.isFinite(n) ? n : null;
+  }
+  const amounts = invoiceAmounts(inv);
+  if (!amounts) return null;
+  if (typeof amounts.invoiceBalance === 'number' && Number.isFinite(amounts.invoiceBalance)) return amounts.invoiceBalance;
+  const total = amounts.total;
+  const paid = amounts.paymentsTotal;
+  if (typeof total === 'number' && typeof paid === 'number' && Number.isFinite(total) && Number.isFinite(paid)) {
+    return Math.round((total - paid) * 100) / 100;
+  }
+  return null;
+}
+
+function invoiceUnpaid(inv: MirrorInvoice, hasBalanceColumn: boolean): boolean {
+  if (hasBalanceColumn) {
+    const owed = invoiceOwed(inv, true);
+    return owed != null && owed > 0;
+  }
+  const status = invoiceStatus(inv);
+  return status === 'past_due' || status === 'awaiting_payment';
+}
+
+/**
+ * One row per client with an unpaid invoice.
+ * Balance column (when present): unpaid means balance > 0.
+ * Otherwise: past_due or awaiting_payment. pastDue is true only for past_due, so those
+ * clients can be worked with no inbound call. Balance is summed for display when known.
+ */
 export function groupPastDueClients(
-  invoices: Array<{ client_id?: string | null; issued_date?: string | null; invoice_status?: string | null }>,
+  invoices: MirrorInvoice[],
   clients: Array<{ id: string; name?: string | null; phones_digits?: string[] | null }>,
+  opts?: { hasBalanceColumn?: boolean },
 ): PastDueClient[] {
-  const earliest = new Map<string, string>();
+  const hasBalanceColumn = opts?.hasBalanceColumn ?? invoices.some((inv) => Object.prototype.hasOwnProperty.call(inv, 'balance'));
+  const grouped = new Map<string, { issuedAt: string; balance: number | null; pastDue: boolean }>();
   for (const inv of invoices) {
-    const status = String(inv.invoice_status ?? '').toLowerCase().replace(/\s+/g, '_');
-    if (status !== 'past_due' || !inv.client_id || !inv.issued_date) continue;
-    const prev = earliest.get(inv.client_id);
-    if (!prev || Date.parse(inv.issued_date) < Date.parse(prev)) earliest.set(inv.client_id, inv.issued_date);
+    if (!inv.client_id || !inv.issued_date || !invoiceUnpaid(inv, hasBalanceColumn)) continue;
+    if (!Number.isFinite(Date.parse(inv.issued_date))) continue;
+    const prev = grouped.get(inv.client_id);
+    const owed = invoiceOwed(inv, hasBalanceColumn);
+    const add = owed != null && owed > 0 ? owed : null;
+    const balance = add == null ? (prev?.balance ?? null) : Math.round(((prev?.balance ?? 0) + add) * 100) / 100;
+    const issuedAt = !prev || Date.parse(inv.issued_date) < Date.parse(prev.issuedAt) ? inv.issued_date : prev.issuedAt;
+    const pastDue = (prev?.pastDue ?? false) || invoiceStatus(inv) === 'past_due';
+    grouped.set(inv.client_id, { issuedAt, balance, pastDue });
   }
   const byId = new Map(clients.map((c) => [c.id, c]));
   const out: PastDueClient[] = [];
-  for (const [id, issuedAt] of Array.from(earliest.entries())) {
+  for (const [id, row] of Array.from(grouped.entries())) {
     const client = byId.get(id);
     const phones = (client?.phones_digits ?? []).map((p) => digits10(p)).filter((p): p is string => !!p);
-    if (!phones.length || !Number.isFinite(Date.parse(issuedAt))) continue;
-    out.push({ id, name: client?.name ?? null, phones, issuedAt });
+    if (!phones.length) continue;
+    out.push({ id, name: client?.name ?? null, phones, issuedAt: row.issuedAt, balance: row.balance, pastDue: row.pastDue });
   }
   return out;
 }
@@ -404,6 +486,11 @@ export function callbackSources(input: {
   return sources;
 }
 
+/**
+ * Attempt text belongs on calls that still need a callback: missed, voicemail, or Mike/Sarah,
+ * and not a booking. A live answer shows attempt text only when someone actually dialed out.
+ * Booked outcome, or a quote/request/job after the call, shows nothing.
+ */
 export function annotateFeed(
   rows: FeedRow[],
   sources: CallbackSource[],
@@ -412,29 +499,53 @@ export function annotateFeed(
 ): FeedRow[] {
   const attempts = extra?.attempts ?? [];
   const fromMs = extra?.fromMs ?? 0;
-  const pastDue = extra?.pastDuePhones ?? new Set<string>();
   const work = extra?.work ?? new Map<string, number[]>();
   return rows.map((row) => {
-    const eligible = feedNeedsCallback(row.outcome);
-    const match = eligible ? handlingCallback(row.phone, row.at, sources) : null;
-    const phone = digits10(row.phone);
-    const isPastDue = !!phone && pastDue.has(phone);
+    const needsOutcome = feedNeedsCallback(row.outcome);
+    const resolved = row.outcome === 'Booked' || (needsOutcome && hasWorkAfter(row.phone, row.at, work));
+    const needs = needsOutcome && !resolved;
+    const match = needs ? handlingCallback(row.phone, row.at, sources) : null;
     const outreach = summarizeOutreach({
       phone: row.phone,
       attempts,
       fromMs,
       now,
       anchorAt: row.at,
-      connected: !!match,
-      booked: row.outcome === 'Booked' || hasWorkAfter(row.phone, row.at, work),
-      trackCold: (eligible && !match) || isPastDue,
+      connected: !!match || row.outcome === 'Answered' || row.outcome.startsWith('Answered'),
+      booked: resolved || row.outcome === 'Booked',
+      trackCold: needs && !match,
     });
-    return { ...row, callback: formatCallbackStatus(match, eligible, now), outreach: outreach.label, goingCold: outreach.goingCold };
+    const answeredWithAttempts = (row.outcome === 'Answered' || row.outcome.startsWith('Answered ·')) && outreach.attempts > 0;
+    const showOutreach = needs || answeredWithAttempts;
+    return {
+      ...row,
+      callback: formatCallbackStatus(match, needs, now),
+      outreach: showOutreach ? outreach.label : null,
+      goingCold: needs ? outreach.goingCold : false,
+    };
   });
 }
 
 const NEEDS_CAP = 100;
 
+export interface CallbackQueues {
+  leads: NeedsCallbackView;
+  invoices: NeedsCallbackView;
+}
+
+function queue(rows: NeedsCallbackRow[]): NeedsCallbackView {
+  const byUrgency = (a: NeedsCallbackRow, b: NeedsCallbackRow) =>
+    Number(b.goingCold) - Number(a.goingCold) || Date.parse(b.at) - Date.parse(a.at);
+  const sorted = [...rows].sort(byUrgency);
+  return { count: sorted.length, rows: sorted.slice(0, NEEDS_CAP) };
+}
+
+/**
+ * New leads stay on `leads` (same exclusions as before, including AI bookings and later
+ * quote/request/job). Callers who match an unpaid invoice go to `invoices` only.
+ * Past-due clients are listed even when they never called. Awaiting-payment clients
+ * appear only when they called.
+ */
 export function needsCallback(input: {
   candidates: CallbackCandidate[];
   sources: CallbackSource[];
@@ -443,47 +554,63 @@ export function needsCallback(input: {
   now?: Date;
   attempts?: OutreachAttempt[];
   pastDue?: PastDueClient[];
-}): NeedsCallbackView {
+}): CallbackQueues {
   const now = input.now ?? new Date();
   const attempts = input.attempts ?? [];
   const pastDue = input.pastDue ?? [];
-  const pastDuePhones = new Set(pastDue.flatMap((c) => c.phones));
-  const kept: NeedsCallbackRow[] = [];
+  const invoiceByPhone = new Map<string, PastDueClient>();
+  for (const client of pastDue) {
+    for (const p of client.phones) {
+      const d = digits10(p);
+      if (d && !invoiceByPhone.has(d)) invoiceByPhone.set(d, client);
+    }
+  }
+  const callsByClient = new Map<string, CallbackCandidate[]>();
+  const leads: NeedsCallbackRow[] = [];
   const seen = new Set<string>();
-  const push = (row: NeedsCallbackRow) => {
-    const p = digits10(row.phone);
-    if (p) seen.add(p);
-    kept.push(row);
-  };
   for (const c of input.candidates) {
     const t = Date.parse(c.at);
     const phone = digits10(c.phone);
     if (!phone || !Number.isFinite(t) || t < input.fromMs || t > now.getTime()) continue;
+    // AI booked a service call, or the call is junk: this number does not need a callback.
     if (c.aiBooked || c.spam || c.vendor) continue;
     if (isHangupUnder10s(c.durationSeconds, c.ringSeconds)) continue;
+    const client = invoiceByPhone.get(phone);
+    if (client) {
+      const list = callsByClient.get(client.id) ?? [];
+      list.push(c);
+      callsByClient.set(client.id, list);
+      continue;
+    }
     if (hasWorkAfter(c.phone, c.at, input.work)) continue;
     if (handlingCallback(c.phone, c.at, input.sources)) continue;
     if (seen.has(phone)) continue;
-    const isPastDue = pastDuePhones.has(phone);
+    seen.add(phone);
     const outreach = summarizeOutreach({
       phone, attempts, fromMs: input.fromMs, now, anchorAt: c.at, trackCold: true,
     });
-    push({
+    leads.push({
       at: c.at,
       phone: formatPhone(c.phone),
       name: c.name,
-      line: isPastDue ? `${c.line} · Past due` : c.line,
+      line: c.line,
       outcome: OUTCOME_LABEL[c.outcome],
       durationSeconds: c.durationSeconds,
       outreach: outreach.label,
       goingCold: outreach.goingCold,
-      pastDue: isPastDue,
+      pastDue: false,
+      balance: null,
+      alsoCalledIn: false,
     });
   }
+  const invoices: NeedsCallbackRow[] = [];
   for (const client of pastDue) {
-    const phone = bestPastDuePhone(client.phones, attempts, input.fromMs, now);
+    const calls = (callsByClient.get(client.id) ?? []).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    const includeWithoutCall = client.pastDue !== false;
+    if (!includeWithoutCall && calls.length === 0) continue;
+    const phone = digits10(calls[0]?.phone) ?? bestPastDuePhone(client.phones, attempts, input.fromMs, now);
     if (!phone || seen.has(phone)) {
-      const existing = phone ? kept.find((r) => digits10(r.phone) === phone) : undefined;
+      const existing = phone ? invoices.find((r) => digits10(r.phone) === phone) : undefined;
       if (existing) {
         const invoice = summarizeOutreach({
           phone, attempts, fromMs: input.fromMs, now, anchorAt: client.issuedAt,
@@ -495,28 +622,27 @@ export function needsCallback(input: {
       }
       continue;
     }
+    seen.add(phone);
+    const isPastDue = client.pastDue !== false;
     const outreach = summarizeOutreach({
       phone, attempts, fromMs: input.fromMs, now, anchorAt: client.issuedAt,
       connected: !!handlingCallback(phone, client.issuedAt, input.sources),
       booked: hasWorkAfter(phone, client.issuedAt, input.work),
       trackCold: true,
     });
-    push({
-      at: client.issuedAt,
+    invoices.push({
+      at: calls[0]?.at ?? client.issuedAt,
       phone: formatPhone(phone),
       name: client.name,
       line: 'Invoice',
-      outcome: 'Past due',
+      outcome: isPastDue ? 'Past due' : 'Awaiting payment',
       durationSeconds: null,
       outreach: outreach.label,
       goingCold: outreach.goingCold,
-      pastDue: true,
+      pastDue: isPastDue,
+      balance: client.balance ?? null,
+      alsoCalledIn: calls.some((c) => !obviouslyAboutInvoice(c.name, c.summary)),
     });
   }
-  const byUrgency = (a: NeedsCallbackRow, b: NeedsCallbackRow) =>
-    Number(b.goingCold) - Number(a.goingCold) || Date.parse(b.at) - Date.parse(a.at);
-  const calls = kept.filter((r) => r.outcome !== 'Past due').sort(byUrgency);
-  const invoices = kept.filter((r) => r.outcome === 'Past due').sort(byUrgency);
-  const rows = [...calls, ...invoices].slice(0, NEEDS_CAP);
-  return { count: kept.length, rows };
+  return { leads: queue(leads), invoices: queue(invoices) };
 }

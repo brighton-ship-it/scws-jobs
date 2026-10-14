@@ -6,7 +6,7 @@ import { unstable_cache } from 'next/cache';
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
-import { buildDashboard, buildCallLogView, mergeLiveCalls, type DashCall, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
+import { buildDashboard, buildCallLogView, mergeLiveCalls, attributeAiHandledCalls, type DashCall, type DialedSourceHint, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { loadWeeklyInvoices, loadWindowQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
@@ -16,6 +16,7 @@ import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 import { annotateFeed, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, needsCallback, voiceAttempts, type PastDueClient } from '@/lib/ads/callbacks';
+import { missingColumnName } from '@/lib/ads/optional-column';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
@@ -72,7 +73,24 @@ export async function GET(request: NextRequest) {
     // but never left that status. Count every real call: drop only fresh in-flight claims and rows with no phone.
     const liveRows = (live.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
       && !(r.status === 'processing' && r.duration_sec == null && !r.summary && Date.now() - Date.parse(r.called_at) < 15 * 60_000));
-    const liveCalls = mergeLiveCalls(adsCalls, liveRows);
+    const log = await loadPhoneCallLog(db, since);
+    let inboundLog: any[] = [];
+    let outboundLog: any[] = [];
+    if (log.error) notes.push(`call log: ${log.error.message}`);
+    else {
+      inboundLog = (log.data ?? []).filter((r: any) => r.direction !== 'outbound' && !isOwnNumber(r.caller_phone));
+      outboundLog = (log.data ?? []).filter((r: any) => r.direction === 'outbound' && !isOwnNumber(r.caller_phone));
+    }
+    const recordingHints = await loadRecordingHints(db, since);
+    if (recordingHints.note) notes.push(recordingHints.note);
+    const dialedHints: DialedSourceHint[] = [
+      ...inboundLog.map((r: any) => ({
+        at: r.started_at, callerPhone: r.caller_phone, dialedNumber: r.called_number,
+        campaignName: r.campaign_name, vapiCallId: r.receptionist_call_id,
+      })),
+      ...recordingHints.hints,
+    ];
+    const liveCalls = attributeAiHandledCalls(mergeLiveCalls(adsCalls, liveRows), dialedHints);
     let bookingIds = new Set<string>();
     const ids = liveRows.map((r: { vapi_call_id: string }) => r.vapi_call_id).slice(0, 600);
     for (let i = 0; i < ids.length; i += 150) {
@@ -120,15 +138,7 @@ export async function GET(request: NextRequest) {
         (dash.tv as any).bookedJobNumbers = nums;
       }
     }
-    const log = await loadPhoneCallLog(db, since);
-    let inboundLog: any[] = [];
-    let outboundLog: any[] = [];
-    if (log.error) notes.push(`call log: ${log.error.message}`);
-    else {
-      inboundLog = (log.data ?? []).filter((r: any) => r.direction !== 'outbound' && !isOwnNumber(r.caller_phone));
-      outboundLog = (log.data ?? []).filter((r: any) => r.direction === 'outbound' && !isOwnNumber(r.caller_phone));
-      dash.callLog = buildCallLogView(inboundLog, nowDash);
-    }
+    if (!log.error) dash.callLog = buildCallLogView(inboundLog, nowDash);
     try {
       const recs = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name')
         .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995)').order('started_at', { ascending: false }).limit(100);
@@ -157,7 +167,9 @@ export async function GET(request: NextRequest) {
           bookedMike: bookingIds,
         });
         dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work });
-        dash.needsCallback = needsCallback({ candidates, sources, work, fromMs, now: nowDash, attempts, pastDue: past.clients });
+        const queues = needsCallback({ candidates, sources, work, fromMs, now: nowDash, attempts, pastDue: past.clients });
+        dash.needsCallback = queues.leads;
+        dash.invoiceFollowUp = queues.invoices;
       } catch (error) {
         dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones });
         notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);
@@ -292,6 +304,21 @@ async function rememberInvoices(from: string, rows: unknown[]) {
 
 const LOG_COLUMNS = 'voice_call_key, started_at, direction, caller_phone, called_number, ring_group, outcome, answered_by, duration_seconds, ring_seconds, client_name, customer_id, jobber_client_id, campaign_name, receptionist_call_id, synced_at';
 
+/** Original dialed number from recorded tracking lines, for Mike/Sarah source attribution. */
+async function loadRecordingHints(db: any, since: string): Promise<{ hints: DialedSourceHint[]; note: string | null }> {
+  const hints: DialedSourceHint[] = [];
+  for (let from = 0; from < 5000; from += 1000) {
+    const q = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source')
+      .gte('started_at', since).neq('source', 'test').order('started_at', { ascending: false }).range(from, from + 999);
+    if (q.error) return { hints, note: `recording sources: ${q.error.message}` };
+    for (const r of q.data ?? []) {
+      hints.push({ at: r.started_at, callerPhone: r.caller_number, dialedNumber: r.tracking_number, recordingSource: r.source });
+    }
+    if ((q.data ?? []).length < 1000) break;
+  }
+  return { hints, note: null };
+}
+
 async function loadPhoneCallLog(db: any, since: string) {
   const rows: any[] = [];
   for (let from = 0; from < 6000; from += 1000) {
@@ -320,23 +347,36 @@ function clientPhones(client: any): string[] {
   return raw.map((p: any) => digits10(typeof p === 'string' ? p : p?.number)).filter((d: string | null): d is string => !!d);
 }
 
-/** Current past-due invoices, one row per client, matched later by phone. Attempt counts still use the period. */
+/**
+ * Unpaid Jobber invoices, one row per client, matched later by phone.
+ * Balance > 0 when jobber_invoices.balance exists; otherwise past_due or awaiting_payment.
+ * Attempt counts still use the period.
+ */
 async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; note: string | null }> {
-  const invoices: Array<{ client_id: string | null; issued_date: string | null; invoice_status: string | null }> = [];
-  for (let from = 0; from < 2000; from += 1000) {
-    const q = await db.from('jobber_invoices').select('client_id, issued_date, invoice_status').eq('invoice_status', 'past_due').order('issued_date', { ascending: true }).range(from, from + 999);
-    if (q.error) return { clients: [], note: `past-due invoices: ${q.error.message}` };
-    invoices.push(...(q.data ?? []));
-    if ((q.data ?? []).length < 1000) break;
+  const probe = await db.from('jobber_invoices').select('balance').limit(1);
+  const missingBalance = missingColumnName(probe.error) === 'balance';
+  if (probe.error && !missingBalance) return { clients: [], note: `invoices: ${probe.error.message}` };
+  const hasBalanceColumn = !missingBalance;
+  const select = hasBalanceColumn
+    ? 'client_id, issued_date, invoice_status, balance'
+    : 'client_id, issued_date, invoice_status, data';
+  const invoices: Array<Record<string, unknown>> = [];
+  for (let from = 0; from < 4000; from += 1000) {
+    let q = db.from('jobber_invoices').select(select).order('issued_date', { ascending: true });
+    q = hasBalanceColumn ? q.gt('balance', 0) : q.in('invoice_status', ['past_due', 'awaiting_payment']);
+    const res = await q.range(from, from + 999);
+    if (res.error) return { clients: [], note: `invoices: ${res.error.message}` };
+    invoices.push(...(res.data ?? []));
+    if ((res.data ?? []).length < 1000) break;
   }
   const ids = Array.from(new Set(invoices.map((i) => i.client_id).filter(Boolean))) as string[];
   const clients: Array<{ id: string; name: string | null; phones_digits: string[] | null }> = [];
   for (let i = 0; i < ids.length; i += 150) {
     const c = await db.from('jobber_clients').select('id, name, phones_digits').in('id', ids.slice(i, i + 150));
-    if (c.error) return { clients: groupPastDueClients(invoices, clients), note: `past-due clients: ${c.error.message}` };
+    if (c.error) return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: `invoice clients: ${c.error.message}` };
     clients.push(...(c.data ?? []));
   }
-  return { clients: groupPastDueClients(invoices, clients), note: null };
+  return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), note: null };
 }
 
 /** Jobber jobs, quotes (when the mirror stored client phones), and booking requests created in the window. */

@@ -216,8 +216,10 @@ export interface Dashboard {
   weekly?: import('./weekly-sales.ts').WeeklySales | null;
   /** Additive. Call to booking denominator: real new leads in the selected range (one per caller). */
   realLeads?: { calls: number; leads: number; pump: number; drilling: number; excluded: Array<{ reason: string; label: string; count: number }>; unresolvedExisting: number } | null;
-  /** Additive. Missed, voicemail, and Mike calls in the selected range that still need a callback. */
+  /** Additive. New leads (missed, voicemail, Mike) in the selected range that still need a callback. */
   needsCallback?: import('./callbacks.ts').NeedsCallbackView | null;
+  /** Additive. Unpaid Jobber invoice clients to collect. Past-due clients are listed even with no inbound call. */
+  invoiceFollowUp?: import('./callbacks.ts').NeedsCallbackView | null;
 }
 
 export interface CallLogRow {
@@ -266,6 +268,115 @@ export function adCategory(campaign: string | null | undefined): AdCategory | nu
   const n = (campaign ?? '').trim();
   if (!n || n.startsWith('(')) return null; // (Mike live call), (unknown)
   return /drilling/i.test(n) ? 'drilling' : 'pump';
+}
+
+/** Shown when a Mike/Sarah call has no original dialed number on the log or a recording. */
+export const AI_UNKNOWN_SOURCE = 'Unknown (AI-handled)';
+
+/** Customer-facing lines. The AI forward target (760-491-5348) is not a source. */
+const AI_LINE_SOURCE: Record<string, string> = {
+  '7604408520': 'Main',
+  '7607895955': 'Ransom',
+  '9516510957': 'GBP Anza',
+  '7602791262': 'GBP Ramona',
+  '7603312502': 'Ads',
+  '7604630493': 'Website',
+  '7604937719': 'Direct',
+  '7608914264': 'Yelp',
+  '7604540365': 'Apple Maps',
+};
+const AI_RECORDING_SOURCE: Record<string, string> = {
+  gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads',
+  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main', ransom_line: 'Ransom',
+};
+
+export interface DialedSourceHint {
+  at: string;
+  callerPhone: string | null;
+  /** Original dialed number: Voice called_number, or the recording's tracking number. */
+  dialedNumber?: string | null;
+  recordingSource?: string | null;
+  /** Google Ads campaign already linked on the call log. Not the '(Mike live call)' placeholder. */
+  campaignName?: string | null;
+  vapiCallId?: string | null;
+}
+
+export function sourceFromDialed(dialed: string | null | undefined, recordingSource?: string | null): string | null {
+  const fromNumber = AI_LINE_SOURCE[digits10(dialed) ?? ''];
+  if (fromNumber) return fromNumber;
+  const key = (recordingSource ?? '').trim().toLowerCase();
+  return AI_RECORDING_SOURCE[key] ?? null;
+}
+
+function isAiPlaceholder(call: DashCall): boolean {
+  const src = (call.call_source ?? '').trim();
+  const camp = (call.campaign_name ?? '').trim();
+  return call.live === true
+    || src === 'Mike (AI receptionist)' || src === 'Sarah (AI receptionist)'
+    || camp === '(Mike live call)' || camp === '(Sarah live call)';
+}
+
+function realCampaignName(name: string | null | undefined): string | null {
+  const n = (name ?? '').trim();
+  if (!n || n.startsWith('(')) return null;
+  return n;
+}
+
+/**
+ * Move Mike/Sarah calls off the '(Mike live call)' bucket onto the line the customer dialed.
+ * A tracking-number recording beats the Voice ring-group destination (often Main).
+ * No dialed number → 'Unknown (AI-handled)'.
+ */
+export function attributeAiHandledCalls<T extends DashCall & { _vapi?: string }>(calls: T[], hints: DialedSourceHint[]): T[] {
+  return calls.map((call) => {
+    if (!isAiPlaceholder(call)) return call;
+    const phone = digits10(call.caller_phone);
+    const t = Date.parse(call.started_at || '');
+    let best: DialedSourceHint | null = null;
+    let bestScore = -1;
+    for (const hint of hints) {
+      const source = sourceFromDialed(hint.dialedNumber, hint.recordingSource);
+      const campaign = realCampaignName(hint.campaignName);
+      if (!source && !campaign) continue;
+      const hintPhone = digits10(hint.callerPhone);
+      const hintAt = Date.parse(hint.at);
+      const idMatch = !!(call._vapi && hint.vapiCallId && hint.vapiCallId === call._vapi);
+      const timeMatch = !!phone && phone === hintPhone && Number.isFinite(t) && Number.isFinite(hintAt) && Math.abs(hintAt - t) <= 10 * 60_000;
+      if (!idMatch && !timeMatch) continue;
+      const specific = source && source !== 'Main' && source !== 'Ransom' ? 10 : source ? 5 : 0;
+      const score = specific + (campaign ? 4 : 0) + (idMatch ? 3 : 0);
+      if (score > bestScore) { best = hint; bestScore = score; }
+    }
+    const source = best ? sourceFromDialed(best.dialedNumber, best.recordingSource) : null;
+    const campaign = realCampaignName(best?.campaignName);
+    return {
+      ...call,
+      call_source: source ?? AI_UNKNOWN_SOURCE,
+      campaign_name: campaign,
+    };
+  });
+}
+
+function trackingSourceKey(c: DashCall): string {
+  const src = (c.call_source ?? '').trim();
+  if (src && src !== 'Mike (AI receptionist)' && src !== 'Sarah (AI receptionist)') return src;
+  const camp = (c.campaign_name ?? '').trim();
+  if (!src || src === 'Mike (AI receptionist)' || src === 'Sarah (AI receptionist)' || camp === '(Mike live call)' || camp === '(Sarah live call)') {
+    if (camp === '(Mike live call)' || camp === '(Sarah live call)' || src === 'Mike (AI receptionist)' || src === 'Sarah (AI receptionist)') return AI_UNKNOWN_SOURCE;
+  }
+  return src || (c.caller_area_code ? `area ${c.caller_area_code}` : '');
+}
+
+function hasRealCampaign(c: DashCall): boolean {
+  const n = (c.campaign_name ?? '').trim();
+  return !!n && !n.startsWith('(');
+}
+
+/** Keep real campaigns. Drop the '(Mike live call)' placeholder and live calls with no campaign. */
+function countsAsCampaign(c: DashCall): boolean {
+  if (hasRealCampaign(c)) return true;
+  if (c.live) return false;
+  return !(c.campaign_name ?? '').trim().startsWith('(');
 }
 
 export function buildAdSplit(input: {
@@ -564,13 +675,18 @@ export function buildDashboard(input: {
       multipleInvoiced: ratio(invoicedValue, spend),
       multiplePaid: paidValue == null ? null : ratio(paidValue, spend),
     },
-    byCampaign: group(decorated, (c) => c.campaign_name || '', spendByCampaign, bookedInWin).map((r) => {
+    byCampaign: group(decorated.filter(countsAsCampaign), (c) => c.campaign_name || '', spendByCampaign, bookedInWin.filter((b) => countsAsCampaign(b.call))).map((r) => {
       if (r.spend == null) return r;
       const n = decorated.filter((c) => (c.campaign_name || '') === r.key && inRange(c.started_at, revStart)).length;
       return { ...r, costPerCall: n ? round(r.spend / n) : null }; // spend and calls over the same days
     }),
-    byKeyword: group(decorated, (c) => c.keyword || (c.ad_group_name ? `ad group: ${c.ad_group_name}` : ''), undefined, bookedInWin),
-    byTrackingNumber: group(decorated, (c) => c.call_source || (c.caller_area_code ? `area ${c.caller_area_code}` : ''), undefined, bookedInWin),
+    byKeyword: group(
+      decorated.filter((c) => !(c.live && !c.keyword && !c.ad_group_name)),
+      (c) => c.keyword || (c.ad_group_name ? `ad group: ${c.ad_group_name}` : ''),
+      undefined,
+      bookedInWin.filter((b) => !(b.call.live && !b.call.keyword && !b.call.ad_group_name)),
+    ),
+    byTrackingNumber: group(decorated, trackingSourceKey, undefined, bookedInWin),
     recent,
     tv: {
       callsToday: callsToday.length,

@@ -202,18 +202,19 @@ function OutreachLine({ text, cold, dark }: { text: string; cold?: boolean; dark
   );
 }
 
-function NeedsCallbackList({ view, rangeLabel, dark = false, limit }: { view: Dashboard['needsCallback']; rangeLabel: string; dark?: boolean; limit: number }) {
+function NeedsCallbackList({ view, rangeLabel, dark = false, limit, empty, metric = 'leads' }: { view: Dashboard['needsCallback']; rangeLabel: string; dark?: boolean; limit: number; empty: string; metric?: 'leads' | 'invoices' }) {
   const count = view?.count ?? 0;
   const rows = view?.rows ?? [];
   const shown = rows.slice(0, limit);
   const ink = dark ? 'text-white' : 'text-slate-900';
   const sub = dark ? 'text-slate-300' : 'text-slate-600';
   const rule = dark ? 'divide-slate-800' : 'divide-slate-200';
+  const countAttr = metric === 'invoices' ? 'data-invoice-follow-up-count' : 'data-needs-callback-count';
   return (
     <div>
-      <p className={`text-3xl font-bold tabular-nums xl:text-5xl ${ink}`} data-needs-callback-count={view ? count : undefined}>{view ? String(count) : '—'}</p>
+      <p className={`text-3xl font-bold tabular-nums xl:text-5xl ${ink}`} {...{ [countAttr]: view ? count : undefined }}>{view ? String(count) : '—'}</p>
       <p className={`mt-0.5 text-xs ${sub}`}>{rangeLabel}</p>
-      {shown.length === 0 ? <p className={`mt-3 text-sm ${sub}`}>{view ? 'No callbacks waiting in this period.' : ' '}</p> : (
+      {shown.length === 0 ? <p className={`mt-3 text-sm ${sub}`}>{view ? empty : ' '}</p> : (
         <ul className={`mt-3 divide-y ${rule}`}>
           {shown.map((r, i) => (
             <li key={`${r.at}-${r.phone}-${i}`} className="py-2.5">
@@ -221,6 +222,8 @@ function NeedsCallbackList({ view, rangeLabel, dark = false, limit }: { view: Da
                 <div className="min-w-0">
                   <div className={`break-words font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
                   <div className={`break-words text-sm ${sub}`}>{r.name ? <><a href={`tel:${r.phone}`}>{r.phone}</a> · </> : null}{r.line} · {r.outcome}</div>
+                  {r.balance != null && r.balance > 0 ? <div className={`mt-1 text-xs font-semibold tabular-nums ${dark ? 'text-amber-300' : 'text-amber-800'}`}>Owes {usd(r.balance, Number.isInteger(r.balance) ? 0 : 2)}</div> : null}
+                  {r.alsoCalledIn ? <div className={`mt-1 text-xs font-medium ${dark ? 'text-sky-300' : 'text-sky-800'}`}>Also called in</div> : null}
                   {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
                 </div>
                 <span className={`shrink-0 text-sm tabular-nums ${sub}`}>{feedTime(r.at)}</span>
@@ -534,9 +537,14 @@ export function CallDashboardPage() {
             </Card>
           </div>
 
-          <Card title="Needs callback" subtitle="Missed, voicemail, Mike, and past-due invoice clients. Attempt counts follow this period. Skips hang-ups under 10s, spam, vendors, AI bookings, and numbers with a Jobber quote, request, or job created after the call." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines only ⓘ</span>} delay={200}>
-            <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} limit={12} />
-          </Card>
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card title="New leads — needs callback" subtitle="Missed, voicemail, and Mike. Skips hang-ups under 10s, spam, vendors, AI bookings, and numbers with a quote, request, or job after the call." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines only ⓘ</span>} delay={200}>
+              <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} limit={12} empty="No new leads waiting on a callback in this period." />
+            </Card>
+            <Card title="Invoice follow-up" subtitle="Clients who still owe on a Jobber invoice. Past-due clients are listed even if they did not call. Voice attempts in this period count as collection tries." delay={220}>
+              <NeedsCallbackList metric="invoices" view={data.invoiceFollowUp} rangeLabel={rangeLabel} limit={12} empty="No invoice follow-ups right now." />
+            </Card>
+          </div>
 
           <div className="grid gap-4 lg:grid-cols-5">
             <Card title="Conversion funnel" subtitle={`New-customer jobs credited to a call · ${rangeLabel}`} delay={140}>
@@ -695,10 +703,17 @@ export function CallDashboardTv() {
           <AdSplitBlocks dark split={data.adSplit} />
         </div>
       ) : null}
-      <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Needs callback">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base" title={OUTREACH_TIP}>Needs callback</p>
-        <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, Mike, and past-due invoices · {mainRange}. Personal cell calls are not logged.</p>
-        <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} limit={6} />
+      <div className="grid shrink-0 gap-3 lg:grid-cols-2">
+        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="New leads — needs callback">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base" title={OUTREACH_TIP}>New leads — needs callback</p>
+          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · {mainRange}. Personal cell calls are not logged.</p>
+          <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} limit={6} empty="No new leads waiting on a callback in this period." />
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Invoice follow-up">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Invoice follow-up</p>
+          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Unpaid invoices · past due stays listed with no call · {mainRange}.</p>
+          <NeedsCallbackList dark metric="invoices" view={data?.invoiceFollowUp} rangeLabel={mainRange} limit={6} empty="No invoice follow-ups right now." />
+        </div>
       </div>
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
         <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Recent calls</p>
