@@ -2,9 +2,10 @@
  * Jobber reads + draft-only quote edits for the MCP gateway.
  * Reuses the shared GraphQL client and unsent-quote helpers.
  *
- * Mutations that send, approve, convert, or delete quotes must never live here.
- * setQuoteSalesperson is the exception that may call quoteEdit on a quote in
- * any status, and only with salespersonId.
+ * Mutations that send, approve, convert, or delete a quote must never live here.
+ * quoteDeleteLineItems removes line items on an unsent draft only; it does
+ * not delete the quote. setQuoteSalesperson is the exception that may call
+ * quoteEdit on a quote in any status, and only with salespersonId.
  */
 
 import { mentionsGpFlag } from './gross-profit.ts';
@@ -82,7 +83,7 @@ const QUOTE_FIELDS = `
     address { street1 street2 city province postalCode }
   }
   lineItems(first: 80) {
-    nodes { id name description quantity unitPrice optional recommended }
+    nodes { id name description quantity unitPrice taxable optional recommended }
   }
 `;
 
@@ -164,14 +165,50 @@ const QUOTE_LINE_ITEMS = `
   }
 `;
 
+/**
+ * QuoteEditLineItemAttributes requires lineItemId and has no
+ * saveToProductsAndServices (that field is only on create). quoteEdit does
+ * not take line items.
+ */
+const QUOTE_EDIT_LINE_ITEMS = `
+  mutation McpQuoteEditLineItems($quoteId: EncodedId!, $lineItems: [QuoteEditLineItemAttributes!]!) {
+    quoteEditLineItems(quoteId: $quoteId, lineItems: $lineItems) {
+      modifiedLineItems { id name }
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_DELETE_LINE_ITEMS = `
+  mutation McpQuoteDeleteLineItems($quoteId: EncodedId!, $lineItemIds: [EncodedId!]!) {
+    quoteDeleteLineItems(quoteId: $quoteId, lineItemIds: $lineItemIds) {
+      deletedLineItems { id name }
+      userErrors { message path }
+    }
+  }
+`;
+
 export type JobberQuoteLine = {
   id?: string | null;
   name?: string | null;
   description?: string | null;
   quantity?: number | null;
   unitPrice?: number | null;
+  taxable?: boolean | null;
   optional?: boolean | null;
   recommended?: boolean | null;
+};
+
+/** Partial edit of one existing quote line. Omitted fields are left unchanged. */
+export type QuoteLineItemEdit = {
+  lineItemId: string;
+  name?: string;
+  description?: string;
+  quantity?: number;
+  unitPrice?: number;
+  taxable?: boolean;
+  optional?: boolean;
+  recommended?: boolean;
 };
 
 export type JobberQuoteDetail = JobberQuoteSummary & {
@@ -221,6 +258,132 @@ export function assertQuoteIsDraftUnsent(quote: JobberQuoteDetail): void {
       `Refusing to edit Jobber quote ${quote.quoteNumber ?? quote.id}: only unsent drafts can be updated (status=${quote.quoteStatus || 'unknown'}, sentAt=${quote.sentAt || 'null'})`
     );
   }
+}
+
+export function quoteLineIds(quote: JobberQuoteDetail): string[] {
+  return (quote.lineItems?.nodes || [])
+    .map((line) => (line?.id ? String(line.id) : ''))
+    .filter(Boolean);
+}
+
+/**
+ * Draft line edits must name lines that are on the quote. Deleting every
+ * line is refused: Jobber rejects a blank quote ("Quote can't be blank").
+ * Adds in the same call count toward the lines that would remain, and the
+ * caller creates those lines before deleting.
+ */
+export function assertDraftQuoteLineEdits(
+  quote: JobberQuoteDetail,
+  input: { updates?: QuoteLineItemEdit[]; removes?: string[]; addCount?: number }
+): void {
+  const ids = new Set(quoteLineIds(quote));
+  const label = quote.quoteNumber ?? quote.id;
+  const updates = input.updates || [];
+  const removes = input.removes || [];
+  const removeSet = new Set(removes);
+  for (const id of removes) {
+    if (!ids.has(id)) throw new Error(`Line item ${id} is not on quote ${label}`);
+  }
+  for (const line of updates) {
+    if (!ids.has(line.lineItemId)) throw new Error(`Line item ${line.lineItemId} is not on quote ${label}`);
+    if (removeSet.has(line.lineItemId)) {
+      throw new Error(`Line item ${line.lineItemId} cannot be edited and deleted in the same update`);
+    }
+  }
+  const remaining = ids.size - removes.length + (input.addCount || 0);
+  if (ids.size > 0 && removes.length > 0 && remaining < 1) {
+    throw new Error(
+      `Refusing to delete every line item on quote ${label}. Jobber rejects a blank quote. Add a replacement line in the same update, or leave at least one line.`
+    );
+  }
+}
+
+/** QuoteEditLineItemAttributes. Never sends saveToProductsAndServices. */
+export function toJobberEditLineItems(lines: QuoteLineItemEdit[]): Array<Record<string, unknown>> {
+  return lines.map((line) => {
+    const item: Record<string, unknown> = { lineItemId: line.lineItemId };
+    if (line.name != null) item.name = line.name;
+    if (line.description != null) item.description = line.description;
+    if (line.quantity != null) item.quantity = line.quantity;
+    if (line.unitPrice != null) item.unitPrice = line.unitPrice;
+    if (typeof line.taxable === 'boolean') item.taxable = line.taxable;
+    if (typeof line.optional === 'boolean') item.optional = line.optional;
+    if (typeof line.recommended === 'boolean') item.recommended = line.recommended;
+    return item;
+  });
+}
+
+const QUOTE_LINE_EDIT_FIELDS = new Set([
+  'lineItemId',
+  'name',
+  'description',
+  'quantity',
+  'unitPrice',
+  'taxable',
+  'optional',
+  'recommended',
+]);
+
+export function parseQuoteLineEdits(value: unknown): QuoteLineItemEdit[] {
+  if (!Array.isArray(value) || !value.length) {
+    throw new Error('updateLineItems must be a non-empty array');
+  }
+  return value.map((item, index) => {
+    const row = item && typeof item === 'object' ? (item as Record<string, unknown>) : {};
+    for (const key of Object.keys(row)) {
+      if (!QUOTE_LINE_EDIT_FIELDS.has(key)) {
+        throw new Error(`updateLineItems[${index}].${key} cannot be changed on a quote line`);
+      }
+    }
+    const lineItemId = typeof row.lineItemId === 'string' ? row.lineItemId.trim() : '';
+    if (!lineItemId) throw new Error(`updateLineItems[${index}].lineItemId is required`);
+    const edit: QuoteLineItemEdit = { lineItemId };
+    if ('name' in row) {
+      const name = typeof row.name === 'string' ? row.name.trim() : '';
+      if (!name) throw new Error(`updateLineItems[${index}].name must be a non-empty string`);
+      edit.name = name;
+    }
+    if ('description' in row) {
+      if (typeof row.description !== 'string') {
+        throw new Error(`updateLineItems[${index}].description must be a string`);
+      }
+      edit.description = row.description;
+    }
+    if ('quantity' in row) {
+      const quantity = Number(row.quantity);
+      if (!Number.isFinite(quantity) || quantity <= 0) {
+        throw new Error(`updateLineItems[${index}].quantity must be a positive number`);
+      }
+      edit.quantity = quantity;
+    }
+    if ('unitPrice' in row) {
+      const unitPrice = Number(row.unitPrice);
+      if (!Number.isFinite(unitPrice)) throw new Error(`updateLineItems[${index}].unitPrice must be a number`);
+      edit.unitPrice = unitPrice;
+    }
+    for (const key of ['taxable', 'optional', 'recommended'] as const) {
+      if (!(key in row) || row[key] == null || row[key] === '') continue;
+      const flag = row[key];
+      if (typeof flag === 'boolean') {
+        edit[key] = flag;
+        continue;
+      }
+      if (typeof flag === 'string' && (flag.trim().toLowerCase() === 'true' || flag.trim().toLowerCase() === 'false')) {
+        edit[key] = flag.trim().toLowerCase() === 'true';
+        continue;
+      }
+      throw new Error(`updateLineItems[${index}].${key} must be a boolean`);
+    }
+    if (edit.recommended === true && edit.optional === false) {
+      throw new Error(`updateLineItems[${index}] recommended lines must stay optional`);
+    }
+    if (Object.keys(edit).length === 1) {
+      throw new Error(
+        `updateLineItems[${index}] must change name, description, quantity, unitPrice, taxable, or optional`
+      );
+    }
+    return edit;
+  });
 }
 
 export function buildDraftQuoteEditAttributes(input: {
@@ -494,6 +657,8 @@ export async function updateUnsentQuoteDraft(
     taxRateId?: string | null;
     salespersonId?: string | null;
     addLineItems?: QuoteLineDraft[];
+    updateLineItems?: QuoteLineItemEdit[];
+    removeLineItemIds?: string[];
   },
   deps?: JobberDeps
 ): Promise<JobberQuoteDetail> {
@@ -503,8 +668,22 @@ export async function updateUnsentQuoteDraft(
   const existing = await getQuoteById(quoteId, deps);
   assertQuoteIsDraftUnsent(existing);
 
+  const updates = input.updateLineItems?.length ? input.updateLineItems : [];
+  const removes = input.removeLineItemIds?.length ? [...new Set(input.removeLineItemIds)] : [];
+  if (updates.length || removes.length) {
+    assertDraftQuoteLineEdits(existing, {
+      updates,
+      removes,
+      addCount: input.addLineItems?.length || 0,
+    });
+  }
+
   const attributes = buildDraftQuoteEditAttributes(input);
   if (Object.keys(attributes).length) {
+    for (const document of [QUOTE_EDIT, QUOTE_EDIT_ALT, QUOTE_EDIT_ALT2]) {
+      assertWriteDoesNotDeliver(document);
+    }
+    assertNoClientNotification(attributes);
     let edited = await graphql(QUOTE_EDIT, { quoteId, attributes }, deps);
     if (edited.errors?.length && /argument|QuoteEdit/i.test(edited.errors[0]?.message || '')) {
       edited = await graphql(QUOTE_EDIT_ALT, { quoteId, attributes }, deps);
@@ -523,10 +702,29 @@ export async function updateUnsentQuoteDraft(
   }
 
   if (input.addLineItems?.length) {
+    assertWriteDoesNotDeliver(QUOTE_LINE_ITEMS);
     const lineItems = toJobberLineItems(input.addLineItems);
     const linesResult = await graphql(QUOTE_LINE_ITEMS, { quoteId, lineItems }, deps);
     assertNoJobberErrors(linesResult, 'quoteCreateLineItems');
     const lineErrors = jobberUserErrors(linesResult.data?.quoteCreateLineItems);
+    if (lineErrors.length) throw new Error(lineErrors.join('; '));
+  }
+
+  if (updates.length) {
+    assertWriteDoesNotDeliver(QUOTE_EDIT_LINE_ITEMS);
+    const lineItems = toJobberEditLineItems(updates);
+    assertNoClientNotification(lineItems);
+    const linesResult = await graphql(QUOTE_EDIT_LINE_ITEMS, { quoteId, lineItems }, deps);
+    assertNoJobberErrors(linesResult, 'quoteEditLineItems');
+    const lineErrors = jobberUserErrors(linesResult.data?.quoteEditLineItems);
+    if (lineErrors.length) throw new Error(lineErrors.join('; '));
+  }
+
+  if (removes.length) {
+    assertWriteDoesNotDeliver(QUOTE_DELETE_LINE_ITEMS);
+    const linesResult = await graphql(QUOTE_DELETE_LINE_ITEMS, { quoteId, lineItemIds: removes }, deps);
+    assertNoJobberErrors(linesResult, 'quoteDeleteLineItems');
+    const lineErrors = jobberUserErrors(linesResult.data?.quoteDeleteLineItems);
     if (lineErrors.length) throw new Error(lineErrors.join('; '));
   }
 

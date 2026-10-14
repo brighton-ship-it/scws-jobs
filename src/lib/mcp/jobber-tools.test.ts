@@ -81,7 +81,25 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_products'));
     assert.ok(names.includes('edit_product'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.9.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.10.0');
+    assert.ok(names.includes('list_notes'));
+    const notesTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'list_notes');
+    const notesSchema = notesTool?.inputSchema as { properties?: Record<string, { type?: string }> };
+    assert.equal(notesSchema?.properties?.jobNumber?.type, 'string');
+    assert.equal(notesSchema?.properties?.visitId?.type, 'string');
+    assert.match(notesTool?.description || '', /Read-only/);
+    const draftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'update_quote_draft');
+    const draftSchema = draftTool?.inputSchema as {
+      properties?: {
+        updateLineItems?: { items?: { required?: string[]; properties?: Record<string, unknown> } };
+        removeLineItemIds?: { type?: string };
+      };
+    };
+    assert.deepEqual(draftSchema?.properties?.updateLineItems?.items?.required, ['lineItemId']);
+    assert.ok(draftSchema?.properties?.updateLineItems?.items?.properties?.optional);
+    assert.ok(draftSchema?.properties?.updateLineItems?.items?.properties?.taxable);
+    assert.equal(draftSchema?.properties?.removeLineItemIds?.type, 'array');
+    assert.match(draftTool?.description || '', /unsent draft/i);
     for (const name of [
       'create_client',
       'create_property',
@@ -1580,5 +1598,84 @@ describe('list_quotes_approved', () => {
     assert.equal(r.isError, undefined);
     const p = JSON.parse(r.content[0].text);
     assert.equal(p.count, 1); assert.equal(p.subtotal, 100); assert.equal(p.quotes[0].quoteNumber, '1'); assert.equal(p.nextCursor, null);
+  });
+});
+
+describe('list_notes and draft line edits through the tool handler', () => {
+  it('returns note text for a job number without mutating', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpNotesJobLookup')
+          ? jsonResponse({ data: { jobs: { nodes: [{ id: 'Z2lkOi8vSm9iYmVyL0pvYi8zNTk5', jobNumber: 3599 }] } } })
+          : null,
+      (query) =>
+        query.includes('McpJobNotes')
+          ? jsonResponse({
+              data: {
+                job: {
+                  id: 'Z2lkOi8vSm9iYmVyL0pvYi8zNTk5',
+                  jobNumber: 3599,
+                  title: 'Well',
+                  client: { name: 'Anothony Parlatore' },
+                  notes: {
+                    nodes: [
+                      {
+                        id: 'n1',
+                        message: 'Haze posted findings.',
+                        createdAt: '2026-10-13T18:00:00Z',
+                        createdBy: { __typename: 'User', id: 'u', name: { full: 'Haze' } },
+                        fileAttachments: { nodes: [], pageInfo: { hasNextPage: false } },
+                      },
+                    ],
+                    pageInfo: { hasNextPage: false },
+                  },
+                },
+              },
+            })
+          : null,
+      (query) =>
+        query.includes('McpJobVisitNotes')
+          ? jsonResponse({
+              data: { job: { id: 'Z2lkOi8vSm9iYmVyL0pvYi8zNTk5', visits: { nodes: [], pageInfo: { hasNextPage: false } } } },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool('list_notes', { jobNumber: '3599' }, { fetchImpl, token: 'test' });
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      clientName: string;
+      notes: Array<{ message: string; author: { name: string } }>;
+    };
+    assert.equal(payload.clientName, 'Anothony Parlatore');
+    assert.equal(payload.notes[0]?.message, 'Haze posted findings.');
+    assert.equal(payload.notes[0]?.author.name, 'Haze');
+    assert.equal(bodies.some((body) => /\bmutation\b/.test(body)), false);
+  });
+
+  it('refuses to delete the only draft line and does not call quoteDeleteLineItems', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpQuoteById')
+          ? jsonResponse({
+              data: {
+                quote: {
+                  id: 'quote-1',
+                  quoteNumber: 12,
+                  quoteStatus: 'draft',
+                  sentAt: null,
+                  lineItems: { nodes: [{ id: 'li-1', name: 'Only', quantity: 1, unitPrice: 1 }] },
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'update_quote_draft',
+      { quoteId: 'quote-1', removeLineItemIds: ['li-1'] },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /every line item/);
+    assert.equal(bodies.some((body) => body.includes('quoteDeleteLineItems')), false);
   });
 });
