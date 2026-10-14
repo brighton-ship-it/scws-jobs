@@ -29,6 +29,10 @@
       "schedule": "*/15 * * * *"
     },
     {
+      "path": "/api/cron/mike-callbacks",
+      "schedule": "*/5 * * * *"
+    },
+    {
       "path": "/api/cron/jobber-mirror",
       "schedule": "*/10 * * * *"
     }

@@ -12,7 +12,7 @@ export const COLD_ATTEMPTS = 3;
 export const COLD_DAYS = 3;
 /** Shop Google Voice lines only. Personal cells are not in the audit log. */
 export const OUTREACH_TOOLTIP =
-  'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton). Personal cell calls are not in this log, so a callback from a cell does not show here.';
+  'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. Personal cell calls are not in this log, so a callback from a cell does not show here.';
 export const COLD_TOOLTIP =
   'Going cold: 3 or more Voice attempts with no connected call or booking, or no attempt in the last 3 days.';
 
@@ -29,8 +29,12 @@ export interface CallbackSource {
 }
 
 export interface CallbackCandidate {
+  /** Stable id for this inbound call (recording sid or voice log key). */
+  key: string;
   at: string;
   phone: string | null;
+  /** Number the caller dialed (tracking or business line), when we know it. */
+  calledNumber: string | null;
   outcome: 'missed' | 'voicemail' | 'forwarded_ai';
   durationSeconds: number | null;
   ringSeconds: number | null;
@@ -65,6 +69,8 @@ export interface NeedsCallbackRow {
   calledAfter?: string | null;
   /** @deprecated Replaced by calledAfter. Always false so the old "Also called in" words are not shown. */
   alsoCalledIn?: boolean;
+  /** Latest automated Mike callback for this missed call, when one was logged. */
+  mike?: string | null;
 }
 
 export interface OutreachAttempt {
@@ -690,8 +696,11 @@ export function callbackCandidates(input: {
     else if (o === 'voicemail_or_no_answer') outcome = 'voicemail';
     if (!outcome) continue;
     const f = flags(r.caller_name ?? null, r.summary ?? null, r.caller_number ?? null, o);
+    const sid = r.call_sid ? String(r.call_sid) : '';
     push({
-      at: r.started_at, phone: r.caller_number ?? null, outcome, durationSeconds: r.duration_seconds ?? null,
+      key: sid ? `recording:${sid}` : `recording:${r.started_at}:${r.caller_number ?? ''}`,
+      at: r.started_at, phone: r.caller_number ?? null, calledNumber: r.tracking_number ?? null, outcome,
+      durationSeconds: r.duration_seconds ?? null,
       ringSeconds: r.ring_seconds ?? null, name: r.caller_name ?? null, line: SOURCE_LINE[r.source] ?? r.line ?? 'Tracking line',
       summary: r.summary ?? null, spam: f.spam, vendor: f.vendor, aiBooked: false,
     });
@@ -705,7 +714,9 @@ export function callbackCandidates(input: {
     if (rows.some((x) => x._d && x._d === d && Math.abs(x._t - t) < 3 * 60_000)) continue;
     const f = flags(r.client_name ?? null, null, r.caller_phone ?? null, outcome);
     push({
-      at: r.started_at, phone: r.caller_phone ?? null, outcome, durationSeconds: r.duration_seconds ?? null,
+      key: r.voice_call_key ? `log:${r.voice_call_key}` : `log:${r.started_at}:${r.caller_phone ?? ''}`,
+      at: r.started_at, phone: r.caller_phone ?? null, calledNumber: r.called_number ?? null, outcome,
+      durationSeconds: r.duration_seconds ?? null,
       ringSeconds: r.ring_seconds ?? null, name: r.client_name ?? null,
       line: r.campaign_name ? 'Ads' : (r.ring_group || 'Main'),
       summary: null, spam: f.spam, vendor: f.vendor,
@@ -719,7 +730,8 @@ export function callbackCandidates(input: {
     const id = m.vapi_call_id ?? m.id;
     const f = flags(m.customer_name ?? null, m.summary ?? null, m.phone ?? null, null);
     push({
-      at: m.called_at, phone: m.phone ?? null, outcome: 'forwarded_ai', durationSeconds: m.duration_sec ?? null,
+      key: id ? `mike:${id}` : `mike:${m.called_at}:${m.phone ?? ''}`,
+      at: m.called_at, phone: m.phone ?? null, calledNumber: null, outcome: 'forwarded_ai', durationSeconds: m.duration_sec ?? null,
       ringSeconds: null, name: m.customer_name ?? null, line: 'Mike', summary: m.summary ?? null,
       spam: f.spam, vendor: f.vendor, aiBooked: !!(id && booked.has(id)),
     });

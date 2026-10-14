@@ -186,12 +186,17 @@ function OutcomePill({ o, by, dark = false }: { o: string; by?: string | null; d
     : (dark ? 'bg-slate-200 text-slate-900' : 'bg-slate-700 text-white');
   return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{who ? `${o} · ${who}` : o}</span>;
 }
+function MikeLine({ text, dark }: { text: string; dark: boolean }) {
+  const booked = text.includes('booked') || text.includes('reached');
+  const cls = booked ? (dark ? 'text-sky-300' : 'text-sky-800') : (dark ? 'text-sky-200' : 'text-sky-900');
+  return <div className={`mt-1 break-words text-xs font-medium leading-snug xl:text-sm ${cls}`}>{text}</div>;
+}
 function CallbackLine({ text, dark }: { text: string; dark: boolean }) {
   const called = text.startsWith('Called back');
   const cls = called ? (dark ? 'text-emerald-300' : 'text-emerald-700') : (dark ? 'text-amber-300' : 'text-amber-800');
   return <div className={`mt-1 break-words text-xs font-medium leading-snug xl:text-sm ${cls}`}>{text}</div>;
 }
-const OUTREACH_TIP = 'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton). Personal cell calls are not in this log, so a callback from a cell does not show here.';
+const OUTREACH_TIP = 'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. Personal cell calls are not in this log, so a callback from a cell does not show here.';
 const COLD_TIP = 'Going cold: 3 or more Voice attempts with no connected call or booking, or no attempt in the last 3 days.';
 function OutreachLine({ text, cold, dark }: { text: string; cold?: boolean; dark: boolean }) {
   return (
@@ -226,6 +231,7 @@ function NeedsCallbackList({ view, rangeLabel, dark = false, empty, metric = 'le
                   {r.balance != null && r.balance > 0 ? <div className={`mt-1 text-xs font-semibold tabular-nums ${dark ? 'text-amber-300' : 'text-amber-800'}`}>Owes {usd(r.balance, Number.isInteger(r.balance) ? 0 : 2)}</div> : null}
                   {metric === 'invoices' ? <div className={`mt-1 text-xs ${sub}`}>{r.daysPastDue == null ? 'Days past due unavailable' : r.daysPastDue === 0 ? 'Not past due' : `${r.daysPastDue} ${r.daysPastDue === 1 ? 'day' : 'days'} past due`}</div> : null}
                   {r.calledAfter ? <div className={`mt-1 text-xs font-medium ${dark ? 'text-sky-300' : 'text-sky-800'}`}>{r.calledAfter}</div> : null}
+                  {r.mike ? <MikeLine text={r.mike} dark={dark} /> : null}
                   {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
                 </div>
                 <span className={`shrink-0 text-sm tabular-nums ${sub}`}>{feedTime(r.at)}</span>
@@ -256,6 +262,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
           <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}</div>
           {r.summary ? <div className={`mt-1 text-sm ${sub}`}>{r.summary}</div> : null}
           {r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}
+          {r.mike ? <MikeLine text={r.mike} dark={dark} /> : null}
           {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
         </li>
       ))}
@@ -273,7 +280,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
               {r.summary ? <div className={`truncate text-sm ${sub}`} title={r.summary}>{r.summary}</div> : null}
             </td>
             <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}</td>
-            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} />{r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}{r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}</td>
+            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} />{r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}{r.mike ? <MikeLine text={r.mike} dark={dark} /> : null}{r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}</td>
             <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${ink}`}>{fmtDur(r.durationSeconds)}</td>
           </tr>
         ))}
@@ -539,7 +546,7 @@ export function CallDashboardPage() {
           </div>
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <Card title="New leads — needs callback" subtitle="Missed, voicemail, and Mike. Skips hang-ups under 10s, spam, vendors, AI bookings, and any Jobber request, quote, job (including cancelled), visit, or invoice on or after the call. Scroll for every row." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines only ⓘ</span>} delay={200}>
+            <Card title="New leads — needs callback" subtitle="Missed, voicemail, and Mike. Attempt counts include shop Voice lines and Mike's automated callbacks. Skips hang-ups under 10s, spam, vendors, AI bookings, and any Jobber request, quote, job (including cancelled), visit, or invoice on or after the call. Scroll for every row." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines + Mike ⓘ</span>} delay={200}>
               <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} empty="No new leads waiting on a callback in this period." />
             </Card>
             <Card title="Invoice follow-up" subtitle="Every awaiting-payment and past-due invoice, called or not. Scroll for every row. Calls are shop Voice lines since the invoice date. Texts include app invoice SMS; Jobber texts show when that history loads. Emails are Jobber invoice sends. Gmail is not logged." delay={220}>
@@ -707,7 +714,7 @@ export function CallDashboardTv() {
       <div className="grid shrink-0 gap-3 lg:grid-cols-2">
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="New leads — needs callback">
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base" title={OUTREACH_TIP}>New leads — needs callback</p>
-          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · {mainRange}. Personal cell calls are not logged.</p>
+          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · {mainRange}. Counts include Mike's automated callbacks. Personal cell calls are not logged.</p>
           <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} empty="No new leads waiting on a callback in this period." />
         </div>
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Invoice follow-up">

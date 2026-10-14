@@ -1,5 +1,11 @@
 # Supabase migrations
 
+## `20261014_mike_callback_attempts.sql`
+
+Adds `mike_callback_attempts`, one row per missed call Mike may call back. The cron at `/api/cron/mike-callbacks` writes it. Until this is applied, the cron logs a missing-table note and dials nobody (the dial is recorded before Twilio is called). `/ops/calls` keeps working and shows no Mike attempt line. Apply it in the SQL Editor. Undo with `20261014_mike_callback_attempts_rollback.sql`.
+
+Callbacks stay off until `MIKE_CALLBACKS_ENABLED=true`. `MIKE_CALLBACK_TEST_NUMBERS` dials only those numbers while the flag is unset.
+
 ## `20261012_jobber_mirror.sql`
 
 Adds the Jobber read mirror (`jobber_clients`, `jobber_jobs`, `jobber_invoices`, `jobber_quotes`, `jobber_payments`, `jobber_timesheets`, `jobber_sync_state`). RLS on with no policies (service role only). Filled by the `/api/cron/jobber-mirror` cron every 10 min (backfill since Jan 2025 first, then rolling windows). `/ops/calls`, the TV page and `/ops/metrics` read the mirror once every backfill is done and the last sync is < 40 min old; otherwise they fall back to live Jobber. Kill switch: `JOBBER_MIRROR_DISABLED=1`. Undo with `20261012_jobber_mirror_rollback.sql`.
