@@ -5,6 +5,11 @@ export type FeedOutcome = 'Booked' | 'Answered' | 'Missed' | 'Voicemail' | 'Mike
 export interface FeedRow {
   at: string; name: string | null; phone: string; line: string; outcome: FeedOutcome;
   answeredBy: string | null; durationSeconds: number | null; summary: string | null;
+  /** Missed, voicemail, and Mike rows: "Called back …" or "No callback yet". */
+  callback?: string | null;
+  /** Shop Voice outbound attempts in the selected period, plus who placed the last one. */
+  outreach?: string | null;
+  goingCold?: boolean;
 }
 
 export function formatPhone(p: string | null | undefined): string {

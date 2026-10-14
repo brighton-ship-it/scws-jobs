@@ -9,6 +9,12 @@ test('invoice rows strip nested client to id and collect client + job ids', () =
   assert.deepEqual(r.rows[0].data.client, { id: 'C1' });
   assert.deepEqual(r.clients[0].phones_digits, ['7605551212']);
 });
+test('quote rows keep client phones for callback exclusion', () => {
+  const r = rowsFor('quotes', [{ id: 'Q1', quoteStatus: 'awaiting_response', createdAt: '2026-10-14T18:00:00Z', updatedAt: '2026-10-14T18:00:00Z', client: { id: 'C9', name: 'Pat', phones: [{ number: '+1 (760) 555-0199' }] } }]);
+  assert.equal(r.table, 'jobber_quotes');
+  assert.equal(r.rows[0].data.client.phones[0].number, '+1 (760) 555-0199');
+  assert.deepEqual(r.clients[0].phones_digits, ['7605550199']);
+});
 test('rolling windows: wide covers 200d quotes', () => {
   const t = rollingTasks(new Date('2026-10-12T00:00:00Z'), true).find((x) => x.field === 'quotes')!;
   assert.equal((t.filter.createdAt as any).after.slice(0, 10), '2026-03-26');

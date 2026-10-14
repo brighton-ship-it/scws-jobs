@@ -2,14 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 import { fetchVoiceActivityPayload, voiceLogConfig } from '@/lib/ads/voice-log';
-import { enrichPhoneLog, parsePhoneCallLog, type Party } from '@/lib/ads/phone-call-log';
+import { enrichPhoneLog, parsePhoneCallLog, type Party, type PhoneLogRow } from '@/lib/ads/phone-call-log';
+import { fetchTwilioOutbound } from '@/lib/ads/twilio-outbound';
 import { findExistingClient, searchClients } from '@/lib/jobber/quotes';
 import { normalizePhone } from '@/lib/ads/book-job';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
-/** Sync the inbound call log (metadata only) from the Voice audit log. Query: ?days=3 (1 to 30). */
+/** Sync the call log (metadata only) from the Voice audit log, including staff outbound calls, plus outbound calls from the Twilio tracking numbers. Query: ?days=3 (1 to 30). */
 export async function POST(request: NextRequest) {
   const cronAuth = authorizeCronRequest(request);
   if (!cronAuth.ok) {
@@ -22,7 +23,17 @@ export async function POST(request: NextRequest) {
     if (!voice) return NextResponse.json({ success: true, skipped: 'voice_log_not_configured' });
     const days = Math.min(30, Math.max(1, Number(request.nextUrl.searchParams.get('days')) || 3));
     const start = new Date(Date.now() - days * 86400_000).toISOString();
-    const parsed = parsePhoneCallLog(await fetchVoiceActivityPayload(voice, fetch, start));
+    const parsedVoice = parsePhoneCallLog(await fetchVoiceActivityPayload(voice, fetch, start));
+    let twilioError: string | null = null;
+    let twilioRows: PhoneLogRow[] = [];
+    try { twilioRows = await fetchTwilioOutbound(start); }
+    catch (error) { twilioError = error instanceof Error ? error.message : 'twilio outbound failed'; }
+    const seen = new Set<string>();
+    const parsed = [...parsedVoice, ...twilioRows].filter((r) => {
+      if (seen.has(r.voice_call_key)) return false;
+      seen.add(r.voice_call_key);
+      return true;
+    });
 
     const db = createServiceClient() as any;
     const [customers, ads, mike, existing] = await Promise.all([
@@ -74,9 +85,14 @@ export async function POST(request: NextRequest) {
       const { error } = await db.from('phone_call_log').upsert(payload.slice(i, i + 200), { onConflict: 'voice_call_key' });
       if (error) throw new Error(error.message);
     }
-    const count = (o: string) => rows.filter((r) => r.outcome === o).length;
+    const inbound = rows.filter((r) => r.direction !== 'outbound');
+    const outbound = rows.filter((r) => r.direction === 'outbound');
+    const count = (o: string) => inbound.filter((r) => r.outcome === o).length;
     return NextResponse.json({
-      success: true, days, calls: rows.length, newRows: rows.filter((r) => !known.has(r.voice_call_key)).length,
+      success: true, days, calls: inbound.length, outbound: outbound.length,
+      outboundVoice: parsedVoice.filter((r) => r.direction === 'outbound').length,
+      outboundTwilio: twilioRows.length, twilioError,
+      newRows: rows.filter((r) => !known.has(r.voice_call_key)).length,
       answered: count('answered'), missed: count('missed'), forwarded_ai: count('forwarded_ai'), answered_unknown: count('answered_unknown'),
       withClient: rows.filter((r) => r.customer_id || r.jobber_client_id).length,
       withAdSource: rows.filter((r) => r.campaign_name).length,

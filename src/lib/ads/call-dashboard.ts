@@ -216,6 +216,8 @@ export interface Dashboard {
   weekly?: import('./weekly-sales.ts').WeeklySales | null;
   /** Additive. Call to booking denominator: real new leads in the selected range (one per caller). */
   realLeads?: { calls: number; leads: number; pump: number; drilling: number; excluded: Array<{ reason: string; label: string; count: number }>; unresolvedExisting: number } | null;
+  /** Additive. Missed, voicemail, and Mike calls in the selected range that still need a callback. */
+  needsCallback?: import('./callbacks.ts').NeedsCallbackView | null;
 }
 
 export interface CallLogRow {

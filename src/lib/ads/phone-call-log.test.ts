@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePhoneCallLog, enrichPhoneLog } from './phone-call-log.ts';
+import { parsePhoneCallLog, enrichPhoneLog, isUserOutboundEvent } from './phone-call-log.ts';
 
 const ev = (time: string, name: string, p: Record<string, string>, email?: string) => ({
   id: { time }, actor: email ? { email } : { key: 'System' },
@@ -26,6 +26,29 @@ test('classifies answered, missed, forwarded to AI', () => {
   assert.equal(by.B.duration_seconds, 155);
   assert.equal(by.C.outcome, 'missed');
   assert.equal(by.D.outcome, 'answered_unknown');
+});
+
+test('stores staff outbound calls and ignores the AI forward', () => {
+  assert.equal(isUserOutboundEvent('OUTGOING_CALL_PLACED'), true);
+  assert.equal(isUserOutboundEvent('RING_GROUP_OUTGOING_CALL_MADE'), false);
+  const rows = parsePhoneCallLog({ items: [
+    ev('2026-10-12T18:04:00.000Z', 'OUTGOING_CALL_PLACED', { PARAM_SOURCE: '+16193208264', PARAM_DESTINATION: '+17602712106', PARAM_DURATION: '125000' }, 'lizbeth@scwellservice.com'),
+    ev('2026-10-12T19:10:00.000Z', 'OUTGOING_CALL_PLACED', { PARAM_SOURCE: '+14422272898', PARAM_DESTINATION: '+17609170000', PARAM_DURATION: '0' }, 'shanicey@scwellservice.com'),
+    ev('2026-10-12T19:11:00.000Z', 'OUTGOING_CALL_PLACED', { PARAM_SOURCE: '+17604408520', PARAM_DESTINATION: '+17604915348', PARAM_DURATION: '30000' }, 'lizbeth@scwellservice.com'),
+    ev('2026-10-12T19:12:00.000Z', 'RING_GROUP_OUTGOING_CALL_MADE', { PARAM_SOURCE: '+17602712106', PARAM_DESTINATION: '+17604915348' }),
+  ] });
+  assert.equal(rows.length, 2);
+  const liz = rows.find((r) => r.answered_by === 'lizbeth@scwellservice.com');
+  assert.equal(liz?.direction, 'outbound');
+  assert.equal(liz?.caller_phone, '+17602712106');
+  assert.equal(liz?.called_number, '+16193208264');
+  assert.equal(liz?.ring_group, 'Liz');
+  assert.equal(liz?.duration_seconds, 125);
+  assert.equal(liz?.outcome, 'answered');
+  assert.equal(liz?.voice_call_key.startsWith('out:'), true);
+  const shan = rows.find((r) => r.ring_group === 'Shanicey');
+  assert.equal(shan?.duration_seconds, 0);
+  assert.equal(shan?.outcome, 'missed');
 });
 
 test('enrich matches ads, Mike and client by phone', () => {
