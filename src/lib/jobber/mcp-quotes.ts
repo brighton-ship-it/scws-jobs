@@ -2,10 +2,12 @@
  * Jobber reads + draft-only quote edits for the MCP gateway.
  * Reuses the shared GraphQL client and unsent-quote helpers.
  *
- * Mutations that send, approve, convert, or delete a quote must never live here.
- * quoteDeleteLineItems removes line items on an unsent draft only; it does
- * not delete the quote. setQuoteSalesperson is the exception that may call
- * quoteEdit on a quote in any status, and only with salespersonId.
+ * Mutations that send, approve, or convert a quote must never live here.
+ * deleteUnsentQuoteDraft may call quoteDelete, or quoteArchive only when
+ * quoteDelete is absent from the schema, and only after the quote is an
+ * unsent draft. quoteDeleteLineItems removes line items on an unsent draft
+ * only; it does not delete the quote. setQuoteSalesperson is the exception
+ * that may call quoteEdit on a quote in any status, and only with salespersonId.
  */
 
 import { mentionsGpFlag } from './gross-profit.ts';
@@ -15,6 +17,7 @@ import {
   jobberUserErrors,
 } from './client.ts';
 import { listUsers } from './mcp-client-writes.ts';
+import { looksLikeJobberEncodedId } from './mcp-jobs.ts';
 import { assertNoClientNotification, assertWriteDoesNotDeliver } from './mcp-notify.ts';
 import { searchJobberProducts, type ProductSearchResult } from './products.ts';
 import {
@@ -188,6 +191,82 @@ const QUOTE_DELETE_LINE_ITEMS = `
   }
 `;
 
+/**
+ * quoteDelete is not on the public 2025-01-20 schema. These documents are
+ * tried anyway: a live API may have added the field. Argument shape follows
+ * other deletes (quoteId), then an input wrapper. Payload selection drops
+ * deletedQuote when that field is unknown. Nothing here sets sentAt or
+ * transitionQuoteTo.
+ */
+const QUOTE_DELETE = `
+  mutation McpQuoteDelete($quoteId: EncodedId!) {
+    quoteDelete(quoteId: $quoteId) {
+      deletedQuote { id }
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_DELETE_BARE = `
+  mutation McpQuoteDeleteBare($quoteId: EncodedId!) {
+    quoteDelete(quoteId: $quoteId) {
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_DELETE_INPUT = `
+  mutation McpQuoteDeleteInput($quoteId: EncodedId!) {
+    quoteDelete(input: { quoteId: $quoteId }) {
+      deletedQuote { id }
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_DELETE_INPUT_BARE = `
+  mutation McpQuoteDeleteInputBare($quoteId: EncodedId!) {
+    quoteDelete(input: { quoteId: $quoteId }) {
+      userErrors { message path }
+    }
+  }
+`;
+
+/** Same argument pattern as requestArchive. Used only when quoteDelete is absent. */
+const QUOTE_ARCHIVE = `
+  mutation McpQuoteArchive($quoteId: EncodedId!) {
+    quoteArchive(quoteId: $quoteId) {
+      quote { id quoteStatus }
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_ARCHIVE_BARE = `
+  mutation McpQuoteArchiveBare($quoteId: EncodedId!) {
+    quoteArchive(quoteId: $quoteId) {
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_ARCHIVE_INPUT = `
+  mutation McpQuoteArchiveInput($quoteId: EncodedId!) {
+    quoteArchive(input: { quoteId: $quoteId }) {
+      quote { id quoteStatus }
+      userErrors { message path }
+    }
+  }
+`;
+
+const QUOTE_ARCHIVE_INPUT_BARE = `
+  mutation McpQuoteArchiveInputBare($quoteId: EncodedId!) {
+    quoteArchive(input: { quoteId: $quoteId }) {
+      userErrors { message path }
+    }
+  }
+`;
+
 export type JobberQuoteLine = {
   id?: string | null;
   name?: string | null;
@@ -256,6 +335,14 @@ export function assertQuoteIsDraftUnsent(quote: JobberQuoteDetail): void {
   if (!isDraftUnsentQuote(quote)) {
     throw new Error(
       `Refusing to edit Jobber quote ${quote.quoteNumber ?? quote.id}: only unsent drafts can be updated (status=${quote.quoteStatus || 'unknown'}, sentAt=${quote.sentAt || 'null'})`
+    );
+  }
+}
+
+export function assertUnsentDraftDeletable(quote: JobberQuoteDetail): void {
+  if (!isDraftUnsentQuote(quote)) {
+    throw new Error(
+      `Refusing to delete Jobber quote ${quote.quoteNumber ?? quote.id}: only an unsent draft can be deleted (status=${quote.quoteStatus || 'unknown'}, sentAt=${quote.sentAt || 'null'}). Sent, approved, converted, and archived quotes are left untouched.`
     );
   }
 }
@@ -737,4 +824,277 @@ export async function updateUnsentQuoteDraft(
 
 export function quoteEditUsedForbiddenFields(body: string): boolean {
   return /transitionQuoteTo/.test(body) || /"sentAt"\s*:/.test(body);
+}
+
+export type QuoteRemovalMethod = 'quoteDelete' | 'quoteArchive';
+
+export type DeleteUnsentQuoteDraftResult = {
+  method: QuoteRemovalMethod;
+  deleted: boolean;
+  archived: boolean;
+  notified: false;
+  sent: false;
+  quoteId: string;
+  quoteNumber: string | number | null;
+  quoteStatus: string | null;
+};
+
+export class QuoteMutationUnavailable extends Error {
+  readonly field: string;
+
+  constructor(field: string) {
+    super(`${field} is not available on this Jobber schema`);
+    this.name = 'QuoteMutationUnavailable';
+    this.field = field;
+  }
+}
+
+export function quoteNumbersMatch(
+  left: string | number | null | undefined,
+  right: string | number | null | undefined
+): boolean {
+  const a = String(left ?? '').trim().replace(/^#/, '');
+  const b = String(right ?? '').trim().replace(/^#/, '');
+  if (!a || !b) return false;
+  if (a === b) return true;
+  if (/^\d+$/.test(a) && /^\d+$/.test(b)) return String(Number(a)) === String(Number(b));
+  return false;
+}
+
+export function graphqlFieldMissing(message: string, field: string): boolean {
+  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return (
+    new RegExp(`cannot query field ['"]${escaped}['"]`, 'i').test(message) ||
+    new RegExp(
+      `field ['"]${escaped}['"].{0,120}(doesn't exist|does not exist|is undefined|unknown)`,
+      'i'
+    ).test(message)
+  );
+}
+
+function graphqlErrorText(result: { errors?: Array<{ message?: string }> | null }): string {
+  return (result.errors || []).map((error) => error.message || '').join(' ');
+}
+
+function removalArgumentError(message: string): boolean {
+  return (
+    /unknown argument|has no argument|was not provided|expected type/i.test(message) &&
+    !/cannot query field/i.test(message)
+  );
+}
+
+function assertRemovalDocument(document: string, operation: string): void {
+  assertWriteDoesNotDeliver(document);
+  if (/transitionQuoteTo|\bquoteSend\b|\bsentAt\b/.test(document)) {
+    throw new Error(`${operation} must not send the quote`);
+  }
+}
+
+async function invokeRemoval(
+  document: string,
+  quoteId: string,
+  operation: string,
+  deps?: JobberDeps
+) {
+  assertRemovalDocument(document, operation);
+  return graphql(document, { quoteId }, deps);
+}
+
+/**
+ * Try one argument shape, then the same shape without a payload field Jobber
+ * does not have. Returns the successful result, or throws QuoteMutationUnavailable
+ * when the mutation itself is absent. Other GraphQL errors are returned so the
+ * caller can try the other argument shape or stop.
+ */
+async function invokeRemovalShape(
+  withSelection: string,
+  bare: string,
+  selectionField: string,
+  mutationField: string,
+  quoteId: string,
+  deps?: JobberDeps
+): Promise<{ ok: true; result: Awaited<ReturnType<typeof graphql>> } | { ok: false; message: string }> {
+  let result = await invokeRemoval(withSelection, quoteId, mutationField, deps);
+  let message = graphqlErrorText(result);
+  if (result.errors?.length && graphqlFieldMissing(message, mutationField)) {
+    throw new QuoteMutationUnavailable(mutationField);
+  }
+  if (result.errors?.length && graphqlFieldMissing(message, selectionField)) {
+    result = await invokeRemoval(bare, quoteId, mutationField, deps);
+    message = graphqlErrorText(result);
+    if (graphqlFieldMissing(message, mutationField)) throw new QuoteMutationUnavailable(mutationField);
+  }
+  if (result.errors?.length) return { ok: false, message: message || `${mutationField} Jobber GraphQL error` };
+  return { ok: true, result };
+}
+
+function assertRemovalUserErrors(
+  result: Awaited<ReturnType<typeof graphql>>,
+  mutationField: QuoteRemovalMethod,
+  quote: JobberQuoteDetail
+): void {
+  const errors = jobberUserErrors(result.data?.[mutationField]);
+  if (!errors.length) return;
+  throw new Error(
+    `Jobber ${mutationField} refused quote ${quote.quoteNumber ?? quote.id}: ${errors.join('; ')}. No other mutation was tried. The quote was not sent.`
+  );
+}
+
+async function runQuoteRemoval(
+  mutationField: QuoteRemovalMethod,
+  documents: { withSelection: string; bare: string; selectionField: string }[],
+  quote: JobberQuoteDetail,
+  deps?: JobberDeps
+): Promise<void> {
+  const quoteId = String(quote.id);
+  let lastMessage = '';
+  for (const document of documents) {
+    const attempt = await invokeRemovalShape(
+      document.withSelection,
+      document.bare,
+      document.selectionField,
+      mutationField,
+      quoteId,
+      deps
+    );
+    if (!attempt.ok) {
+      lastMessage = attempt.message;
+      if (removalArgumentError(attempt.message)) continue;
+      throw new Error(attempt.message);
+    }
+    assertRemovalUserErrors(attempt.result, mutationField, quote);
+    return;
+  }
+  throw new Error(lastMessage || `${mutationField} Jobber GraphQL error`);
+}
+
+async function findQuoteByExactNumber(quoteNumber: string, deps?: JobberDeps): Promise<JobberQuoteDetail> {
+  const wanted = quoteNumber.trim().replace(/^#/, '');
+  if (!wanted) throw new Error('quoteNumber is required');
+  const matches = await searchQuotes({ searchTerm: wanted, first: MCP_QUOTE_MAX_PAGE_SIZE }, deps);
+  const exact = matches.filter((quote) => quoteNumbersMatch(quote.quoteNumber, wanted));
+  if (!exact.length) throw new Error(`Jobber quote number ${wanted} not found`);
+  if (exact.length > 1) {
+    const ids = exact.map((quote) => quote.id).filter(Boolean).join(', ');
+    throw new Error(
+      `Jobber quote number ${wanted} matches ${exact.length} quotes (${ids}). Pass quoteId so the wrong draft is not deleted.`
+    );
+  }
+  const id = exact[0]?.id;
+  if (!id) throw new Error(`Jobber quote number ${wanted} not found`);
+  return getQuoteById(id, deps);
+}
+
+export async function resolveQuoteForDraftDelete(
+  input: { quoteId?: string | null; quoteNumber?: string | null },
+  deps?: JobberDeps
+): Promise<JobberQuoteDetail> {
+  const quoteId = input.quoteId?.trim() || '';
+  const quoteNumber = input.quoteNumber?.trim().replace(/^#/, '') || '';
+  if (quoteId && quoteNumber) throw new Error('Pass quoteId or quoteNumber, not both');
+  if (!quoteId && !quoteNumber) throw new Error('quoteId or quoteNumber is required');
+  if (quoteId) {
+    if (!looksLikeJobberEncodedId(quoteId)) {
+      throw new Error('quoteId must be an encoded Jobber id. Pass quoteNumber to look up by number.');
+    }
+    return getQuoteById(quoteId, deps);
+  }
+  return findQuoteByExactNumber(quoteNumber, deps);
+}
+
+function quoteGoneMessage(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found/i.test(message);
+}
+
+/**
+ * Delete an unsent draft. quoteDelete is tried first. quoteArchive runs only
+ * when quoteDelete is not a field on Mutation. A userError from quoteDelete
+ * does not fall through to archive, and nothing sets transitionQuoteTo or sentAt.
+ */
+export async function deleteUnsentQuoteDraft(
+  input: { quoteId?: string | null; quoteNumber?: string | null },
+  deps?: JobberDeps
+): Promise<DeleteUnsentQuoteDraftResult> {
+  const existing = await resolveQuoteForDraftDelete(input, deps);
+  assertUnsentDraftDeletable(existing);
+  const quoteId = String(existing.id);
+
+  let method: QuoteRemovalMethod = 'quoteDelete';
+  try {
+    await runQuoteRemoval(
+      'quoteDelete',
+      [
+        { withSelection: QUOTE_DELETE, bare: QUOTE_DELETE_BARE, selectionField: 'deletedQuote' },
+        { withSelection: QUOTE_DELETE_INPUT, bare: QUOTE_DELETE_INPUT_BARE, selectionField: 'deletedQuote' },
+      ],
+      existing,
+      deps
+    );
+  } catch (error) {
+    if (!(error instanceof QuoteMutationUnavailable) || error.field !== 'quoteDelete') throw error;
+    method = 'quoteArchive';
+    try {
+      await runQuoteRemoval(
+        'quoteArchive',
+        [
+          { withSelection: QUOTE_ARCHIVE, bare: QUOTE_ARCHIVE_BARE, selectionField: 'quote' },
+          { withSelection: QUOTE_ARCHIVE_INPUT, bare: QUOTE_ARCHIVE_INPUT_BARE, selectionField: 'quote' },
+        ],
+        existing,
+        deps
+      );
+    } catch (archiveError) {
+      if (archiveError instanceof QuoteMutationUnavailable) {
+        throw new Error(
+          `Jobber has no quoteDelete or quoteArchive mutation on this schema. Quote ${existing.quoteNumber ?? quoteId} was not changed and was not sent.`
+        );
+      }
+      throw archiveError;
+    }
+  }
+
+  let after: JobberQuoteDetail | null = null;
+  try {
+    after = await getQuoteById(quoteId, deps);
+  } catch (error) {
+    if (!quoteGoneMessage(error)) throw error;
+    return {
+      method,
+      deleted: true,
+      archived: false,
+      notified: false,
+      sent: false,
+      quoteId,
+      quoteNumber: existing.quoteNumber ?? null,
+      quoteStatus: null,
+    };
+  }
+
+  if (after.sentAt) {
+    throw new Error(
+      `${method} left sentAt set on quote ${after.quoteNumber ?? quoteId}. The gateway did not send the quote.`
+    );
+  }
+  if (isDraftUnsentQuote(after)) {
+    throw new Error(
+      `${method} left quote ${after.quoteNumber ?? quoteId} as an unsent draft. It was not sent.`
+    );
+  }
+  const status = normalizeMcpQuoteStatus(after.quoteStatus);
+  if (method === 'quoteArchive' && status === 'archived') {
+    return {
+      method,
+      deleted: false,
+      archived: true,
+      notified: false,
+      sent: false,
+      quoteId,
+      quoteNumber: after.quoteNumber ?? existing.quoteNumber ?? null,
+      quoteStatus: after.quoteStatus ?? 'archived',
+    };
+  }
+  throw new Error(
+    `${method} left quote ${after.quoteNumber ?? quoteId} in status ${after.quoteStatus || 'unknown'} instead of removing it. It was not sent.`
+  );
 }

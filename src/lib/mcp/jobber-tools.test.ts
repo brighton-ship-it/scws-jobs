@@ -81,7 +81,20 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_products'));
     assert.ok(names.includes('edit_product'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.10.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.11.0');
+    assert.ok(names.includes('delete_quote_draft'));
+    assert.equal(names.includes('delete_quote'), false);
+    const deleteDraftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'delete_quote_draft');
+    const deleteDraftSchema = deleteDraftTool?.inputSchema as {
+      properties?: { quoteId?: { type?: string }; quoteNumber?: { type?: string } };
+      required?: string[];
+    };
+    assert.equal(deleteDraftSchema?.properties?.quoteId?.type, 'string');
+    assert.equal(deleteDraftSchema?.properties?.quoteNumber?.type, 'string');
+    assert.equal(deleteDraftSchema?.required, undefined);
+    assert.match(deleteDraftTool?.description || '', /unsent draft/i);
+    assert.match(deleteDraftTool?.description || '', /quoteDelete/);
+    assert.match(deleteDraftTool?.description || '', /quoteArchive/);
     assert.ok(names.includes('list_notes'));
     const notesTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'list_notes');
     const notesSchema = notesTool?.inputSchema as { properties?: Record<string, { type?: string }> };
@@ -1549,6 +1562,8 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_products'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_products'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'edit_product'));
+    assert.ok(rpc.result.tools.some((tool) => tool.name === 'delete_quote_draft'));
+    assert.equal(rpc.result.tools.some((tool) => tool.name === 'delete_quote'), false);
     assert.equal(rpc.result.tools.some((tool) => tool.name === 'delete_product'), false);
     assert.equal(
       rpc.result.tools.some((tool) => tool.name === 'send_invoice' || tool.name === 'create_invoice'),
@@ -1677,5 +1692,41 @@ describe('list_notes and draft line edits through the tool handler', () => {
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /every line item/);
     assert.equal(bodies.some((body) => body.includes('quoteDeleteLineItems')), false);
+  });
+
+  it('delete_quote stays forbidden and delete_quote_draft reports quoteDelete without sending', async () => {
+    const forbidden = await callJobberMcpTool('delete_quote', { quoteId: 'quote-1' }, { token: 'test' });
+    assert.equal(forbidden.isError, true);
+    assert.match(forbidden.content[0].text, /cannot send, approve, convert, or delete quotes/i);
+
+    const quoteId = 'Z2lkOi8vSm9iYmVyL1F1b3RlLzE';
+    let reads = 0;
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) => {
+        if (!query.includes('McpQuoteById')) return null;
+        reads += 1;
+        if (reads === 1) {
+          return jsonResponse({
+            data: { quote: { id: quoteId, quoteNumber: 12, quoteStatus: 'draft', sentAt: null } },
+          });
+        }
+        return jsonResponse({ data: { quote: null } });
+      },
+      (query) =>
+        query.includes('quoteDelete')
+          ? jsonResponse({
+              data: { quoteDelete: { deletedQuote: { id: quoteId }, userErrors: [] } },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool('delete_quote_draft', { quoteId }, { fetchImpl, token: 'test' });
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as { method: string; deleted: boolean; sent: boolean; notified: boolean };
+    assert.equal(payload.method, 'quoteDelete');
+    assert.equal(payload.deleted, true);
+    assert.equal(payload.sent, false);
+    assert.equal(payload.notified, false);
+    assert.equal(bodies.some((body) => /transitionQuoteTo/.test(body)), false);
+    assert.equal(bodies.some((body) => body.includes('quoteArchive')), false);
   });
 });

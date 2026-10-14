@@ -1,6 +1,6 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **add notes and read note text** (jobs, including visit notes, plus clients, quotes, and requests), **draft quotes and edit or delete line items on unsent drafts**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, **read completed jobs with photo URLs** (GBP posts and photo backfill), and **read catalog cost/price and edit one product's cost, price, markup, or visibility** (never delete) without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **add notes and read note text** (jobs, including visit notes, plus clients, quotes, and requests), **draft quotes, edit or delete line items on unsent drafts, and delete an unsent draft**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, **read completed jobs with photo URLs** (GBP posts and photo backfill), and **read catalog cost/price and edit one product's cost, price, markup, or visibility** (never delete) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
@@ -15,10 +15,11 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | --- | --- |
 | Search / get / create clients (deduped by email or full name) | Send quote to customer |
 | Add a property to a client | Approve / convert quote |
-| List users (ids for assignment) | Delete quote |
+| List users (ids for assignment) | Delete a sent, approved, converted, or archived quote |
 | Search / get quotes | Payroll |
 | Create unsent quote draft | Invoice send, mark-sent, or record payment |
 | Update unsent draft (title, message, add/edit/delete lines, taxRateId, salesperson) | Editing or deleting lines on a sent, approved, or converted quote |
+| Delete an unsent draft (`delete_quote_draft`) | Marking a draft awaiting response so it can be archived |
 | Set salesperson on a quote in any status (`set_quote_salesperson`) | Sending, resending, or changing anything except salesperson |
 | Search products for line names / street list | Record or collect a payment |
 | Read product cost, street price, markup, and visible (`get_products`) | Delete a product, or edit name, description, tax, or category |
@@ -35,7 +36,9 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | Read note text (`list_notes`: message, author, created time, attachment names and URLs), including visit notes on a job | Editing or deleting notes |
 | Close a job (`jobClose` + incomplete-visit decision) | Client email, text, or booking confirmation |
 
-`create_quote_draft` and `update_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
+`create_quote_draft`, `update_quote_draft`, and `delete_quote_draft` never set `transitionQuoteTo` or `sentAt`. Customer-facing title/message must not contain GP FLAG math. Internal notes may.
+
+`delete_quote_draft` loads the quote and refuses unless it is an unsent draft (`sentAt` empty and status `draft`). It calls `quoteDelete`. The public 2025-01-20 schema has no `quoteDelete` and no `quoteArchive` field. When Jobber responds that `quoteDelete` is not a field on `Mutation`, the tool calls `quoteArchive` and reports `method: "quoteArchive"`. A `userError` from `quoteDelete` is returned as-is and does not archive the quote. The tool never marks the quote awaiting response. The response `method` is `quoteDelete` or `quoteArchive`.
 
 If Jobber already sent the quote, `update_quote_draft` refuses, including line-item edits and deletes. `set_quote_salesperson` is the only quote write that runs after send. It calls `quoteEdit` with `{ salespersonId }` and nothing else, then re-reads the quote. It does not send, resend, or notify the customer, and it does not change line items, amounts, message, or status.
 
@@ -84,7 +87,7 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.10.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.11.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
@@ -95,6 +98,7 @@ MCP server version **1.10.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version sta
 - `get_quote` — one quote + line items + salesperson (`id`, `name`). Each line includes `optional` and `recommended`
 - `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`. `salespersonId` defaults to Brighton Scala. `findBrightonSalespersonId` queries `users(first: 50) { nodes { id name { full first last } email { raw } } }`, which matches `User.name` (`Name`) and `User.email` (`UserEmail.raw`) on the 2025-01-20 schema. It returns a string (env override, matched user, or Brighton's known id) and does not return null
 - `update_quote_draft` — unsent draft only. `addLineItems` accepts the same line fields (`quoteCreateLineItems`). `updateLineItems` edits an existing line by `lineItemId` (`quoteEditLineItems` / `QuoteEditLineItemAttributes`: name, description, quantity, unitPrice, taxable, optional, recommended). Omitted fields stay as they are. `optional: false` makes the line required. `removeLineItemIds` deletes lines (`quoteDeleteLineItems`) and refuses a delete that would leave the quote with no lines. The tool re-reads the quote first and refuses anything that is not an unsent draft. `taxRateId` sets the quote tax rate. `salespersonId` is sent on `quoteEdit` (the only quote mutation with that field). The tool re-reads `Quote.salesperson` and errors if Jobber left the previous salesperson in place. Nothing here sets `transitionQuoteTo` or `sentAt`
+- `delete_quote_draft` — unsent draft only. Pass `quoteId` or `quoteNumber`, not both. Quote numbers are not unique; more than one exact match refuses and asks for `quoteId`. The tool re-reads the quote and refuses anything that is not an unsent draft (including `awaiting_response`, `approved`, `converted`, `archived`, `changes_requested`, and any `sentAt`). It tries `quoteDelete(quoteId)`, then `quoteDelete(input: { quoteId })` if the argument shape is rejected. If `deletedQuote` is not a payload field, it selects `userErrors` only. If `quoteDelete` itself is missing from the schema, it tries `quoteArchive` the same way and reports that method. It does not call `transitionQuoteTo`. After the mutation it re-reads the quote: gone means deleted; `archived` with no `sentAt` means archived via `quoteArchive`; still a draft is an error
 - `list_notes` — read-only note text. Pass exactly one of `jobId` / `jobNumber`, `clientId`, `quoteId`, or `requestId`. Returns `message`, author (`User` / `Client` / `Application` name), `createdAt`, and attachment `fileName` / `url`. A job also reads `Visit.notes` (notes technicians post on a visit; Jobber also copies those onto the job, and the tool dedupes by note id). Optional `visitId` limits visit notes to that visit. `first` defaults to 25 and maxes at 50
 - `set_quote_salesperson` — `{ quoteId, salespersonId }` only. Any status, including `awaiting_response`, `approved`, `converted`, and `changes_requested`. `quoteEdit` attributes are exactly `{ salespersonId }`. `salespersonId` must be an active user from `list_users` (`status` `ACTIVATED`). The tool re-reads the quote and returns the salesperson Jobber shows. Never contacts the customer
 - `list_tax_rates` — read-only. Optional `query` filters name, label, or description (for example `San Diego` or `7.75`). Returns `id`, `name`, `label`, `rate`, `default`. Pass `id` as `taxRateId` on a quote draft, `edit_invoice`, or `create_invoice_draft`

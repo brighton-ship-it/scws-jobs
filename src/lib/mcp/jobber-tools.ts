@@ -24,6 +24,7 @@ import {
   type JobberDeps,
 } from '../jobber/quotes.ts';
 import {
+  deleteUnsentQuoteDraft,
   getClientById,
   getQuoteById,
   parseQuoteLineEdits,
@@ -73,7 +74,7 @@ import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.10.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.11.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -126,7 +127,7 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 
 export const JOBBER_MCP_INSTRUCTIONS = [
   'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, create_request, create_job, create_visit, and create_note write records. Nothing emails, texts, or notifies a client.',
-  'Never send, approve, convert, or delete quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
+  'Never send, approve, or convert quotes. delete_quote_draft removes an unsent draft only, via quoteDelete or via quoteArchive when quoteDelete is not in the schema, and refuses sent, approved, converted, and archived quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
   'edit_invoice sets message (client-facing body), taxRateId, and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings / copy, not a charge. create_invoice_draft requires message. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
@@ -424,6 +425,26 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
           items: { type: 'string' },
           description:
             'Encoded line item ids to delete from an unsent draft. Refuses when that would leave the quote with no line items. Does not send the quote.',
+        },
+      },
+    },
+  },
+  {
+    name: 'delete_quote_draft',
+    description:
+      'Delete one UNSENT draft quote. Pass quoteId (encoded id) or quoteNumber, not both. Refuses sent, awaiting_response, approved, converted, archived, and changes_requested quotes, and any quote with sentAt set. Tries Jobber quoteDelete. If that mutation is not in the schema, archives with quoteArchive and does not mark the quote awaiting response. A quoteDelete userError does not fall through to archive. Returns method quoteDelete or quoteArchive. Never sends, approves, or converts the quote.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        quoteId: {
+          type: 'string',
+          description: 'Encoded Jobber quote id. Omit when passing quoteNumber.',
+        },
+        quoteNumber: {
+          type: 'string',
+          description:
+            'Quote number. Refuses when more than one quote has that number; pass quoteId instead. Omit when passing quoteId.',
         },
       },
     },
@@ -1323,6 +1344,41 @@ export async function callJobberMcpTool(
           sentAt: quote.sentAt ?? null,
           note: 'Draft stays unsent. Line edits and deletes ran only because the quote was still an unsent draft. This tool cannot send the quote to the customer.',
           quote: summarizeQuote(quote),
+        });
+      }
+      case 'delete_quote_draft': {
+        assertNoNotifyArgs(args);
+        const rejected = [
+          'transitionQuoteTo',
+          'sentAt',
+          'status',
+          'quoteStatus',
+          'message',
+          'title',
+          'lineItems',
+          'send',
+        ].filter((key) => args[key] != null);
+        if (rejected.length) {
+          throw new Error(`delete_quote_draft only removes an unsent draft. Refusing ${rejected.join(', ')}.`);
+        }
+        const quoteNumber =
+          optionalString(args, 'quoteNumber') ??
+          (typeof args.quoteNumber === 'number' && Number.isFinite(args.quoteNumber)
+            ? String(args.quoteNumber)
+            : undefined);
+        const result = await deleteUnsentQuoteDraft(
+          {
+            quoteId: optionalString(args, 'quoteId'),
+            quoteNumber,
+          },
+          deps
+        );
+        return textResult({
+          ...result,
+          note:
+            result.method === 'quoteDelete'
+              ? 'Removed an unsent draft with quoteDelete. Nothing was sent, approved, or converted.'
+              : 'Archived an unsent draft with quoteArchive because quoteDelete is not on this Jobber schema. Nothing was sent, approved, or converted.',
         });
       }
       case 'set_quote_salesperson': {
