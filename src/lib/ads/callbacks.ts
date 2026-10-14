@@ -513,6 +513,10 @@ export function needsCallback(input: {
       pastDue: true,
     });
   }
-  kept.sort((a, b) => Number(b.goingCold) - Number(a.goingCold) || Date.parse(b.at) - Date.parse(a.at));
-  return { count: kept.length, rows: kept.slice(0, NEEDS_CAP) };
+  const byUrgency = (a: NeedsCallbackRow, b: NeedsCallbackRow) =>
+    Number(b.goingCold) - Number(a.goingCold) || Date.parse(b.at) - Date.parse(a.at);
+  const calls = kept.filter((r) => r.outcome !== 'Past due').sort(byUrgency);
+  const invoices = kept.filter((r) => r.outcome === 'Past due').sort(byUrgency);
+  const rows = [...calls, ...invoices].slice(0, NEEDS_CAP);
+  return { count: kept.length, rows };
 }

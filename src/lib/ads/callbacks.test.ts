@@ -117,18 +117,26 @@ test('shop Voice attempts count, name the last caller, and flag going cold', () 
     log: [{ direction: 'inbound', outcome: 'missed', started_at: '2026-10-12T16:00:00Z', caller_phone: '+17603330001', duration_seconds: 0, ring_seconds: 20, client_name: 'Ada' }],
     recordings: [], mike: [],
   });
+  const freshCall = callbackCandidates({
+    log: [{ direction: 'inbound', outcome: 'missed', started_at: '2026-10-14T19:00:00Z', caller_phone: '+17603330008', duration_seconds: 0, ring_seconds: 20, client_name: 'New' }],
+    recordings: [], mike: [],
+  });
   const view = needsCallback({
-    candidates, sources, work: indexWorkTimes([]), fromMs, now, attempts,
+    candidates: [...candidates, ...freshCall], sources, work: indexWorkTimes([]), fromMs, now, attempts,
     pastDue: [{ id: 'C1', name: 'Owen', phones: ['7603330004'], issuedAt: '2026-10-01T15:00:00Z' }],
   });
-  assert.equal(view.rows.find((r) => r.name === 'Ada')?.outreach, cold.label);
-  assert.equal(view.rows.find((r) => r.name === 'Ada')?.goingCold, true);
+  assert.equal(view.rows[0].name, 'Ada');
+  assert.equal(view.rows[1].name, 'New');
+  assert.equal(view.rows[0].outreach, cold.label);
+  assert.equal(view.rows[0].goingCold, true);
+  assert.equal(view.rows[1].goingCold, false);
   const owen = view.rows.find((r) => r.name === 'Owen');
   assert.equal(owen?.outcome, 'Past due');
   assert.equal(owen?.phone, '(760) 333-0004');
   assert.equal(owen?.outreach, 'No Voice attempts yet');
   assert.equal(owen?.goingCold, true);
-  assert.equal(view.count, 2);
+  assert.equal(view.count, 3);
+  assert.equal(view.rows.at(-1)?.name, 'Owen');
 });
 
 test('past-due clients match Jobber phones and ignore other invoice statuses', () => {
