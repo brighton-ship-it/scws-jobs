@@ -191,6 +191,16 @@ function CallbackLine({ text, dark }: { text: string; dark: boolean }) {
   const cls = called ? (dark ? 'text-emerald-300' : 'text-emerald-700') : (dark ? 'text-amber-300' : 'text-amber-800');
   return <div className={`mt-1 break-words text-xs font-medium leading-snug xl:text-sm ${cls}`}>{text}</div>;
 }
+const OUTREACH_TIP = 'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton). Personal cell calls are not in this log, so a callback from a cell does not show here.';
+const COLD_TIP = 'Going cold: 3 or more Voice attempts with no connected call or booking, or no attempt in the last 3 days.';
+function OutreachLine({ text, cold, dark }: { text: string; cold?: boolean; dark: boolean }) {
+  return (
+    <div className={`mt-1 break-words text-xs leading-snug xl:text-sm ${dark ? 'text-slate-300' : 'text-slate-600'}`} title={OUTREACH_TIP}>
+      <span>{text}</span>
+      {cold ? <span className="ml-1.5 inline-block rounded-full bg-rose-600 px-2 py-0.5 align-middle text-[10px] font-semibold text-white" title={COLD_TIP}>Going cold</span> : null}
+    </div>
+  );
+}
 
 function NeedsCallbackList({ view, rangeLabel, dark = false, limit }: { view: Dashboard['needsCallback']; rangeLabel: string; dark?: boolean; limit: number }) {
   const count = view?.count ?? 0;
@@ -211,6 +221,7 @@ function NeedsCallbackList({ view, rangeLabel, dark = false, limit }: { view: Da
                 <div className="min-w-0">
                   <div className={`break-words font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
                   <div className={`break-words text-sm ${sub}`}>{r.name ? <><a href={`tel:${r.phone}`}>{r.phone}</a> · </> : null}{r.line} · {r.outcome}</div>
+                  {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
                 </div>
                 <span className={`shrink-0 text-sm tabular-nums ${sub}`}>{feedTime(r.at)}</span>
               </div>
@@ -241,6 +252,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
           <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}</div>
           {r.summary ? <div className={`mt-1 text-sm ${sub}`}>{r.summary}</div> : null}
           {r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}
+          {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
         </li>
       ))}
     </ul>
@@ -257,7 +269,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
               {r.summary ? <div className={`truncate text-sm ${sub}`} title={r.summary}>{r.summary}</div> : null}
             </td>
             <td className={`truncate px-3 py-2 align-top font-medium ${ink}`}>{r.line}</td>
-            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} />{r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}</td>
+            <td className="px-3 py-2 align-top text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} />{r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}{r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}</td>
             <td className={`whitespace-nowrap px-3 py-2 text-right align-top tabular-nums ${ink}`}>{fmtDur(r.durationSeconds)}</td>
           </tr>
         ))}
@@ -522,7 +534,7 @@ export function CallDashboardPage() {
             </Card>
           </div>
 
-          <Card title="Needs callback" subtitle="Missed, voicemail, and Mike calls with no callback yet. Skips hang-ups under 10s, spam, vendors, AI bookings, and numbers with a Jobber quote, request, or job created after the call." delay={200}>
+          <Card title="Needs callback" subtitle="Missed, voicemail, Mike, and past-due invoice clients. Attempt counts follow this period. Skips hang-ups under 10s, spam, vendors, AI bookings, and numbers with a Jobber quote, request, or job created after the call." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines only ⓘ</span>} delay={200}>
             <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} limit={12} />
           </Card>
 
@@ -684,8 +696,8 @@ export function CallDashboardTv() {
         </div>
       ) : null}
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Needs callback">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Needs callback</p>
-        <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · no callback yet · {mainRange}</p>
+        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base" title={OUTREACH_TIP}>Needs callback</p>
+        <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, Mike, and past-due invoices · {mainRange}. Personal cell calls are not logged.</p>
         <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} limit={6} />
       </div>
       <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">

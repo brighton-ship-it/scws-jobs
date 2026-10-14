@@ -5,8 +5,16 @@
  */
 import { digits10 } from './call-dashboard.ts';
 import { formatDuration, formatPhone, type FeedRow } from './call-feed.ts';
+import { staffLines, type StaffLine } from './staff-lines.ts';
 
 export const HANGUP_SECONDS = 10;
+export const COLD_ATTEMPTS = 3;
+export const COLD_DAYS = 3;
+/** Shop Google Voice lines only. Personal cells are not in the audit log. */
+export const OUTREACH_TOOLTIP =
+  'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton). Personal cell calls are not in this log, so a callback from a cell does not show here.';
+export const COLD_TOOLTIP =
+  'Going cold: 3 or more Voice attempts with no connected call or booking, or no attempt in the last 3 days.';
 
 const TOLL_FREE = new Set(['800', '833', '844', '855', '866', '877', '888']);
 const SPAM = /spam|robocall|wrong number|telemarket|solicit|marketing|\bSEO\b|google (listing|business)|sales department|extended warranty on (your|their) (car|vehicle)/i;
@@ -41,6 +49,32 @@ export interface NeedsCallbackRow {
   line: string;
   outcome: string;
   durationSeconds: number | null;
+  outreach: string;
+  goingCold: boolean;
+  pastDue: boolean;
+}
+
+export interface OutreachAttempt {
+  at: string;
+  phone: string | null;
+  staff: string | null;
+  durationSeconds: number | null;
+}
+
+export interface OutreachView {
+  attempts: number;
+  lastAt: string | null;
+  lastBy: string | null;
+  label: string;
+  goingCold: boolean;
+}
+
+export interface PastDueClient {
+  id: string;
+  name: string | null;
+  phones: string[];
+  /** Earliest past-due invoice issue time. Anchor for the 3-day cold clock. */
+  issuedAt: string;
 }
 
 export interface NeedsCallbackView {
@@ -111,6 +145,139 @@ export function firstCallback(phone: string | null, afterIso: string, sources: C
     if (!best || t < Date.parse(best.at)) best = s;
   }
   return best;
+}
+
+/** A callback that actually connected: outbound talk time, or a later inbound a person answered. */
+export function handlingCallback(phone: string | null, afterIso: string, sources: CallbackSource[]): CallbackSource | null {
+  const p = digits10(phone);
+  const after = Date.parse(afterIso);
+  if (!p || !Number.isFinite(after)) return null;
+  let best: CallbackSource | null = null;
+  for (const s of sources) {
+    if (digits10(s.phone) !== p) continue;
+    const t = Date.parse(s.at);
+    if (!Number.isFinite(t) || t <= after) continue;
+    const connected = s.kind === 'staff_answered' || (s.durationSeconds ?? 0) > 0;
+    if (!connected) continue;
+    if (!best || t < Date.parse(best.at)) best = s;
+  }
+  return best;
+}
+
+function shopStaffName(row: Record<string, any>, lines: StaffLine[]): string | null {
+  const email = String(row.answered_by ?? '').split('@')[0].toLowerCase();
+  const phone = digits10(row.called_number);
+  const ring = String(row.ring_group ?? '').trim().toLowerCase();
+  for (const line of lines) {
+    const local = (line.email ?? '').split('@')[0].toLowerCase();
+    if (email && local && email === local) return line.name;
+    if (phone && line.phone && phone === line.phone) return line.name;
+    if (ring && ring === line.name.toLowerCase()) return line.name;
+  }
+  return null;
+}
+
+/** Outbound calls placed from a configured shop Voice line. Twilio tracking lines are not attempts. */
+export function voiceAttempts(log: Array<Record<string, any>>, lines: StaffLine[] = staffLines()): OutreachAttempt[] {
+  const out: OutreachAttempt[] = [];
+  for (const row of log) {
+    if (row.direction !== 'outbound') continue;
+    const staff = shopStaffName(row, lines);
+    if (!staff) continue;
+    const at = String(row.started_at ?? '');
+    if (!Number.isFinite(Date.parse(at))) continue;
+    out.push({
+      at,
+      phone: row.caller_phone ?? null,
+      staff,
+      durationSeconds: row.duration_seconds ?? null,
+    });
+  }
+  return out;
+}
+
+function formatAttemptWhen(iso: string, now: Date): string {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
+  const day = d.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  const today = now.toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+  if (day === today) return `today ${time}`;
+  const age = now.getTime() - d.getTime();
+  if (age >= 0 && age < 7 * 86400_000) {
+    const weekday = d.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', weekday: 'short' });
+    return `${weekday} ${time}`;
+  }
+  const date = d.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric' });
+  return `${date}, ${time}`;
+}
+
+export function summarizeOutreach(input: {
+  phone: string | null;
+  attempts: OutreachAttempt[];
+  fromMs: number;
+  now: Date;
+  anchorAt: string;
+  connected?: boolean;
+  booked?: boolean;
+  trackCold?: boolean;
+}): OutreachView {
+  const phone = digits10(input.phone);
+  const end = input.now.getTime();
+  const inWindow = input.attempts.filter((a) => {
+    if (!phone || digits10(a.phone) !== phone) return false;
+    const t = Date.parse(a.at);
+    return Number.isFinite(t) && t >= input.fromMs && t <= end;
+  }).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const last = inWindow.length ? inWindow[inWindow.length - 1] : null;
+  const connected = !!input.connected || inWindow.some((a) => (a.durationSeconds ?? 0) > 0);
+  const booked = !!input.booked;
+  const anchor = Date.parse(input.anchorAt);
+  const lastMs = last ? Date.parse(last.at) : NaN;
+  const stale = Number.isFinite(lastMs)
+    ? end - lastMs >= COLD_DAYS * 86400_000
+    : Number.isFinite(anchor) && end - anchor >= COLD_DAYS * 86400_000;
+  const unansweredBurst = inWindow.length >= COLD_ATTEMPTS && !connected && !booked;
+  const goingCold = input.trackCold === false ? false : unansweredBurst || stale;
+  const label = !last
+    ? 'No Voice attempts yet'
+    : `${inWindow.length} ${inWindow.length === 1 ? 'attempt' : 'attempts'}, last ${formatAttemptWhen(last.at, input.now)}${last.staff ? ` · ${last.staff}` : ''}`;
+  return { attempts: inWindow.length, lastAt: last?.at ?? null, lastBy: last?.staff ?? null, label, goingCold };
+}
+
+export function groupPastDueClients(
+  invoices: Array<{ client_id?: string | null; issued_date?: string | null; invoice_status?: string | null }>,
+  clients: Array<{ id: string; name?: string | null; phones_digits?: string[] | null }>,
+): PastDueClient[] {
+  const earliest = new Map<string, string>();
+  for (const inv of invoices) {
+    const status = String(inv.invoice_status ?? '').toLowerCase().replace(/\s+/g, '_');
+    if (status !== 'past_due' || !inv.client_id || !inv.issued_date) continue;
+    const prev = earliest.get(inv.client_id);
+    if (!prev || Date.parse(inv.issued_date) < Date.parse(prev)) earliest.set(inv.client_id, inv.issued_date);
+  }
+  const byId = new Map(clients.map((c) => [c.id, c]));
+  const out: PastDueClient[] = [];
+  for (const [id, issuedAt] of Array.from(earliest.entries())) {
+    const client = byId.get(id);
+    const phones = (client?.phones_digits ?? []).map((p) => digits10(p)).filter((p): p is string => !!p);
+    if (!phones.length || !Number.isFinite(Date.parse(issuedAt))) continue;
+    out.push({ id, name: client?.name ?? null, phones, issuedAt });
+  }
+  return out;
+}
+
+function bestPastDuePhone(phones: string[], attempts: OutreachAttempt[], fromMs: number, now: Date): string | null {
+  let best: string | null = null;
+  let bestAt = -1;
+  for (const phone of phones) {
+    for (const a of attempts) {
+      if (digits10(a.phone) !== phone) continue;
+      const t = Date.parse(a.at);
+      if (!Number.isFinite(t) || t < fromMs || t > now.getTime()) continue;
+      if (t >= bestAt) { bestAt = t; best = phone; }
+    }
+  }
+  return best ?? phones[0] ?? null;
 }
 
 export function indexWorkTimes(rows: Array<{ phone: string | null; at: string }>): Map<string, number[]> {
@@ -237,11 +404,32 @@ export function callbackSources(input: {
   return sources;
 }
 
-export function annotateFeed(rows: FeedRow[], sources: CallbackSource[], now: Date): FeedRow[] {
+export function annotateFeed(
+  rows: FeedRow[],
+  sources: CallbackSource[],
+  now: Date,
+  extra?: { attempts?: OutreachAttempt[]; fromMs?: number; pastDuePhones?: Set<string>; work?: Map<string, number[]> },
+): FeedRow[] {
+  const attempts = extra?.attempts ?? [];
+  const fromMs = extra?.fromMs ?? 0;
+  const pastDue = extra?.pastDuePhones ?? new Set<string>();
+  const work = extra?.work ?? new Map<string, number[]>();
   return rows.map((row) => {
     const eligible = feedNeedsCallback(row.outcome);
-    const match = eligible ? firstCallback(row.phone, row.at, sources) : null;
-    return { ...row, callback: formatCallbackStatus(match, eligible, now) };
+    const match = eligible ? handlingCallback(row.phone, row.at, sources) : null;
+    const phone = digits10(row.phone);
+    const isPastDue = !!phone && pastDue.has(phone);
+    const outreach = summarizeOutreach({
+      phone: row.phone,
+      attempts,
+      fromMs,
+      now,
+      anchorAt: row.at,
+      connected: !!match,
+      booked: row.outcome === 'Booked' || hasWorkAfter(row.phone, row.at, work),
+      trackCold: (eligible && !match) || isPastDue,
+    });
+    return { ...row, callback: formatCallbackStatus(match, eligible, now), outreach: outreach.label, goingCold: outreach.goingCold };
   });
 }
 
@@ -253,25 +441,78 @@ export function needsCallback(input: {
   work: Map<string, number[]>;
   fromMs: number;
   now?: Date;
+  attempts?: OutreachAttempt[];
+  pastDue?: PastDueClient[];
 }): NeedsCallbackView {
   const now = input.now ?? new Date();
+  const attempts = input.attempts ?? [];
+  const pastDue = input.pastDue ?? [];
+  const pastDuePhones = new Set(pastDue.flatMap((c) => c.phones));
   const kept: NeedsCallbackRow[] = [];
+  const seen = new Set<string>();
+  const push = (row: NeedsCallbackRow) => {
+    const p = digits10(row.phone);
+    if (p) seen.add(p);
+    kept.push(row);
+  };
   for (const c of input.candidates) {
     const t = Date.parse(c.at);
-    if (!digits10(c.phone) || !Number.isFinite(t) || t < input.fromMs || t > now.getTime()) continue;
+    const phone = digits10(c.phone);
+    if (!phone || !Number.isFinite(t) || t < input.fromMs || t > now.getTime()) continue;
     if (c.aiBooked || c.spam || c.vendor) continue;
     if (isHangupUnder10s(c.durationSeconds, c.ringSeconds)) continue;
     if (hasWorkAfter(c.phone, c.at, input.work)) continue;
-    if (firstCallback(c.phone, c.at, input.sources)) continue;
-    kept.push({
+    if (handlingCallback(c.phone, c.at, input.sources)) continue;
+    if (seen.has(phone)) continue;
+    const isPastDue = pastDuePhones.has(phone);
+    const outreach = summarizeOutreach({
+      phone, attempts, fromMs: input.fromMs, now, anchorAt: c.at, trackCold: true,
+    });
+    push({
       at: c.at,
       phone: formatPhone(c.phone),
       name: c.name,
-      line: c.line,
+      line: isPastDue ? `${c.line} · Past due` : c.line,
       outcome: OUTCOME_LABEL[c.outcome],
       durationSeconds: c.durationSeconds,
+      outreach: outreach.label,
+      goingCold: outreach.goingCold,
+      pastDue: isPastDue,
     });
   }
-  kept.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  for (const client of pastDue) {
+    const phone = bestPastDuePhone(client.phones, attempts, input.fromMs, now);
+    if (!phone || seen.has(phone)) {
+      const existing = phone ? kept.find((r) => digits10(r.phone) === phone) : undefined;
+      if (existing) {
+        const invoice = summarizeOutreach({
+          phone, attempts, fromMs: input.fromMs, now, anchorAt: client.issuedAt,
+          connected: !!handlingCallback(phone, client.issuedAt, input.sources),
+          booked: hasWorkAfter(phone, client.issuedAt, input.work),
+          trackCold: true,
+        });
+        if (invoice.goingCold) existing.goingCold = true;
+      }
+      continue;
+    }
+    const outreach = summarizeOutreach({
+      phone, attempts, fromMs: input.fromMs, now, anchorAt: client.issuedAt,
+      connected: !!handlingCallback(phone, client.issuedAt, input.sources),
+      booked: hasWorkAfter(phone, client.issuedAt, input.work),
+      trackCold: true,
+    });
+    push({
+      at: client.issuedAt,
+      phone: formatPhone(phone),
+      name: client.name,
+      line: 'Invoice',
+      outcome: 'Past due',
+      durationSeconds: null,
+      outreach: outreach.label,
+      goingCold: outreach.goingCold,
+      pastDue: true,
+    });
+  }
+  kept.sort((a, b) => Number(b.goingCold) - Number(a.goingCold) || Date.parse(b.at) - Date.parse(a.at));
   return { count: kept.length, rows: kept.slice(0, NEEDS_CAP) };
 }

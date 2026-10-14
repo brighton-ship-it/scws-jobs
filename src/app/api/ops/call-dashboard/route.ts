@@ -15,7 +15,7 @@ import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
-import { annotateFeed, callbackCandidates, callbackSources, indexWorkTimes, needsCallback } from '@/lib/ads/callbacks';
+import { annotateFeed, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, needsCallback, voiceAttempts, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
@@ -142,18 +142,26 @@ export async function GET(request: NextRequest) {
       for (const r of liveOut.rows) if (r.voice_call_key && !outboundByKey.has(r.voice_call_key)) outboundByKey.set(r.voice_call_key, r);
       const outboundAll = Array.from(outboundByKey.values());
       const sources = callbackSources({ log: [...inboundLog, ...outboundAll], recordings: recs.data ?? [] });
-      dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash);
+      const attempts = voiceAttempts(outboundAll);
+      const past = await loadPastDueClients(db);
+      if (past.note) notes.push(past.note);
+      const pastDuePhones = new Set(past.clients.flatMap((c) => c.phones));
       try {
         const loaded = await loadWorkRows(db, new Date(fromMs).toISOString());
         if (loaded.note) notes.push(loaded.note);
+        const work = indexWorkTimes(loaded.rows);
         const candidates = callbackCandidates({
           log: inboundLog,
           recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)),
           mike: liveRows,
           bookedMike: bookingIds,
         });
-        dash.needsCallback = needsCallback({ candidates, sources, work: indexWorkTimes(loaded.rows), fromMs, now: nowDash });
-      } catch (error) { notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`); }
+        dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work });
+        dash.needsCallback = needsCallback({ candidates, sources, work, fromMs, now: nowDash, attempts, pastDue: past.clients });
+      } catch (error) {
+        dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones });
+        notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);
+      }
       // Main page header and TV "today" tiles share this one count across every line.
       if (dash.callLog) dash.callLog.today = feedToday(merged, ptStartOfDay(new Date()).getTime());
     } catch (e) { notes.push(`call feed: ${e instanceof Error ? e.message : 'error'}`); }
@@ -310,6 +318,25 @@ function clientPhones(client: any): string[] {
   if (!client) return [];
   const raw = client.phones_digits ?? client.phones ?? [];
   return raw.map((p: any) => digits10(typeof p === 'string' ? p : p?.number)).filter((d: string | null): d is string => !!d);
+}
+
+/** Current past-due invoices, one row per client, matched later by phone. Attempt counts still use the period. */
+async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; note: string | null }> {
+  const invoices: Array<{ client_id: string | null; issued_date: string | null; invoice_status: string | null }> = [];
+  for (let from = 0; from < 2000; from += 1000) {
+    const q = await db.from('jobber_invoices').select('client_id, issued_date, invoice_status').eq('invoice_status', 'past_due').order('issued_date', { ascending: true }).range(from, from + 999);
+    if (q.error) return { clients: [], note: `past-due invoices: ${q.error.message}` };
+    invoices.push(...(q.data ?? []));
+    if ((q.data ?? []).length < 1000) break;
+  }
+  const ids = Array.from(new Set(invoices.map((i) => i.client_id).filter(Boolean))) as string[];
+  const clients: Array<{ id: string; name: string | null; phones_digits: string[] | null }> = [];
+  for (let i = 0; i < ids.length; i += 150) {
+    const c = await db.from('jobber_clients').select('id, name, phones_digits').in('id', ids.slice(i, i + 150));
+    if (c.error) return { clients: groupPastDueClients(invoices, clients), note: `past-due clients: ${c.error.message}` };
+    clients.push(...(c.data ?? []));
+  }
+  return { clients: groupPastDueClients(invoices, clients), note: null };
 }
 
 /** Jobber jobs, quotes (when the mirror stored client phones), and booking requests created in the window. */
