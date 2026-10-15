@@ -89,6 +89,18 @@ export async function POST(request: NextRequest) {
     const stagesByJob = new Map(candidates.map((c) => [c.jobberJobId, c.stages]));
     const existingRows: Array<{ jobber_job_id: string; status: string; value_usd: number | null; payload: unknown }> =
       existing.data ?? [];
+    // First upload carries the best value already known (invoice > approved quote > booking),
+    // so a late original doesn't wait a day for its restatement. Upward-only state is recorded.
+    const uploadedIds = new Set(existingRows.filter((r) => r.status === 'uploaded').map((r) => r.jobber_job_id));
+    const firstStage = new Map<string, 1 | 2 | 3>();
+    for (const c of candidates) {
+      if (uploadedIds.has(c.jobberJobId)) continue;
+      const best = nextRestatement(c.stages, { stage: 1, value: c.stages.booking });
+      if (best) {
+        c.valueUsd = best.value;
+        firstStage.set(c.jobberJobId, best.stage);
+      }
+    }
     const result = await runOfflineImport({
       candidates,
       existing: existingRows,
@@ -112,7 +124,7 @@ export async function POST(request: NextRequest) {
             payload: {
               conversion: row.payload,
               stages: stagesByJob.get(row.jobber_job_id) ?? null,
-              sent_stage: row.status === 'uploaded' ? 1 : null,
+              sent_stage: row.status === 'uploaded' ? (firstStage.get(row.jobber_job_id) ?? 1) : null,
               sent_value: row.status === 'uploaded' ? row.value_usd : null,
             },
             google_response: row.google_response ?? null,

@@ -6,8 +6,8 @@
  *  - booked at = job.createdAt (a booked job / accepted quote creates the job).
  *  - floor: nothing before 2026-09-18 (tracking go-live, 00:00 PT).
  *  - the ad signal (ads call, click-id lead, google_ads lead) must precede the job.
- *  - existing client: another job, or an issued invoice, for the same client
- *    dated before the first ad signal. Skipped.
+ *  - repeat clients count when an ad signal falls after their most recent
+ *    earlier job/issued invoice (ad-sourced repeat). Organic repeats skipped.
  *  - only the client's first booked job after the signal counts.
  *  - order_id = Jobber job id. Value = quote subtotal, else issued invoice
  *    pre-tax subtotal, else job total.
@@ -164,25 +164,30 @@ export function candidatesFromBookedJobs(input: {
       ex('signal_after_job');
       continue;
     }
-    const anchor = before[0].at;
-
-    const existing = jobs.some((other) => {
-      if (other.job.id === job.id || !sharesKey(keys, other.keys)) return false;
-      if (Number.isFinite(other.at) && other.at < anchor) return true;
-      return (other.job.invoices ?? []).some((inv) => {
-        const issued = ms(inv.issuedDate);
-        return Number.isFinite(issued) && issued < anchor && sumIssuedInvoicePretax([inv]) != null;
-      });
-    });
-    if (existing) {
-      ex('existing_client');
-      continue;
-    }
-
     if (firstBookedByClient.some((row) => sharesKey(keys, row.keys))) {
       ex('repeat_job');
       continue;
     }
+
+    // Repeat customers count when an ad touch drove this job: the anchor is the
+    // first ad signal after the client's most recent earlier job/issued invoice.
+    // Organic repeats (no ad signal since their last job) stay excluded.
+    let lastPrior = Number.NEGATIVE_INFINITY;
+    for (const other of jobs) {
+      if (other.job.id === job.id || !sharesKey(keys, other.keys)) continue;
+      if (Number.isFinite(other.at) && other.at < at) lastPrior = Math.max(lastPrior, other.at);
+      for (const inv of other.job.invoices ?? []) {
+        const issued = ms(inv.issuedDate);
+        if (Number.isFinite(issued) && issued < at && sumIssuedInvoicePretax([inv]) != null)
+          lastPrior = Math.max(lastPrior, issued);
+      }
+    }
+    const fresh = before.filter((s) => s.at > lastPrior);
+    if (!fresh.length) {
+      ex('existing_client');
+      continue;
+    }
+    const anchor = fresh[0].at;
 
     const priced = bookedValue(job);
     if (!priced) {
@@ -201,8 +206,8 @@ export function candidatesFromBookedJobs(input: {
       invoices: clientJobs.flatMap((j) => j.invoices ?? []),
     });
 
-    const pick = before.find((s) => s.lead && hasStoredClickId(s.lead)) ?? before[0];
-    const lead = pick.lead ?? before.find((s) => s.lead)?.lead ?? null;
+    const pick = fresh.find((s) => s.lead && hasStoredClickId(s.lead)) ?? fresh[0];
+    const lead = pick.lead ?? fresh.find((s) => s.lead)?.lead ?? null;
     const phone = (job.phones ?? []).map(normalizePhone).find(Boolean) ?? null;
     const email = (job.emails ?? []).map(normalizeEmail).find(Boolean) ?? null;
     candidates.push({
