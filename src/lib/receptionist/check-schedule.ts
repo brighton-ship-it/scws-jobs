@@ -79,6 +79,10 @@ export type ScheduleLookupResult = {
   /** Upcoming visit on a job created in the last RECENT_BOOKING_DAYS days (duplicate-booking guard). */
   recentBooking?: ScheduleVisit;
   alreadyBooked?: boolean;
+  /** True when the model should call checkSchedule again before createCallback. */
+  retryRequired?: boolean;
+  /** False until the caller declines or the schedule tools have failed twice. */
+  takeMessage?: boolean;
 };
 
 export type CheckScheduleInput = {
@@ -650,6 +654,8 @@ export async function handleCheckSchedule(
     );
 
     if (slots.lookupStatus === 'error') {
+      const retryMessage =
+        'The Jobber calendar did not load. Call checkSchedule one more time right now with the same phone and intent "book". Do not call createCallback. Do not say the office will call them back unless a second checkSchedule also fails.';
       return {
         result: {
           ...result,
@@ -659,28 +665,40 @@ export async function handleCheckSchedule(
           openSlots: [],
           assignedTechName: slots.assignedTechName,
           bookingBlockReason: 'jobber_slots_error',
-          bookingMessage:
-            "I'm not able to pull up open times on the Jobber calendar. I won't invent a time. I'll have the office call you back.",
+          message: retryMessage,
+          bookingMessage: retryMessage,
+          confirmationRule:
+            'Do not confirm a time. Do not offer an office callback. Call checkSchedule again immediately.',
+          retryRequired: true,
+          takeMessage: false,
           error: result.error || slots.error,
         },
       };
     }
 
+    const openSlots = withSlotIds(slots.openSlots);
+    const hasSlots = openSlots.length > 0;
+    const bookingMessage = hasSlots
+      ? `I have ${openSlots.length} open Jobber slot${openSlots.length === 1 ? '' : 's'} for a $200 service call. Offer two of them, confirm the address, and book. Do not take a message.`
+      : 'I do not see an open Jobber slot on this lookup. Call checkSchedule one more time before you take a message. Do not invent a time.';
     return {
       result: {
         ...result,
-        mayBook: slots.openSlots.length > 0,
-        openSlots: withSlotIds(slots.openSlots),
-        availableSlots: withSlotIds(slots.openSlots),
+        mayBook: hasSlots,
+        openSlots,
+        availableSlots: openSlots,
         ...(recent ? { recentBooking: recent } : {}),
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
         allowlistedTechIds: slots.allowlistedTechIds,
-        bookingMessage:
-          slots.openSlots.length > 0
-            ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`
-            : "I don't see an open Jobber slot I can book. I'll have the office call you back.",
-        bookingBlockReason: slots.openSlots.length === 0 ? 'no_slots' : undefined,
+        message: bookingMessage,
+        bookingMessage,
+        confirmationRule: hasSlots
+          ? 'Offer two specific openSlots times, confirm the service address, and call bookJob. Do not take a message.'
+          : 'No open slots on this lookup. Call checkSchedule once more before taking a message. Do not invent a time.',
+        retryRequired: hasSlots ? false : true,
+        takeMessage: false,
+        bookingBlockReason: hasSlots ? undefined : 'no_slots',
       },
     };
   } catch (error: unknown) {

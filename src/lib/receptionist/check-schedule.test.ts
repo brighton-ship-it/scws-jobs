@@ -372,6 +372,46 @@ describe('handleCheckSchedule throttling', () => {
   });
 });
 
+describe('handleCheckSchedule booking retry', () => {
+  it('asks for another checkSchedule instead of an office callback when slots fail once', async () => {
+    const { result } = await handleCheckSchedule(
+      { phone: GUY_PHONE, city: 'Ramona', intent: 'book' },
+      {
+        accessToken: 'test-token',
+        now: INCIDENT_NOW,
+        sleep: async () => {},
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body || '{}')) as GraphqlBody;
+          const query = body.query || '';
+          if (query.includes('SearchClients')) {
+            return jsonResponse({ data: { clients: { nodes: [guyClient] } } });
+          }
+          if (query.includes('GetUpcomingVisits')) {
+            return jsonResponse({ data: { client: { jobs: { nodes: [] } } } });
+          }
+          return jsonResponse({
+            errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+            extensions: {
+              cost: {
+                requestedQueryCost: 100,
+                throttleStatus: { maximumAvailable: 10_000, currentlyAvailable: 0, restoreRate: 500 },
+              },
+            },
+          });
+        },
+      },
+    );
+
+    assert.equal(result.bookingBlockReason, 'jobber_slots_error');
+    assert.equal(result.retryRequired, true);
+    assert.equal(result.takeMessage, false);
+    assert.match(result.bookingMessage || '', /checkSchedule one more time/i);
+    assert.match(result.bookingMessage || '', /Do not call createCallback/);
+    assert.match(result.bookingMessage || '', /Do not say the office will call them back/);
+    assert.match(result.confirmationRule, /Do not offer an office callback/);
+  });
+});
+
 describe('scheduleLookupError', () => {
   it('never produces confirmation speech', () => {
     const result: ScheduleLookupResult = scheduleLookupError('down');

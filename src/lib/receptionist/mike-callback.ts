@@ -330,8 +330,8 @@ export function callbackVoiceSettings(): {
 
 /**
  * Stop as soon as the caller’s voice is on the line, then wait a second.
- * There is no say hook. A say action speaks on its own stream, which played
- * over the model’s reply on the 6:26 PM call.
+ * A say.prompt hook is not used. That stream spoke the rules over the model
+ * on the 6:26 PM call.
  */
 export function callbackStopSpeakingPlan(): {
   numWords: 0;
@@ -341,7 +341,52 @@ export function callbackStopSpeakingPlan(): {
   return { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 };
 }
 
-/** Outbound callback: one assistant, no parallel say, wait for them to speak. */
+/**
+ * LiveKit wait after the 6:36 PM call. That call's plan was `200 + 6000 * x`,
+ * and the first turn waited 1024ms (x ≈ 0.137) before the model even started.
+ * This expression is about 140ms at that same confidence, so model (~620ms)
+ * plus voice (~150ms) lands near 1 second after the hello ends.
+ */
+export const CALLBACK_ENDPOINT_WAIT = '50 + 250 * sqrt(x) + 500 * x^3';
+
+export function callbackEndpointWaitMs(probability: number): number {
+  const x = Math.min(1, Math.max(0, probability));
+  return 50 + 250 * Math.sqrt(x) + 500 * x ** 3;
+}
+
+export function callbackStartSpeakingPlan(): {
+  waitSeconds: 0;
+  smartEndpointingPlan: { provider: 'livekit'; waitFunction: string };
+} {
+  return {
+    waitSeconds: 0,
+    smartEndpointingPlan: {
+      provider: 'livekit',
+      waitFunction: CALLBACK_ENDPOINT_WAIT,
+    },
+  };
+}
+
+/**
+ * If they never speak, say the greeting once at 2 seconds.
+ * exact only — a prompt action is spoken aloud. This does not use
+ * call.timeElapsed, which fires even after they have already said hello.
+ */
+export function callbackSilenceGreetingHook(): {
+  on: 'customer.speech.timeout';
+  name: 'callback_opening_greeting';
+  options: { timeoutSeconds: 2; triggerMaxCount: 1; triggerResetMode: 'never' };
+  do: [{ type: 'say'; exact: string }];
+} {
+  return {
+    on: 'customer.speech.timeout',
+    name: 'callback_opening_greeting',
+    options: { timeoutSeconds: 2, triggerMaxCount: 1, triggerResetMode: 'never' },
+    do: [{ type: 'say', exact: mikeCallbackFirstMessage() }],
+  };
+}
+
+/** Outbound callback: wait for them, greet within about a second, one exact fallback. */
 export function callbackAssistantOverrides(customerPhone: string): {
   firstMessage: '';
   firstMessageMode: 'assistant-waits-for-user';
@@ -349,8 +394,8 @@ export function callbackAssistantOverrides(customerPhone: string): {
   backgroundSound: 'off';
   voice: ReturnType<typeof callbackVoiceSettings>;
   stopSpeakingPlan: ReturnType<typeof callbackStopSpeakingPlan>;
-  /** Replaces any saved say hook so a second voice cannot join this call. */
-  hooks: [];
+  startSpeakingPlan: ReturnType<typeof callbackStartSpeakingPlan>;
+  hooks: [ReturnType<typeof callbackSilenceGreetingHook>];
   variableValues: { callback: 'true'; customerPhone: string };
 } {
   return {
@@ -361,7 +406,8 @@ export function callbackAssistantOverrides(customerPhone: string): {
     backgroundSound: 'off',
     voice: callbackVoiceSettings(),
     stopSpeakingPlan: callbackStopSpeakingPlan(),
-    hooks: [],
+    startSpeakingPlan: callbackStartSpeakingPlan(),
+    hooks: [callbackSilenceGreetingHook()],
     variableValues: { callback: 'true', customerPhone },
   };
 }

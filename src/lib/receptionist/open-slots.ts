@@ -173,6 +173,20 @@ const USERS_QUERY_BARE = `
 
 type VisitQueryDetail = 'rich' | 'mid' | 'base' | 'fit';
 
+/** Page size used when the rate-limit bucket is empty and the rich query cannot run. */
+export const EMPTY_BUCKET_FIT_PAGE = 8;
+
+/**
+ * How long to wait for points to restore before the small calendar query.
+ * A fit page costs a few hundred points. Cap the wait so checkSchedule
+ * does not sit on a rich query the bucket cannot afford.
+ */
+export function emptyBucketWaitMs(restoreRate?: number): number {
+  const rate = restoreRate && restoreRate > 0 ? restoreRate : 500;
+  const wait = Math.ceil(400 / rate) * 1000;
+  return Math.min(Math.max(wait, 500), 1_500);
+}
+
 /**
  * How small a page has to be before it fits in the points Jobber has left.
  * Returns null when the bucket is empty or the current page is already small.
@@ -281,10 +295,11 @@ async function jobberGraphql(
       shortfall === 'step-down' &&
       typeof requested === 'number' &&
       typeof available === 'number' &&
-      available > 0 &&
       requested > available
     ) {
-      throw new JobberBudgetStepDownError(available, requested);
+      const restoreRaw = json.extensions?.cost?.throttleStatus?.restoreRate;
+      const restore = typeof restoreRaw === 'number' && restoreRaw > 0 ? restoreRaw : 500;
+      throw new JobberBudgetStepDownError(available, requested, restore);
     }
     console.warn(
       `[Receptionist] Jobber throttled open slots (attempt ${attempt}/${THROTTLE_MAX_ATTEMPTS}, ` +
@@ -699,6 +714,10 @@ export async function lookupOpenSlots(
             if (fitted) {
               detail = 'fit';
               pageSize = fitted;
+            } else if (error.available <= 0) {
+              detail = 'fit';
+              pageSize = Math.min(pageSize, EMPTY_BUCKET_FIT_PAGE);
+              await sleep(emptyBucketWaitMs(error.restoreRate));
             }
             continue;
           }

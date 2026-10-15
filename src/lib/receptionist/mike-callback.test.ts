@@ -23,6 +23,7 @@ import {
   mikeFirstMessage,
   mikeCallbackFirstMessage,
   callbackAssistantOverrides,
+  callbackEndpointWaitMs,
   CALLBACK_VOICE_VOLUME,
   callbackPublicBase,
   phraseMatches,
@@ -401,11 +402,24 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.equal(payload.assistantOverrides.firstMessage, '');
   assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-waits-for-user');
   assert.equal(payload.assistantOverrides.backgroundSound, 'off');
-  assert.deepEqual(payload.assistantOverrides.hooks, []);
-  assert.doesNotMatch(body, /"say"|prompt|HARD RULE|output no words/);
+  assert.equal(payload.assistantOverrides.hooks.length, 1);
+  assert.equal(payload.assistantOverrides.hooks[0].on, 'customer.speech.timeout');
+  assert.equal(payload.assistantOverrides.hooks[0].options.timeoutSeconds, 2);
+  assert.equal(payload.assistantOverrides.hooks[0].options.triggerMaxCount, 1);
+  assert.equal(payload.assistantOverrides.hooks[0].options.triggerResetMode, 'never');
+  assert.equal(payload.assistantOverrides.hooks[0].do[0].type, 'say');
+  assert.equal(payload.assistantOverrides.hooks[0].do[0].exact, mikeCallbackFirstMessage());
+  assert.equal('prompt' in payload.assistantOverrides.hooks[0].do[0], false);
+  assert.doesNotMatch(body, /"prompt"|HARD RULE|output no words|Transcript so far/);
   assert.equal(payload.assistantOverrides.firstMessageInterruptionsEnabled, true);
   assert.deepEqual(payload.assistantOverrides.stopSpeakingPlan, { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 });
-  assert.doesNotMatch(body, /output no words|Transcript so far|HARD RULE|say","prompt/);
+  assert.equal(payload.assistantOverrides.startSpeakingPlan.waitSeconds, 0);
+  assert.equal(payload.assistantOverrides.startSpeakingPlan.smartEndpointingPlan.provider, 'livekit');
+  assert.equal(payload.assistantOverrides.startSpeakingPlan.smartEndpointingPlan.waitFunction, '50 + 250 * sqrt(x) + 500 * x^3');
+  const measuredEndpointProbability = (1024 - 200) / 6000;
+  const endpointMs = callbackEndpointWaitMs(measuredEndpointProbability);
+  assert.ok(endpointMs < 250, `endpoint wait ${endpointMs}ms`);
+  assert.ok(endpointMs + 621 + 151 < 1100, 'greeting should land near 1s after hello');
   assert.equal(payload.assistantOverrides.voice.generationConfig.volume, CALLBACK_VOICE_VOLUME);
   assert.equal(payload.assistantOverrides.voice.generationConfig.speed, 1);
   assert.ok(CALLBACK_VOICE_VOLUME < 1);

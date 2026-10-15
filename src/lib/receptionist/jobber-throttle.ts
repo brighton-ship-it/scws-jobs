@@ -64,12 +64,14 @@ export class JobberQueryOverCostError extends Error {
 export class JobberBudgetStepDownError extends Error {
   readonly available: number;
   readonly requested: number;
+  readonly restoreRate: number;
 
-  constructor(available: number, requested: number) {
+  constructor(available: number, requested: number, restoreRate = JOBBER_DEFAULT_RESTORE_RATE) {
     super('Throttled');
     this.name = 'JobberBudgetStepDownError';
     this.available = available;
     this.requested = requested;
+    this.restoreRate = restoreRate > 0 ? restoreRate : JOBBER_DEFAULT_RESTORE_RATE;
   }
 }
 

@@ -28,6 +28,12 @@ describe('booking prompt text', () => {
     assert.match(MIKE_CALLBACK_BOOKING, /Wait for them to speak first/);
     assert.match(MIKE_CALLBACK_BOOKING, /this call's recorded/);
     assert.match(MIKE_CALLBACK_BOOKING, /do not sound like you are shouting/i);
+    assert.match(MIKE_CALLBACK_BOOKING, /Call checkSchedule immediately/);
+    assert.match(MIKE_CALLBACK_BOOKING, /confirm the service address/);
+    assert.match(MIKE_CALLBACK_BOOKING, /failed twice/);
+    assert.match(MIKE_CALLBACK_BOOKING, /caller declines/);
+    assert.match(MIKE_CALLBACK_BOOKING, /Do not createCallback on the first failure/);
+    assert.doesNotMatch(MIKE_CALLBACK_BOOKING, /Only if checkSchedule returns no openSlots/);
     const combined = withCallbackBookingPrompt('## STEP ZERO\nLook up the caller.');
     assert.match(combined, /overrides STEP ZERO/);
     assert.ok(combined.indexOf('Missed-call callback') < combined.indexOf('STEP ZERO'));
