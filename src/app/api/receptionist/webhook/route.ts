@@ -16,7 +16,7 @@ import { getBusinessHours } from '@/lib/receptionist/business-hours';
 import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
 import { callCustomerPhone, parseVapiServerTools, vapiCallId, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
 import { isOwnNumber } from '@/lib/ads/real-leads';
-import { businessCallerId } from '@/lib/receptionist/mike-callback';
+import { businessCallerId, phoneForCallbackTool } from '@/lib/receptionist/mike-callback';
 import { linkAttemptVapi, overrideCallbackCaller, updateAttemptOutcome } from '@/lib/receptionist/mike-callback-run';
 import {
   OFFICE_ALERT_DEDUPE_MS,
@@ -612,7 +612,7 @@ async function handleVapiTools(body: any) {
     if (executed[i]) continue;
     const call = calls[i];
     const params = call.params || {};
-    const phone = String(params.phone || callPhone || '');
+    const phone = phoneForCallbackTool(params.phone, callPhone);
     try {
       executed[i] = { id: call.id, body: await executeTool(call.name, params, phone) };
     } catch (error: any) {

@@ -1,7 +1,7 @@
 /**
  * Twilio asks for this when an outbound Mike callback is answered.
- * A machine gets one short voicemail. A person hears the recording notice,
- * then the call is handed to Mike's existing assistant.
+ * A machine gets one short voicemail. A person is handed straight to Mike,
+ * who says the recording disclosure in his own voice.
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
@@ -13,7 +13,6 @@ import {
   hangupTwiml,
   humanTwiml,
   machineTwiml,
-  openingScript,
   voicemailScript,
 } from '@/lib/receptionist/mike-callback';
 import { findAttemptByKey, findAttemptBySid, updateAttemptOutcome } from '@/lib/receptionist/mike-callback-run';
@@ -43,7 +42,6 @@ export async function POST(req: NextRequest) {
   await updateAttemptOutcome(db, attempt.id, 'reached', null, ['dialing']);
   const action = `${new URL(publicUrl(req)).origin}/api/calls/mike-callback/bridge?attempt=${encodeURIComponent(attempt.missedCallKey)}`;
   return xml(humanTwiml({
-    opening: openingScript(),
     from: attempt.fromNumber,
     mikeNumber: callbackConfig().mikeNumber,
     actionUrl: action,

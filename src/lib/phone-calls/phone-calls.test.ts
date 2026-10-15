@@ -23,9 +23,9 @@ describe('phone-calls', () => {
     const none = await parseTwilio(req(p), {} as any);
     assert.equal(none.valid, false);
   });
-  it('twiml announces, then dials with recording', () => {
+  it('twiml dials with recording and does not play a separate notice', () => {
     const x = buildInboundTwiml({ shopNumbers: ['+17604408520'], baseUrl: 'https://x.test' });
-    assert.ok(x.indexOf('<Say') < x.indexOf('<Dial'));
+    assert.doesNotMatch(x, /<Say/);
     assert.match(x, /record="record-from-answer-dual"/);
     assert.match(x, /<Number>\+17604408520<\/Number>/);
     assert.match(x, /recording"/);
