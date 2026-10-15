@@ -129,6 +129,7 @@ export function commsFromNodes(
       source: kind === 'email' ? 'jobber_email' : 'jobber_sms',
       clientId,
       by: node.sender?.name ?? node.user?.name ?? null,
+      subject: typeof node.subject === 'string' ? node.subject : null,
       invoiceNumbers: num ? [num] : null,
     });
   }

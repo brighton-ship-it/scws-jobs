@@ -125,9 +125,12 @@ export function gmailTargetKey(targets: GmailSearchTarget[]): string {
   return `${targets.length}:${(hash >>> 0).toString(16)}`;
 }
 
-const INVOICE_NUM = /(?:invoice(?:\s+number)?\s*#?\s*|#)(\d{3,6})\b/gi;
-const COLLECTION = /\binvoice\b|past due|balance|payment|pay link|unpaid/i;
 const REVIEW_ONLY = /how'?d we do|how did we do|google review|leave (us )?a review|review request/i;
+const QUOTE = /\b(?:quotes?|estimates?|proposals?)\b/i;
+const SCHEDULE = /\b(?:appointments?|schedul(?:e|ed|ing)|reschedul(?:e|ed|ing)|on my way|what time(?: works)?|see you (?:mon(?:day)?|tue(?:sday)?|wed(?:nesday)?|thu(?:rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|tomorrow|next|at|on))\b/i;
+const COURTESY = /^(?:re:\s*)?(?:thanks|thank you|sounds good|perfect|got it|ok(?:ay)?|will do|you'?re welcome)[!.\s]*$/i;
+const PAYMENT_LINK = /clienthub\.getjobber\.com|\bpay link\b|\beasy pay(?:\s+link)?\b/i;
+const PAYMENT_REQUEST = /\bpast due\b|\bplease pay\b|\bpay (?:this|the|your) invoice\b|\bpay it here\b|\bpay here\b|\beasy pay\b|\bpay link\b|\bpayment (?:is )?due\b|\bamount due\b|\bbalance (?:is )?due\b|\bremaining balance\b|\bstill unpaid\b|\bunpaid invoice\b|\bneeds? to (?:get|be) closed\b|\binvoices?\b[\s\S]{0,48}\btaken care of\b|\btaken care of\b[\s\S]{0,48}\binvoices?\b/i;
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 export function gmailFederationConfig(env: NodeJS.ProcessEnv = process.env): GmailFederationConfig | null {
@@ -174,16 +177,67 @@ export function vercelOidcToken(env: NodeJS.ProcessEnv = process.env, header?: s
   return fromHeader || null;
 }
 
+/** Invoice numbers only. A bare #1234 counts when the message also says invoice. Dollar amounts do not. */
 export function invoiceNumbersIn(text: string): string[] {
+  if (!/\binvoices?\b/i.test(text)) return [];
   const out: string[] = [];
   const seen = new Set<string>();
-  for (const match of text.matchAll(INVOICE_NUM)) {
-    const num = match[1];
-    if (!num || seen.has(num)) continue;
+  const add = (num: string | undefined) => {
+    if (!num || seen.has(num)) return;
     seen.add(num);
     out.push(num);
+  };
+  for (const match of text.matchAll(/\binvoices?\b(?:\s+numbers?)?\s*#?\s*(\d{3,6})\b((?:\s*(?:,|&|and)\s*#?\s*\d{3,6}\b)*)/gi)) {
+    add(match[1]);
+    for (const more of (match[2] ?? '').matchAll(/(\d{3,6})/g)) add(more[1]);
+  }
+  for (const match of text.matchAll(/#(\d{3,6})\b/g)) add(match[1]);
+  return out;
+}
+
+export function dollarAmountsIn(text: string): number[] {
+  const out: number[] = [];
+  const seen = new Set<number>();
+  for (const match of text.matchAll(/\$\s*(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{2}))?\b/g)) {
+    const value = Math.round((Number(match[1].replace(/,/g, '')) + (match[2] ? Number(match[2]) / 100 : 0)) * 100) / 100;
+    if (!Number.isFinite(value) || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
   }
   return out;
+}
+
+export interface CollectionMailHit {
+  invoiceNumbers: string[];
+  amounts: number[];
+  paymentLink: boolean;
+  paymentRequest: boolean;
+}
+
+/** A courtesy subject is a general reply even when the quoted thread mentions an invoice. */
+export function isCourtesySubject(subject: string): boolean {
+  return COURTESY.test(subject.trim());
+}
+
+/**
+ * A collection email cites an invoice number, a dollar amount due, or a pay link,
+ * or it uses clear payment-request language.
+ * Quotes, scheduling notes, review asks, and messages with none of those signals are not collection mail.
+ */
+export function classifyCollectionText(text: string): CollectionMailHit | null {
+  const invoiceNumbers = invoiceNumbersIn(text);
+  const paymentLink = PAYMENT_LINK.test(text);
+  const paymentRequest = PAYMENT_REQUEST.test(text) || paymentLink;
+  if (QUOTE.test(text) && !paymentRequest && !paymentLink) return null;
+  if (REVIEW_ONLY.test(text) && !paymentRequest && !paymentLink) return null;
+  if (SCHEDULE.test(text) && !paymentRequest && !paymentLink) return null;
+  if (!invoiceNumbers.length && !paymentLink && !paymentRequest) return null;
+  return {
+    invoiceNumbers,
+    amounts: dollarAmountsIn(text),
+    paymentLink,
+    paymentRequest,
+  };
 }
 
 export function parseAddressList(header: string | null | undefined): string[] {
@@ -198,17 +252,15 @@ export function parseAddressList(header: string | null | undefined): string[] {
   return out;
 }
 
-/** Sent collection mail. Review requests with no invoice number are not attempts. */
+/** Sent collection mail. The subject is kept. The snippet is only used to classify, then dropped. */
 export function collectionEmailEvents(messages: GmailCollectionMessage[], mailbox: string): CollectionEvent[] {
   const events: CollectionEvent[] = [];
   const seen = new Set<string>();
   for (const msg of messages) {
     const subject = msg.subject ?? '';
-    const snippet = msg.snippet ?? '';
-    const blob = `${subject}\n${snippet}`;
-    const nums = invoiceNumbersIn(blob);
-    if (REVIEW_ONLY.test(blob) && nums.length === 0) continue;
-    if (nums.length === 0 && !COLLECTION.test(blob)) continue;
+    if (isCourtesySubject(subject)) continue;
+    const hit = classifyCollectionText(`${subject}\n${msg.snippet ?? ''}`);
+    if (!hit) continue;
     const atRaw = msg.internalDate && /^\d+$/.test(msg.internalDate) ? Number(msg.internalDate) : Date.parse(msg.date ?? '');
     if (!Number.isFinite(atRaw)) continue;
     const toEmails = [...parseAddressList(msg.to), ...parseAddressList(msg.cc)];
@@ -222,7 +274,11 @@ export function collectionEmailEvents(messages: GmailCollectionMessage[], mailbo
       source: 'gmail',
       by: staffLabel(actor, null),
       toEmails,
-      invoiceNumbers: nums,
+      invoiceNumbers: hit.invoiceNumbers,
+      amounts: hit.amounts,
+      paymentLink: hit.paymentLink,
+      paymentRequest: hit.paymentRequest,
+      subject: subject.trim() || null,
       sid: msg.id ?? null,
     });
   }

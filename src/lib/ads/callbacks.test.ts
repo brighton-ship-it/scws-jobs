@@ -408,7 +408,7 @@ test('open invoices list every past-due and awaiting invoice, with collection co
       { at: '2026-10-12T18:00:00Z', channel: 'call', source: 'voice', phone: '7608038863', by: 'Brighton' },
       { at: '2026-10-09T18:00:00Z', channel: 'text', source: 'app_sms', clientId: 'C1', invoiceNumbers: ['5806'] },
       { at: '2026-10-12T20:00:00Z', channel: 'text', source: 'jobber_sms', clientId: 'C1', by: 'Liz' },
-      { at: '2026-10-08T18:00:00Z', channel: 'email', source: 'jobber_email', clientId: 'C1', by: 'Liz' },
+      { at: '2026-10-08T18:00:00Z', channel: 'email', source: 'jobber_email', clientId: 'C1', by: 'Liz', invoiceNumbers: ['5806'], subject: 'Invoice #5806' },
     ],
   });
   assert.equal(label, '3 calls · 2 texts · 1 email · Gmail unavailable · last: text by Liz Oct 12');
@@ -542,6 +542,45 @@ test('a collection call matches the Jobber client when the dialed number is not 
     ],
   });
   assert.equal(karen, '0 calls · 0 texts · 2 emails · last: email by Brighton Oct 14');
+  const loose = formatCollectionAttempts({
+    phones: [],
+    emails: ['kareneddy48@gmail.com'],
+    clientId: 'C-KAREN',
+    invoiceNumber: '5785',
+    balance: 200,
+    sinceIso: '2026-09-24T13:57:11Z',
+    channels: { calls: true, appTexts: true, jobberTexts: true, emails: true, gmail: true },
+    events: [
+      { at: '2026-10-08T19:39:52Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'Invoices #5785 and #5829 from SCWS', invoiceNumbers: ['5785', '5829'], toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-09T18:00:00Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'Quote for the new pump', toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-10T18:00:00Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'See you Tuesday', toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-11T18:00:00Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'Thanks', toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-12T18:00:00Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'Your balance of $200 is due', amounts: [200], paymentRequest: true, toEmails: ['kareneddy48@gmail.com'] },
+    ],
+  });
+  assert.equal(loose, '0 calls · 0 texts · 2 emails · last: email by Brighton Oct 12');
+  const view = needsCallback({
+    candidates: [],
+    sources: [],
+    work: indexWorkTimes([]),
+    fromMs,
+    now,
+    openInvoices: [{
+      id: 'K', number: '5785', clientId: 'C-KAREN', name: 'Karen Eddy', phones: [],
+      emails: ['kareneddy48@gmail.com'], issuedAt: '2026-09-24T13:57:11Z', dueAt: null,
+      status: 'past_due', balance: 200,
+    }],
+    collections: [
+      { at: '2026-10-08T19:39:52Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'Invoices #5785 and #5829 from SCWS', invoiceNumbers: ['5785', '5829'], toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-14T18:29:46Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'Invoice #5785 from SCWS', invoiceNumbers: ['5785'], amounts: [200], paymentLink: true, toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-09T18:00:00Z', channel: 'email', source: 'gmail', by: 'Brighton', subject: 'See you Tuesday', toEmails: ['kareneddy48@gmail.com'] },
+    ],
+    channels: { calls: true, appTexts: true, jobberTexts: false, emails: false, gmail: true },
+  });
+  assert.deepEqual(view.invoices.rows[0].collectionEmails, [
+    { at: '2026-10-08T19:39:52Z', by: 'Brighton', subject: 'Invoices #5785 and #5829 from SCWS' },
+    { at: '2026-10-14T18:29:46Z', by: 'Brighton', subject: 'Invoice #5785 from SCWS' },
+  ]);
 });
 
 test('Mike callback attempts stay off the invoice collection count', () => {

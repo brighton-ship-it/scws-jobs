@@ -71,6 +71,8 @@ export interface NeedsCallbackRow {
   alsoCalledIn?: boolean;
   /** Latest automated Mike callback for this missed call, when one was logged. */
   mike?: string | null;
+  /** Counted collection emails, oldest first. Empty when none counted. */
+  collectionEmails?: CollectionEmailLine[];
 }
 
 export interface OutreachAttempt {
@@ -134,7 +136,22 @@ export interface CollectionEvent {
   invoiceNumbers?: string[] | null;
   /** Recipient addresses for a shop Gmail message. */
   toEmails?: string[] | null;
+  /** Subject line. Shown on the invoice card. The body snippet is not stored. */
+  subject?: string | null;
+  /** Dollar amounts written in a collection email, used to match that invoice's balance. */
+  amounts?: number[] | null;
+  /** A Jobber pay link or "pay link" / "easy pay" wording. */
+  paymentLink?: boolean;
+  /** Clear payment-request wording, not a bare "balance" or "payment". */
+  paymentRequest?: boolean;
   sid?: string | null;
+}
+
+/** One counted collection email, for the invoice card. */
+export interface CollectionEmailLine {
+  at: string;
+  by: string | null;
+  subject: string;
 }
 
 export interface CollectionChannels {
@@ -613,26 +630,59 @@ function collectionWhen(iso: string): string {
   return d.toLocaleDateString('en-US', { timeZone: PT, month: 'short', day: 'numeric' });
 }
 
+function moneyCents(amount: number): number {
+  return Math.round(amount * 100);
+}
+
+/**
+ * An email counts for this invoice when it cites the invoice number,
+ * cites this invoice's amount due, or (with no other invoice number) includes a pay link
+ * or clear payment-request language for this customer.
+ * Quotes, scheduling, and ordinary replies never become email events.
+ */
+function emailCountsForInvoice(
+  event: CollectionEvent,
+  invoiceNumber: string,
+  balance: number | null | undefined,
+  customerOk: boolean,
+): boolean {
+  const cited = (event.invoiceNumbers ?? []).map((n) => String(n).trim()).filter(Boolean);
+  if (cited.length) return !!invoiceNumber && cited.includes(invoiceNumber);
+  if (!customerOk) return false;
+  if (balance != null && Number.isFinite(balance)) {
+    const want = moneyCents(balance);
+    if ((event.amounts ?? []).some((amount) => Number.isFinite(amount) && moneyCents(amount) === want)) return true;
+  }
+  return !!(event.paymentLink || event.paymentRequest);
+}
+
+function emailChannelOpen(event: CollectionEvent, channels: CollectionChannels): boolean {
+  if (event.source === 'jobber_email') return channels.emails;
+  if (event.source === 'gmail') return channels.gmail === true;
+  return false;
+}
+
 /**
  * Collection attempts since the invoice was issued.
  * A channel that could not be read is "unavailable", never a fake 0.
  * Calls match the customer phone or the Jobber client id.
- * Texts and emails that cite an invoice number stay on that invoice.
+ * Texts that cite an invoice number stay on that invoice.
  */
-export function formatCollectionAttempts(input: {
+export function selectCollectionEvents(input: {
   events: CollectionEvent[];
   phones: string[];
   emails?: string[];
   clientId: string;
   invoiceNumber: string | null;
+  balance?: number | null;
   sinceIso: string;
   channels: CollectionChannels;
-}): string {
+}): CollectionEvent[] {
   const since = Date.parse(input.sinceIso);
   const phones = new Set(input.phones.map((p) => digits10(p)).filter((p): p is string => !!p));
   const wantEmails = new Set((input.emails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean));
   const num = (input.invoiceNumber ?? '').trim();
-  const matched = input.events.filter((event) => {
+  return input.events.filter((event) => {
     const t = Date.parse(event.at);
     if (!Number.isFinite(t) || (Number.isFinite(since) && t < since)) return false;
     const phone = digits10(event.phone);
@@ -644,9 +694,31 @@ export function formatCollectionAttempts(input: {
     // Recipient list must include an address on the Jobber client.
     if ((event.toEmails?.length ?? 0) > 0 && wantEmails.size > 0 && !emailOk) return false;
     if (event.channel === 'call') return phoneOk || clientOk;
+    if (event.channel === 'email') return emailCountsForInvoice(event, num, input.balance, emailOk || clientOk || phoneOk);
     if (cited.length) return invoiceOk || (!num && clientOk);
     return clientOk || phoneOk || emailOk;
   }).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+}
+
+export function collectionEmailLines(events: CollectionEvent[], channels: CollectionChannels): CollectionEmailLine[] {
+  return events.filter((event) => event.channel === 'email' && emailChannelOpen(event, channels)).map((event) => ({
+    at: event.at,
+    by: event.by ?? null,
+    subject: event.subject?.trim() || 'Invoice email',
+  }));
+}
+
+export function formatCollectionAttempts(input: {
+  events: CollectionEvent[];
+  phones: string[];
+  emails?: string[];
+  clientId: string;
+  invoiceNumber: string | null;
+  balance?: number | null;
+  sinceIso: string;
+  channels: CollectionChannels;
+}): string {
+  const matched = selectCollectionEvents(input);
 
   const calls = matched.filter((event) => event.channel === 'call');
   const appTexts = matched.filter((event) => event.source === 'app_sms');
@@ -948,6 +1020,11 @@ export function needsCallback(input: {
       booked: hasWorkOnOrAfter(phone, inv.issuedAt, input.work),
       trackCold: true,
     }) : null;
+    const attemptInput = {
+      events: collections, phones: inv.phones, emails: inv.emails, clientId: inv.clientId,
+      invoiceNumber: inv.number, balance: owed, sinceIso: inv.issuedAt, channels,
+    };
+    const counted = selectCollectionEvents(attemptInput);
     invoices.push({
       at: inv.issuedAt,
       phone: phone ? formatPhone(phone) : 'No phone on file',
@@ -955,10 +1032,8 @@ export function needsCallback(input: {
       line: 'Invoice',
       outcome: isPastDue ? 'Past due' : 'Awaiting payment',
       durationSeconds: null,
-      outreach: formatCollectionAttempts({
-        events: collections, phones: inv.phones, emails: inv.emails, clientId: inv.clientId,
-        invoiceNumber: inv.number, sinceIso: inv.issuedAt, channels,
-      }),
+      outreach: formatCollectionAttempts(attemptInput),
+      collectionEmails: collectionEmailLines(counted, channels),
       goingCold: cold?.goingCold ?? false,
       pastDue: isPastDue,
       balance: owed,

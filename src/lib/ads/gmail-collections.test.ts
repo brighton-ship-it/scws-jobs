@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  collectionEmailEvents, delegationClaims, gmailAfterDay, gmailFederationConfig, gmailSearchTargets,
-  gmailSentQueries, invoiceNumbersIn, loadGmailCollection, SHOP_GMAIL_MAILBOXES, workloadIdentityAudience,
+  classifyCollectionText, collectionEmailEvents, delegationClaims, gmailAfterDay, gmailFederationConfig, gmailSearchTargets,
+  gmailSentQueries, invoiceNumbersIn, isCourtesySubject, loadGmailCollection, SHOP_GMAIL_MAILBOXES, workloadIdentityAudience,
 } from './gmail-collections.ts';
 
 test('shop Gmail counts invoice mail and skips review requests', () => {
@@ -50,15 +50,77 @@ test('shop Gmail counts invoice mail and skips review requests', () => {
       snippet: 'The balance of $15,276.37 is with counsel.',
     },
   ], 'brighton@scwellservice.com');
-  assert.deepEqual(events.map((event) => event.invoiceNumbers), [['5818'], ['5621'], ['5504'], []]);
+  assert.deepEqual(events.map((event) => event.invoiceNumbers), [['5818'], ['5621'], ['5504']]);
   assert.equal(events[0].by, 'Brighton');
   assert.equal(events[0].channel, 'email');
   assert.equal(events[0].source, 'gmail');
+  assert.equal(events[0].subject, 'Invoice #5818 from SCWS');
+  assert.equal(events[0].paymentRequest, true);
   assert.deepEqual(events[0].toEmails, ['nancy@pacificaglass.net']);
   assert.deepEqual(events[2].toEmails, ['pwrobinson33@yahoo.com']);
-  assert.equal(events[3].toEmails?.[0], 'lawyer@example.com');
+  assert.equal(events.some((event) => event.toEmails?.[0] === 'lawyer@example.com'), false);
   assert.equal(events.some((event) => /review/i.test(event.invoiceNumbers?.join('') ?? '')), false);
   assert.equal(JSON.stringify(events).includes('Please pay'), false);
+});
+
+test('quotes, scheduling, and ordinary replies are not collection emails', () => {
+  assert.equal(classifyCollectionText('Quote #4501 for the new pump. We can schedule Thursday.'), null);
+  assert.equal(classifyCollectionText('See you Tuesday at the well.'), null);
+  assert.equal(classifyCollectionText('The balance of $15,276.37 is with counsel.'), null);
+  assert.equal(classifyCollectionText("How'd we do, Nancy? Leave us a Google review."), null);
+  assert.equal(isCourtesySubject('Thanks!'), true);
+  assert.equal(isCourtesySubject('Re: Invoice #5785 from SCWS'), false);
+  const events = collectionEmailEvents([
+    {
+      id: 'q1',
+      internalDate: String(Date.parse('2026-10-02T18:00:00Z')),
+      from: 'brighton@scwellservice.com',
+      to: 'kareneddy48@gmail.com',
+      subject: 'Quote for the new pump',
+      snippet: 'Estimate attached. We can schedule next week.',
+    },
+    {
+      id: 's1',
+      internalDate: String(Date.parse('2026-10-03T18:00:00Z')),
+      from: 'brighton@scwellservice.com',
+      to: 'oaktreeranch@gmail.com',
+      subject: 'See you Tuesday',
+      snippet: 'Confirming the appointment for the yearly service.',
+    },
+    {
+      id: 'r1',
+      internalDate: String(Date.parse('2026-10-04T18:00:00Z')),
+      from: 'brighton@scwellservice.com',
+      to: 'kareneddy48@gmail.com',
+      subject: 'Thanks',
+      snippet: 'Invoice #5785 is in the thread below.',
+    },
+    {
+      id: 'oak',
+      internalDate: String(Date.parse('2026-10-14T23:35:10Z')),
+      from: 'brighton@scwellservice.com',
+      to: 'NConner@hometownamerica.net',
+      subject: 'Re: Invoice from Southern California Well Service - Yearly Service',
+      snippet: 'Invoice #5621 ($200.00) covers the yearly inspection.',
+    },
+    {
+      id: 'pay',
+      internalDate: String(Date.parse('2026-10-11T18:00:00Z')),
+      from: 'brighton@scwellservice.com',
+      to: 'pwrobinson33@yahoo.com',
+      subject: 'Paul — your balance is due',
+      snippet: 'The remaining balance of $432.73 is past due.',
+    },
+  ], 'brighton@scwellservice.com');
+  assert.deepEqual(events.map((event) => event.subject), [
+    'Re: Invoice from Southern California Well Service - Yearly Service',
+    'Paul — your balance is due',
+  ]);
+  assert.deepEqual(events[0].invoiceNumbers, ['5621']);
+  assert.deepEqual(events[0].amounts, [200]);
+  assert.equal(events[1].paymentRequest, true);
+  assert.deepEqual(events[1].amounts, [432.73]);
+  assert.deepEqual(events[1].invoiceNumbers, []);
 });
 
 test('domain-wide claims are read-only and name the mailbox', () => {

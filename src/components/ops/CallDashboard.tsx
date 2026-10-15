@@ -206,6 +206,24 @@ function OutreachLine({ text, cold, dark }: { text: string; cold?: boolean; dark
     </div>
   );
 }
+function InvoiceEmails({ emails, dark }: { emails?: Array<{ at: string; by: string | null; subject: string }> | null; dark: boolean }) {
+  if (!emails?.length) return null;
+  const tip = emails.map((email) => `${feedTime(email.at)} · ${email.by || 'Shop'} · ${email.subject}`).join('\n');
+  return (
+    <details className="mt-1">
+      <summary className={`cursor-pointer text-xs underline decoration-dotted underline-offset-2 ${dark ? 'text-slate-300' : 'text-slate-600'}`} title={tip}>
+        Show email subjects
+      </summary>
+      <ul className={`mt-1 space-y-0.5 ${dark ? 'text-slate-300' : 'text-slate-400'}`}>
+        {emails.map((email, i) => (
+          <li key={`${email.at}-${i}`} className="text-xs leading-snug" title={`${email.by || 'Shop'} · ${email.subject}`}>
+            {feedTime(email.at)} · {email.by || 'Shop'} · {email.subject}
+          </li>
+        ))}
+      </ul>
+    </details>
+  );
+}
 
 function NeedsCallbackList({ view, rangeLabel, dark = false, empty, metric = 'leads' }: { view: Dashboard['needsCallback']; rangeLabel: string; dark?: boolean; empty: string; metric?: 'leads' | 'invoices' }) {
   const count = view?.count ?? 0;
@@ -233,6 +251,7 @@ function NeedsCallbackList({ view, rangeLabel, dark = false, empty, metric = 'le
                   {r.calledAfter ? <div className={`mt-1 text-xs font-medium ${dark ? 'text-sky-300' : 'text-sky-800'}`}>{r.calledAfter}</div> : null}
                   {r.mike ? <MikeLine text={r.mike} dark={dark} /> : null}
                   {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
+                  {metric === 'invoices' ? <InvoiceEmails emails={r.collectionEmails} dark={dark} /> : null}
                 </div>
                 <span className={`shrink-0 text-sm tabular-nums ${sub}`}>{feedTime(r.at)}</span>
               </div>
@@ -549,7 +568,7 @@ export function CallDashboardPage() {
             <Card title="New leads — needs callback" subtitle="Missed, voicemail, and Mike. Attempt counts include shop Voice lines and Mike's automated callbacks. Skips hang-ups under 10s, spam, vendors, AI bookings, and any Jobber request, quote, job (including cancelled), visit, or invoice on or after the call. Scroll for every row." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines + Mike ⓘ</span>} delay={200}>
               <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} empty="No new leads waiting on a callback in this period." />
             </Card>
-            <Card title="Invoice follow-up" subtitle="Every awaiting-payment and past-due invoice, called or not. Scroll for every row. Calls are shop Voice lines since the invoice date, matched to the customer phone or Jobber client. Texts are app invoice SMS plus Jobber texts when that history loads. Emails are shop Gmail from Brighton, Liz, and Shanicey, plus Jobber invoice sends. A mailbox or source that cannot be read says unavailable." delay={220}>
+            <Card title="Invoice follow-up" subtitle="Every awaiting-payment and past-due invoice, called or not. Scroll for every row. Calls are shop Voice lines since the invoice date, matched to the customer phone or Jobber client. Texts are app invoice SMS plus Jobber texts when that history loads. An email counts when it cites that invoice number or amount due, includes a pay link, or clearly asks for payment. Quotes, scheduling, and ordinary replies do not. Hover or expand “Show email subjects” for the date, sender, and subject. A mailbox or source that cannot be read says unavailable." delay={220}>
               <NeedsCallbackList metric="invoices" view={data.invoiceFollowUp} rangeLabel={rangeLabel} empty="No invoice follow-ups right now." />
             </Card>
           </div>
@@ -719,7 +738,7 @@ export function CallDashboardTv() {
         </div>
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Invoice follow-up">
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Invoice follow-up</p>
-          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Every open invoice · scroll for all · {mainRange}.</p>
+          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Every open invoice · scroll for all · {mainRange}. Expand “Show email subjects” for each counted email.</p>
           <NeedsCallbackList dark metric="invoices" view={data?.invoiceFollowUp} rangeLabel={mainRange} empty="No invoice follow-ups right now." />
         </div>
       </div>
