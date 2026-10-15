@@ -19,6 +19,8 @@ import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
 import { loadGmailCollection, invoiceNumbersIn } from '@/lib/ads/gmail-collections';
 import { fetchTwilioCollectionMessages, type TwilioText } from '@/lib/ads/twilio-outbound';
+import { callbackVapiIds, dropBookedByMike, mikeOutreachAttempts, mikeStatusLabel, sourcesWithoutMikeLegs } from '@/lib/receptionist/mike-callback';
+import { loadRecentAttempts } from '@/lib/receptionist/mike-callback-run';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
@@ -69,11 +71,15 @@ export async function GET(request: NextRequest) {
     const conversions = convs.data ?? [];
     const jobMoney = await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
     if (live.error) notes.push(`live calls: ${live.error.message}`);
+    const mikeCallbacks = await loadRecentAttempts(db, new Date(Date.now() - 14 * 86400_000).toISOString());
+    if (mikeCallbacks.note) notes.push(mikeCallbacks.note);
+    const callbackVapi = callbackVapiIds(mikeCallbacks.attempts);
     // SCWS's own numbers (GV/Twilio lines, staff, Twilio test line 760-823-7963) never count as calls, leads or bookings.
+    // Mike's outbound callbacks are not new inbound leads and do not credit Mike as a source.
     const adsCalls: DashCall[] = (calls.data ?? []).filter((c: DashCall) => !isOwnNumber(c.caller_phone));
     // 'processing' is only the webhook's claim placeholder; ~220 Sep 18–Oct 7 calls finished (duration + summary)
     // but never left that status. Count every real call: drop only fresh in-flight claims and rows with no phone.
-    const liveRows = (live.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
+    const liveRows = (live.data ?? []).filter((r: any) => !callbackVapi.has(r.vapi_call_id) && !isOwnNumber(r.phone) && /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
       && !(r.status === 'processing' && r.duration_sec == null && !r.summary && Date.now() - Date.parse(r.called_at) < 15 * 60_000));
     const log = await loadPhoneCallLog(db, since);
     let inboundLog: any[] = [];
@@ -152,15 +158,15 @@ export async function GET(request: NextRequest) {
         .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995)').order('started_at', { ascending: false }).limit(100);
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
-      const merged = mergeCallFeed({ log: inboundLog, recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone)), bookedMike: bookingIds });
+      const merged = mergeCallFeed({ log: inboundLog, recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && !callbackVapi.has(r.vapi_call_id)), bookedMike: bookingIds });
       const liveOut = await liveOutP;
       notes.push(...liveOut.notes);
       const outboundByKey = new Map<string, any>();
       for (const r of outboundLog) if (r.voice_call_key) outboundByKey.set(r.voice_call_key, r);
       for (const r of liveOut.rows) if (r.voice_call_key && !outboundByKey.has(r.voice_call_key)) outboundByKey.set(r.voice_call_key, r);
       const outboundAll = Array.from(outboundByKey.values());
-      const sources = callbackSources({ log: [...inboundLog, ...outboundAll], recordings: recs.data ?? [] });
-      const attempts = voiceAttempts(outboundAll);
+      const sources = sourcesWithoutMikeLegs(callbackSources({ log: [...inboundLog, ...outboundAll], recordings: recs.data ?? [] }), mikeCallbacks.attempts);
+      const attempts = [...voiceAttempts(outboundAll), ...mikeOutreachAttempts(mikeCallbacks.attempts)];
       const past = await loadPastDueClients(db);
       if (past.note) notes.push(past.note);
       const pastDuePhones = new Set(past.clients.flatMap((c) => c.phones));
@@ -202,20 +208,21 @@ export async function GET(request: NextRequest) {
         let open = listOpenInvoices(past.invoices, past.clientRows, { hasBalanceColumn: past.hasBalanceColumn });
         open = applyInvoiceExtras(open, jobber.invoices);
         const work = indexWorkTimes([...loaded.rows, ...jobber.work]);
-        const candidates = callbackCandidates({
+        const candidates = dropBookedByMike(callbackCandidates({
           log: inboundLog,
           recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)),
           mike: liveRows,
           bookedMike: bookingIds,
-        });
-        dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work });
+        }), mikeCallbacks.attempts);
+        const withMike = <T extends { phone: string; at: string }>(rows: T[]) => rows.map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
+        dash.callFeed = withMike(annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work }));
         const queues = needsCallback({
           candidates, sources, work, fromMs, now: nowDash, attempts,
           openInvoices: open,
           inbound: [
             ...inboundLog.map((r: any) => ({ at: r.started_at, phone: r.caller_phone ?? null })),
             ...(recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number ?? null })),
-            ...(mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone)).map((r: any) => ({ at: r.called_at, phone: r.phone ?? null })),
+            ...(mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && !callbackVapi.has(r.vapi_call_id)).map((r: any) => ({ at: r.called_at, phone: r.phone ?? null })),
           ],
           collections: [
             ...texts.events,
@@ -231,10 +238,10 @@ export async function GET(request: NextRequest) {
             gmail: gmail.ok,
           },
         });
-        dash.needsCallback = queues.leads;
+        dash.needsCallback = { ...queues.leads, rows: withMike(queues.leads.rows) };
         dash.invoiceFollowUp = queues.invoices;
       } catch (error) {
-        dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones });
+        dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
         notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);
       }
       // Main page header and TV "today" tiles share this one count across every line.

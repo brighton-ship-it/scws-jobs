@@ -15,6 +15,9 @@ import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
 import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
 import { callCustomerPhone, parseVapiServerTools, vapiCallId, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
+import { isOwnNumber } from '@/lib/ads/real-leads';
+import { businessCallerId } from '@/lib/receptionist/mike-callback';
+import { linkAttemptVapi, overrideCallbackCaller, updateAttemptOutcome } from '@/lib/receptionist/mike-callback-run';
 import {
   OFFICE_ALERT_DEDUPE_MS,
   OFFICE_ALERT_EMAILS,
@@ -103,7 +106,7 @@ export async function POST(request: NextRequest) {
     const analysis = message.analysis || call.analysis || body.analysis || {};
     
     // Extract phone early since we need it for call ID generation
-    const phone = (call.customer?.number || message.customer?.number || body.customer?.number || '').replace(/\D/g, '');
+    let phone = (call.customer?.number || message.customer?.number || body.customer?.number || '').replace(/\D/g, '');
     
     // Try to get call ID from multiple places, generate one if not found
     const callId = call.id || message.callId || message.call?.id || body.callId || body.call?.id || 
@@ -120,6 +123,24 @@ export async function POST(request: NextRequest) {
     }));
 
     const supabase = createServiceClient();
+    let callbackAttempt: { id: string } | null = null;
+    try {
+      const match = await overrideCallbackCaller(supabase as any, phone, call.id);
+      if (match) {
+        callbackAttempt = { id: match.id };
+        const rewritten = match.phone.replace(/\D/g, '');
+        if (rewritten.length >= 10) phone = rewritten.slice(-10);
+        await linkAttemptVapi(supabase as any, match.id, call.id);
+      }
+    } catch (callbackErr) {
+      console.error('[mike-callback] caller match failed', callbackErr instanceof Error ? callbackErr.message : callbackErr);
+    }
+    // Vapi sees the tracking number as the caller on a callback bridge. If that
+    // number does not match exactly one in-flight callback, do not file a lead for it.
+    if (!callbackAttempt && businessCallerId(phone)) {
+      console.error('[mike-callback] no unique in-flight callback for this business caller ID; not filing a lead');
+      return NextResponse.json({ ok: true, skipped: true, reason: 'callback-unmatched' });
+    }
     
     // Check if we already processed this call - use upsert pattern to prevent race conditions
     // First, try to claim this call by inserting a placeholder record
@@ -216,7 +237,7 @@ export async function POST(request: NextRequest) {
 
       if (existingCustomer) {
         customerId = (existingCustomer as { id: string }).id;
-      } else if (customerName) {
+      } else if (customerName && !callbackAttempt) {
         // Create new customer
         const { data: newCustomer, error: customerError } = await supabase
           .from('customers')
@@ -281,8 +302,10 @@ export async function POST(request: NextRequest) {
       // Don't fail - still try to email
     }
 
-    // Also create a booking request if we have enough info
-    if (phone.length >= 10) {
+    // Also create a booking request if we have enough info.
+    // A callback already has the original missed call. Only a real booking
+    // (the book tool) should take that caller off the callback list.
+    if (phone.length >= 10 && !callbackAttempt) {
       // Just include summary - full transcript is in receptionist_calls table
       const notesText = summary 
         ? `📞 Mike: ${summary}` 
@@ -307,7 +330,7 @@ export async function POST(request: NextRequest) {
         await supabase.from('communications').insert({
           customer_id: customerId,
           type: 'call',
-          direction: 'inbound',
+          direction: callbackAttempt ? 'outbound' : 'inbound',
           content: summary || `Phone call from ${customerName || formatPhone(phone)}${serviceNeeded ? ` - ${serviceNeeded}` : ''}`,
           duration_seconds: durationSec > 0 ? durationSec : null,
         });
@@ -462,6 +485,20 @@ export async function POST(request: NextRequest) {
 
     console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Task: ${taskCreated}`);
 
+    if (callbackAttempt) {
+      try {
+        await updateAttemptOutcome(
+          supabase as any,
+          callbackAttempt.id,
+          outcome.booked ? 'booked' : 'reached',
+          null,
+          outcome.booked ? ['dialing', 'reached'] : ['dialing'],
+        );
+      } catch (callbackErr) {
+        console.error('[mike-callback] outcome update failed', callbackErr instanceof Error ? callbackErr.message : callbackErr);
+      }
+    }
+
     return NextResponse.json({
       ok: true,
       call_id: call.id,
@@ -515,8 +552,16 @@ async function handleVapiTools(body: any) {
   }
 
   const calls = parsed.mode === 'function-call' ? [parsed.call] : parsed.calls;
-  const callPhone = callCustomerPhone(body);
+  let callPhone = callCustomerPhone(body);
   const callId = vapiCallId(body) || null;
+  try {
+    const match = await overrideCallbackCaller(createServiceClient() as any, callPhone, callId || '');
+    if (match) callPhone = match.phone;
+    else if (isOwnNumber(callPhone)) callPhone = '';
+  } catch (callbackErr) {
+    console.error('[mike-callback] tool caller match failed', callbackErr instanceof Error ? callbackErr.message : callbackErr);
+    if (isOwnNumber(callPhone)) callPhone = '';
+  }
   const executed: Array<{ id: string | null; body: { result: unknown } } | undefined> = new Array(calls.length);
   const officeIndexes: number[] = [];
 

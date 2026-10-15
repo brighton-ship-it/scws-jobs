@@ -507,6 +507,23 @@ test('a collection call matches the Jobber client when the dialed number is not 
   assert.equal(hidden, '0 calls · 0 texts · 0 emails · Gmail unavailable');
 });
 
+test('Mike callback attempts stay off the invoice collection count', () => {
+  const view = needsCallback({
+    candidates: [],
+    sources: [],
+    work: indexWorkTimes([]),
+    fromMs,
+    now,
+    attempts: [{ at: '2026-10-14T18:00:00Z', phone: '7608038863', staff: 'Mike', durationSeconds: 1 }],
+    openInvoices: [{
+      id: 'I', number: '1', clientId: 'C', name: 'Ada', phones: ['7608038863'],
+      issuedAt: '2026-10-01T17:00:00Z', dueAt: null, status: 'past_due', balance: 10,
+    }],
+    channels: { calls: true, appTexts: false, jobberTexts: false, emails: false },
+  });
+  assert.match(view.invoices.rows[0].outreach ?? '', /^0 calls/);
+});
+
 test('twilio collection texts keep the invoice number and skip inbound', () => {
   const rows = parseTwilioCollectionMessages({
     messages: [
