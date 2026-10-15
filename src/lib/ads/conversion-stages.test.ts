@@ -81,7 +81,7 @@ describe('sentStateOf / buildRestatement', () => {
     assert.equal(a.order_id, 'job1');
     assert.equal(a.restatement_value.adjusted_value, 4722.5);
     assert.equal(a.adjustment_date_time, '2026-10-20 20:00:00+00:00');
-    assert.deepEqual(a.user_identifiers, [{ hashed_phone_number: 'abc' }]);
+    assert.equal(a.user_identifiers, undefined); // Google rejects identifiers on RESTATEMENT
   });
 });
 

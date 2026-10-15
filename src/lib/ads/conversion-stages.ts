@@ -135,6 +135,7 @@ export function buildRestatement(
     adjustment_date_time: formatAdsDateTime(input.nowIso),
     restatement_value: { adjusted_value: round(input.value), currency_code: 'USD' },
   };
-  if (ids.length) out.user_identifiers = ids;
+  // Google rejects user_identifiers on RESTATEMENT (VALUE_MUST_BE_UNSET); order_id only.
+  void ids;
   return out;
 }

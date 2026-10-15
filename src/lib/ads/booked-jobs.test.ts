@@ -39,7 +39,7 @@ describe('booked-time candidates', () => {
     assert.deepEqual(r.excluded.map((e) => e.reason).sort(), ['no_ads_signal', 'signal_after_job']);
   });
 
-  it('skips an existing client with earlier work, even an invoice only', () => {
+  it('counts an ad-sourced repeat client (ad touch after their earlier work)', () => {
     const r = candidatesFromBookedJobs({
       jobs: [
         job({ id: 'earlier', createdAt: '2026-02-01T18:00:00.000Z', clientId: 'x' }),
@@ -56,9 +56,20 @@ describe('booked-time candidates', () => {
       leads: [],
       adsCalls: [call('7605550100', '2026-10-01T17:00:00.000Z'), call('7605550200', '2026-10-02T17:00:00.000Z')],
     });
-    assert.equal(r.candidates.length, 0);
+    assert.deepEqual(r.candidates.map((c) => c.jobberJobId).sort(), ['inv-new', 'now']);
+  });
+
+  it('skips an organic repeat (no ad touch since their last job)', () => {
+    const r = candidatesFromBookedJobs({
+      jobs: [
+        job({ id: 'earlier', createdAt: '2026-08-01T18:00:00.000Z', clientId: 'x' }),
+        job({ id: 'now', clientId: 'x', createdAt: '2026-10-05T18:00:00.000Z' }),
+      ],
+      leads: [],
+      adsCalls: [call('7605550100', '2026-07-20T17:00:00.000Z')],
+    });
     assert.ok(r.excluded.some((e) => e.jobId === 'now' && e.reason === 'existing_client'));
-    assert.ok(r.excluded.some((e) => e.jobId === 'inv-new' && e.reason === 'existing_client'));
+    assert.ok(!r.candidates.some((c) => c.jobberJobId === 'now'));
   });
 
   it('counts only the first booked job per new client', () => {
