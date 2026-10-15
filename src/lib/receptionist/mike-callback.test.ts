@@ -10,15 +10,17 @@ import {
   dropBookedByMike,
   formatMikeStatus,
   fromLineBusy,
+  CALLBACK_SAY_VOICE,
   hangupTwiml,
   humanTwiml,
+  phoneForCallbackTool,
   isOpenAt,
   machineTwiml,
   matchInFlightCallback,
   mikeOutreachAttempts,
   mikeStatusLabel,
   nextOpenAt,
-  openingScript,
+  mikeFirstMessage,
   callbackPublicBase,
   phraseMatches,
   planMikeCallbacks,
@@ -226,11 +228,11 @@ test('dashboard copy names Mike, and a voicemail does not clear the callback', (
   assert.equal(kept[0].staff, 'Liz');
 });
 
-test('opening discloses the assistant and the recording notice; voicemail does not promise another call', () => {
-  const opening = openingScript();
-  assert.match(opening, /Southern California Well Service/);
-  assert.match(opening, /automated assistant/);
-  assert.match(opening, /This call may be recorded for quality and training purposes/);
+test('Mike speaks the recording disclosure; the callback bridge does not Say it', () => {
+  const greeting = mikeFirstMessage();
+  assert.match(greeting, /Mike/);
+  assert.match(greeting, /Southern California Well Service/);
+  assert.match(greeting, /this call's recorded/);
   const voicemail = voicemailScript('+17603312502');
   assert.match(voicemail, /760\) 331-2502/);
   assert.match(voicemail, /number you dialed/);
@@ -240,11 +242,16 @@ test('opening discloses the assistant and the recording notice; voicemail does n
   assert.equal(amdKind('fax'), 'fax');
   assert.equal(amdKind('unknown'), 'human');
   const machine = machineTwiml(voicemail);
-  assert.match(machine, /<Say/);
+  assert.match(machine, new RegExp(`<Say voice="${CALLBACK_SAY_VOICE}">`));
+  assert.doesNotMatch(machine, /Polly\.Joanna/);
   assert.match(machine, /<Hangup/);
   assert.doesNotMatch(machine, /<Dial/);
-  const human = humanTwiml({ opening, from: '+17603312502', mikeNumber: '+17604915348', actionUrl: 'https://scws.example/bridge' });
-  assert.ok(human.indexOf('<Say') < human.indexOf('<Dial'));
+  const human = humanTwiml({ from: '+17603312502', mikeNumber: '+17604915348', actionUrl: 'https://scws.example/bridge' });
+  assert.doesNotMatch(human, /<Say/);
+  assert.match(human, /<Dial/);
+  assert.equal(phoneForCallbackTool('+17603312502', '4083181171'), '4083181171');
+  assert.equal(phoneForCallbackTool('+14083181171', '4083181171'), '+14083181171');
+  assert.equal(phoneForCallbackTool('', '4083181171'), '4083181171');
   assert.match(human, /callerId="\+17603312502"/);
   assert.match(human, /<Number>\+17604915348<\/Number>/);
   assert.match(hangupTwiml(), /<Hangup/);

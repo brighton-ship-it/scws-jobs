@@ -9,7 +9,7 @@
  * Mike's own assistant number is never used as that caller ID.
  */
 import { ASSISTANT_NAME } from './assistant-name.ts';
-import { RECORDING_NOTICE, PORTED_LINES, shopNumbers } from '../phone-calls/config.ts';
+import { PORTED_LINES, shopNumbers } from '../phone-calls/config.ts';
 import { MIKE_FORWARD_NUMBER } from '../ads/phone-call-log.ts';
 import { digits10 } from '../ads/call-dashboard.ts';
 import { isOwnNumber } from '../ads/real-leads.ts';
@@ -263,8 +263,9 @@ export function businessCallerId(called: string | null | undefined, env: NodeJS.
   return `+1${d}`;
 }
 
-export function openingScript(): string {
-  return `Hi, this is ${ASSISTANT_NAME}, an automated assistant with Southern California Well Service, returning your call. ${RECORDING_NOTICE}`;
+/** Spoken by Mike in his Vapi voice on inbound calls and callbacks. No Twilio <Say> before him. */
+export function mikeFirstMessage(): string {
+  return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?`;
 }
 
 export function voicemailScript(fromE164: string): string {
@@ -274,18 +275,35 @@ export function voicemailScript(fromE164: string): string {
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
+/**
+ * Voicemail only. A person is bridged straight to Mike, who says the recording
+ * disclosure himself. Chirp3 HD is a generative US English male, not standard Polly.
+ */
+export const CALLBACK_SAY_VOICE = 'Google.en-US-Chirp3-HD-Charon';
+
+/**
+ * On a callback, Vapi's Caller ID is the tracking number we dialed from.
+ * The model often passes that number as params.phone, which would look up
+ * our ads line instead of the customer. Prefer the customer we actually dialed.
+ */
+export function phoneForCallbackTool(paramsPhone: unknown, callPhone: string): string {
+  const presented = String(paramsPhone ?? '').trim();
+  const caller = String(callPhone ?? '').trim();
+  if (caller && isOwnNumber(presented)) return caller;
+  return presented || caller;
+}
+
 export function machineTwiml(voicemail: string): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">${esc(voicemail)}</Say>
+  <Say voice="${CALLBACK_SAY_VOICE}">${esc(voicemail)}</Say>
   <Hangup/>
 </Response>`;
 }
 
-export function humanTwiml(opts: { opening: string; from: string; mikeNumber: string; actionUrl: string }): string {
+export function humanTwiml(opts: { from: string; mikeNumber: string; actionUrl: string }): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Say voice="Polly.Joanna">${esc(opts.opening)}</Say>
   <Dial callerId="${esc(opts.from)}" timeout="25" action="${esc(opts.actionUrl)}" method="POST">
     <Number>${esc(opts.mikeNumber)}</Number>
   </Dial>

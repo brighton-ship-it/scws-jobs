@@ -27,6 +27,13 @@ import {
   resolveReceptionistJobberToken,
 } from './check-schedule.ts';
 import {
+  JobberQueryOverCostError,
+  THROTTLE_MAX_ATTEMPTS,
+  isJobberThrottled,
+  throttleBackoffMs,
+  type JobberGraphqlPayload,
+} from './jobber-throttle.ts';
+import {
   allowedTechSpokenName,
   assignShopTech,
   dispatchZoneForPlace,
@@ -117,12 +124,16 @@ export type OpenSlot = {
   technicianId: string;
 };
 
+/** Calendar reads can wait longer than the 2s client-lookup cap so a short throttle still returns slots. */
+const SLOTS_THROTTLE_MAX_WAIT_MS = 4_000;
+
 export type OpenSlotsDeps = {
   fetchFn?: typeof fetch;
   now?: Date;
   accessToken?: string | null;
   graphqlVersion?: string;
   env?: NodeJS.ProcessEnv;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type OpenSlotsResult = {
@@ -199,35 +210,64 @@ function jobberHeaders(token: string, version: string): HeadersInit {
   };
 }
 
+function defaultSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Schema rejections can try a cheaper calendar query. A spent rate-limit bucket must wait, not immediately fire another query. */
+function shouldStepDownSlotsQuery(error: unknown): boolean {
+  if (error instanceof JobberQueryOverCostError) return true;
+  const message = error instanceof Error ? error.message : '';
+  return !/^throttled$/i.test(message);
+}
+
 async function jobberGraphql(
   token: string,
   query: string,
   variables: Record<string, unknown>,
   fetchFn: typeof fetch,
-  version: string
+  version: string,
+  sleep: (ms: number) => Promise<void>
 ): Promise<{ data?: any; errors?: Array<{ message?: string }> }> {
-  const response = await fetchFn(JOBBER_GRAPHQL_URL, {
-    method: 'POST',
-    headers: jobberHeaders(token, version),
-    body: JSON.stringify({ query, variables }),
-  });
+  let lastMessage = 'Jobber GraphQL error';
 
-  let json: { data?: any; errors?: Array<{ message?: string }> };
-  try {
-    json = (await response.json()) as typeof json;
-  } catch {
-    throw new Error(`Jobber GraphQL HTTP ${response.status}`);
+  for (let attempt = 1; attempt <= THROTTLE_MAX_ATTEMPTS; attempt++) {
+    const response = await fetchFn(JOBBER_GRAPHQL_URL, {
+      method: 'POST',
+      headers: jobberHeaders(token, version),
+      body: JSON.stringify({ query, variables }),
+    });
+
+    let json: JobberGraphqlPayload;
+    try {
+      json = (await response.json()) as JobberGraphqlPayload;
+    } catch {
+      throw new Error(`Jobber GraphQL HTTP ${response.status}`);
+    }
+
+    const throttled = isJobberThrottled(json) || response.status === 429;
+    if (!response.ok && !throttled) {
+      throw new Error(`Jobber GraphQL HTTP ${response.status}`);
+    }
+    if (!json.errors?.length && response.ok) {
+      return json;
+    }
+
+    lastMessage = json.errors?.[0]?.message || (throttled ? 'Throttled' : 'Jobber GraphQL error');
+    if (!throttled) throw new Error(lastMessage);
+
+    const waitMs = throttleBackoffMs(json.extensions?.cost, SLOTS_THROTTLE_MAX_WAIT_MS);
+    if (waitMs < 0) throw new JobberQueryOverCostError();
+    console.warn(
+      `[Receptionist] Jobber throttled open slots (attempt ${attempt}/${THROTTLE_MAX_ATTEMPTS}, ` +
+        `requested=${json.extensions?.cost?.requestedQueryCost ?? '?'}, ` +
+        `available=${json.extensions?.cost?.throttleStatus?.currentlyAvailable ?? '?'}, waitMs=${waitMs})`
+    );
+    if (attempt === THROTTLE_MAX_ATTEMPTS) throw new Error(lastMessage);
+    await sleep(waitMs);
   }
 
-  if (!response.ok) {
-    throw new Error(`Jobber GraphQL HTTP ${response.status}`);
-  }
-
-  if (json.errors?.length) {
-    throw new Error(json.errors[0]?.message || 'Jobber GraphQL error');
-  }
-
-  return json;
+  throw new Error(lastMessage);
 }
 
 function zonedDate(dateStr: string, hour: number, minute: number): Date {
@@ -562,6 +602,7 @@ export async function lookupOpenSlots(
   const token = resolvedToken.token;
 
   const fetchFn = deps.fetchFn ?? fetch;
+  const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? new Date();
   const version =
     deps.graphqlVersion ??
@@ -571,11 +612,11 @@ export async function lookupOpenSlots(
   try {
     let usersData: { data?: any };
     try {
-      usersData = await jobberGraphql(token, USERS_QUERY, {}, fetchFn, version);
+      usersData = await jobberGraphql(token, USERS_QUERY, {}, fetchFn, version, sleep);
     } catch (error) {
       const message = error instanceof Error ? error.message : '';
       if (/email/i.test(message)) {
-        usersData = await jobberGraphql(token, USERS_QUERY_BARE, {}, fetchFn, version);
+        usersData = await jobberGraphql(token, USERS_QUERY_BARE, {}, fetchFn, version, sleep);
       } else {
         throw error;
       }
@@ -615,10 +656,11 @@ export async function lookupOpenSlots(
             occupiedVisitsQuery(ladder[level]),
             { startAfter, startBefore, cursor },
             fetchFn,
-            version
+            version,
+            sleep
           );
         } catch (error) {
-          if (level >= ladder.length - 1 || cursor) throw error;
+          if (!shouldStepDownSlotsQuery(error) || level >= ladder.length - 1 || cursor) throw error;
           level += 1;
         }
       }

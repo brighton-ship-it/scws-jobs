@@ -229,6 +229,81 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     assert.equal(/assignedUsers\s*\{/.test(visitsQuery), false);
   });
 
+  it('waits out a Jobber throttle and still returns open slots', async () => {
+    const waits: number[] = [];
+    let visitsCalls = 0;
+    const result = await lookupOpenSlots(
+      { city: 'Valley Center' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        sleep: async (ms) => { waits.push(ms); },
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body || '{}')) as { query?: string };
+          const query = body.query || '';
+          if (query.includes('ShopUsers')) {
+            return jsonResponse({ data: { users: { nodes: [BRIAN] } } });
+          }
+          visitsCalls += 1;
+          if (visitsCalls === 1) {
+            return jsonResponse({
+              errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+              extensions: {
+                cost: {
+                  requestedQueryCost: 1800,
+                  throttleStatus: { maximumAvailable: 10_000, currentlyAvailable: 0, restoreRate: 500 },
+                },
+              },
+            });
+          }
+          return jsonResponse({ data: { visits: { nodes: [], pageInfo: { hasNextPage: false } } } });
+        },
+      }
+    );
+    assert.equal(visitsCalls, 2);
+    assert.deepEqual(waits, [4000]);
+    assert.equal(result.lookupStatus, 'ok');
+    assert.ok(result.openSlots.length > 0);
+    assert.equal(result.assignedTechName, 'Brian Eads');
+  });
+
+  it('steps down when the calendar query costs more than Jobber allows', async () => {
+    const queries: string[] = [];
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        sleep: async () => { throw new Error('over-cost must not wait'); },
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body || '{}')) as { query?: string };
+          const query = body.query || '';
+          if (query.includes('ShopUsers')) {
+            return jsonResponse({ data: { users: { nodes: [BRIAN] } } });
+          }
+          queries.push(query);
+          if (query.includes('property')) {
+            return jsonResponse({
+              errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+              extensions: {
+                cost: {
+                  requestedQueryCost: 12_000,
+                  throttleStatus: { maximumAvailable: 10_000, currentlyAvailable: 10_000, restoreRate: 500 },
+                },
+              },
+            });
+          }
+          return jsonResponse({ data: { visits: { nodes: [], pageInfo: { hasNextPage: false } } } });
+        },
+      }
+    );
+    assert.equal(queries.length, 2);
+    assert.match(queries[0], /property/);
+    assert.doesNotMatch(queries[1], /property/);
+    assert.equal(result.lookupStatus, 'ok');
+    assert.ok(result.openSlots.length > 0);
+  });
+
   it('Anza: Doug open and Cowin booked → Doug only, never Travis', async () => {
     const friday = computeOpenSlots({
       occupied: [],

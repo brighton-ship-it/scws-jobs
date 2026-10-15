@@ -49,11 +49,19 @@ function finiteNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/** Jobber rejected the query because it costs more than maximumAvailable. Retrying the same query cannot succeed. */
+export class JobberQueryOverCostError extends Error {
+  constructor() {
+    super('Throttled');
+    this.name = 'JobberQueryOverCostError';
+  }
+}
+
 /**
  * How long to wait before retrying a throttled query.
  * -1 means the query costs more than maximumAvailable and will never run.
  */
-export function throttleBackoffMs(cost: JobberCost | undefined): number {
+export function throttleBackoffMs(cost: JobberCost | undefined, maxWaitMs = THROTTLE_MAX_WAIT_MS): number {
   const requested = finiteNumber(cost?.requestedQueryCost);
   const maximum = finiteNumber(cost?.throttleStatus?.maximumAvailable);
   const available = finiteNumber(cost?.throttleStatus?.currentlyAvailable);
@@ -65,7 +73,7 @@ export function throttleBackoffMs(cost: JobberCost | undefined): number {
 
   const rate = restore != null && restore > 0 ? restore : JOBBER_DEFAULT_RESTORE_RATE;
   const waitMs = Math.ceil((requested - available) / rate) * 1000;
-  return Math.min(Math.max(waitMs, 250), THROTTLE_MAX_WAIT_MS);
+  return Math.min(Math.max(waitMs, 250), maxWaitMs);
 }
 
 /** Connection cost is page size times the cost of the fields on each node. `nodes` itself is free. */
