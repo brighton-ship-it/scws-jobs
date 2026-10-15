@@ -505,6 +505,43 @@ test('a collection call matches the Jobber client when the dialed number is not 
     ],
   });
   assert.equal(hidden, '0 calls · 0 texts · 0 emails · Gmail unavailable');
+  const partial = formatCollectionAttempts({
+    phones: ['7604190997'],
+    emails: ['nancy@pacificaglass.net'],
+    clientId: 'C1',
+    invoiceNumber: '5818',
+    sinceIso: '2026-09-30T20:54:50Z',
+    channels: { calls: true, appTexts: true, jobberTexts: true, emails: true, gmail: true, gmailMissing: ['Liz'] },
+    events: [
+      { at: '2026-10-05T18:25:18Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5818'], toEmails: ['nancy@pacificaglass.net'] },
+    ],
+  });
+  assert.equal(partial, '0 calls · 0 texts · 1 email · Liz Gmail unavailable · last: email by Brighton Oct 5');
+  const allClosed = formatCollectionAttempts({
+    phones: ['7604190997'],
+    emails: ['kareneddy48@gmail.com'],
+    clientId: 'C1',
+    invoiceNumber: '5785',
+    sinceIso: '2026-09-24T13:57:11Z',
+    channels: { calls: true, appTexts: true, jobberTexts: true, emails: true, gmail: false, gmailMissing: ['Brighton', 'Liz', 'Shanicey'] },
+    events: [],
+  });
+  assert.equal(allClosed, '0 calls · 0 texts · 0 emails · Brighton Gmail unavailable · Liz Gmail unavailable · Shanicey Gmail unavailable');
+  const karen = formatCollectionAttempts({
+    phones: [],
+    emails: ['kareneddy48@gmail.com'],
+    clientId: 'C-KAREN',
+    invoiceNumber: '5785',
+    sinceIso: '2026-09-24T13:57:11Z',
+    channels: { calls: true, appTexts: true, jobberTexts: true, emails: true, gmail: true },
+    events: [
+      { at: '2026-09-28T18:33:41Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5785'], toEmails: ['keddy48@gmail.com'] },
+      { at: '2026-10-05T18:25:02Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5785', '5829'], toEmails: ['keddy48@gmail.com'] },
+      { at: '2026-10-08T19:39:52Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5785', '5829'], toEmails: ['kareneddy48@gmail.com'] },
+      { at: '2026-10-14T18:29:46Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5785'], toEmails: ['kareneddy48@gmail.com'] },
+    ],
+  });
+  assert.equal(karen, '0 calls · 0 texts · 2 emails · last: email by Brighton Oct 14');
 });
 
 test('Mike callback attempts stay off the invoice collection count', () => {

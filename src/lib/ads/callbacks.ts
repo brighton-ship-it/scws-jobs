@@ -148,6 +148,8 @@ export interface CollectionChannels {
   emails: boolean;
   /** Shop Gmail mailboxes the app can read. */
   gmail?: boolean;
+  /** Staff names whose Gmail could not be read. Empty when every mailbox loaded. */
+  gmailMissing?: string[];
 }
 
 export interface MirrorInvoice {
@@ -639,6 +641,8 @@ export function formatCollectionAttempts(input: {
     const cited = (event.invoiceNumbers ?? []).map((n) => String(n).trim()).filter(Boolean);
     const invoiceOk = !!num && cited.includes(num);
     const emailOk = (event.toEmails ?? []).some((e) => wantEmails.has(e.trim().toLowerCase()));
+    // Recipient list must include an address on the Jobber client.
+    if ((event.toEmails?.length ?? 0) > 0 && wantEmails.size > 0 && !emailOk) return false;
     if (event.channel === 'call') return phoneOk || clientOk;
     if (cited.length) return invoiceOk || (!num && clientOk);
     return clientOk || phoneOk || emailOk;
@@ -662,10 +666,22 @@ export function formatCollectionAttempts(input: {
   }
   const gmailOn = input.channels.gmail === true;
   const jobberMailOn = input.channels.emails;
-  if (gmailOn && jobberMailOn) parts.push(countWord(jobberEmails.length + gmailEmails.length, 'email', 'emails'));
-  else if (gmailOn) parts.push(`${countWord(gmailEmails.length, 'email', 'emails')} · Jobber emails unavailable`);
-  else if (jobberMailOn) parts.push(`${countWord(jobberEmails.length, 'email', 'emails')} · Gmail unavailable`);
-  else parts.push('email unavailable');
+  const missing = (input.channels.gmailMissing ?? []).map((name) => name.trim()).filter(Boolean);
+  const gmailGap = missing.length
+    ? missing.map((name) => `${name} Gmail unavailable`).join(' · ')
+    : (gmailOn ? null : 'Gmail unavailable');
+  const emailCount = (jobberMailOn ? jobberEmails.length : 0) + (gmailOn ? gmailEmails.length : 0);
+  if (gmailOn && jobberMailOn) {
+    parts.push(gmailGap ? `${countWord(emailCount, 'email', 'emails')} · ${gmailGap}` : countWord(emailCount, 'email', 'emails'));
+  } else if (gmailOn) {
+    parts.push(`${countWord(gmailEmails.length, 'email', 'emails')} · Jobber emails unavailable${gmailGap ? ` · ${gmailGap}` : ''}`);
+  } else if (jobberMailOn) {
+    parts.push(`${countWord(jobberEmails.length, 'email', 'emails')} · ${gmailGap}`);
+  } else if (missing.length) {
+    parts.push(`${gmailGap} · Jobber emails unavailable`);
+  } else {
+    parts.push('email unavailable');
+  }
 
   const visible = matched.filter((event) => {
     if (event.channel === 'call') return input.channels.calls;

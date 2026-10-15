@@ -17,7 +17,7 @@ import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
-import { loadGmailCollection, invoiceNumbersIn } from '@/lib/ads/gmail-collections';
+import { loadGmailCollection, invoiceNumbersIn, vercelOidcToken, SHOP_GMAIL_MAILBOXES } from '@/lib/ads/gmail-collections';
 import { fetchTwilioCollectionMessages, type TwilioText } from '@/lib/ads/twilio-outbound';
 import { callbackVapiIds, dropBookedByMike, mikeOutreachAttempts, mikeStatusLabel, sourcesWithoutMikeLegs } from '@/lib/receptionist/mike-callback';
 import { loadRecentAttempts } from '@/lib/receptionist/mike-callback-run';
@@ -193,17 +193,21 @@ export async function GET(request: NextRequest) {
           notes: [`jobber follow-up: ${error instanceof Error ? error.message : 'error'}`],
         }));
         notes.push(...jobber.notes);
+        // Read the OIDC token in the request, then close over it. The cache key
+        // must not contain the token, and unstable_cache does not see request headers.
+        const oidcToken = vercelOidcToken(process.env, request.headers.get('x-vercel-oidc-token'));
         const gmail = await unstable_cache(
-          () => loadGmailCollection(),
-          ['gmail-collections-v1'],
+          () => loadGmailCollection(process.env, fetch, oidcToken),
+          ['gmail-collections-v2'],
           { revalidate: 600 },
         )().catch((error: unknown) => ({
           events: [] as CollectionEvent[],
           ok: false,
           mailbox: null as string | null,
+          unavailable: SHOP_GMAIL_MAILBOXES.map((box) => box.name),
           note: `Gmail unavailable${error instanceof Error ? `: ${error.message}` : ''}.`,
         }));
-        if (gmail.ok) notes.push(`Collection email: Gmail counts mail sent from ${gmail.mailbox ?? 'the connected shop mailbox'}. Liz and Shanicey mailboxes are not connected.`);
+        if (gmail.ok) notes.push(`Collection email: Gmail counts mail sent from ${gmail.mailbox}.`);
         if (gmail.note) notes.push(gmail.note);
         let open = listOpenInvoices(past.invoices, past.clientRows, { hasBalanceColumn: past.hasBalanceColumn });
         open = applyInvoiceExtras(open, jobber.invoices);
@@ -236,6 +240,7 @@ export async function GET(request: NextRequest) {
             jobberTexts: jobber.channels.jobberTexts,
             emails: jobber.channels.emails,
             gmail: gmail.ok,
+            gmailMissing: gmail.unavailable,
           },
         });
         dash.needsCallback = { ...queues.leads, rows: withMike(queues.leads.rows) };
