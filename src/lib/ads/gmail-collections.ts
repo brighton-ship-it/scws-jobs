@@ -55,7 +55,8 @@ const REVIEW_ONLY = /how'?d we do|how did we do|google review|leave (us )?a revi
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 export function gmailFederationConfig(env: NodeJS.ProcessEnv = process.env): GmailFederationConfig | null {
-  const projectNumber = env.GCP_PROJECT_NUMBER?.trim() || '';
+  // scws-ads. Env overrides this when it is set; the number is not a secret.
+  const projectNumber = env.GCP_PROJECT_NUMBER?.trim() || '950015473137';
   if (!/^\d+$/.test(projectNumber)) return null;
   return {
     projectId: env.GCP_PROJECT_ID?.trim() || 'scws-ads',

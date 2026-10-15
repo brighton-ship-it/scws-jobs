@@ -79,7 +79,8 @@ test('domain-wide claims are read-only and name the mailbox', () => {
   assert.equal(config?.providerId, 'vercel');
   assert.equal(config?.serviceAccountEmail, 'scws-gmail-readonly@scws-ads.iam.gserviceaccount.com');
   assert.equal(workloadIdentityAudience(config!), '//iam.googleapis.com/projects/123456789012/locations/global/workloadIdentityPools/vercel/providers/vercel');
-  assert.equal(gmailFederationConfig({} as NodeJS.ProcessEnv), null);
+  assert.equal(gmailFederationConfig({} as NodeJS.ProcessEnv)?.projectNumber, '950015473137');
+  assert.equal(gmailFederationConfig({ GCP_PROJECT_NUMBER: 'nope' } as NodeJS.ProcessEnv), null);
 });
 
 test('one mailbox can fail without zeroing mail from the others', async () => {
@@ -161,5 +162,5 @@ test('one mailbox can fail without zeroing mail from the others', async () => {
   assert.equal(missing.ok, false);
   assert.deepEqual(missing.events, []);
   assert.deepEqual(missing.unavailable, ['Brighton', 'Liz', 'Shanicey']);
-  assert.match(missing.note ?? '', /project number/);
+  assert.match(missing.note ?? '', /OIDC token/);
 });

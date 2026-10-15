@@ -198,7 +198,7 @@ export async function GET(request: NextRequest) {
         const oidcToken = vercelOidcToken(process.env, request.headers.get('x-vercel-oidc-token'));
         const gmail = await unstable_cache(
           () => loadGmailCollection(process.env, fetch, oidcToken),
-          ['gmail-collections-v2'],
+          ['gmail-collections-v3'],
           { revalidate: 600 },
         )().catch((error: unknown) => ({
           events: [] as CollectionEvent[],
