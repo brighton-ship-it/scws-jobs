@@ -36,6 +36,8 @@ describe('booking prompt text', () => {
     assert.match(MIKE_CALLBACK_BOOKING, /any water at all/);
     assert.match(MIKE_CALLBACK_BOOKING, /no second greeting/);
     assert.match(MIKE_CALLBACK_BOOKING, /do not sound like you are shouting/i);
+    assert.match(MIKE_CALLBACK_BOOKING, /a little slower than a conversational pace/);
+    assert.match(MIKE_CALLBACK_BOOKING, /short natural pause between sentences/);
     assert.doesNotMatch(MIKE_CALLBACK_BOOKING, /one short greeting may play/);
     assert.match(MIKE_CALLBACK_BOOKING, /call checkSchedule immediately/i);
     assert.match(MIKE_CALLBACK_BOOKING, /Is \[the address\] right/);

@@ -279,10 +279,13 @@ export function mikeCallbackFirstMessage(): string {
  */
 export const CALLBACK_VOICE_VOLUME = 0.55;
 
+/** Cartesia and 11labs both treat 1 as normal. 0.88 is a little slower. */
+export const CALLBACK_VOICE_SPEED = 0.88;
+
 export const CALLBACK_VOICE_ID = '5fc5c797-12c5-4f2b-ac9b-d4e53c08098f';
 
 /**
- * Wyatt, quieter, normal speed, no emotion styling.
+ * Wyatt, quieter, a little slower than normal, no emotion styling.
  * Cartesia emotion tags only add emotion, so none is set.
  * The 11labs fallback has speaker boost off so a failover is not louder.
  */
@@ -312,7 +315,7 @@ export function callbackVoiceSettings(): {
     model: 'sonic-3',
     language: 'en',
     cachingEnabled: false,
-    generationConfig: { speed: 1, volume: CALLBACK_VOICE_VOLUME },
+    generationConfig: { speed: CALLBACK_VOICE_SPEED, volume: CALLBACK_VOICE_VOLUME },
     fallbackPlan: {
       voices: [{
         provider: '11labs',
@@ -321,7 +324,7 @@ export function callbackVoiceSettings(): {
         stability: 0.6,
         similarityBoost: 0.75,
         style: 0,
-        speed: 1,
+        speed: CALLBACK_VOICE_SPEED,
         useSpeakerBoost: false,
       }],
     },

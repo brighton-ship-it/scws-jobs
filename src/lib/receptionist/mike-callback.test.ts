@@ -25,6 +25,7 @@ import {
   callbackAssistantOverrides,
   callbackEndpointWaitMs,
   CALLBACK_VOICE_VOLUME,
+  CALLBACK_VOICE_SPEED,
   callbackPublicBase,
   phraseMatches,
   planMikeCallbacks,
@@ -414,7 +415,9 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.ok(endpointMs < 250, `endpoint wait ${endpointMs}ms`);
   assert.ok(endpointMs + 621 + 151 < 1100, 'greeting should land near 1s after hello');
   assert.equal(payload.assistantOverrides.voice.generationConfig.volume, CALLBACK_VOICE_VOLUME);
-  assert.equal(payload.assistantOverrides.voice.generationConfig.speed, 1);
+  assert.equal(payload.assistantOverrides.voice.generationConfig.speed, CALLBACK_VOICE_SPEED);
+  assert.ok(CALLBACK_VOICE_SPEED >= 0.85 && CALLBACK_VOICE_SPEED <= 0.9);
+  assert.equal(payload.assistantOverrides.voice.fallbackPlan.voices[0].speed, CALLBACK_VOICE_SPEED);
   assert.ok(CALLBACK_VOICE_VOLUME < 1);
   assert.ok(CALLBACK_VOICE_VOLUME >= 0.5);
   assert.equal('experimentalControls' in payload.assistantOverrides.voice, false);
