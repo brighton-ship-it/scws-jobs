@@ -542,7 +542,7 @@ export function CallDashboardPage() {
             <Card title="New leads — needs callback" subtitle="Missed, voicemail, and Mike. Skips hang-ups under 10s, spam, vendors, AI bookings, and any Jobber request, quote, job (including cancelled), visit, or invoice on or after the call. Scroll for every row." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines only ⓘ</span>} delay={200}>
               <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} empty="No new leads waiting on a callback in this period." />
             </Card>
-            <Card title="Invoice follow-up" subtitle="Every awaiting-payment and past-due invoice, called or not. Scroll for every row. Calls are shop Voice lines since the invoice date. Texts include app invoice SMS; Jobber texts show when that history loads. Emails are Jobber invoice sends. Gmail is not logged." delay={220}>
+            <Card title="Invoice follow-up" subtitle="Every awaiting-payment and past-due invoice, called or not. Scroll for every row. Calls are shop Voice lines since the invoice date, matched to the customer phone or Jobber client. Texts are app invoice SMS plus Jobber texts when that history loads. Emails are shop Gmail from the connected mailbox and Jobber invoice sends. A source that cannot be read says unavailable." delay={220}>
               <NeedsCallbackList metric="invoices" view={data.invoiceFollowUp} rangeLabel={rangeLabel} empty="No invoice follow-ups right now." />
             </Card>
           </div>

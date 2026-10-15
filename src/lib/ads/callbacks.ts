@@ -5,7 +5,7 @@
  */
 import { digits10 } from './call-dashboard.ts';
 import { formatDuration, formatPhone, type FeedRow } from './call-feed.ts';
-import { staffLines, type StaffLine } from './staff-lines.ts';
+import { staffLabel, staffLines, type StaffLine } from './staff-lines.ts';
 
 export const HANGUP_SECONDS = 10;
 export const COLD_ATTEMPTS = 3;
@@ -72,6 +72,7 @@ export interface OutreachAttempt {
   phone: string | null;
   staff: string | null;
   durationSeconds: number | null;
+  clientId?: string | null;
 }
 
 export interface OutreachView {
@@ -105,6 +106,7 @@ export interface OpenInvoice {
   clientId: string;
   name: string | null;
   phones: string[];
+  emails?: string[];
   issuedAt: string;
   dueAt: string | null;
   status: 'past_due' | 'awaiting_payment';
@@ -119,22 +121,27 @@ export interface InboundTouch {
 export interface CollectionEvent {
   at: string;
   channel: 'call' | 'text' | 'email';
-  source: 'voice' | 'app_sms' | 'jobber_sms' | 'jobber_email';
+  source: 'voice' | 'app_sms' | 'jobber_sms' | 'jobber_email' | 'gmail';
   by?: string | null;
   phone?: string | null;
   clientId?: string | null;
   invoiceNumbers?: string[] | null;
+  /** Recipient addresses for a shop Gmail message. */
+  toEmails?: string[] | null;
+  sid?: string | null;
 }
 
 export interface CollectionChannels {
   /** Shop Google Voice outbound calls. */
   calls: boolean;
-  /** A2P invoice texts in collection_sms_log. */
+  /** A2P invoice texts in collection_sms_log and the Twilio message list. */
   appTexts: boolean;
   /** Jobber invoice SMS / text reminders. */
   jobberTexts: boolean;
-  /** Jobber invoice emails. Gmail collection mail is not in the app. */
+  /** Jobber invoice emails. */
   emails: boolean;
+  /** Shop Gmail mailboxes the app can read. */
+  gmail?: boolean;
 }
 
 export interface MirrorInvoice {
@@ -274,7 +281,8 @@ export function voiceAttempts(log: Array<Record<string, any>>, lines: StaffLine[
   const out: OutreachAttempt[] = [];
   for (const row of log) {
     if (row.direction !== 'outbound') continue;
-    const staff = shopStaffName(row, lines);
+    const staff = shopStaffName(row, lines)
+      ?? (/@scwellservice\.com$/i.test(String(row.answered_by ?? '')) ? staffLabel(row.answered_by, null, lines) : null);
     if (!staff) continue;
     const at = String(row.started_at ?? '');
     if (!Number.isFinite(Date.parse(at))) continue;
@@ -283,6 +291,7 @@ export function voiceAttempts(log: Array<Record<string, any>>, lines: StaffLine[
       phone: row.caller_phone ?? null,
       staff,
       durationSeconds: row.duration_seconds ?? null,
+      clientId: row.jobber_client_id ?? null,
     });
   }
   return out;
@@ -449,7 +458,7 @@ function invoiceDueOf(inv: MirrorInvoice): string | null {
 /** One open invoice per past_due or awaiting_payment row with something owed, or an unknown amount. */
 export function listOpenInvoices(
   invoices: MirrorInvoice[],
-  clients: Array<{ id: string; name?: string | null; phones_digits?: string[] | null }>,
+  clients: Array<{ id: string; name?: string | null; phones_digits?: string[] | null; emails?: string[] | null }>,
   opts?: { hasBalanceColumn?: boolean },
 ): OpenInvoice[] {
   const hasBalanceColumn = opts?.hasBalanceColumn ?? invoices.some((inv) => Object.prototype.hasOwnProperty.call(inv, 'balance'));
@@ -464,6 +473,7 @@ export function listOpenInvoices(
     if (owed != null && owed <= 0) continue;
     const client = byId.get(inv.client_id);
     const phones = (client?.phones_digits ?? []).map((p) => digits10(p)).filter((p): p is string => !!p);
+    const emails = (client?.emails ?? []).map((e) => String(e).trim().toLowerCase()).filter(Boolean);
     const id = inv.id || `${inv.client_id}:${inv.issued_date}`;
     out.push({
       id: String(id),
@@ -471,6 +481,7 @@ export function listOpenInvoices(
       clientId: inv.client_id,
       name: client?.name ?? null,
       phones,
+      emails,
       issuedAt: inv.issued_date,
       dueAt: invoiceDueOf(inv),
       status: statusName,
@@ -597,11 +608,13 @@ function collectionWhen(iso: string): string {
 /**
  * Collection attempts since the invoice was issued.
  * A channel that could not be read is "unavailable", never a fake 0.
- * Gmail is not logged: when Jobber emails are readable the label still says Gmail is unavailable.
+ * Calls match the customer phone or the Jobber client id.
+ * Texts and emails that cite an invoice number stay on that invoice.
  */
 export function formatCollectionAttempts(input: {
   events: CollectionEvent[];
   phones: string[];
+  emails?: string[];
   clientId: string;
   invoiceNumber: string | null;
   sinceIso: string;
@@ -609,22 +622,27 @@ export function formatCollectionAttempts(input: {
 }): string {
   const since = Date.parse(input.sinceIso);
   const phones = new Set(input.phones.map((p) => digits10(p)).filter((p): p is string => !!p));
+  const wantEmails = new Set((input.emails ?? []).map((e) => e.trim().toLowerCase()).filter(Boolean));
   const num = (input.invoiceNumber ?? '').trim();
   const matched = input.events.filter((event) => {
     const t = Date.parse(event.at);
     if (!Number.isFinite(t) || (Number.isFinite(since) && t < since)) return false;
     const phone = digits10(event.phone);
     const phoneOk = !!phone && phones.has(phone);
-    if (event.channel === 'call') return phoneOk;
     const clientOk = !!event.clientId && event.clientId === input.clientId;
-    const invoiceOk = !!num && (event.invoiceNumbers ?? []).some((n) => String(n).trim() === num);
-    return clientOk || invoiceOk || phoneOk;
+    const cited = (event.invoiceNumbers ?? []).map((n) => String(n).trim()).filter(Boolean);
+    const invoiceOk = !!num && cited.includes(num);
+    const emailOk = (event.toEmails ?? []).some((e) => wantEmails.has(e.trim().toLowerCase()));
+    if (event.channel === 'call') return phoneOk || clientOk;
+    if (cited.length) return invoiceOk || (!num && clientOk);
+    return clientOk || phoneOk || emailOk;
   }).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
 
   const calls = matched.filter((event) => event.channel === 'call');
   const appTexts = matched.filter((event) => event.source === 'app_sms');
   const jobberTexts = matched.filter((event) => event.source === 'jobber_sms');
-  const emails = matched.filter((event) => event.channel === 'email');
+  const jobberEmails = matched.filter((event) => event.source === 'jobber_email');
+  const gmailEmails = matched.filter((event) => event.source === 'gmail');
   const parts: string[] = [];
   parts.push(input.channels.calls ? countWord(calls.length, 'call', 'calls') : 'calls unavailable');
   if (input.channels.appTexts && input.channels.jobberTexts) {
@@ -636,15 +654,19 @@ export function formatCollectionAttempts(input: {
   } else {
     parts.push('texts unavailable');
   }
-  parts.push(input.channels.emails
-    ? `${countWord(emails.length, 'email', 'emails')} · Gmail unavailable`
-    : 'email unavailable');
+  const gmailOn = input.channels.gmail === true;
+  const jobberMailOn = input.channels.emails;
+  if (gmailOn && jobberMailOn) parts.push(countWord(jobberEmails.length + gmailEmails.length, 'email', 'emails'));
+  else if (gmailOn) parts.push(`${countWord(gmailEmails.length, 'email', 'emails')} · Jobber emails unavailable`);
+  else if (jobberMailOn) parts.push(`${countWord(jobberEmails.length, 'email', 'emails')} · Gmail unavailable`);
+  else parts.push('email unavailable');
 
   const visible = matched.filter((event) => {
     if (event.channel === 'call') return input.channels.calls;
     if (event.source === 'app_sms') return input.channels.appTexts;
     if (event.source === 'jobber_sms') return input.channels.jobberTexts;
-    if (event.channel === 'email') return input.channels.emails;
+    if (event.source === 'jobber_email') return jobberMailOn;
+    if (event.source === 'gmail') return gmailOn;
     return false;
   });
   const last = visible[visible.length - 1];
@@ -844,6 +866,7 @@ export function needsCallback(input: {
       source: 'voice' as const,
       by: attempt.staff,
       phone: attempt.phone,
+      clientId: attempt.clientId,
     })),
     ...(input.collections ?? []).filter((event) => event.channel !== 'call'),
   ];
@@ -904,7 +927,7 @@ export function needsCallback(input: {
       outcome: isPastDue ? 'Past due' : 'Awaiting payment',
       durationSeconds: null,
       outreach: formatCollectionAttempts({
-        events: collections, phones: inv.phones, clientId: inv.clientId,
+        events: collections, phones: inv.phones, emails: inv.emails, clientId: inv.clientId,
         invoiceNumber: inv.number, sinceIso: inv.issuedAt, channels,
       }),
       goingCold: cold?.goingCold ?? false,

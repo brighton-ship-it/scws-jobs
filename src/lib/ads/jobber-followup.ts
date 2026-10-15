@@ -11,6 +11,8 @@ export interface JobberInvoiceExtra {
   id: string;
   number: string | null;
   dueAt: string | null;
+  emails: string[];
+  phones: string[];
   comms: CollectionEvent[];
 }
 
@@ -70,39 +72,85 @@ const INVOICES = `query OpenInv($first: Int!, $after: String, $filter: InvoiceFi
   invoices(first: $first, after: $after, filter: $filter) {
     nodes {
       id invoiceNumber invoiceStatus issuedDate dueDate
-      client { id }
+      client { id emails { address } phones { number } }
       COMMS
     }
     pageInfo { hasNextPage endCursor }
   }
 }`;
-const COMMS = `linkedCommunications(first: 20) { nodes { __typename id createdAt } }`;
+
+/** Tried in order. A selection that errors is skipped. Undated nodes are not counted as zero. */
+export const COMM_PROBES = [
+  `linkedCommunications(first: 20) { nodes { __typename id createdAt channel commType } }`,
+  `linkedCommunications(first: 20) { nodes { __typename id sentAt channel commType } }`,
+  `linkedCommunications(first: 20) { nodes { __typename id timestamp } }`,
+  `linkedCommunications(first: 20) { nodes { __typename id createdAt } }`,
+  `linkedCommunications(first: 20) { nodes { __typename id } }`,
+  `linkedCommunications(first: 20) { nodes { __typename id ... on EmailMessage { createdAt subject } ... on SmsMessage { createdAt } ... on TextMessage { createdAt } ... on ClientEmail { createdAt } ... on ClientSms { createdAt } } }`,
+];
 
 function classifyComm(node: any): 'email' | 'text' | null {
-  const type = `${node?.__typename ?? ''} ${node?.channel ?? ''} ${node?.commType ?? ''}`.toLowerCase();
+  const type = `${node?.__typename ?? ''} ${node?.channel ?? ''} ${node?.commType ?? ''} ${node?.messageType ?? ''} ${node?.deliveryType ?? ''} ${node?.kind ?? ''}`.toLowerCase();
   if (/email/.test(type)) return 'email';
-  if (/sms|text/.test(type)) return 'text';
+  if (/\bsms\b|\btext\b/.test(type)) return 'text';
   return null;
 }
 
-export function commsFromNodes(clientId: string | null, nodes: any[]): { events: CollectionEvent[]; classified: boolean } {
+function emailsOf(client: any): string[] {
+  const raw = Array.isArray(client?.emails) ? client.emails : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const email = String(typeof entry === 'string' ? entry : entry?.address ?? '').trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
+export function commsFromNodes(
+  clientId: string | null,
+  nodes: any[],
+  invoiceNumber?: string | null,
+): { events: CollectionEvent[]; classified: boolean } {
   let classified = false;
   const events: CollectionEvent[] = [];
+  const num = invoiceNumber == null || invoiceNumber === '' ? null : String(invoiceNumber);
   for (const node of nodes ?? []) {
     const kind = classifyComm(node);
     if (!kind) continue;
     classified = true;
-    const at = node.createdAt || node.sentAt;
+    const at = node.createdAt || node.sentAt || node.timestamp;
     if (!at || !Number.isFinite(Date.parse(at))) continue;
     events.push({
       at: String(at),
       channel: kind,
       source: kind === 'email' ? 'jobber_email' : 'jobber_sms',
       clientId,
-      by: null,
+      by: node.sender?.name ?? node.user?.name ?? null,
+      invoiceNumbers: num ? [num] : null,
     });
   }
   return { events, classified };
+}
+
+async function probeInvoiceComms(gql: Gql): Promise<{ selection: string; dated: boolean; upper: boolean } | null> {
+  for (const selection of COMM_PROBES) {
+    for (const status of ['past_due', 'PAST_DUE']) {
+      try {
+        await read(gql, INVOICES.replace('COMMS', selection), { first: 1, after: null, filter: { invoiceStatus: [status] } });
+        return { selection, dated: /createdAt|sentAt|timestamp/.test(selection), upper: status === 'PAST_DUE' };
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : '';
+        const statusErr = /invoiceStatus|enum/i.test(msg);
+        const fieldErr = /linkedCommunications|createdAt|sentAt|timestamp|channel|commType|EmailMessage|SmsMessage|TextMessage|ClientEmail|ClientSms|Cannot query|unknown field/i.test(msg);
+        if (statusErr && !fieldErr && status === 'past_due') continue;
+        break;
+      }
+    }
+  }
+  return null;
 }
 
 async function pageAll(gql: Gql, query: string, filter: Record<string, unknown>, pick: (data: any) => { nodes: any[]; next: string | null }, cap: number): Promise<any[]> {
@@ -180,54 +228,60 @@ export async function loadJobberFollowUp(sinceIso: string, gql: Gql = jobberGrap
   }
 
   const invoices: JobberInvoiceExtra[] = [];
-  let commsOk = true;
+  let commsOk = false;
   try {
+    const probed = await probeInvoiceComms(gql);
+    const selection = probed?.dated ? probed.selection : '';
+    commsOk = !!probed?.dated;
+    if (!probed) notes.push('Jobber invoice emails and texts unavailable');
+    else if (!probed.dated) notes.push('Jobber messages have no timestamp');
     const collected: any[] = [];
+    let pageFailed = false;
+    const pick = (data: any) => ({
+      nodes: data?.invoices?.nodes ?? [],
+      next: data?.invoices?.pageInfo?.hasNextPage ? data.invoices.pageInfo.endCursor : null,
+    });
     for (const status of ['past_due', 'awaiting_payment']) {
+      const filterStatus = probed?.upper ? status.toUpperCase() : status;
       try {
-        const nodes = await pageAll(gql, INVOICES.replace('COMMS', COMMS), { invoiceStatus: [status] }, (data) => ({
-          nodes: data?.invoices?.nodes ?? [],
-          next: data?.invoices?.pageInfo?.hasNextPage ? data.invoices.pageInfo.endCursor : null,
-        }), 10);
+        const nodes = await pageAll(gql, INVOICES.replace('COMMS', selection), { invoiceStatus: [filterStatus] }, pick, 10);
         collected.push(...nodes);
       } catch (error) {
-        const msg = error instanceof Error ? error.message : '';
-        if (/linkedCommunications|createdAt|__typename/i.test(msg)) {
-          commsOk = false;
-          const nodes = await pageAll(gql, INVOICES.replace('COMMS', ''), { invoiceStatus: [status] }, (data) => ({
-            nodes: data?.invoices?.nodes ?? [],
-            next: data?.invoices?.pageInfo?.hasNextPage ? data.invoices.pageInfo.endCursor : null,
-          }), 10);
-          collected.push(...nodes);
-        } else if (/invoiceStatus|enum/i.test(msg)) {
-          const nodes = await pageAll(gql, INVOICES.replace('COMMS', commsOk ? COMMS : ''), { invoiceStatus: [status.toUpperCase()] }, (data) => ({
-            nodes: data?.invoices?.nodes ?? [],
-            next: data?.invoices?.pageInfo?.hasNextPage ? data.invoices.pageInfo.endCursor : null,
-          }), 10);
-          collected.push(...nodes);
-        } else throw error;
+        pageFailed = true;
+        const nodes = await pageAll(gql, INVOICES.replace('COMMS', ''), { invoiceStatus: [filterStatus] }, pick, 10);
+        collected.push(...nodes);
+        notes.push(`Jobber send history: ${error instanceof Error ? error.message : 'error'}`);
       }
     }
     let classified = false;
+    let sawNodes = false;
     for (const inv of collected) {
-      const parsed = commsFromNodes(inv.client?.id ?? null, inv.linkedCommunications?.nodes ?? []);
+      const number = inv.invoiceNumber == null || inv.invoiceNumber === '' ? null : String(inv.invoiceNumber);
+      const nodes = inv.linkedCommunications?.nodes ?? [];
+      if (nodes.length) sawNodes = true;
+      const parsed = commsFromNodes(inv.client?.id ?? null, nodes, number);
       if (parsed.classified) classified = true;
       invoices.push({
         id: String(inv.id),
-        number: inv.invoiceNumber == null || inv.invoiceNumber === '' ? null : String(inv.invoiceNumber),
+        number,
         dueAt: inv.dueDate ? String(inv.dueDate) : null,
+        emails: emailsOf(inv.client),
+        phones: phonesOf(inv.client),
         comms: parsed.events,
       });
     }
-    if (commsOk && collected.length && !classified && collected.some((inv) => (inv.linkedCommunications?.nodes ?? []).length)) {
+    if (pageFailed || (commsOk && sawNodes && !classified)) {
       commsOk = false;
-      notes.push('Jobber send history could not be classified');
+      for (const inv of invoices) inv.comms = [];
+      if (!pageFailed) notes.push('Jobber send history could not be classified');
     }
   } catch (error) {
     commsOk = false;
     notes.push(`open invoices: ${error instanceof Error ? error.message : 'error'}`);
   }
-  if (!commsOk) notes.push('Jobber invoice emails and texts unavailable');
+  if (!commsOk && !notes.some((note) => /email|text|send history|timestamp/i.test(note))) {
+    notes.push('Jobber invoice emails and texts unavailable');
+  }
 
   return { work, invoices, channels: { jobberTexts: commsOk, emails: commsOk }, notes };
 }

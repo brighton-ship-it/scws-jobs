@@ -6,7 +6,7 @@ import {
   OUTREACH_TOOLTIP, requestResolvesCallback, summarizeOutreach, voiceAttempts,
 } from './callbacks.ts';
 import { DEFAULT_STAFF_LINES, staffLines, staffLabel } from './staff-lines.ts';
-import { parseTwilioOutbound } from './twilio-outbound.ts';
+import { parseTwilioCollectionMessages, parseTwilioOutbound } from './twilio-outbound.ts';
 import type { FeedRow } from './call-feed.ts';
 
 const now = new Date('2026-10-14T20:00:00Z'); // 1pm PT
@@ -451,7 +451,7 @@ test('staff line list is configurable', () => {
   assert.equal(lines[1].phone, null);
   assert.equal(staffLabel('alex@scwellservice.com', null, lines), 'Alex');
   assert.equal(staffLabel(null, '+16193208264', lines), 'Liz');
-  assert.equal(staffLines({} as NodeJS.ProcessEnv).some((l) => l.name === 'Brighton' && l.phone === null), true);
+  assert.equal(staffLines({} as NodeJS.ProcessEnv).some((l) => l.name === 'Brighton' && l.phone === '6192590410'), true);
 });
 
 test('twilio outbound from a tracking number is stored', () => {
@@ -468,4 +468,56 @@ test('twilio outbound from a tracking number is stored', () => {
   assert.equal(rows[0].caller_phone, '+17605551212');
   assert.equal(rows[0].ring_group, 'Ads');
   assert.equal(rows[0].duration_seconds, 55);
+});
+
+test('a collection call matches the Jobber client when the dialed number is not on the invoice', () => {
+  const attempts = voiceAttempts([
+    { direction: 'outbound', started_at: '2026-10-14T17:59:27Z', caller_phone: '+13103516864', answered_by: 'lizbeth@scwellservice.com', called_number: '+16193208264', jobber_client_id: 'C-DEIDREH' },
+    { direction: 'outbound', started_at: '2026-10-14T18:00:00Z', caller_phone: '+17605550111', answered_by: 'office@example.com', called_number: '+17604408520' },
+  ], DEFAULT_STAFF_LINES);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].staff, 'Liz');
+  assert.equal(attempts[0].clientId, 'C-DEIDREH');
+  const label = formatCollectionAttempts({
+    phones: ['7604190997'],
+    emails: ['nancy@pacificaglass.net'],
+    clientId: 'C1',
+    invoiceNumber: '5818',
+    sinceIso: '2026-09-30T20:54:50Z',
+    channels: { calls: true, appTexts: true, jobberTexts: false, emails: false, gmail: true },
+    events: [
+      { at: '2026-10-14T17:59:27Z', channel: 'call', source: 'voice', phone: '3103516864', clientId: 'C1', by: 'Liz' },
+      { at: '2026-10-05T18:25:18Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5818'], toEmails: ['nancy@pacificaglass.net'] },
+      { at: '2026-10-13T18:41:26Z', channel: 'email', source: 'gmail', by: 'Brighton', toEmails: ['pwrobinson33@yahoo.com'] },
+      { at: '2026-10-07T18:00:00Z', channel: 'text', source: 'app_sms', clientId: 'C1', invoiceNumbers: ['9999'] },
+    ],
+  });
+  assert.equal(label, '1 call · 0 texts · Jobber texts unavailable · 1 email · Jobber emails unavailable · last: call by Liz Oct 14');
+  const hidden = formatCollectionAttempts({
+    phones: ['7604190997'],
+    emails: ['nancy@pacificaglass.net'],
+    clientId: 'C1',
+    invoiceNumber: '5818',
+    sinceIso: '2026-09-30T20:54:50Z',
+    channels: { calls: true, appTexts: true, jobberTexts: true, emails: true },
+    events: [
+      { at: '2026-10-05T18:25:18Z', channel: 'email', source: 'gmail', by: 'Brighton', invoiceNumbers: ['5818'], toEmails: ['nancy@pacificaglass.net'] },
+    ],
+  });
+  assert.equal(hidden, '0 calls · 0 texts · 0 emails · Gmail unavailable');
+});
+
+test('twilio collection texts keep the invoice number and skip inbound', () => {
+  const rows = parseTwilioCollectionMessages({
+    messages: [
+      { sid: 'SM1', from: '+17608237963', to: '+17604190997', direction: 'outbound-api', date_sent: 'Tue, 07 Oct 2026 18:00:00 +0000', body: 'Invoice #5656 is past due' },
+      { sid: 'SM1', from: '+17608237963', to: '+17604190997', direction: 'outbound-api', date_sent: 'Tue, 07 Oct 2026 18:00:00 +0000', body: 'duplicate' },
+      { sid: 'SM2', from: '+17603312502', to: '+17604190997', direction: 'outbound-api', date_sent: 'Tue, 07 Oct 2026 18:05:00 +0000', body: 'Invoice #1' },
+      { sid: 'SM3', from: '+17608237963', to: '+17608237963', direction: 'inbound', date_sent: 'Tue, 07 Oct 2026 18:06:00 +0000', body: 'STOP' },
+    ],
+  }, new Set(['7608237963']));
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].sid, 'SM1');
+  assert.equal(rows[0].to, '+17604190997');
+  assert.match(rows[0].body, /5656/);
 });

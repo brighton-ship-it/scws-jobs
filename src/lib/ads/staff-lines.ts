@@ -16,15 +16,13 @@ export interface StaffLine {
 }
 
 /**
- * Numbers seen as the user-leg destination in the Voice audit log.
- * Liz's line (619-320-8264) only shows about 3 outbound calls in 7 days, so she
- * likely calls from a phone that is not in this log. Her callbacks stay missing
- * until that phone is a logged Voice or Twilio line and is added here.
+ * Shop Voice lines that place collection calls.
+ * Outbound rows store the customer as caller_phone and this line as called_number.
  */
 export const DEFAULT_STAFF_LINES: StaffLine[] = [
   { name: 'Liz', email: 'lizbeth@scwellservice.com', phone: '6193208264' },
   { name: 'Shanicey', email: 'shanicey@scwellservice.com', phone: '4422272898' },
-  { name: 'Brighton', email: 'brighton@scwellservice.com', phone: null },
+  { name: 'Brighton', email: 'brighton@scwellservice.com', phone: '6192590410' },
 ];
 
 function cleanPhone(raw: string | null | undefined): string | null {

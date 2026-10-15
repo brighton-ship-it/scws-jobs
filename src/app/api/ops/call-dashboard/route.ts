@@ -17,6 +17,8 @@ import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
+import { loadGmailCollection, invoiceNumbersIn } from '@/lib/ads/gmail-collections';
+import { fetchTwilioCollectionMessages, type TwilioText } from '@/lib/ads/twilio-outbound';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
@@ -168,17 +170,35 @@ export async function GET(request: NextRequest) {
         if (loaded.note) notes.push(loaded.note);
         const texts = await loadCollectionTexts(db);
         if (texts.note) notes.push(texts.note);
+        const twilioTexts = await fetchTwilioCollectionMessages().catch((error: unknown) => ({
+          texts: [] as TwilioText[],
+          ok: false,
+          note: `Twilio message list unavailable${error instanceof Error ? `: ${error.message}` : ''}.`,
+        }));
+        if (!twilioTexts.ok && twilioTexts.note) notes.push(twilioTexts.note);
         const jobber = await unstable_cache(
           () => loadJobberFollowUp(sinceIso),
-          ['jobber-followup-v1', sinceIso.slice(0, 10)],
+          ['jobber-followup-v2', sinceIso.slice(0, 10)],
           { revalidate: 600 },
         )().catch((error: unknown) => ({
           work: [] as Array<{ phone: string | null; at: string }>,
-          invoices: [] as Array<{ id: string; number: string | null; dueAt: string | null; comms: CollectionEvent[] }>,
+          invoices: [] as Array<{ id: string; number: string | null; dueAt: string | null; emails?: string[]; phones?: string[]; comms: CollectionEvent[] }>,
           channels: { jobberTexts: false, emails: false },
           notes: [`jobber follow-up: ${error instanceof Error ? error.message : 'error'}`],
         }));
         notes.push(...jobber.notes);
+        const gmail = await unstable_cache(
+          () => loadGmailCollection(),
+          ['gmail-collections-v1'],
+          { revalidate: 600 },
+        )().catch((error: unknown) => ({
+          events: [] as CollectionEvent[],
+          ok: false,
+          mailbox: null as string | null,
+          note: `Gmail unavailable${error instanceof Error ? `: ${error.message}` : ''}.`,
+        }));
+        if (gmail.ok) notes.push(`Collection email: Gmail counts mail sent from ${gmail.mailbox ?? 'the connected shop mailbox'}. Liz and Shanicey mailboxes are not connected.`);
+        if (gmail.note) notes.push(gmail.note);
         let open = listOpenInvoices(past.invoices, past.clientRows, { hasBalanceColumn: past.hasBalanceColumn });
         open = applyInvoiceExtras(open, jobber.invoices);
         const work = indexWorkTimes([...loaded.rows, ...jobber.work]);
@@ -199,9 +219,17 @@ export async function GET(request: NextRequest) {
           ],
           collections: [
             ...texts.events,
+            ...twilioTextEvents(twilioTexts.texts, texts.sids),
             ...jobber.invoices.flatMap((inv) => inv.comms),
+            ...gmail.events,
           ],
-          channels: { calls: !log.error, appTexts: texts.ok, jobberTexts: jobber.channels.jobberTexts, emails: jobber.channels.emails },
+          channels: {
+            calls: !log.error,
+            appTexts: texts.ok || twilioTexts.ok,
+            jobberTexts: jobber.channels.jobberTexts,
+            emails: jobber.channels.emails,
+            gmail: gmail.ok,
+          },
         });
         dash.needsCallback = queues.leads;
         dash.invoiceFollowUp = queues.invoices;
@@ -307,7 +335,7 @@ export async function GET(request: NextRequest) {
     if (!dash.roas && dash.adSplit) blankSplitMoney(dash);
     strictMoneyOnly(dash);
     dropStaleFields(dash);
-    dash.gaps.push('Outbound callbacks: staff Voice lines come from VOICE_STAFF_LINES (defaults Liz 619-320-8264, Shanicey 442-227-2898, Brighton by email). Liz’s Voice number shows only about 3 outbound calls in 7 days, so she likely calls from a phone that is not in the Voice audit log. Those callbacks stay missing until that phone is a logged Voice or Twilio line and is added to VOICE_STAFF_LINES.');
+    dash.gaps.push('Invoice follow-up calls are outbound Google Voice calls from Liz (619-320-8264), Shanicey (442-227-2898), and Brighton (619-259-0410), matched to the customer phone or Jobber client after the invoice was issued. The Voice audit log starts in early October 2026, so earlier calls are not in it.');
     dash.gaps.push(...notes);
     const ms = await mirrorState();
     return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) }));
@@ -387,7 +415,38 @@ function clientPhones(client: any): string[] {
  * Balance > 0 when jobber_invoices.balance exists; otherwise past_due or awaiting_payment.
  * Attempt counts still use the period.
  */
-async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; invoices: Array<Record<string, unknown>>; clientRows: Array<{ id: string; name: string | null; phones_digits: string[] | null }>; hasBalanceColumn: boolean; note: string | null }> {
+function emailsFromClientData(data: unknown): string[] {
+  const emails = data && typeof data === 'object' ? (data as { emails?: unknown }).emails : null;
+  if (!Array.isArray(emails)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of emails) {
+    const email = String(typeof entry === 'string' ? entry : (entry as { address?: string })?.address ?? '').trim().toLowerCase();
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
+function twilioTextEvents(texts: TwilioText[], seenSids: Set<string>): CollectionEvent[] {
+  const events: CollectionEvent[] = [];
+  for (const text of texts) {
+    if (seenSids.has(text.sid)) continue;
+    seenSids.add(text.sid);
+    events.push({
+      at: text.at,
+      channel: 'text',
+      source: 'app_sms',
+      phone: text.to,
+      invoiceNumbers: invoiceNumbersIn(text.body),
+      sid: text.sid,
+    });
+  }
+  return events;
+}
+
+async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; invoices: Array<Record<string, unknown>>; clientRows: Array<{ id: string; name: string | null; phones_digits: string[] | null; emails?: string[] }>; hasBalanceColumn: boolean; note: string | null }> {
   const probe = await db.from('jobber_invoices').select('balance').limit(1);
   // A missing column is normal (Postgres 42703 or PostgREST PGRST204). Do not blank the card for that.
   const hasBalanceColumn = !probe.error;
@@ -407,43 +466,76 @@ async function loadPastDueClients(db: any): Promise<{ clients: PastDueClient[]; 
   }
   // Page clients instead of id=in.(...), because Jobber ids are base64 and end with "=".
   const want = new Set(invoices.map((i) => i.client_id).filter(Boolean));
-  const clients: Array<{ id: string; name: string | null; phones_digits: string[] | null }> = [];
+  const clients: Array<{ id: string; name: string | null; phones_digits: string[] | null; emails?: string[] }> = [];
   for (let from = 0; from < 8000; from += 1000) {
-    const c = await db.from('jobber_clients').select('id, name, phones_digits').order('id', { ascending: true }).range(from, from + 999);
+    const c = await db.from('jobber_clients').select('id, name, phones_digits, data').order('id', { ascending: true }).range(from, from + 999);
     if (c.error) return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), invoices, clientRows: clients, hasBalanceColumn, note: [`invoice clients: ${c.error.message}`, ...notes].filter(Boolean).join('; ') };
-    for (const row of c.data ?? []) if (want.has(row.id)) clients.push(row);
+    for (const row of c.data ?? []) if (want.has(row.id)) clients.push({ id: row.id, name: row.name, phones_digits: row.phones_digits, emails: emailsFromClientData(row.data) });
     if ((c.data ?? []).length < 1000) break;
   }
   return { clients: groupPastDueClients(invoices, clients, { hasBalanceColumn }), invoices, clientRows: clients, hasBalanceColumn, note: notes.length ? notes.join('; ') : null };
 }
 
-function applyInvoiceExtras(open: OpenInvoice[], extras: Array<{ id: string; number: string | null; dueAt: string | null }>): OpenInvoice[] {
+function applyInvoiceExtras(open: OpenInvoice[], extras: Array<{ id: string; number: string | null; dueAt: string | null; emails?: string[]; phones?: string[] }>): OpenInvoice[] {
   const byId = new Map(extras.map((row) => [row.id, row]));
   return open.map((inv) => {
     const extra = byId.get(inv.id);
     if (!extra) return inv;
-    return { ...inv, number: inv.number ?? extra.number, dueAt: inv.dueAt ?? extra.dueAt };
+    return {
+      ...inv,
+      number: inv.number ?? extra.number,
+      dueAt: inv.dueAt ?? extra.dueAt,
+      emails: mergeValues(inv.emails, extra.emails, (value) => value.trim().toLowerCase() || null),
+      phones: mergeValues(inv.phones, extra.phones, (value) => digits10(value)),
+    };
   });
 }
 
-async function loadCollectionTexts(db: any): Promise<{ events: CollectionEvent[]; ok: boolean; note: string | null }> {
+function mergeValues(current: string[] | undefined, extra: string[] | undefined, norm: (value: string) => string | null): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...(current ?? []), ...(extra ?? [])]) {
+    const value = norm(String(raw));
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function invoiceNumberList(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((n) => String(n).trim()).filter(Boolean);
+  if (typeof raw === 'string' && raw.trim()) return raw.split(/[,\s]+/).map((n) => n.trim()).filter(Boolean);
+  return [];
+}
+
+async function loadCollectionTexts(db: any): Promise<{ events: CollectionEvent[]; sids: Set<string>; ok: boolean; note: string | null }> {
   const events: CollectionEvent[] = [];
+  const sids = new Set<string>();
+  let columns = 'created_at, client_id, invoice_numbers, status, twilio_sid';
   for (let from = 0; from < 5000; from += 1000) {
-    const q = await db.from('collection_sms_log').select('created_at, client_id, invoice_numbers, status').eq('status', 'sent').order('created_at', { ascending: false }).range(from, from + 999);
-    if (q.error) return { events: [], ok: false, note: `collection texts: ${q.error.message}` };
+    const q = await db.from('collection_sms_log').select(columns).eq('status', 'sent').order('created_at', { ascending: false }).range(from, from + 999);
+    if (q.error && columns.includes('twilio_sid') && /twilio_sid/i.test(q.error.message)) {
+      columns = 'created_at, client_id, invoice_numbers, status';
+      from -= 1000;
+      continue;
+    }
+    if (q.error) return { events: [], sids, ok: false, note: `collection texts: ${q.error.message}` };
     for (const row of q.data ?? []) {
       if (!row.created_at) continue;
+      if (row.twilio_sid) sids.add(String(row.twilio_sid));
       events.push({
         at: row.created_at,
         channel: 'text',
         source: 'app_sms',
         clientId: row.client_id ?? null,
-        invoiceNumbers: Array.isArray(row.invoice_numbers) ? row.invoice_numbers.map(String) : [],
+        invoiceNumbers: invoiceNumberList(row.invoice_numbers),
+        sid: row.twilio_sid ? String(row.twilio_sid) : null,
       });
     }
     if ((q.data ?? []).length < 1000) break;
   }
-  return { events, ok: true, note: null };
+  return { events, sids, ok: true, note: null };
 }
 
 async function clientPhoneMap(db: any): Promise<{ phones: Map<string, string[]>; note: string | null }> {

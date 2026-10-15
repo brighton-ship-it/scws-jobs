@@ -11,7 +11,7 @@ const digits10 = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, '');
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DAY = 86400_000;
 
-const CLIENT_FIELDS = 'client { id name companyName createdAt phones { number } }';
+const CLIENT_FIELDS = 'client { id name companyName createdAt phones { number } emails { address } }';
 export const Q = {
   invoices: `query MirInv($first: Int!, $after: String, $filter: InvoiceFilterAttributes) { invoices(first: $first, after: $after, filter: $filter) {
     nodes { id invoiceNumber invoiceStatus issuedDate dueDate subject updatedAt amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 5) { nodes { id title } } ${CLIENT_FIELDS} }
@@ -20,7 +20,7 @@ export const Q = {
     nodes { id jobNumber jobStatus title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   quotes: `query MirQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) { quotes(first: $first, after: $after, filter: $filter) {
-    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name phones { number } } }
+    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name phones { number } emails { address } } }
     pageInfo { hasNextPage endCursor } } }`,
   paymentRecords: `query MirPay($first: Int!, $after: String, $filter: PaymentRecordFilterAttributes) { paymentRecords(first: $first, after: $after, filter: $filter) {
     nodes { id amount entryDate adjustmentType }
@@ -99,11 +99,16 @@ async function page(field: Field, filter: unknown, after: string | null) {
   }
 }
 
+function clientEmails(c: any): string[] {
+  const raw = Array.isArray(c?.emails) ? c.emails : [];
+  return Array.from(new Set(raw.map((e: any) => String(e?.address ?? e ?? '').trim().toLowerCase()).filter(Boolean)));
+}
+
 function clientRow(c: any) {
   if (!c?.id) return null;
   return { id: c.id, created_at: c.createdAt ?? null, name: c.name ?? null, company_name: c.companyName ?? null,
     phones_digits: Array.from(new Set((c.phones ?? []).map((p: any) => digits10(p?.number)).filter((d: string) => d.length === 10))),
-    data: { id: c.id, name: c.name ?? null, companyName: c.companyName ?? null, createdAt: c.createdAt ?? null, phones: c.phones ?? [] }, synced_at: new Date().toISOString() };
+    data: { id: c.id, name: c.name ?? null, companyName: c.companyName ?? null, createdAt: c.createdAt ?? null, phones: c.phones ?? [], emails: clientEmails(c) }, synced_at: new Date().toISOString() };
 }
 
 /** Map one page of nodes to upserts. Exported for tests. */
