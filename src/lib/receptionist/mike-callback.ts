@@ -337,8 +337,9 @@ export function callbackVoiceSettings(): {
 
 /**
  * Opening fallback. The timer is cancelled when the person speaks, so the
- * greeting is not recited over their hello. The words are exact. A model
- * prompt here was spoken aloud, including the instructions.
+ * greeting is not recited over their hello. exact is the only spoken text.
+ * say.prompt is spoken aloud by the voice, which is how the rules were read
+ * on the 6:26 PM call.
  */
 export function callbackSilenceGreetingHook(): {
   on: 'customer.speech.timeout';
@@ -354,8 +355,19 @@ export function callbackSilenceGreetingHook(): {
       triggerMaxCount: 1,
       triggerResetMode: 'never',
     },
+    // Hook say rejects interruptionsEnabled. Barge-in is stopSpeakingPlan
+    // plus firstMessageInterruptionsEnabled, which cover this utterance.
     do: [{ type: 'say', exact: mikeCallbackFirstMessage() }],
   };
+}
+
+/** Stop as soon as the caller’s voice is on the line, then wait a second. */
+export function callbackStopSpeakingPlan(): {
+  numWords: 0;
+  voiceSeconds: 0.2;
+  backoffSeconds: 1;
+} {
+  return { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 };
 }
 
 /** Outbound callback: wait for them, then greet if they stay quiet. */
@@ -365,6 +377,7 @@ export function callbackAssistantOverrides(customerPhone: string): {
   firstMessageInterruptionsEnabled: true;
   backgroundSound: 'off';
   voice: ReturnType<typeof callbackVoiceSettings>;
+  stopSpeakingPlan: ReturnType<typeof callbackStopSpeakingPlan>;
   hooks: Array<ReturnType<typeof callbackSilenceGreetingHook>>;
   variableValues: { callback: 'true'; customerPhone: string };
 } {
@@ -375,6 +388,7 @@ export function callbackAssistantOverrides(customerPhone: string): {
     firstMessageInterruptionsEnabled: true,
     backgroundSound: 'off',
     voice: callbackVoiceSettings(),
+    stopSpeakingPlan: callbackStopSpeakingPlan(),
     hooks: [callbackSilenceGreetingHook()],
     variableValues: { callback: 'true', customerPhone },
   };

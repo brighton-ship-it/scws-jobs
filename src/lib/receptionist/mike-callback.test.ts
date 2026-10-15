@@ -256,6 +256,7 @@ test('Mike speaks the recording disclosure; the callback bridge does not Say it'
   assert.match(callbackGreeting, /this call's recorded/);
   const human = humanTwiml({ customerPhone: '+14083181171', actionUrl: 'https://scws.example/bridge' });
   assert.doesNotMatch(human, /<Say/);
+  assert.doesNotMatch(human, /<Play/);
   assert.match(human, /<Dial/);
   assert.match(human, /<Sip>sip:scws-mike-callback@sip\.vapi\.ai\?X-callback=true&amp;X-customerPhone=%2B14083181171<\/Sip>/);
   assert.doesNotMatch(human, /<Number>/);
@@ -405,8 +406,12 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.equal(payload.assistantOverrides.hooks[0].options.timeoutSeconds, CALLBACK_SILENCE_GREETING_SECONDS);
   assert.equal(payload.assistantOverrides.hooks[0].options.triggerMaxCount, 1);
   assert.equal(payload.assistantOverrides.hooks[0].options.triggerResetMode, 'never');
-  assert.match(payload.assistantOverrides.hooks[0].do[0].exact, /this call's recorded/);
+  assert.equal(payload.assistantOverrides.hooks[0].do[0].exact, mikeCallbackFirstMessage());
   assert.equal('prompt' in payload.assistantOverrides.hooks[0].do[0], false);
+  assert.equal('interruptionsEnabled' in payload.assistantOverrides.hooks[0].do[0], false);
+  assert.equal(payload.assistantOverrides.firstMessageInterruptionsEnabled, true);
+  assert.deepEqual(payload.assistantOverrides.stopSpeakingPlan, { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 });
+  assert.doesNotMatch(body, /output no words|Transcript so far|HARD RULE|say","prompt/);
   assert.equal(payload.assistantOverrides.voice.generationConfig.volume, CALLBACK_VOICE_VOLUME);
   assert.equal(payload.assistantOverrides.voice.generationConfig.speed, 1);
   assert.ok(CALLBACK_VOICE_VOLUME < 1);
