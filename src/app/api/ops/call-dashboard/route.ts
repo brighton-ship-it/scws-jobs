@@ -17,7 +17,7 @@ import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
-import { loadGmailCollection, invoiceNumbersIn, vercelOidcToken, SHOP_GMAIL_MAILBOXES } from '@/lib/ads/gmail-collections';
+import { loadGmailCollection, invoiceNumbersIn, vercelOidcToken, SHOP_GMAIL_MAILBOXES, gmailSearchTargets, gmailTargetKey } from '@/lib/ads/gmail-collections';
 import { fetchTwilioCollectionMessages, type TwilioText } from '@/lib/ads/twilio-outbound';
 import { callbackVapiIds, dropBookedByMike, mikeOutreachAttempts, mikeStatusLabel, sourcesWithoutMikeLegs } from '@/lib/receptionist/mike-callback';
 import { loadRecentAttempts } from '@/lib/receptionist/mike-callback-run';
@@ -193,12 +193,15 @@ export async function GET(request: NextRequest) {
           notes: [`jobber follow-up: ${error instanceof Error ? error.message : 'error'}`],
         }));
         notes.push(...jobber.notes);
-        // Read the OIDC token in the request, then close over it. The cache key
-        // must not contain the token, and unstable_cache does not see request headers.
+        let open = listOpenInvoices(past.invoices, past.clientRows, { hasBalanceColumn: past.hasBalanceColumn });
+        open = applyInvoiceExtras(open, jobber.invoices);
+        // Search each customer address from that invoice's date. The cache key is
+        // the address set, not the OIDC token, and unstable_cache does not see request headers.
         const oidcToken = vercelOidcToken(process.env, request.headers.get('x-vercel-oidc-token'));
+        const gmailTargets = gmailSearchTargets(open);
         const gmail = await unstable_cache(
-          () => loadGmailCollection(process.env, fetch, oidcToken),
-          ['gmail-collections-v3'],
+          () => loadGmailCollection(process.env, fetch, oidcToken, Math.floor(Date.now() / 1000), gmailTargets),
+          ['gmail-collections-v4', gmailTargetKey(gmailTargets)],
           { revalidate: 600 },
         )().catch((error: unknown) => ({
           events: [] as CollectionEvent[],
@@ -209,8 +212,6 @@ export async function GET(request: NextRequest) {
         }));
         if (gmail.ok) notes.push(`Collection email: Gmail counts mail sent from ${gmail.mailbox}.`);
         if (gmail.note) notes.push(gmail.note);
-        let open = listOpenInvoices(past.invoices, past.clientRows, { hasBalanceColumn: past.hasBalanceColumn });
-        open = applyInvoiceExtras(open, jobber.invoices);
         const work = indexWorkTimes([...loaded.rows, ...jobber.work]);
         const candidates = dropBookedByMike(callbackCandidates({
           log: inboundLog,
@@ -245,6 +246,16 @@ export async function GET(request: NextRequest) {
         });
         dash.needsCallback = { ...queues.leads, rows: withMike(queues.leads.rows) };
         dash.invoiceFollowUp = queues.invoices;
+        const watched = new Set(['5621', '5504', '5818', '5785']);
+        console.log('[gmail-verify]', JSON.stringify({
+          ok: gmail.ok,
+          unavailable: gmail.unavailable,
+          note: gmail.note,
+          targets: gmailTargets.length,
+          rows: queues.invoices.rows
+            .filter((row) => watched.has(String(row.invoiceNumber ?? '')))
+            .map((row) => ({ n: row.invoiceNumber, name: row.name, outreach: row.outreach })),
+        }));
       } catch (error) {
         dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
         notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);

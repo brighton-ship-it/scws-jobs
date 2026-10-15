@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  collectionEmailEvents, delegationClaims, gmailFederationConfig, invoiceNumbersIn, loadGmailCollection,
-  SHOP_GMAIL_MAILBOXES, workloadIdentityAudience,
+  collectionEmailEvents, delegationClaims, gmailAfterDay, gmailFederationConfig, gmailSearchTargets,
+  gmailSentQueries, invoiceNumbersIn, loadGmailCollection, SHOP_GMAIL_MAILBOXES, workloadIdentityAudience,
 } from './gmail-collections.ts';
 
 test('shop Gmail counts invoice mail and skips review requests', () => {
@@ -141,6 +141,11 @@ test('one mailbox can fail without zeroing mail from the others', async () => {
       });
     }
     if (url.includes('/messages?')) {
+      const q = new URL(url).searchParams.get('q') ?? '';
+      assert.match(q, /in:sent/);
+      assert.match(q, /to:nancy@pacificaglass.net/);
+      assert.match(q, /after:2026\/09\/29/);
+      assert.equal(q.includes('newer_than'), false);
       if (auth.includes('shanicey@')) return json({ messages: [] });
       return json({ messages: [{ id: 'b1' }] });
     }
@@ -148,7 +153,9 @@ test('one mailbox can fail without zeroing mail from the others', async () => {
   };
   const result = await loadGmailCollection({
     GCP_PROJECT_NUMBER: '123456789012',
-  } as NodeJS.ProcessEnv, fetchImpl, 'oidc-token', 1_700_000_000);
+  } as NodeJS.ProcessEnv, fetchImpl, 'oidc-token', 1_700_000_000, [
+    { email: 'nancy@pacificaglass.net', afterIso: '2026-09-30T20:54:50Z' },
+  ]);
   assert.equal(result.ok, true);
   assert.deepEqual(result.unavailable, ['Liz']);
   assert.equal(result.mailbox, 'brighton@scwellservice.com, shanicey@scwellservice.com');
@@ -163,4 +170,74 @@ test('one mailbox can fail without zeroing mail from the others', async () => {
   assert.deepEqual(missing.events, []);
   assert.deepEqual(missing.unavailable, ['Brighton', 'Liz', 'Shanicey']);
   assert.match(missing.note ?? '', /OIDC token/);
+});
+
+test('sent search uses the customer address and pages back past the newest mail', async () => {
+  const targets = gmailSearchTargets([
+    { emails: ['kareneddy48@gmail.com', 'keddy48@gmail.com'], issuedAt: '2026-09-24T13:57:11Z' },
+    { emails: ['kareneddy48@gmail.com'], issuedAt: '2026-10-01T17:00:00Z' },
+  ]);
+  assert.deepEqual(targets.map((target) => target.email), ['kareneddy48@gmail.com', 'keddy48@gmail.com']);
+  assert.equal(gmailAfterDay('2026-09-24T13:57:11Z'), '2026/09/23');
+  const queries = gmailSentQueries(targets);
+  assert.equal(queries.length, 1);
+  assert.match(queries[0], /in:sent after:2026\/09\/23/);
+  assert.match(queries[0], /to:kareneddy48@gmail.com/);
+  assert.equal(queries[0].includes('newer_than'), false);
+
+  const fetchImpl: typeof fetch = async (input, init) => {
+    const url = String(input);
+    const body = typeof init?.body === 'string' ? init.body : init?.body instanceof URLSearchParams ? init.body.toString() : '';
+    const json = (payload: unknown, status = 200) => new Response(JSON.stringify(payload), { status, headers: { 'content-type': 'application/json' } });
+    if (url.startsWith('https://sts.googleapis.com/')) return json({ access_token: 'federated' });
+    if (url.includes(':generateAccessToken')) return json({ accessToken: 'service-account' });
+    if (url.includes(':signJwt')) {
+      const claims = JSON.parse(JSON.parse(body).payload) as { sub: string };
+      return json({ signedJwt: `signed-${claims.sub}` });
+    }
+    if (url.startsWith('https://oauth2.googleapis.com/token')) {
+      const fields = new URLSearchParams(body);
+      return json({ access_token: `gmail-${fields.get('assertion')}` });
+    }
+    if (url.endsWith('/profile')) {
+      const auth = new Headers(init?.headers).get('authorization') ?? '';
+      const email = auth.includes('lizbeth@') ? 'lizbeth@scwellservice.com' : auth.includes('shanicey@') ? 'shanicey@scwellservice.com' : 'brighton@scwellservice.com';
+      return json({ emailAddress: email });
+    }
+    if (url.includes('/messages/')) {
+      const id = decodeURIComponent(url.split('/messages/')[1]?.split('?')[0] ?? '');
+      const oct8 = id.endsWith('oct8');
+      return json({
+        id,
+        internalDate: String(Date.parse(oct8 ? '2026-10-08T19:39:52Z' : '2026-10-14T18:29:46Z')),
+        snippet: 'Invoice balance is still open.',
+        payload: {
+          headers: [
+            { name: 'Subject', value: oct8 ? 'Invoices #5785 and #5829 from SCWS' : 'Invoice #5785 from SCWS' },
+            { name: 'From', value: 'brighton@scwellservice.com' },
+            { name: 'To', value: 'kareneddy48@gmail.com' },
+          ],
+        },
+      });
+    }
+    if (url.includes('/messages?')) {
+      const auth = new Headers(init?.headers).get('authorization') ?? '';
+      if (!auth.includes('brighton@')) return json({ messages: [] });
+      const page = new URL(url).searchParams.get('pageToken');
+      if (page === 'older') return json({ messages: [{ id: 'oct8' }] });
+      return json({ messages: [{ id: 'oct14' }], nextPageToken: 'older' });
+    }
+    return json({ error: `unexpected ${url}` }, 500);
+  };
+  const result = await loadGmailCollection({ GCP_PROJECT_NUMBER: '950015473137' } as NodeJS.ProcessEnv, fetchImpl, 'oidc-token', 1_700_000_000, [
+    { email: 'kareneddy48@gmail.com', afterIso: '2026-09-24T13:57:11Z' },
+  ]);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.unavailable, []);
+  const brighton = result.events.filter((event) => event.invoiceNumbers?.includes('5785'));
+  assert.deepEqual(brighton.map((event) => event.at).sort(), [
+    '2026-10-08T19:39:52.000Z',
+    '2026-10-14T18:29:46.000Z',
+  ]);
+  assert.equal((result.note ?? '').includes('300'), false);
 });
