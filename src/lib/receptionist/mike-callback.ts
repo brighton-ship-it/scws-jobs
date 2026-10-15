@@ -273,8 +273,12 @@ export function mikeCallbackFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. Just a heads up, this call's recorded. What's going on with your well?`;
 }
 
-/** How long a callback waits for the person who answered before Mike greets. */
-export const CALLBACK_SILENCE_GREETING_SECONDS = 2;
+/**
+ * How long a callback waits for the person who answered before Mike greets.
+ * A little past 2 seconds: a hello that starts right at 2 seconds has to
+ * cancel the timer before the greeting is locked in.
+ */
+export const CALLBACK_SILENCE_GREETING_SECONDS = 3;
 
 /**
  * Cartesia sonic-3 volume. 1 is the default and 0.5 is the quietest.
@@ -332,33 +336,25 @@ export function callbackVoiceSettings(): {
 }
 
 /**
- * Opening fallback. customer.speech.timeout starts only after the assistant
- * has finished a turn, so it never covers the silence at pickup. This hook
- * starts at connect. The prompt stays silent if they already spoke, so the
- * greeting is not recited over "this is Brighton."
+ * Opening fallback. The timer is cancelled when the person speaks, so the
+ * greeting is not recited over their hello. The words are exact. A model
+ * prompt here was spoken aloud, including the instructions.
  */
 export function callbackSilenceGreetingHook(): {
-  on: 'call.timeElapsed';
+  on: 'customer.speech.timeout';
   name: string;
-  options: { seconds: number };
-  do: Array<{ type: 'say'; prompt: string }>;
+  options: { timeoutSeconds: number; triggerMaxCount: number; triggerResetMode: 'never' };
+  do: Array<{ type: 'say'; exact: string }>;
 } {
-  const greeting = mikeCallbackFirstMessage();
   return {
-    on: 'call.timeElapsed',
+    on: 'customer.speech.timeout',
     name: 'callback_greeting_if_silent',
-    options: { seconds: CALLBACK_SILENCE_GREETING_SECONDS },
-    do: [{
-      type: 'say',
-      prompt: [
-        'Transcript so far:',
-        '{{transcript}}',
-        '',
-        'If the customer has already said anything, including a hello or their name, output no words at all. Do not greet. Do not apologize. Produce no speech.',
-        'If the customer has not spoken, say exactly this and nothing more, calmly, at a normal volume, with no excitement and no emphasis:',
-        greeting,
-      ].join('\n'),
-    }],
+    options: {
+      timeoutSeconds: CALLBACK_SILENCE_GREETING_SECONDS,
+      triggerMaxCount: 1,
+      triggerResetMode: 'never',
+    },
+    do: [{ type: 'say', exact: mikeCallbackFirstMessage() }],
   };
 }
 

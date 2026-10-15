@@ -401,10 +401,12 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.equal(payload.assistantOverrides.firstMessage, '');
   assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-waits-for-user');
   assert.equal(payload.assistantOverrides.backgroundSound, 'off');
-  assert.equal(payload.assistantOverrides.hooks[0].on, 'call.timeElapsed');
-  assert.equal(payload.assistantOverrides.hooks[0].options.seconds, CALLBACK_SILENCE_GREETING_SECONDS);
-  assert.match(payload.assistantOverrides.hooks[0].do[0].prompt, /this call's recorded/);
-  assert.match(payload.assistantOverrides.hooks[0].do[0].prompt, /output no words at all/);
+  assert.equal(payload.assistantOverrides.hooks[0].on, 'customer.speech.timeout');
+  assert.equal(payload.assistantOverrides.hooks[0].options.timeoutSeconds, CALLBACK_SILENCE_GREETING_SECONDS);
+  assert.equal(payload.assistantOverrides.hooks[0].options.triggerMaxCount, 1);
+  assert.equal(payload.assistantOverrides.hooks[0].options.triggerResetMode, 'never');
+  assert.match(payload.assistantOverrides.hooks[0].do[0].exact, /this call's recorded/);
+  assert.equal('prompt' in payload.assistantOverrides.hooks[0].do[0], false);
   assert.equal(payload.assistantOverrides.voice.generationConfig.volume, CALLBACK_VOICE_VOLUME);
   assert.equal(payload.assistantOverrides.voice.generationConfig.speed, 1);
   assert.ok(CALLBACK_VOICE_VOLUME < 1);
