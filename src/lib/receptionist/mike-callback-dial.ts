@@ -4,9 +4,9 @@
  * Fetch is injected so tests never touch the network.
  */
 import {
+  callbackAssistantOverrides,
   callbackConfig,
   callbackPublicBase,
-  mikeCallbackFirstMessage,
   type CallbackConfig,
 } from './mike-callback.ts';
 import { digits10 } from '../ads/call-dashboard.ts';
@@ -109,8 +109,9 @@ export async function placeTwilioCallback(
 }
 
 /**
- * Vapi places the call from the tracking number and speaks the callback
- * greeting as soon as the customer answers. No second PSTN leg.
+ * Vapi places one call from the tracking number. There is no second bridge,
+ * so the audio is not doubled or amplified. Mike waits for the person who
+ * answered, and greets only if they stay quiet.
  */
 export async function placeVapiCallback(
   input: PlaceCallbackInput,
@@ -133,14 +134,7 @@ export async function placeVapiCallback(
       assistantId: auth.assistantId,
       phoneNumberId: auth.phoneNumberId,
       customer,
-      assistantOverrides: {
-        firstMessageMode: 'assistant-speaks-first',
-        firstMessage: mikeCallbackFirstMessage(),
-        variableValues: {
-          callback: 'true',
-          customerPhone: input.to,
-        },
-      },
+      assistantOverrides: callbackAssistantOverrides(input.to),
     }),
   });
   const payload = await response.json().catch(() => ({})) as { id?: string; message?: string };

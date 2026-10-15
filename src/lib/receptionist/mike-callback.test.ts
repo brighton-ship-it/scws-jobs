@@ -22,6 +22,9 @@ import {
   nextOpenAt,
   mikeFirstMessage,
   mikeCallbackFirstMessage,
+  callbackAssistantOverrides,
+  CALLBACK_SILENCE_GREETING_SECONDS,
+  CALLBACK_VOICE_VOLUME,
   callbackPublicBase,
   phraseMatches,
   planMikeCallbacks,
@@ -360,7 +363,7 @@ test('a live dial posts to Twilio from the tracking number and does not echo the
   assert.match(auth, /^Basic /);
 });
 
-test('a Vapi callback speaks first from the tracking number and does not echo the key', async () => {
+test('a Vapi callback waits for the callee and does not echo the key', async () => {
   let body = '';
   let auth = '';
   const env = {
@@ -389,14 +392,26 @@ test('a Vapi callback speaks first from the tracking number and does not echo th
     assistantId: string;
     phoneNumberId: string;
     customer: { number: string; name?: string };
-    assistantOverrides: { firstMessageMode: string; firstMessage: string; variableValues: { customerPhone: string; callback: string } };
+    assistantOverrides: ReturnType<typeof callbackAssistantOverrides>;
   };
   assert.equal(payload.assistantId, 'asst_test');
   assert.equal(payload.phoneNumberId, 'pn_test');
   assert.equal(payload.customer.number, '+14083181171');
   assert.equal(payload.customer.name, 'Brighton');
-  assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-speaks-first');
-  assert.match(payload.assistantOverrides.firstMessage, /returning your call/);
+  assert.equal(payload.assistantOverrides.firstMessage, '');
+  assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-waits-for-user');
+  assert.equal(payload.assistantOverrides.backgroundSound, 'off');
+  assert.equal(payload.assistantOverrides.hooks[0].on, 'call.timeElapsed');
+  assert.equal(payload.assistantOverrides.hooks[0].options.seconds, CALLBACK_SILENCE_GREETING_SECONDS);
+  assert.match(payload.assistantOverrides.hooks[0].do[0].prompt, /this call's recorded/);
+  assert.match(payload.assistantOverrides.hooks[0].do[0].prompt, /output no words at all/);
+  assert.equal(payload.assistantOverrides.voice.generationConfig.volume, CALLBACK_VOICE_VOLUME);
+  assert.equal(payload.assistantOverrides.voice.generationConfig.speed, 1);
+  assert.ok(CALLBACK_VOICE_VOLUME < 1);
+  assert.ok(CALLBACK_VOICE_VOLUME >= 0.5);
+  assert.equal('experimentalControls' in payload.assistantOverrides.voice, false);
+  assert.equal(payload.assistantOverrides.voice.fallbackPlan.voices[0].useSpeakerBoost, false);
+  assert.equal(payload.assistantOverrides.voice.fallbackPlan.voices[0].style, 0);
   assert.equal(payload.assistantOverrides.variableValues.customerPhone, '+14083181171');
   assert.equal(payload.assistantOverrides.variableValues.callback, 'true');
   assert.doesNotMatch(body, /vapi-secret/);

@@ -268,9 +268,120 @@ export function mikeFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?`;
 }
 
-/** Callback only. He says he is returning the missed call, then asks what's going on. */
+/** Callback only. Spoken by Mike if the person who answered stays quiet. */
 export function mikeCallbackFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. Just a heads up, this call's recorded. What's going on with your well?`;
+}
+
+/** How long a callback waits for the person who answered before Mike greets. */
+export const CALLBACK_SILENCE_GREETING_SECONDS = 2;
+
+/**
+ * Cartesia sonic-3 volume. 1 is the default and 0.5 is the quietest.
+ * The callback was coming through like a shout at the default.
+ */
+export const CALLBACK_VOICE_VOLUME = 0.55;
+
+export const CALLBACK_VOICE_ID = '5fc5c797-12c5-4f2b-ac9b-d4e53c08098f';
+
+/**
+ * Wyatt, quieter, normal speed, no emotion styling.
+ * Cartesia emotion tags only add emotion, so none is set.
+ * The 11labs fallback has speaker boost off so a failover is not louder.
+ */
+export function callbackVoiceSettings(): {
+  provider: 'cartesia';
+  voiceId: string;
+  model: 'sonic-3';
+  language: 'en';
+  cachingEnabled: false;
+  generationConfig: { speed: number; volume: number };
+  fallbackPlan: {
+    voices: Array<{
+      provider: '11labs';
+      voiceId: string;
+      model: 'eleven_turbo_v2_5';
+      stability: number;
+      similarityBoost: number;
+      style: number;
+      speed: number;
+      useSpeakerBoost: false;
+    }>;
+  };
+} {
+  return {
+    provider: 'cartesia',
+    voiceId: CALLBACK_VOICE_ID,
+    model: 'sonic-3',
+    language: 'en',
+    cachingEnabled: false,
+    generationConfig: { speed: 1, volume: CALLBACK_VOICE_VOLUME },
+    fallbackPlan: {
+      voices: [{
+        provider: '11labs',
+        voiceId: 'pNInz6obpgDQGcFmaJgB',
+        model: 'eleven_turbo_v2_5',
+        stability: 0.6,
+        similarityBoost: 0.75,
+        style: 0,
+        speed: 1,
+        useSpeakerBoost: false,
+      }],
+    },
+  };
+}
+
+/**
+ * Opening fallback. customer.speech.timeout starts only after the assistant
+ * has finished a turn, so it never covers the silence at pickup. This hook
+ * starts at connect. The prompt stays silent if they already spoke, so the
+ * greeting is not recited over "this is Brighton."
+ */
+export function callbackSilenceGreetingHook(): {
+  on: 'call.timeElapsed';
+  name: string;
+  options: { seconds: number };
+  do: Array<{ type: 'say'; prompt: string }>;
+} {
+  const greeting = mikeCallbackFirstMessage();
+  return {
+    on: 'call.timeElapsed',
+    name: 'callback_greeting_if_silent',
+    options: { seconds: CALLBACK_SILENCE_GREETING_SECONDS },
+    do: [{
+      type: 'say',
+      prompt: [
+        'Transcript so far:',
+        '{{transcript}}',
+        '',
+        'If the customer has already said anything, including a hello or their name, output no words at all. Do not greet. Do not apologize. Produce no speech.',
+        'If the customer has not spoken, say exactly this and nothing more, calmly, at a normal volume, with no excitement and no emphasis:',
+        greeting,
+      ].join('\n'),
+    }],
+  };
+}
+
+/** Outbound callback: wait for them, then greet if they stay quiet. */
+export function callbackAssistantOverrides(customerPhone: string): {
+  firstMessage: '';
+  firstMessageMode: 'assistant-waits-for-user';
+  firstMessageInterruptionsEnabled: true;
+  backgroundSound: 'off';
+  voice: ReturnType<typeof callbackVoiceSettings>;
+  hooks: Array<ReturnType<typeof callbackSilenceGreetingHook>>;
+  variableValues: { callback: 'true'; customerPhone: string };
+} {
+  return {
+    // Empty so a saved firstMessage is not recited over their hello.
+    firstMessage: '',
+    firstMessageMode: 'assistant-waits-for-user',
+    firstMessageInterruptionsEnabled: true,
+    backgroundSound: 'off',
+    voice: callbackVoiceSettings(),
+    hooks: [callbackSilenceGreetingHook()],
+    variableValues: { callback: 'true', customerPhone },
+  };
 }
 
 /** SIP user for the callback assistant. Twilio dials this instead of Mike's PSTN number. */
