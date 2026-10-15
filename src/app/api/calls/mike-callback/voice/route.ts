@@ -9,7 +9,6 @@ import { publicUrl } from '@/lib/phone-calls/config';
 import { optionalServiceClient } from '@/lib/supabase/service';
 import {
   amdKind,
-  callbackConfig,
   hangupTwiml,
   humanTwiml,
   machineTwiml,
@@ -39,11 +38,11 @@ export async function POST(req: NextRequest) {
     await updateAttemptOutcome(db, attempt.id, 'voicemail', null, ['dialing', 'reached']);
     return xml(machineTwiml(voicemailScript(attempt.fromNumber)));
   }
+  if (!attempt.phone) return xml(hangupTwiml());
   await updateAttemptOutcome(db, attempt.id, 'reached', null, ['dialing']);
   const action = `${new URL(publicUrl(req)).origin}/api/calls/mike-callback/bridge?attempt=${encodeURIComponent(attempt.missedCallKey)}`;
   return xml(humanTwiml({
-    from: attempt.fromNumber,
-    mikeNumber: callbackConfig().mikeNumber,
+    customerPhone: attempt.phone,
     actionUrl: action,
   }));
 }

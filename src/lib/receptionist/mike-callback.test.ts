@@ -21,6 +21,7 @@ import {
   mikeStatusLabel,
   nextOpenAt,
   mikeFirstMessage,
+  mikeCallbackFirstMessage,
   callbackPublicBase,
   phraseMatches,
   planMikeCallbacks,
@@ -33,7 +34,7 @@ import {
   type PlannedCallback,
   type StoredAttempt,
 } from './mike-callback.ts';
-import { DialNotAllowedError, placeTwilioCallback } from './mike-callback-dial.ts';
+import { DialNotAllowedError, placeTwilioCallback, placeVapiCallback } from './mike-callback-dial.ts';
 import { callbackPassBlocked, executeMikeCallbacks } from './mike-callback-run.ts';
 
 const FULL = { MIKE_CALLBACKS_ENABLED: 'true', NEXT_PUBLIC_APP_URL: 'https://scws.example' } as NodeJS.ProcessEnv;
@@ -199,6 +200,7 @@ test('a busy tracking line waits instead of overlapping two bridges', () => {
   assert.equal(queued.action, 'queue');
   if (queued.action === 'queue') assert.equal(queued.reason, 'line_busy');
   assert.equal(matchInFlightCallback('+17603312502', [busy], now)?.phone, '+17605550222');
+  assert.equal(matchInFlightCallback('+17605550222', [busy], now)?.phone, '+17605550222');
   assert.equal(matchInFlightCallback('+17605550100', [busy], now), null);
   assert.equal(matchInFlightCallback('+17603312502', [busy, { ...busy, missedCallKey: 'log:third', phone: '+17605550333' }], now), null);
 });
@@ -246,14 +248,17 @@ test('Mike speaks the recording disclosure; the callback bridge does not Say it'
   assert.doesNotMatch(machine, /Polly\.Joanna/);
   assert.match(machine, /<Hangup/);
   assert.doesNotMatch(machine, /<Dial/);
-  const human = humanTwiml({ from: '+17603312502', mikeNumber: '+17604915348', actionUrl: 'https://scws.example/bridge' });
+  const callbackGreeting = mikeCallbackFirstMessage();
+  assert.match(callbackGreeting, /returning your call/);
+  assert.match(callbackGreeting, /this call's recorded/);
+  const human = humanTwiml({ customerPhone: '+14083181171', actionUrl: 'https://scws.example/bridge' });
   assert.doesNotMatch(human, /<Say/);
   assert.match(human, /<Dial/);
+  assert.match(human, /<Sip>sip:scws-mike-callback@sip\.vapi\.ai\?X-callback=true&amp;X-customerPhone=%2B14083181171<\/Sip>/);
+  assert.doesNotMatch(human, /<Number>/);
   assert.equal(phoneForCallbackTool('+17603312502', '4083181171'), '4083181171');
   assert.equal(phoneForCallbackTool('+14083181171', '4083181171'), '+14083181171');
   assert.equal(phoneForCallbackTool('', '4083181171'), '4083181171');
-  assert.match(human, /callerId="\+17603312502"/);
-  assert.match(human, /<Number>\+17604915348<\/Number>/);
   assert.match(hangupTwiml(), /<Hangup/);
   assert.deepEqual(visitCreatedInstants({ visits: { nodes: [{ createdAt: '2026-10-14T18:00:00Z' }, { startAt: '2026-10-15T16:00:00Z' }] } }), ['2026-10-14T18:00:00Z', '2026-10-15T16:00:00Z']);
 });
@@ -321,7 +326,7 @@ test('the executor places no call when the flag is off, and only the allowlist i
   let fetches = 0;
   await assert.rejects(
     () => placeTwilioCallback(
-      { to: '+17605550100', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status' },
+      { to: '+17605550100', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status', amdUrl: 'https://scws.example/amd' },
       { TWILIO_ACCOUNT_SID: 'AC_TEST', TWILIO_AUTH_TOKEN: 'secret-token', NEXT_PUBLIC_APP_URL: 'https://scws.example' } as NodeJS.ProcessEnv,
       async () => { fetches += 1; return new Response('{}'); },
     ),
@@ -335,7 +340,7 @@ test('a live dial posts to Twilio from the tracking number and does not echo the
   let url = '';
   let auth = '';
   const result = await placeTwilioCallback(
-    { to: '+17605550199', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status' },
+    { to: '+17605550199', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status', amdUrl: 'https://scws.example/amd' },
     { MIKE_CALLBACK_TEST_NUMBERS: '+17605550199', NEXT_PUBLIC_APP_URL: 'https://scws.example', TWILIO_ACCOUNT_SID: 'AC_TEST', TWILIO_AUTH_TOKEN: 'secret-token' } as NodeJS.ProcessEnv,
     async (input, init) => {
       url = String(input);
@@ -349,8 +354,53 @@ test('a live dial posts to Twilio from the tracking number and does not echo the
   assert.match(body, /From=%2B17603312502/);
   assert.match(body, /To=%2B17605550199/);
   assert.match(body, /MachineDetection=DetectMessageEnd/);
+  assert.match(body, /AsyncAmd=true/);
+  assert.match(body, /AsyncAmdStatusCallback=/);
   assert.doesNotMatch(body, /secret-token/);
   assert.match(auth, /^Basic /);
+});
+
+test('a Vapi callback speaks first from the tracking number and does not echo the key', async () => {
+  let body = '';
+  let auth = '';
+  const env = {
+    MIKE_CALLBACK_TEST_NUMBERS: '+14083181171',
+    NEXT_PUBLIC_APP_URL: 'https://scws.example',
+  } as NodeJS.ProcessEnv;
+  const result = await placeVapiCallback(
+    {
+      to: '+14083181171',
+      from: '+17604630493',
+      voiceUrl: 'https://scws.example/voice',
+      statusUrl: 'https://scws.example/status',
+      amdUrl: 'https://scws.example/amd',
+      name: 'Brighton',
+    },
+    env,
+    { key: 'vapi-secret', phoneNumberId: 'pn_test', assistantId: 'asst_test' },
+    async (_input, init) => {
+      auth = String((init?.headers as Record<string, string>).Authorization || '');
+      body = String(init?.body || '');
+      return new Response(JSON.stringify({ id: 'call_test' }), { status: 200 });
+    },
+  );
+  assert.equal(result.vapiCallId, 'call_test');
+  const payload = JSON.parse(body) as {
+    assistantId: string;
+    phoneNumberId: string;
+    customer: { number: string; name?: string };
+    assistantOverrides: { firstMessageMode: string; firstMessage: string; variableValues: { customerPhone: string; callback: string } };
+  };
+  assert.equal(payload.assistantId, 'asst_test');
+  assert.equal(payload.phoneNumberId, 'pn_test');
+  assert.equal(payload.customer.number, '+14083181171');
+  assert.equal(payload.customer.name, 'Brighton');
+  assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-speaks-first');
+  assert.match(payload.assistantOverrides.firstMessage, /returning your call/);
+  assert.equal(payload.assistantOverrides.variableValues.customerPhone, '+14083181171');
+  assert.equal(payload.assistantOverrides.variableValues.callback, 'true');
+  assert.doesNotMatch(body, /vapi-secret/);
+  assert.match(auth, /^Bearer /);
 });
 
 test('an http public URL and a failed exclusion read never dial', () => {

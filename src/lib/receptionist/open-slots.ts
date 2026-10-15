@@ -27,6 +27,7 @@ import {
   resolveReceptionistJobberToken,
 } from './check-schedule.ts';
 import {
+  JobberBudgetStepDownError,
   JobberQueryOverCostError,
   THROTTLE_MAX_ATTEMPTS,
   isJobberThrottled,
@@ -170,30 +171,45 @@ const USERS_QUERY_BARE = `
   }
 `;
 
-function occupiedVisitsQuery(detail: 'rich' | 'mid' | 'base'): string {
+type VisitQueryDetail = 'rich' | 'mid' | 'base' | 'fit';
+
+/**
+ * How small a page has to be before it fits in the points Jobber has left.
+ * Returns null when the bucket is empty or the current page is already small.
+ */
+export function fitVisitPageSize(requested: number, pageSize: number, available: number): number | null {
+  if (!(requested > 0) || pageSize < 2 || !(available > 0) || requested <= available) return null;
+  const fitted = Math.floor((available * 0.8) / (requested / pageSize));
+  if (fitted < 4 || fitted >= pageSize) return null;
+  return fitted;
+}
+
+function occupiedVisitsQuery(detail: VisitQueryDetail, pageSize: number): string {
   const extra =
     detail === 'base'
       ? ''
-      : detail === 'mid'
+      : detail === 'rich'
         ? `
         title
-        job { title jobType }`
+        job { title jobType property { address { city } } }`
         : `
         title
-        job { title jobType property { address { city } } }`;
+        job { title jobType }`;
+  const usersFirst = detail === 'fit' ? 2 : 5;
+  const nameFields = detail === 'fit' ? 'full' : 'full first last';
   return `
   query OccupiedVisits($startAfter: ISO8601DateTime!, $startBefore: ISO8601DateTime!, $cursor: String) {
-    visits(first: ${detail === 'base' ? 100 : 50}, after: $cursor, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
+    visits(first: ${pageSize}, after: $cursor, filter: { startAt: { after: $startAfter, before: $startBefore } }) {
       pageInfo { hasNextPage endCursor }
       nodes {
         id
         startAt
         endAt
         allDay${extra}
-        assignedUsers(first: 5) {
+        assignedUsers(first: ${usersFirst}) {
           nodes {
             id
-            name { full first last }
+            name { ${nameFields} }
           }
         }
       }
@@ -227,7 +243,8 @@ async function jobberGraphql(
   variables: Record<string, unknown>,
   fetchFn: typeof fetch,
   version: string,
-  sleep: (ms: number) => Promise<void>
+  sleep: (ms: number) => Promise<void>,
+  shortfall: 'step-down' | 'wait' = 'wait',
 ): Promise<{ data?: any; errors?: Array<{ message?: string }> }> {
   let lastMessage = 'Jobber GraphQL error';
 
@@ -258,6 +275,17 @@ async function jobberGraphql(
 
     const waitMs = throttleBackoffMs(json.extensions?.cost, SLOTS_THROTTLE_MAX_WAIT_MS);
     if (waitMs < 0) throw new JobberQueryOverCostError();
+    const requested = json.extensions?.cost?.requestedQueryCost;
+    const available = json.extensions?.cost?.throttleStatus?.currentlyAvailable;
+    if (
+      shortfall === 'step-down' &&
+      typeof requested === 'number' &&
+      typeof available === 'number' &&
+      available > 0 &&
+      requested > available
+    ) {
+      throw new JobberBudgetStepDownError(available, requested);
+    }
     console.warn(
       `[Receptionist] Jobber throttled open slots (attempt ${attempt}/${THROTTLE_MAX_ATTEMPTS}, ` +
         `requested=${json.extensions?.cost?.requestedQueryCost ?? '?'}, ` +
@@ -644,24 +672,39 @@ export async function lookupOpenSlots(
     const occupied: OccupiedVisit[] = [];
     let cursor: string | null = null;
     let complete = false;
-    // Richest query first; if Jobber rejects a field or the cost, step down so slots still load.
-    const ladder: Array<'rich' | 'mid' | 'base'> = ['rich', 'mid', 'base'];
-    let level = 0;
-    for (let page = 0; page < MAX_VISIT_PAGES; page++) {
+    // Richest query first. A query that costs more than the bucket allows steps
+    // down a field. A query the bucket cannot afford right now shrinks the page
+    // so checkSchedule still returns real openings.
+    let detail: VisitQueryDetail = 'rich';
+    let pageSize = 50;
+    let budgetFitted = false;
+    const pageCap = () => (pageSize <= 25 ? 20 : MAX_VISIT_PAGES);
+    for (let page = 0; page < pageCap(); page++) {
       let visitsData: { data?: any } | null = null;
       while (!visitsData) {
         try {
           visitsData = await jobberGraphql(
             token,
-            occupiedVisitsQuery(ladder[level]),
+            occupiedVisitsQuery(detail, pageSize),
             { startAfter, startBefore, cursor },
             fetchFn,
             version,
-            sleep
+            sleep,
+            budgetFitted ? 'wait' : 'step-down',
           );
         } catch (error) {
-          if (!shouldStepDownSlotsQuery(error) || level >= ladder.length - 1 || cursor) throw error;
-          level += 1;
+          if (error instanceof JobberBudgetStepDownError && !cursor && !budgetFitted) {
+            const fitted = fitVisitPageSize(error.requested, pageSize, error.available);
+            budgetFitted = true;
+            if (fitted) {
+              detail = 'fit';
+              pageSize = fitted;
+            }
+            continue;
+          }
+          if (!shouldStepDownSlotsQuery(error) || detail === 'base' || detail === 'fit' || cursor) throw error;
+          detail = detail === 'rich' ? 'mid' : 'base';
+          if (detail === 'base') pageSize = Math.min(pageSize, 40);
         }
       }
       occupied.push(...(visitsData?.data?.visits?.nodes || []).map(mapVisitNode));

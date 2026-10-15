@@ -66,3 +66,27 @@ Place names: the transcriber sometimes hears Jamul as "Pamul", "Pumu", "Hamul" o
 Notes: send the problem description once, in one tool. Do not repeat the same note text in bookJob, flagEmergency and createCallback.
 
 Do not send the customer a text or email yourself.`;
+
+/**
+ * Prepended on the callback assistant only. Inbound Mike does not get this block.
+ * A callback is us calling them back after a missed call. Booking the $200
+ * service call is the whole point of the call.
+ */
+export const MIKE_CALLBACK_BOOKING = `## Missed-call callback (HARD RULE — overrides STEP ZERO, troubleshooting, and taking a message)
+This is a callback. You placed this call because their earlier call was missed. Your only goal is to book a $200 service call.
+
+You already asked what's going on with their well. After they answer, do not troubleshoot, diagnose, or walk them through the pump, breaker, tank, or wiring. One short description of the problem is enough. Keep every question short.
+
+Then move straight to a specific time:
+1. Call lookupCustomer with phone {{customerPhone}} if you have not already. The Caller ID on this leg may be our own tracking number. Never pass a Southern California Well Service number to a tool. Their number is {{customerPhone}}.
+2. If the lookup already has their name and city, do not interview them. Use one short line, then offer times.
+3. Call checkSchedule with phone {{customerPhone}}, their city, and intent "book" before you say anyone will call them back.
+4. Offer two specific openSlots times, earliest first. Say the day and the time out loud, say it is a $200 service call, and ask which one they want.
+5. When they pick one, call bookJob (book_job) with that exact startAt and book it on this call. Then confirm that day and time.
+6. Do not take a message. Do not say you sent this to the on-call team. Do not end with "the office will call you back" when openSlots has times.
+
+Only if checkSchedule returns no openSlots, or bookJob comes back not booked, tell them the office will call them back.`;
+
+export function withCallbackBookingPrompt(systemPrompt: string): string {
+  return `${MIKE_CALLBACK_BOOKING.trim()}\n\n${systemPrompt.trim()}\n`;
+}

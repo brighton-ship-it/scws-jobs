@@ -263,9 +263,22 @@ export function businessCallerId(called: string | null | undefined, env: NodeJS.
   return `+1${d}`;
 }
 
-/** Spoken by Mike in his Vapi voice on inbound calls and callbacks. No Twilio <Say> before him. */
+/** Spoken by Mike in his Vapi voice on inbound calls. No Twilio <Say> before him. */
 export function mikeFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?`;
+}
+
+/** Callback only. He says he is returning the missed call, then asks what's going on. */
+export function mikeCallbackFirstMessage(): string {
+  return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. Just a heads up, this call's recorded. What's going on with your well?`;
+}
+
+/** SIP user for the callback assistant. Twilio dials this instead of Mike's PSTN number. */
+export const CALLBACK_SIP_USER = 'scws-mike-callback';
+
+export function callbackSipUri(customerPhone: string): string {
+  const phone = customerPhone.trim();
+  return `sip:${CALLBACK_SIP_USER}@sip.vapi.ai?X-callback=true&X-customerPhone=${encodeURIComponent(phone)}`;
 }
 
 export function voicemailScript(fromE164: string): string {
@@ -301,11 +314,15 @@ export function machineTwiml(voicemail: string): string {
 </Response>`;
 }
 
-export function humanTwiml(opts: { from: string; mikeNumber: string; actionUrl: string }): string {
+/**
+ * Person answered. Connect straight to the callback assistant over SIP.
+ * No second PSTN leg, and no <Say> before Mike.
+ */
+export function humanTwiml(opts: { customerPhone: string; actionUrl: string }): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${esc(opts.from)}" timeout="25" action="${esc(opts.actionUrl)}" method="POST">
-    <Number>${esc(opts.mikeNumber)}</Number>
+  <Dial timeout="20" action="${esc(opts.actionUrl)}" method="POST">
+    <Sip>${esc(callbackSipUri(opts.customerPhone))}</Sip>
   </Dial>
 </Response>`;
 }
@@ -413,16 +430,21 @@ export function fromLineBusy(from: string | null, attempts: StoredAttempt[], now
   });
 }
 
+function inFlightAttempt(row: StoredAttempt, now: Date): boolean {
+  const t = Date.parse(row.attemptedAt || '');
+  if (!Number.isFinite(t) || now.getTime() - t > IN_FLIGHT_MS) return false;
+  return row.outcome === 'dialing' || row.outcome === 'reached';
+}
+
 export function matchInFlightCallback(presented: string | null, attempts: StoredAttempt[], now: Date): StoredAttempt | null {
   const line = digits10(presented);
   if (!line) return null;
-  const hits = attempts.filter((row) => {
-    if (digits10(row.fromNumber) !== line) return false;
-    const t = Date.parse(row.attemptedAt || '');
-    if (!Number.isFinite(t) || now.getTime() - t > IN_FLIGHT_MS) return false;
-    return row.outcome === 'dialing' || row.outcome === 'reached';
-  });
-  return hits.length === 1 ? hits[0] : null;
+  const live = attempts.filter((row) => inFlightAttempt(row, now));
+  const byFrom = live.filter((row) => digits10(row.fromNumber) === line);
+  if (byFrom.length === 1) return byFrom[0];
+  if (byFrom.length > 1) return null;
+  const byPhone = live.filter((row) => digits10(row.phone) === line);
+  return byPhone.length === 1 ? byPhone[0] : null;
 }
 
 function gate(decision: CallbackAction, phone: string | null, config: CallbackConfig): CallbackAction {
