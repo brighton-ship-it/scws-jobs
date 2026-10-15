@@ -54,6 +54,14 @@ describe('isPublicApiRoute', () => {
     assert.equal(isPublicApiRoute('POST', '/api/collections/sms-batch/extra'), false);
   });
 
+  it('lets Mike callback TwiML past middleware (routes still require a Twilio signature)', () => {
+    assert.equal(isPublicApiRoute('POST', '/api/calls/mike-callback/voice'), true);
+    assert.equal(isPublicApiRoute('POST', '/api/calls/mike-callback/bridge'), true);
+    assert.equal(isPublicApiRoute('POST', '/api/calls/mike-callback/status'), true);
+    assert.equal(isPublicApiRoute('GET', '/api/calls/mike-callback/voice'), false);
+    assert.equal(isPublicApiRoute('POST', '/api/calls/mike-callback/voice/extra'), false);
+  });
+
   it('lets the quote GP tracker past middleware (route still requires session or QUOTES_GP_KEY)', () => {
     assert.equal(isOpsApiPath('/api/ops/quotes-gp'), true);
     assert.equal(isOpsPagePath('/ops/quotes-gp'), true);
