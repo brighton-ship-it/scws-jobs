@@ -109,9 +109,8 @@ export async function placeTwilioCallback(
 }
 
 /**
- * Vapi places one call from the tracking number. There is no second bridge,
- * so the audio is not doubled or amplified. Mike waits for the person who
- * answered, and greets only if they stay quiet.
+ * Vapi places one call from the tracking number. There is no Twilio bridge
+ * on this path, and no say hook, so a second Mike cannot join the audio.
  */
 export async function placeVapiCallback(
   input: PlaceCallbackInput,

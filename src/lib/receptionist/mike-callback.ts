@@ -268,17 +268,10 @@ export function mikeFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?`;
 }
 
-/** Callback only. Spoken by Mike if the person who answered stays quiet. */
+/** Callback greeting. The model says this itself. Nothing else on the call speaks it. */
 export function mikeCallbackFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. Just a heads up, this call's recorded. What's going on with your well?`;
 }
-
-/**
- * How long a callback waits for the person who answered before Mike greets.
- * A little past 2 seconds: a hello that starts right at 2 seconds has to
- * cancel the timer before the greeting is locked in.
- */
-export const CALLBACK_SILENCE_GREETING_SECONDS = 3;
 
 /**
  * Cartesia sonic-3 volume. 1 is the default and 0.5 is the quietest.
@@ -336,32 +329,10 @@ export function callbackVoiceSettings(): {
 }
 
 /**
- * Opening fallback. The timer is cancelled when the person speaks, so the
- * greeting is not recited over their hello. exact is the only spoken text.
- * say.prompt is spoken aloud by the voice, which is how the rules were read
- * on the 6:26 PM call.
+ * Stop as soon as the caller’s voice is on the line, then wait a second.
+ * There is no say hook. A say action speaks on its own stream, which played
+ * over the model’s reply on the 6:26 PM call.
  */
-export function callbackSilenceGreetingHook(): {
-  on: 'customer.speech.timeout';
-  name: string;
-  options: { timeoutSeconds: number; triggerMaxCount: number; triggerResetMode: 'never' };
-  do: Array<{ type: 'say'; exact: string }>;
-} {
-  return {
-    on: 'customer.speech.timeout',
-    name: 'callback_greeting_if_silent',
-    options: {
-      timeoutSeconds: CALLBACK_SILENCE_GREETING_SECONDS,
-      triggerMaxCount: 1,
-      triggerResetMode: 'never',
-    },
-    // Hook say rejects interruptionsEnabled. Barge-in is stopSpeakingPlan
-    // plus firstMessageInterruptionsEnabled, which cover this utterance.
-    do: [{ type: 'say', exact: mikeCallbackFirstMessage() }],
-  };
-}
-
-/** Stop as soon as the caller’s voice is on the line, then wait a second. */
 export function callbackStopSpeakingPlan(): {
   numWords: 0;
   voiceSeconds: 0.2;
@@ -370,7 +341,7 @@ export function callbackStopSpeakingPlan(): {
   return { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 };
 }
 
-/** Outbound callback: wait for them, then greet if they stay quiet. */
+/** Outbound callback: one assistant, no parallel say, wait for them to speak. */
 export function callbackAssistantOverrides(customerPhone: string): {
   firstMessage: '';
   firstMessageMode: 'assistant-waits-for-user';
@@ -378,7 +349,8 @@ export function callbackAssistantOverrides(customerPhone: string): {
   backgroundSound: 'off';
   voice: ReturnType<typeof callbackVoiceSettings>;
   stopSpeakingPlan: ReturnType<typeof callbackStopSpeakingPlan>;
-  hooks: Array<ReturnType<typeof callbackSilenceGreetingHook>>;
+  /** Replaces any saved say hook so a second voice cannot join this call. */
+  hooks: [];
   variableValues: { callback: 'true'; customerPhone: string };
 } {
   return {
@@ -389,7 +361,7 @@ export function callbackAssistantOverrides(customerPhone: string): {
     backgroundSound: 'off',
     voice: callbackVoiceSettings(),
     stopSpeakingPlan: callbackStopSpeakingPlan(),
-    hooks: [callbackSilenceGreetingHook()],
+    hooks: [],
     variableValues: { callback: 'true', customerPhone },
   };
 }

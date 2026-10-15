@@ -23,7 +23,6 @@ import {
   mikeFirstMessage,
   mikeCallbackFirstMessage,
   callbackAssistantOverrides,
-  CALLBACK_SILENCE_GREETING_SECONDS,
   CALLBACK_VOICE_VOLUME,
   callbackPublicBase,
   phraseMatches,
@@ -37,8 +36,8 @@ import {
   type PlannedCallback,
   type StoredAttempt,
 } from './mike-callback.ts';
-import { DialNotAllowedError, placeTwilioCallback, placeVapiCallback } from './mike-callback-dial.ts';
-import { callbackPassBlocked, executeMikeCallbacks } from './mike-callback-run.ts';
+import { DialNotAllowedError, placeMikeCallback, placeTwilioCallback, placeVapiCallback } from './mike-callback-dial.ts';
+import { callbackPassBlocked, executeMikeCallbacks, upsertAttempt, type PersistAttempt } from './mike-callback-run.ts';
 
 const FULL = { MIKE_CALLBACKS_ENABLED: 'true', NEXT_PUBLIC_APP_URL: 'https://scws.example' } as NodeJS.ProcessEnv;
 const now = new Date('2026-10-14T20:00:00Z'); // Wednesday 1:00 PM Pacific
@@ -402,13 +401,8 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.equal(payload.assistantOverrides.firstMessage, '');
   assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-waits-for-user');
   assert.equal(payload.assistantOverrides.backgroundSound, 'off');
-  assert.equal(payload.assistantOverrides.hooks[0].on, 'customer.speech.timeout');
-  assert.equal(payload.assistantOverrides.hooks[0].options.timeoutSeconds, CALLBACK_SILENCE_GREETING_SECONDS);
-  assert.equal(payload.assistantOverrides.hooks[0].options.triggerMaxCount, 1);
-  assert.equal(payload.assistantOverrides.hooks[0].options.triggerResetMode, 'never');
-  assert.equal(payload.assistantOverrides.hooks[0].do[0].exact, mikeCallbackFirstMessage());
-  assert.equal('prompt' in payload.assistantOverrides.hooks[0].do[0], false);
-  assert.equal('interruptionsEnabled' in payload.assistantOverrides.hooks[0].do[0], false);
+  assert.deepEqual(payload.assistantOverrides.hooks, []);
+  assert.doesNotMatch(body, /"say"|prompt|HARD RULE|output no words/);
   assert.equal(payload.assistantOverrides.firstMessageInterruptionsEnabled, true);
   assert.deepEqual(payload.assistantOverrides.stopSpeakingPlan, { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 });
   assert.doesNotMatch(body, /output no words|Transcript so far|HARD RULE|say","prompt/);
@@ -423,6 +417,107 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.equal(payload.assistantOverrides.variableValues.callback, 'true');
   assert.doesNotMatch(body, /vapi-secret/);
   assert.match(auth, /^Bearer /);
+});
+
+test('one attempt key claims one dial, and Vapi is not paired with a Twilio leg', async () => {
+  const rows = new Map<string, { id: string; outcome: string }>();
+  let seq = 0;
+  const db = {
+    from() {
+      const state: { key?: string; id?: string; outcomes?: string[] } = {};
+      const api = {
+        select() { return api; },
+        eq(column: string, value: string) {
+          if (column === 'missed_call_key') state.key = value;
+          if (column === 'id') state.id = value;
+          return api;
+        },
+        in(_column: string, values: string[]) { state.outcomes = values; return api; },
+        maybeSingle: async () => {
+          const row = state.key ? rows.get(state.key) : undefined;
+          return { data: row ? { id: row.id, outcome: row.outcome } : null, error: null };
+        },
+        insert(row: { missed_call_key: string; outcome: string }) {
+          return {
+            select() {
+              return {
+                single: async () => {
+                  if (rows.has(row.missed_call_key)) {
+                    return { data: null, error: { message: 'duplicate key value violates unique constraint' } };
+                  }
+                  const id = `row-${++seq}`;
+                  rows.set(row.missed_call_key, { id, outcome: row.outcome });
+                  return { data: { id }, error: null };
+                },
+              };
+            },
+          };
+        },
+        update(row: { outcome: string }) {
+          return {
+            eq(column: string, value: string) {
+              if (column === 'id') state.id = value;
+              return api;
+            },
+            in(column: string, values: string[]) {
+              state.outcomes = values;
+              return {
+                select: async () => {
+                  const found = [...rows.values()].find((item) => item.id === state.id);
+                  if (!found || !state.outcomes?.includes(found.outcome)) return { data: [], error: null };
+                  found.outcome = row.outcome;
+                  return { data: [{ id: found.id }], error: null };
+                },
+              };
+            },
+            select: async () => ({ data: [], error: null }),
+          };
+        },
+      };
+      return api;
+    },
+  };
+  const attempt: PersistAttempt = {
+    missedCallKey: 'test:one-mike',
+    phone: '+14083181171',
+    fromNumber: '+17604630493',
+    missedAt: '2026-10-15T01:26:00Z',
+    name: 'Brighton',
+    outcome: 'dialing',
+    reason: null,
+    scheduledFor: null,
+    attemptedAt: '2026-10-15T01:26:00Z',
+  };
+  const first = await upsertAttempt(db, attempt, true);
+  const second = await upsertAttempt(db, attempt, true);
+  assert.equal(first, 'row-1');
+  assert.equal(second, null);
+
+  const urls: string[] = [];
+  const placed = await placeMikeCallback(
+    {
+      to: '+14083181171',
+      from: '+17604630493',
+      voiceUrl: 'https://scws.example/voice',
+      statusUrl: 'https://scws.example/status',
+      amdUrl: 'https://scws.example/amd',
+    },
+    {
+      MIKE_CALLBACK_TEST_NUMBERS: '+14083181171',
+      VAPI_PRIVATE_KEY: 'vapi-secret',
+      MIKE_CALLBACK_ASSISTANT_ID: 'asst_test',
+      MIKE_CALLBACK_VAPI_NUMBERS: '{"7604630493":"pn_test"}',
+      TWILIO_ACCOUNT_SID: 'AC_TEST',
+      TWILIO_AUTH_TOKEN: 'secret-token',
+      NEXT_PUBLIC_APP_URL: 'https://scws.example',
+    } as NodeJS.ProcessEnv,
+    async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ id: 'call_once' }), { status: 200 });
+    },
+  );
+  assert.equal(placed.vapiCallId, 'call_once');
+  assert.deepEqual(urls, ['https://api.vapi.ai/call']);
 });
 
 test('an http public URL and a failed exclusion read never dial', () => {
