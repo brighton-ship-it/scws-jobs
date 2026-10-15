@@ -252,8 +252,8 @@ test('Mike speaks the recording disclosure; the callback bridge does not Say it'
   assert.match(machine, /<Hangup/);
   assert.doesNotMatch(machine, /<Dial/);
   const callbackGreeting = mikeCallbackFirstMessage();
-  assert.match(callbackGreeting, /returning your call/);
-  assert.match(callbackGreeting, /this call's recorded/);
+  assert.equal(callbackGreeting, "Hey, this is Mike with Southern California Well Service, returning your call. What's going on with your well?");
+  assert.ok(callbackGreeting.split(/\s+/).length <= 20);
   const human = humanTwiml({ customerPhone: '+14083181171', actionUrl: 'https://scws.example/bridge' });
   assert.doesNotMatch(human, /<Say/);
   assert.doesNotMatch(human, /<Play/);
@@ -402,15 +402,8 @@ test('a Vapi callback waits for the callee and does not echo the key', async () 
   assert.equal(payload.assistantOverrides.firstMessage, '');
   assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-waits-for-user');
   assert.equal(payload.assistantOverrides.backgroundSound, 'off');
-  assert.equal(payload.assistantOverrides.hooks.length, 1);
-  assert.equal(payload.assistantOverrides.hooks[0].on, 'customer.speech.timeout');
-  assert.equal(payload.assistantOverrides.hooks[0].options.timeoutSeconds, 2);
-  assert.equal(payload.assistantOverrides.hooks[0].options.triggerMaxCount, 1);
-  assert.equal(payload.assistantOverrides.hooks[0].options.triggerResetMode, 'never');
-  assert.equal(payload.assistantOverrides.hooks[0].do[0].type, 'say');
-  assert.equal(payload.assistantOverrides.hooks[0].do[0].exact, mikeCallbackFirstMessage());
-  assert.equal('prompt' in payload.assistantOverrides.hooks[0].do[0], false);
-  assert.doesNotMatch(body, /"prompt"|HARD RULE|output no words|Transcript so far/);
+  assert.deepEqual(payload.assistantOverrides.hooks, []);
+  assert.doesNotMatch(body, /"say"|"prompt"|customer\.speech\.timeout|HARD RULE|output no words|Transcript so far/);
   assert.equal(payload.assistantOverrides.firstMessageInterruptionsEnabled, true);
   assert.deepEqual(payload.assistantOverrides.stopSpeakingPlan, { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 });
   assert.equal(payload.assistantOverrides.startSpeakingPlan.waitSeconds, 0);

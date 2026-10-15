@@ -135,7 +135,7 @@ describe('callback booking flow', () => {
 
     const transcript = [
       'Caller: This is Brighton. The well is not producing.',
-      'Mike: Hey, this is Mike with Southern California Well Service, returning your call. This call is recorded. What\'s going on with your well?',
+      'Mike: Hey, this is Mike with Southern California Well Service, returning your call. What\'s going on with your well?',
       'Caller: It\'s not producing.',
       `Mike tool checkSchedule: ${schedule.result.bookingMessage}`,
       `Mike: I can do ${first.date} ${first.time} or ${second.date} ${second.time}. That is a $200 service call. Is the address 100 Well Rd in Ramona?`,

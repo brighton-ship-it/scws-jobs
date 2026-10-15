@@ -268,9 +268,9 @@ export function mikeFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?`;
 }
 
-/** Callback greeting. The model says this itself. Nothing else on the call speaks it. */
+/** The only words Mike speaks on the first callback turn. Nothing else speaks. */
 export function mikeCallbackFirstMessage(): string {
-  return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. Just a heads up, this call's recorded. What's going on with your well?`;
+  return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. What's going on with your well?`;
 }
 
 /**
@@ -368,25 +368,10 @@ export function callbackStartSpeakingPlan(): {
 }
 
 /**
- * If they never speak, say the greeting once at 2 seconds.
- * exact only — a prompt action is spoken aloud. This does not use
- * call.timeElapsed, which fires even after they have already said hello.
+ * Outbound callback: one voice. The model says the short greeting itself.
+ * A say hook is a second stream, which stacked a second greeting on the
+ * 7:05 PM call and came out as a word vomit.
  */
-export function callbackSilenceGreetingHook(): {
-  on: 'customer.speech.timeout';
-  name: 'callback_opening_greeting';
-  options: { timeoutSeconds: 2; triggerMaxCount: 1; triggerResetMode: 'never' };
-  do: [{ type: 'say'; exact: string }];
-} {
-  return {
-    on: 'customer.speech.timeout',
-    name: 'callback_opening_greeting',
-    options: { timeoutSeconds: 2, triggerMaxCount: 1, triggerResetMode: 'never' },
-    do: [{ type: 'say', exact: mikeCallbackFirstMessage() }],
-  };
-}
-
-/** Outbound callback: wait for them, greet within about a second, one exact fallback. */
 export function callbackAssistantOverrides(customerPhone: string): {
   firstMessage: '';
   firstMessageMode: 'assistant-waits-for-user';
@@ -395,11 +380,11 @@ export function callbackAssistantOverrides(customerPhone: string): {
   voice: ReturnType<typeof callbackVoiceSettings>;
   stopSpeakingPlan: ReturnType<typeof callbackStopSpeakingPlan>;
   startSpeakingPlan: ReturnType<typeof callbackStartSpeakingPlan>;
-  hooks: [ReturnType<typeof callbackSilenceGreetingHook>];
+  /** Clears any saved say hook so a second greeting cannot join. */
+  hooks: [];
   variableValues: { callback: 'true'; customerPhone: string };
 } {
   return {
-    // Empty so a saved firstMessage is not recited over their hello.
     firstMessage: '',
     firstMessageMode: 'assistant-waits-for-user',
     firstMessageInterruptionsEnabled: true,
@@ -407,7 +392,7 @@ export function callbackAssistantOverrides(customerPhone: string): {
     voice: callbackVoiceSettings(),
     stopSpeakingPlan: callbackStopSpeakingPlan(),
     startSpeakingPlan: callbackStartSpeakingPlan(),
-    hooks: [callbackSilenceGreetingHook()],
+    hooks: [],
     variableValues: { callback: 'true', customerPhone },
   };
 }
