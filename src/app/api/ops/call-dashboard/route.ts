@@ -246,16 +246,6 @@ export async function GET(request: NextRequest) {
         });
         dash.needsCallback = { ...queues.leads, rows: withMike(queues.leads.rows) };
         dash.invoiceFollowUp = queues.invoices;
-        const watched = new Set(['5621', '5504', '5818', '5785']);
-        console.log('[gmail-verify]', JSON.stringify({
-          ok: gmail.ok,
-          unavailable: gmail.unavailable,
-          note: gmail.note,
-          targets: gmailTargets.length,
-          rows: queues.invoices.rows
-            .filter((row) => watched.has(String(row.invoiceNumber ?? '')))
-            .map((row) => ({ n: row.invoiceNumber, name: row.name, outreach: row.outreach })),
-        }));
       } catch (error) {
         dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
         notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);
