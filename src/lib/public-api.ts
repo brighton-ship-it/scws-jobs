@@ -35,6 +35,10 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   { method: 'POST', path: '/api/calls/inbound', match: 'exact' },
   { method: 'POST', path: '/api/calls/inbound/status', match: 'exact' },
   { method: 'POST', path: '/api/calls/inbound/recording', match: 'exact' },
+  // Mike outbound callback TwiML. Routes still require a valid Twilio signature.
+  { method: 'POST', path: '/api/calls/mike-callback/voice', match: 'exact' },
+  { method: 'POST', path: '/api/calls/mike-callback/bridge', match: 'exact' },
+  { method: 'POST', path: '/api/calls/mike-callback/status', match: 'exact' },
   { method: 'POST', path: '/api/receptionist/webhook', match: 'exact' },
   { method: 'POST', path: '/api/receptionist/sarah', match: 'exact' },
 
