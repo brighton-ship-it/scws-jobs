@@ -2,6 +2,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeOpenSlots,
+  emptyBucketWaitMs,
+  fitVisitPageSize,
   isWeekdayVisitStart,
   lookupOpenSlots,
   mergeOpenSlots,
@@ -229,8 +231,9 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     assert.equal(/assignedUsers\s*\{/.test(visitsQuery), false);
   });
 
-  it('waits out a Jobber throttle and still returns open slots', async () => {
+  it('steps down to a small page when the Jobber bucket is empty and still returns open slots', async () => {
     const waits: number[] = [];
+    const queries: string[] = [];
     let visitsCalls = 0;
     const result = await lookupOpenSlots(
       { city: 'Valley Center' },
@@ -245,7 +248,8 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
             return jsonResponse({ data: { users: { nodes: [BRIAN] } } });
           }
           visitsCalls += 1;
-          if (visitsCalls === 1) {
+          queries.push(query);
+          if (query.includes('property')) {
             return jsonResponse({
               errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
               extensions: {
@@ -261,7 +265,11 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
       }
     );
     assert.equal(visitsCalls, 2);
-    assert.deepEqual(waits, [4000]);
+    assert.deepEqual(waits, [emptyBucketWaitMs(500)]);
+    assert.match(queries[0], /property/);
+    assert.match(queries[1], /first: 8/);
+    assert.match(queries[1], /assignedUsers\(first: 2\)/);
+    assert.doesNotMatch(queries[1], /property/);
     assert.equal(result.lookupStatus, 'ok');
     assert.ok(result.openSlots.length > 0);
     assert.equal(result.assignedTechName, 'Brian Eads');
@@ -299,6 +307,48 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     );
     assert.equal(queries.length, 2);
     assert.match(queries[0], /property/);
+    assert.doesNotMatch(queries[1], /property/);
+    assert.equal(result.lookupStatus, 'ok');
+    assert.ok(result.openSlots.length > 0);
+  });
+
+  it('shrinks the calendar page when the bucket cannot afford the full query', async () => {
+    assert.equal(fitVisitPageSize(1905, 50, 836), 17);
+    assert.equal(fitVisitPageSize(1800, 50, 0), null);
+    const queries: string[] = [];
+    const waits: number[] = [];
+    const result = await lookupOpenSlots(
+      { city: 'Ramona' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        sleep: async (ms) => { waits.push(ms); },
+        fetchFn: async (_url, init) => {
+          const body = JSON.parse(String(init?.body || '{}')) as { query?: string };
+          const query = body.query || '';
+          if (query.includes('ShopUsers')) {
+            return jsonResponse({ data: { users: { nodes: [BRIAN] } } });
+          }
+          queries.push(query);
+          if (query.includes('property')) {
+            return jsonResponse({
+              errors: [{ message: 'Throttled', extensions: { code: 'THROTTLED' } }],
+              extensions: {
+                cost: {
+                  requestedQueryCost: 1905,
+                  throttleStatus: { maximumAvailable: 10_000, currentlyAvailable: 836, restoreRate: 50 },
+                },
+              },
+            });
+          }
+          return jsonResponse({ data: { visits: { nodes: [], pageInfo: { hasNextPage: false } } } });
+        },
+      }
+    );
+    assert.equal(waits.length, 0);
+    assert.equal(queries.length, 2);
+    assert.match(queries[0], /property/);
+    assert.match(queries[1], /first: 17/);
     assert.doesNotMatch(queries[1], /property/);
     assert.equal(result.lookupStatus, 'ok');
     assert.ok(result.openSlots.length > 0);

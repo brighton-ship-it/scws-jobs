@@ -21,6 +21,11 @@ import {
   mikeStatusLabel,
   nextOpenAt,
   mikeFirstMessage,
+  mikeCallbackFirstMessage,
+  callbackAssistantOverrides,
+  callbackEndpointWaitMs,
+  CALLBACK_VOICE_VOLUME,
+  CALLBACK_VOICE_SPEED,
   callbackPublicBase,
   phraseMatches,
   planMikeCallbacks,
@@ -33,8 +38,8 @@ import {
   type PlannedCallback,
   type StoredAttempt,
 } from './mike-callback.ts';
-import { DialNotAllowedError, placeTwilioCallback } from './mike-callback-dial.ts';
-import { callbackPassBlocked, executeMikeCallbacks } from './mike-callback-run.ts';
+import { DialNotAllowedError, placeMikeCallback, placeTwilioCallback, placeVapiCallback } from './mike-callback-dial.ts';
+import { callbackPassBlocked, executeMikeCallbacks, upsertAttempt, type PersistAttempt } from './mike-callback-run.ts';
 
 const FULL = { MIKE_CALLBACKS_ENABLED: 'true', NEXT_PUBLIC_APP_URL: 'https://scws.example' } as NodeJS.ProcessEnv;
 const now = new Date('2026-10-14T20:00:00Z'); // Wednesday 1:00 PM Pacific
@@ -199,6 +204,7 @@ test('a busy tracking line waits instead of overlapping two bridges', () => {
   assert.equal(queued.action, 'queue');
   if (queued.action === 'queue') assert.equal(queued.reason, 'line_busy');
   assert.equal(matchInFlightCallback('+17603312502', [busy], now)?.phone, '+17605550222');
+  assert.equal(matchInFlightCallback('+17605550222', [busy], now)?.phone, '+17605550222');
   assert.equal(matchInFlightCallback('+17605550100', [busy], now), null);
   assert.equal(matchInFlightCallback('+17603312502', [busy, { ...busy, missedCallKey: 'log:third', phone: '+17605550333' }], now), null);
 });
@@ -246,14 +252,18 @@ test('Mike speaks the recording disclosure; the callback bridge does not Say it'
   assert.doesNotMatch(machine, /Polly\.Joanna/);
   assert.match(machine, /<Hangup/);
   assert.doesNotMatch(machine, /<Dial/);
-  const human = humanTwiml({ from: '+17603312502', mikeNumber: '+17604915348', actionUrl: 'https://scws.example/bridge' });
+  const callbackGreeting = mikeCallbackFirstMessage();
+  assert.equal(callbackGreeting, "Hey, this is Mike with Southern California Well Service, returning your call. What's going on with your well?");
+  assert.ok(callbackGreeting.split(/\s+/).length <= 20);
+  const human = humanTwiml({ customerPhone: '+14083181171', actionUrl: 'https://scws.example/bridge' });
   assert.doesNotMatch(human, /<Say/);
+  assert.doesNotMatch(human, /<Play/);
   assert.match(human, /<Dial/);
+  assert.match(human, /<Sip>sip:scws-mike-callback@sip\.vapi\.ai\?X-callback=true&amp;X-customerPhone=%2B14083181171<\/Sip>/);
+  assert.doesNotMatch(human, /<Number>/);
   assert.equal(phoneForCallbackTool('+17603312502', '4083181171'), '4083181171');
   assert.equal(phoneForCallbackTool('+14083181171', '4083181171'), '+14083181171');
   assert.equal(phoneForCallbackTool('', '4083181171'), '4083181171');
-  assert.match(human, /callerId="\+17603312502"/);
-  assert.match(human, /<Number>\+17604915348<\/Number>/);
   assert.match(hangupTwiml(), /<Hangup/);
   assert.deepEqual(visitCreatedInstants({ visits: { nodes: [{ createdAt: '2026-10-14T18:00:00Z' }, { startAt: '2026-10-15T16:00:00Z' }] } }), ['2026-10-14T18:00:00Z', '2026-10-15T16:00:00Z']);
 });
@@ -321,7 +331,7 @@ test('the executor places no call when the flag is off, and only the allowlist i
   let fetches = 0;
   await assert.rejects(
     () => placeTwilioCallback(
-      { to: '+17605550100', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status' },
+      { to: '+17605550100', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status', amdUrl: 'https://scws.example/amd' },
       { TWILIO_ACCOUNT_SID: 'AC_TEST', TWILIO_AUTH_TOKEN: 'secret-token', NEXT_PUBLIC_APP_URL: 'https://scws.example' } as NodeJS.ProcessEnv,
       async () => { fetches += 1; return new Response('{}'); },
     ),
@@ -335,7 +345,7 @@ test('a live dial posts to Twilio from the tracking number and does not echo the
   let url = '';
   let auth = '';
   const result = await placeTwilioCallback(
-    { to: '+17605550199', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status' },
+    { to: '+17605550199', from: '+17603312502', voiceUrl: 'https://scws.example/voice', statusUrl: 'https://scws.example/status', amdUrl: 'https://scws.example/amd' },
     { MIKE_CALLBACK_TEST_NUMBERS: '+17605550199', NEXT_PUBLIC_APP_URL: 'https://scws.example', TWILIO_ACCOUNT_SID: 'AC_TEST', TWILIO_AUTH_TOKEN: 'secret-token' } as NodeJS.ProcessEnv,
     async (input, init) => {
       url = String(input);
@@ -349,8 +359,175 @@ test('a live dial posts to Twilio from the tracking number and does not echo the
   assert.match(body, /From=%2B17603312502/);
   assert.match(body, /To=%2B17605550199/);
   assert.match(body, /MachineDetection=DetectMessageEnd/);
+  assert.match(body, /AsyncAmd=true/);
+  assert.match(body, /AsyncAmdStatusCallback=/);
   assert.doesNotMatch(body, /secret-token/);
   assert.match(auth, /^Basic /);
+});
+
+test('a Vapi callback waits for the callee and does not echo the key', async () => {
+  let body = '';
+  let auth = '';
+  const env = {
+    MIKE_CALLBACK_TEST_NUMBERS: '+14083181171',
+    NEXT_PUBLIC_APP_URL: 'https://scws.example',
+  } as NodeJS.ProcessEnv;
+  const result = await placeVapiCallback(
+    {
+      to: '+14083181171',
+      from: '+17604630493',
+      voiceUrl: 'https://scws.example/voice',
+      statusUrl: 'https://scws.example/status',
+      amdUrl: 'https://scws.example/amd',
+      name: 'Brighton',
+    },
+    env,
+    { key: 'vapi-secret', phoneNumberId: 'pn_test', assistantId: 'asst_test' },
+    async (_input, init) => {
+      auth = String((init?.headers as Record<string, string>).Authorization || '');
+      body = String(init?.body || '');
+      return new Response(JSON.stringify({ id: 'call_test' }), { status: 200 });
+    },
+  );
+  assert.equal(result.vapiCallId, 'call_test');
+  const payload = JSON.parse(body) as {
+    assistantId: string;
+    phoneNumberId: string;
+    customer: { number: string; name?: string };
+    assistantOverrides: ReturnType<typeof callbackAssistantOverrides>;
+  };
+  assert.equal(payload.assistantId, 'asst_test');
+  assert.equal(payload.phoneNumberId, 'pn_test');
+  assert.equal(payload.customer.number, '+14083181171');
+  assert.equal(payload.customer.name, 'Brighton');
+  assert.equal(payload.assistantOverrides.firstMessage, '');
+  assert.equal(payload.assistantOverrides.firstMessageMode, 'assistant-waits-for-user');
+  assert.equal(payload.assistantOverrides.backgroundSound, 'off');
+  assert.deepEqual(payload.assistantOverrides.hooks, []);
+  assert.doesNotMatch(body, /"say"|"prompt"|customer\.speech\.timeout|HARD RULE|output no words|Transcript so far/);
+  assert.equal(payload.assistantOverrides.firstMessageInterruptionsEnabled, true);
+  assert.deepEqual(payload.assistantOverrides.stopSpeakingPlan, { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 });
+  assert.equal(payload.assistantOverrides.startSpeakingPlan.waitSeconds, 0);
+  assert.equal(payload.assistantOverrides.startSpeakingPlan.smartEndpointingPlan.provider, 'livekit');
+  assert.equal(payload.assistantOverrides.startSpeakingPlan.smartEndpointingPlan.waitFunction, '50 + 250 * sqrt(x) + 500 * x^3');
+  const measuredEndpointProbability = (1024 - 200) / 6000;
+  const endpointMs = callbackEndpointWaitMs(measuredEndpointProbability);
+  assert.ok(endpointMs < 250, `endpoint wait ${endpointMs}ms`);
+  assert.ok(endpointMs + 621 + 151 < 1100, 'greeting should land near 1s after hello');
+  assert.equal(payload.assistantOverrides.voice.generationConfig.volume, CALLBACK_VOICE_VOLUME);
+  assert.equal(payload.assistantOverrides.voice.generationConfig.speed, CALLBACK_VOICE_SPEED);
+  assert.ok(CALLBACK_VOICE_SPEED >= 0.85 && CALLBACK_VOICE_SPEED <= 0.9);
+  assert.equal(payload.assistantOverrides.voice.fallbackPlan.voices[0].speed, CALLBACK_VOICE_SPEED);
+  assert.ok(CALLBACK_VOICE_VOLUME < 1);
+  assert.ok(CALLBACK_VOICE_VOLUME >= 0.5);
+  assert.equal('experimentalControls' in payload.assistantOverrides.voice, false);
+  assert.equal(payload.assistantOverrides.voice.fallbackPlan.voices[0].useSpeakerBoost, false);
+  assert.equal(payload.assistantOverrides.voice.fallbackPlan.voices[0].style, 0);
+  assert.equal(payload.assistantOverrides.variableValues.customerPhone, '+14083181171');
+  assert.equal(payload.assistantOverrides.variableValues.callback, 'true');
+  assert.doesNotMatch(body, /vapi-secret/);
+  assert.match(auth, /^Bearer /);
+});
+
+test('one attempt key claims one dial, and Vapi is not paired with a Twilio leg', async () => {
+  const rows = new Map<string, { id: string; outcome: string }>();
+  let seq = 0;
+  const db = {
+    from() {
+      const state: { key?: string; id?: string; outcomes?: string[] } = {};
+      const api = {
+        select() { return api; },
+        eq(column: string, value: string) {
+          if (column === 'missed_call_key') state.key = value;
+          if (column === 'id') state.id = value;
+          return api;
+        },
+        in(_column: string, values: string[]) { state.outcomes = values; return api; },
+        maybeSingle: async () => {
+          const row = state.key ? rows.get(state.key) : undefined;
+          return { data: row ? { id: row.id, outcome: row.outcome } : null, error: null };
+        },
+        insert(row: { missed_call_key: string; outcome: string }) {
+          return {
+            select() {
+              return {
+                single: async () => {
+                  if (rows.has(row.missed_call_key)) {
+                    return { data: null, error: { message: 'duplicate key value violates unique constraint' } };
+                  }
+                  const id = `row-${++seq}`;
+                  rows.set(row.missed_call_key, { id, outcome: row.outcome });
+                  return { data: { id }, error: null };
+                },
+              };
+            },
+          };
+        },
+        update(row: { outcome: string }) {
+          return {
+            eq(column: string, value: string) {
+              if (column === 'id') state.id = value;
+              return api;
+            },
+            in(column: string, values: string[]) {
+              state.outcomes = values;
+              return {
+                select: async () => {
+                  const found = [...rows.values()].find((item) => item.id === state.id);
+                  if (!found || !state.outcomes?.includes(found.outcome)) return { data: [], error: null };
+                  found.outcome = row.outcome;
+                  return { data: [{ id: found.id }], error: null };
+                },
+              };
+            },
+            select: async () => ({ data: [], error: null }),
+          };
+        },
+      };
+      return api;
+    },
+  };
+  const attempt: PersistAttempt = {
+    missedCallKey: 'test:one-mike',
+    phone: '+14083181171',
+    fromNumber: '+17604630493',
+    missedAt: '2026-10-15T01:26:00Z',
+    name: 'Brighton',
+    outcome: 'dialing',
+    reason: null,
+    scheduledFor: null,
+    attemptedAt: '2026-10-15T01:26:00Z',
+  };
+  const first = await upsertAttempt(db, attempt, true);
+  const second = await upsertAttempt(db, attempt, true);
+  assert.equal(first, 'row-1');
+  assert.equal(second, null);
+
+  const urls: string[] = [];
+  const placed = await placeMikeCallback(
+    {
+      to: '+14083181171',
+      from: '+17604630493',
+      voiceUrl: 'https://scws.example/voice',
+      statusUrl: 'https://scws.example/status',
+      amdUrl: 'https://scws.example/amd',
+    },
+    {
+      MIKE_CALLBACK_TEST_NUMBERS: '+14083181171',
+      VAPI_PRIVATE_KEY: 'vapi-secret',
+      MIKE_CALLBACK_ASSISTANT_ID: 'asst_test',
+      MIKE_CALLBACK_VAPI_NUMBERS: '{"7604630493":"pn_test"}',
+      TWILIO_ACCOUNT_SID: 'AC_TEST',
+      TWILIO_AUTH_TOKEN: 'secret-token',
+      NEXT_PUBLIC_APP_URL: 'https://scws.example',
+    } as NodeJS.ProcessEnv,
+    async (input) => {
+      urls.push(String(input));
+      return new Response(JSON.stringify({ id: 'call_once' }), { status: 200 });
+    },
+  );
+  assert.equal(placed.vapiCallId, 'call_once');
+  assert.deepEqual(urls, ['https://api.vapi.ai/call']);
 });
 
 test('an http public URL and a failed exclusion read never dial', () => {

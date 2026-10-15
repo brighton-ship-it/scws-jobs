@@ -22,15 +22,15 @@ import {
   type PlannedCallback,
   type StoredAttempt,
 } from './mike-callback.ts';
-import { placeTwilioCallback, twilioConfigured, DialNotAllowedError } from './mike-callback-dial.ts';
+import { placeMikeCallback, twilioConfigured, DialNotAllowedError } from './mike-callback-dial.ts';
 
 export interface ExecuteDeps {
   now: Date;
   env: NodeJS.ProcessEnv;
   save(input: PersistAttempt): Promise<void>;
   claim(input: PersistAttempt): Promise<{ id: string } | null>;
-  mark(id: string, patch: { outcome: string; reason?: string | null; twilioCallSid?: string | null }): Promise<void>;
-  place(input: { to: string; from: string; voiceUrl: string; statusUrl: string }): Promise<{ sid: string }>;
+  mark(id: string, patch: { outcome: string; reason?: string | null; twilioCallSid?: string | null; vapiCallId?: string | null }): Promise<void>;
+  place(input: { to: string; from: string; voiceUrl: string; statusUrl: string; amdUrl: string; name?: string | null }): Promise<{ sid: string; vapiCallId?: string | null }>;
 }
 
 export interface PersistAttempt {
@@ -54,13 +54,14 @@ export interface ExecuteSummary {
   errors: string[];
 }
 
-function baseUrls(attemptKey: string, env: NodeJS.ProcessEnv): { voice: string; status: string } | null {
+function baseUrls(attemptKey: string, env: NodeJS.ProcessEnv): { voice: string; status: string; amd: string } | null {
   const base = callbackPublicBase(env);
   if (!base) return null;
   const key = encodeURIComponent(attemptKey);
   return {
     voice: `${base}/api/calls/mike-callback/voice?attempt=${key}`,
     status: `${base}/api/calls/mike-callback/status?attempt=${key}`,
+    amd: `${base}/api/calls/mike-callback/amd?attempt=${key}`,
   };
 }
 
@@ -118,8 +119,19 @@ export async function executeMikeCallbacks(plans: PlannedCallback[], deps: Execu
     });
     if (!claimed) continue;
     try {
-      const placed = await deps.place({ to: decision.to, from: decision.from, voiceUrl: urls.voice, statusUrl: urls.status });
-      await deps.mark(claimed.id, { outcome: 'dialing', twilioCallSid: placed.sid });
+      const placed = await deps.place({
+        to: decision.to,
+        from: decision.from,
+        voiceUrl: urls.voice,
+        statusUrl: urls.status,
+        amdUrl: urls.amd,
+        name: plan.call.name,
+      });
+      await deps.mark(claimed.id, {
+        outcome: 'dialing',
+        twilioCallSid: placed.vapiCallId ? null : placed.sid,
+        vapiCallId: placed.vapiCallId ?? null,
+      });
       summary.dialed += 1;
     } catch (error) {
       if (error instanceof DialNotAllowedError) {
@@ -321,10 +333,11 @@ export async function runMikeCallbackPass(
       const row: Record<string, unknown> = { outcome: patch.outcome, updated_at: new Date().toISOString() };
       if (patch.reason !== undefined) row.reason = patch.reason;
       if (patch.twilioCallSid) row.twilio_call_sid = patch.twilioCallSid;
+      if (patch.vapiCallId) row.vapi_call_id = patch.vapiCallId;
       const { error } = await db.from('mike_callback_attempts').update(row).eq('id', id);
       if (error) throw new Error(error.message);
     },
-    place: (input) => placeTwilioCallback(input, env, fetchImpl),
+    place: (input) => placeMikeCallback(input, env, fetchImpl),
   });
   return { ...summary, notes: snapshot.notes };
 }
@@ -403,6 +416,13 @@ export async function findAttemptByKey(db: any, key: string): Promise<StoredAtte
   return toStoredAttempt(result.data?.[0] ?? {});
 }
 
+export async function findAttemptByVapi(db: any, vapiCallId: string): Promise<StoredAttempt | null> {
+  if (!vapiCallId) return null;
+  const result = await db.from('mike_callback_attempts').select('id, missed_call_key, caller_phone, from_number, missed_at, attempted_at, outcome, reason, twilio_call_sid, vapi_call_id').eq('vapi_call_id', vapiCallId).limit(1);
+  if (result.error) return null;
+  return toStoredAttempt(result.data?.[0] ?? {});
+}
+
 export async function listInFlightAttempts(db: any, sinceIso: string): Promise<StoredAttempt[]> {
   const result = await db.from('mike_callback_attempts')
     .select('id, missed_call_key, caller_phone, from_number, missed_at, attempted_at, outcome, reason, twilio_call_sid, vapi_call_id')
@@ -430,13 +450,17 @@ export async function linkAttemptVapi(db: any, id: string, vapiCallId: string): 
   await db.from('mike_callback_attempts').update({ vapi_call_id: vapiCallId, updated_at: new Date().toISOString() }).eq('id', id);
 }
 
-/** When Mike is bridged, Vapi sees our tracking number. Swap in the customer we actually dialed. */
+/** When Mike is bridged, Vapi may see our tracking number. Swap in the customer we actually dialed. */
 export async function overrideCallbackCaller(
   db: any,
   presented: string,
   vapiCallId: string,
   now = new Date(),
 ): Promise<{ id: string; phone: string } | null> {
+  if (vapiCallId) {
+    const linked = await findAttemptByVapi(db, vapiCallId);
+    if (linked?.id && linked.phone) return { id: linked.id, phone: linked.phone };
+  }
   const since = new Date(now.getTime() - IN_FLIGHT_MS).toISOString();
   const attempts = await listInFlightAttempts(db, since);
   const match = matchInFlightCallback(presented, attempts, now);

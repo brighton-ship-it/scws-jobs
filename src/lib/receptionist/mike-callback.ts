@@ -263,9 +263,149 @@ export function businessCallerId(called: string | null | undefined, env: NodeJS.
   return `+1${d}`;
 }
 
-/** Spoken by Mike in his Vapi voice on inbound calls and callbacks. No Twilio <Say> before him. */
+/** Spoken by Mike in his Vapi voice on inbound calls. No Twilio <Say> before him. */
 export function mikeFirstMessage(): string {
   return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?`;
+}
+
+/** The only words Mike speaks on the first callback turn. Nothing else speaks. */
+export function mikeCallbackFirstMessage(): string {
+  return `Hey, this is ${ASSISTANT_NAME} with Southern California Well Service, returning your call. What's going on with your well?`;
+}
+
+/**
+ * Cartesia sonic-3 volume. 1 is the default and 0.5 is the quietest.
+ * The callback was coming through like a shout at the default.
+ */
+export const CALLBACK_VOICE_VOLUME = 0.55;
+
+/** Cartesia and 11labs both treat 1 as normal. 0.88 is a little slower. */
+export const CALLBACK_VOICE_SPEED = 0.88;
+
+export const CALLBACK_VOICE_ID = '5fc5c797-12c5-4f2b-ac9b-d4e53c08098f';
+
+/**
+ * Wyatt, quieter, a little slower than normal, no emotion styling.
+ * Cartesia emotion tags only add emotion, so none is set.
+ * The 11labs fallback has speaker boost off so a failover is not louder.
+ */
+export function callbackVoiceSettings(): {
+  provider: 'cartesia';
+  voiceId: string;
+  model: 'sonic-3';
+  language: 'en';
+  cachingEnabled: false;
+  generationConfig: { speed: number; volume: number };
+  fallbackPlan: {
+    voices: Array<{
+      provider: '11labs';
+      voiceId: string;
+      model: 'eleven_turbo_v2_5';
+      stability: number;
+      similarityBoost: number;
+      style: number;
+      speed: number;
+      useSpeakerBoost: false;
+    }>;
+  };
+} {
+  return {
+    provider: 'cartesia',
+    voiceId: CALLBACK_VOICE_ID,
+    model: 'sonic-3',
+    language: 'en',
+    cachingEnabled: false,
+    generationConfig: { speed: CALLBACK_VOICE_SPEED, volume: CALLBACK_VOICE_VOLUME },
+    fallbackPlan: {
+      voices: [{
+        provider: '11labs',
+        voiceId: 'pNInz6obpgDQGcFmaJgB',
+        model: 'eleven_turbo_v2_5',
+        stability: 0.6,
+        similarityBoost: 0.75,
+        style: 0,
+        speed: CALLBACK_VOICE_SPEED,
+        useSpeakerBoost: false,
+      }],
+    },
+  };
+}
+
+/**
+ * Stop as soon as the caller’s voice is on the line, then wait a second.
+ * A say.prompt hook is not used. That stream spoke the rules over the model
+ * on the 6:26 PM call.
+ */
+export function callbackStopSpeakingPlan(): {
+  numWords: 0;
+  voiceSeconds: 0.2;
+  backoffSeconds: 1;
+} {
+  return { numWords: 0, voiceSeconds: 0.2, backoffSeconds: 1 };
+}
+
+/**
+ * LiveKit wait after the 6:36 PM call. That call's plan was `200 + 6000 * x`,
+ * and the first turn waited 1024ms (x ≈ 0.137) before the model even started.
+ * This expression is about 140ms at that same confidence, so model (~620ms)
+ * plus voice (~150ms) lands near 1 second after the hello ends.
+ */
+export const CALLBACK_ENDPOINT_WAIT = '50 + 250 * sqrt(x) + 500 * x^3';
+
+export function callbackEndpointWaitMs(probability: number): number {
+  const x = Math.min(1, Math.max(0, probability));
+  return 50 + 250 * Math.sqrt(x) + 500 * x ** 3;
+}
+
+export function callbackStartSpeakingPlan(): {
+  waitSeconds: 0;
+  smartEndpointingPlan: { provider: 'livekit'; waitFunction: string };
+} {
+  return {
+    waitSeconds: 0,
+    smartEndpointingPlan: {
+      provider: 'livekit',
+      waitFunction: CALLBACK_ENDPOINT_WAIT,
+    },
+  };
+}
+
+/**
+ * Outbound callback: one voice. The model says the short greeting itself.
+ * A say hook is a second stream, which stacked a second greeting on the
+ * 7:05 PM call and came out as a word vomit.
+ */
+export function callbackAssistantOverrides(customerPhone: string): {
+  firstMessage: '';
+  firstMessageMode: 'assistant-waits-for-user';
+  firstMessageInterruptionsEnabled: true;
+  backgroundSound: 'off';
+  voice: ReturnType<typeof callbackVoiceSettings>;
+  stopSpeakingPlan: ReturnType<typeof callbackStopSpeakingPlan>;
+  startSpeakingPlan: ReturnType<typeof callbackStartSpeakingPlan>;
+  /** Clears any saved say hook so a second greeting cannot join. */
+  hooks: [];
+  variableValues: { callback: 'true'; customerPhone: string };
+} {
+  return {
+    firstMessage: '',
+    firstMessageMode: 'assistant-waits-for-user',
+    firstMessageInterruptionsEnabled: true,
+    backgroundSound: 'off',
+    voice: callbackVoiceSettings(),
+    stopSpeakingPlan: callbackStopSpeakingPlan(),
+    startSpeakingPlan: callbackStartSpeakingPlan(),
+    hooks: [],
+    variableValues: { callback: 'true', customerPhone },
+  };
+}
+
+/** SIP user for the callback assistant. Twilio dials this instead of Mike's PSTN number. */
+export const CALLBACK_SIP_USER = 'scws-mike-callback';
+
+export function callbackSipUri(customerPhone: string): string {
+  const phone = customerPhone.trim();
+  return `sip:${CALLBACK_SIP_USER}@sip.vapi.ai?X-callback=true&X-customerPhone=${encodeURIComponent(phone)}`;
 }
 
 export function voicemailScript(fromE164: string): string {
@@ -301,11 +441,15 @@ export function machineTwiml(voicemail: string): string {
 </Response>`;
 }
 
-export function humanTwiml(opts: { from: string; mikeNumber: string; actionUrl: string }): string {
+/**
+ * Person answered. Connect straight to the callback assistant over SIP.
+ * No second PSTN leg, and no <Say> before Mike.
+ */
+export function humanTwiml(opts: { customerPhone: string; actionUrl: string }): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial callerId="${esc(opts.from)}" timeout="25" action="${esc(opts.actionUrl)}" method="POST">
-    <Number>${esc(opts.mikeNumber)}</Number>
+  <Dial timeout="20" action="${esc(opts.actionUrl)}" method="POST">
+    <Sip>${esc(callbackSipUri(opts.customerPhone))}</Sip>
   </Dial>
 </Response>`;
 }
@@ -413,16 +557,21 @@ export function fromLineBusy(from: string | null, attempts: StoredAttempt[], now
   });
 }
 
+function inFlightAttempt(row: StoredAttempt, now: Date): boolean {
+  const t = Date.parse(row.attemptedAt || '');
+  if (!Number.isFinite(t) || now.getTime() - t > IN_FLIGHT_MS) return false;
+  return row.outcome === 'dialing' || row.outcome === 'reached';
+}
+
 export function matchInFlightCallback(presented: string | null, attempts: StoredAttempt[], now: Date): StoredAttempt | null {
   const line = digits10(presented);
   if (!line) return null;
-  const hits = attempts.filter((row) => {
-    if (digits10(row.fromNumber) !== line) return false;
-    const t = Date.parse(row.attemptedAt || '');
-    if (!Number.isFinite(t) || now.getTime() - t > IN_FLIGHT_MS) return false;
-    return row.outcome === 'dialing' || row.outcome === 'reached';
-  });
-  return hits.length === 1 ? hits[0] : null;
+  const live = attempts.filter((row) => inFlightAttempt(row, now));
+  const byFrom = live.filter((row) => digits10(row.fromNumber) === line);
+  if (byFrom.length === 1) return byFrom[0];
+  if (byFrom.length > 1) return null;
+  const byPhone = live.filter((row) => digits10(row.phone) === line);
+  return byPhone.length === 1 ? byPhone[0] : null;
 }
 
 function gate(decision: CallbackAction, phone: string | null, config: CallbackConfig): CallbackAction {

@@ -58,6 +58,24 @@ export class JobberQueryOverCostError extends Error {
 }
 
 /**
+ * The bucket cannot afford this query right now, but a smaller page might.
+ * Callers should shrink the query instead of waiting on the same cost.
+ */
+export class JobberBudgetStepDownError extends Error {
+  readonly available: number;
+  readonly requested: number;
+  readonly restoreRate: number;
+
+  constructor(available: number, requested: number, restoreRate = JOBBER_DEFAULT_RESTORE_RATE) {
+    super('Throttled');
+    this.name = 'JobberBudgetStepDownError';
+    this.available = available;
+    this.requested = requested;
+    this.restoreRate = restoreRate > 0 ? restoreRate : JOBBER_DEFAULT_RESTORE_RATE;
+  }
+}
+
+/**
  * How long to wait before retrying a throttled query.
  * -1 means the query costs more than maximumAvailable and will never run.
  */
