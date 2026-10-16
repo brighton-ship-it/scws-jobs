@@ -28,7 +28,6 @@ import {
 } from './check-schedule.ts';
 import {
   JobberQueryOverCostError,
-  THROTTLE_MAX_ATTEMPTS,
   isJobberThrottled,
   throttleBackoffMs,
   type JobberGraphqlPayload,
@@ -125,7 +124,8 @@ export type OpenSlot = {
 };
 
 /** Calendar reads can wait longer than the 2s client-lookup cap so a short throttle still returns slots. */
-const SLOTS_THROTTLE_MAX_WAIT_MS = 4_000;
+const SLOTS_THROTTLE_MAX_WAIT_MS = 6_000;
+const SLOTS_THROTTLE_MAX_ATTEMPTS = 4;
 
 export type OpenSlotsDeps = {
   fetchFn?: typeof fetch;
@@ -134,7 +134,27 @@ export type OpenSlotsDeps = {
   graphqlVersion?: string;
   env?: NodeJS.ProcessEnv;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * book_job only: read the board up to this instant instead of the full 14-day lookahead.
+   * The board read is the expensive part (~1,900 Jobber points per 50-visit page, up to 10 pages),
+   * so a booking that re-reads the whole board right after checkSchedule drains Jobber's bucket.
+   */
+  windowEndAt?: string | null;
+  /** Skip the short-lived board cache (tests). */
+  noCache?: boolean;
 };
+
+/**
+ * Short-lived in-process cache of the Jobber board (users + occupied visits).
+ * checkSchedule and book_job run ~30–60 s apart on the same call; reusing the board avoids
+ * paying the full query cost twice. book_job still re-reads when the cache is cold or stale.
+ */
+const BOARD_CACHE_TTL_MS = 45_000;
+type BoardCacheEntry = { at: number; users: JobberUser[]; occupied: OccupiedVisit[]; complete: boolean; startBefore: number };
+const boardCache = new Map<string, BoardCacheEntry>();
+export function clearOpenSlotsBoardCache(): void {
+  boardCache.clear();
+}
 
 export type OpenSlotsResult = {
   lookupStatus: 'ok' | 'error';
@@ -231,7 +251,7 @@ async function jobberGraphql(
 ): Promise<{ data?: any; errors?: Array<{ message?: string }> }> {
   let lastMessage = 'Jobber GraphQL error';
 
-  for (let attempt = 1; attempt <= THROTTLE_MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= SLOTS_THROTTLE_MAX_ATTEMPTS; attempt++) {
     const response = await fetchFn(JOBBER_GRAPHQL_URL, {
       method: 'POST',
       headers: jobberHeaders(token, version),
@@ -259,11 +279,12 @@ async function jobberGraphql(
     const waitMs = throttleBackoffMs(json.extensions?.cost, SLOTS_THROTTLE_MAX_WAIT_MS);
     if (waitMs < 0) throw new JobberQueryOverCostError();
     console.warn(
-      `[Receptionist] Jobber throttled open slots (attempt ${attempt}/${THROTTLE_MAX_ATTEMPTS}, ` +
+      `[Receptionist] Jobber throttled open slots (attempt ${attempt}/${SLOTS_THROTTLE_MAX_ATTEMPTS}, ` +
         `requested=${json.extensions?.cost?.requestedQueryCost ?? '?'}, ` +
-        `available=${json.extensions?.cost?.throttleStatus?.currentlyAvailable ?? '?'}, waitMs=${waitMs})`
+        `available=${json.extensions?.cost?.throttleStatus?.currentlyAvailable ?? '?'}, ` +
+        `restoreRate=${json.extensions?.cost?.throttleStatus?.restoreRate ?? '?'}, waitMs=${waitMs})`
     );
-    if (attempt === THROTTLE_MAX_ATTEMPTS) throw new Error(lastMessage);
+    if (attempt === SLOTS_THROTTLE_MAX_ATTEMPTS) throw new Error(lastMessage);
     await sleep(waitMs);
   }
 
@@ -610,6 +631,27 @@ export async function lookupOpenSlots(
     DEFAULT_JOBBER_GRAPHQL_VERSION;
 
   try {
+    const startAfterMs = now.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
+    const fullBeforeMs = now.getTime() + (SLOT_LOOKAHEAD_DAYS + 1) * 24 * 60 * 60 * 1000;
+    const windowEndMs = deps.windowEndAt ? Date.parse(deps.windowEndAt) : NaN;
+    const startBeforeMs = Number.isFinite(windowEndMs)
+      ? Math.min(fullBeforeMs, Math.max(now.getTime(), windowEndMs) + 24 * 60 * 60 * 1000)
+      : fullBeforeMs;
+    const cacheKey = token.slice(-12);
+    // book_job (windowEndAt set) always re-reads so a slot taken seconds ago is never double-booked.
+    const cached = deps.noCache || deps.fetchFn || deps.windowEndAt ? undefined : boardCache.get(cacheKey);
+    const cacheHit =
+      cached && now.getTime() - cached.at < BOARD_CACHE_TTL_MS && cached.startBefore >= startBeforeMs ? cached : null;
+
+    let users: JobberUser[];
+    const occupied: OccupiedVisit[] = [];
+    let complete = false;
+    if (cacheHit) {
+      users = cacheHit.users;
+      occupied.push(...cacheHit.occupied);
+      complete = cacheHit.complete;
+      console.log('[Receptionist] open slots: reused Jobber board from cache');
+    } else {
     let usersData: { data?: any };
     try {
       usersData = await jobberGraphql(token, USERS_QUERY, {}, fetchFn, version, sleep);
@@ -621,29 +663,10 @@ export async function lookupOpenSlots(
         throw error;
       }
     }
-    const users = (usersData?.data?.users?.nodes || []) as JobberUser[];
-    const resolved = resolveTechsForLocation(location, users, deps.env ?? process.env);
-    const primaryIds = new Set(resolved.map((tech) => tech.id));
-    const fallbackResolved = resolveFallbackTechs(users, deps.env ?? process.env).filter(
-      (tech) => !primaryIds.has(tech.id)
-    );
-    const assignedTechName = resolved.length
-      ? formatTechNames(resolved.map((tech) => tech.name))
-      : spokenAllowed;
-    const allowlistedTechIds = resolved.map((tech) => tech.id);
-
-    if (resolved.length === 0 && fallbackResolved.length === 0) {
-      return emptyOpenSlots(assignedTechName, {
-        lookupStatus: 'ok',
-        error: `Allowlisted service tech not found in Jobber users (${spokenAllowed})`,
-      });
-    }
-
-    const startAfter = new Date(now.getTime() - LOOKBACK_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    const startBefore = new Date(now.getTime() + (SLOT_LOOKAHEAD_DAYS + 1) * 24 * 60 * 60 * 1000).toISOString();
-    const occupied: OccupiedVisit[] = [];
+    users = (usersData?.data?.users?.nodes || []) as JobberUser[];
+    const startAfter = new Date(startAfterMs).toISOString();
+    const startBefore = new Date(startBeforeMs).toISOString();
     let cursor: string | null = null;
-    let complete = false;
     // Richest query first; if Jobber rejects a field or the cost, step down so slots still load.
     const ladder: Array<'rich' | 'mid' | 'base'> = ['rich', 'mid', 'base'];
     let level = 0;
@@ -672,6 +695,27 @@ export async function lookupOpenSlots(
       }
       cursor = pageInfo.endCursor as string;
     }
+    if (!deps.noCache && !deps.fetchFn && complete) {
+      boardCache.set(cacheKey, { at: now.getTime(), users, occupied: [...occupied], complete, startBefore: startBeforeMs });
+    }
+    }
+    const resolved = resolveTechsForLocation(location, users, deps.env ?? process.env);
+    const primaryIds = new Set(resolved.map((tech) => tech.id));
+    const fallbackResolved = resolveFallbackTechs(users, deps.env ?? process.env).filter(
+      (tech) => !primaryIds.has(tech.id)
+    );
+    const assignedTechName = resolved.length
+      ? formatTechNames(resolved.map((tech) => tech.name))
+      : spokenAllowed;
+    const allowlistedTechIds = resolved.map((tech) => tech.id);
+
+    if (resolved.length === 0 && fallbackResolved.length === 0) {
+      return emptyOpenSlots(assignedTechName, {
+        lookupStatus: 'ok',
+        error: `Allowlisted service tech not found in Jobber users (${spokenAllowed})`,
+      });
+    }
+
     const siteCity = location.city || null;
 
     const perTechMax = SLOT_LOOKAHEAD_DAYS * SLOT_HOURS_PT.length;
