@@ -8,6 +8,8 @@ import { jobberGraphql } from '../jobber/client.ts';
 
 type Db = any;
 const digits10 = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
+/** Mirror waits for the shared bucket to refill to this before its next page. */
+export const MIRROR_BUCKET_RESERVE = 9000;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DAY = 86400_000;
 
@@ -91,9 +93,11 @@ async function page(field: Field, filter: unknown, after: string | null) {
       const need = ts && c?.requestedQueryCost ? ((c.requestedQueryCost + 1000 - ts.currentlyAvailable) / (ts.restoreRate || 500)) * 1000 : 5000 * (attempt + 1);
       await sleep(Math.min(20_000, Math.max(2000, need))); continue;
     }
-    // Leave headroom for the receptionist / booking calls sharing this Jobber app.
+    // Leave headroom for the receptionist / booking calls sharing this Jobber app's 10,000-point bucket.
+    // One checkSchedule board read costs ~8–9k points (several 1,905-point visit pages), so a 4k floor
+    // starved live calls into "Throttled" while the mirror ran. Refill to near-full before the next page.
     const ts = res?.extensions?.cost?.throttleStatus;
-    if (ts && ts.currentlyAvailable < 4000) await sleep(Math.min(8000, ((4000 - ts.currentlyAvailable) / (ts.restoreRate || 500)) * 1000));
+    if (ts && ts.currentlyAvailable < MIRROR_BUCKET_RESERVE) await sleep(Math.min(20_000, ((MIRROR_BUCKET_RESERVE - ts.currentlyAvailable) / (ts.restoreRate || 500)) * 1000));
     const conn = res?.data?.[field];
     return { nodes: (conn?.nodes ?? []) as any[], next: conn?.pageInfo?.hasNextPage ? (conn.pageInfo.endCursor as string) : null };
   }
