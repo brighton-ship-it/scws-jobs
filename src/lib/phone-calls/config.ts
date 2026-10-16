@@ -41,3 +41,13 @@ export function forwardTargets(line: { forwardEnv: string }, env: NodeJS.Process
 /** Our own Twilio numbers: calls FROM these are test traffic (never real customers). Excluded from dashboards + Jobber. */
 export const TEST_CALLERS = ['+17608237963', '+18773863995'];
 export const isTestCall = (from: string | null | undefined, testParam?: string | null) => testParam === '1' || TEST_CALLERS.includes(from ?? '');
+
+/** AI receptionist (Vapi "SCWS Receptionist", +1 760-491-5348). Calls the shop leg doesn't answer roll here when the
+ * voice URL carries ?ai=1 (or PHONE_CALL_AI_FALLBACK=1). Override the number with PHONE_CALL_AI_NUMBER. */
+export const AI_RECEPTIONIST = '+17604915348';
+export function aiFallbackNumber(q: URLSearchParams, env: NodeJS.ProcessEnv = process.env): string | null {
+  const on = q.get('ai') === '1' || env.PHONE_CALL_AI_FALLBACK === '1';
+  if (!on) return null;
+  const n = (env.PHONE_CALL_AI_NUMBER || AI_RECEPTIONIST).trim();
+  return /^\+\d{10,15}$/.test(n) ? n : null;
+}

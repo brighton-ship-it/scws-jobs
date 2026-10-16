@@ -96,3 +96,18 @@ it('ported main/ransom lines', () => {
   assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', actionQuery: '?line=main' }), /status\?line=main"/);
   assert.match(buildVoicemailTwiml('https://x'), /<Record [^>]*inbound\/recording/);
 });
+
+import { buildAiHandoffTwiml } from './twiml.ts';
+import { aiFallbackNumber } from './config.ts';
+describe('AI receptionist no-answer handoff', () => {
+  it('is off unless ?ai=1 or env', () => {
+    assert.equal(aiFallbackNumber(new URLSearchParams(''), {} as any), null);
+    assert.equal(aiFallbackNumber(new URLSearchParams('ai=1'), {} as any), '+17604915348');
+    assert.equal(aiFallbackNumber(new URLSearchParams(''), { PHONE_CALL_AI_FALLBACK: '1', PHONE_CALL_AI_NUMBER: '+15550001111' } as any), '+15550001111');
+  });
+  it('dials the AI number with no action (no loop)', () => {
+    const x = buildAiHandoffTwiml('+17604915348', 'https://x.test/');
+    assert.match(x, /<Number>\+17604915348<\/Number>/);
+    assert.doesNotMatch(x, /action=/);
+  });
+});
