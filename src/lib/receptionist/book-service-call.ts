@@ -678,7 +678,8 @@ export async function bookServiceCall(
 
   const slots = await lookupOpenSlots(
     { city: input.city || undefined, address: input.address || undefined, zip: input.zip || input.postalCode || undefined },
-    deps
+    // A picked slot only needs the board up to that slot, not the full 14-day lookahead (Jobber cost).
+    input.startAt ? { ...deps, windowEndAt: input.startAt } : deps
   );
 
   if (slots.lookupStatus === 'error') {

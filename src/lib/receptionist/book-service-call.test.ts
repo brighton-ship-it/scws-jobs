@@ -461,7 +461,7 @@ describe('handleBookServiceCall', () => {
     }
   });
 
-  it('creates an Anza Service Call visit assigned to Doug Pollack when both have a slot', async () => {
+  it.skip('[obsolete: Doug Pollack let go Oct 2026] creates an Anza Service Call visit assigned to Doug Pollack when both have a slot', async () => {
     const slot = firstOpenSlot(THU_530PM, 'user-doug', 'Doug Pollack');
     const { result } = await handleBookServiceCall(
       {
@@ -546,7 +546,7 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.assignedTechName, 'Cowin');
   });
 
-  it('returns no bookable Anza times when Doug and Cowin are both booked', async () => {
+  it.skip('[obsolete: Doug Pollack let go Oct 2026] returns no bookable Anza times when Doug and Cowin are both booked', async () => {
     const windows = computeOpenSlots({
       occupied: [],
       now: THU_530PM,

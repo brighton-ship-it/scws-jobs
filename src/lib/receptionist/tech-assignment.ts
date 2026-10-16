@@ -81,6 +81,9 @@ const BLOCKED_NAME_EXACT = new Set([
   'sergio',
   'brian schroeder',
   'brian schroder',
+  'doug pollack',
+  'douglas pollack',
+  'doug',
 ]);
 
 /**
@@ -345,14 +348,11 @@ export function allowedTechsForLocation(input: {
   const territory = assignShopTerritory(input);
   if (territory === 'desert') {
     // Anza techs first so ties go to them; Brian is merged in so the earliest slot wins.
-    return [
-      { ...SERVICE_TECH_ROSTER.doug },
-      { ...SERVICE_TECH_ROSTER.cowin },
-      { ...SERVICE_TECH_ROSTER.brian },
-    ];
+    // Doug Pollack was let go (Oct 2026): never offer or book his slots.
+    return [{ ...SERVICE_TECH_ROSTER.cowin }, { ...SERVICE_TECH_ROSTER.brian }];
   }
   if (territory === 'anza') {
-    return [{ ...SERVICE_TECH_ROSTER.doug }, { ...SERVICE_TECH_ROSTER.cowin }];
+    return [{ ...SERVICE_TECH_ROSTER.cowin }];
   }
   return [{ ...SERVICE_TECH_ROSTER.brian }];
 }
