@@ -34,3 +34,12 @@ export function buildVoicemailTwiml(baseUrl: string): string {
   <Say voice="Polly.Joanna">We did not get a message. Goodbye.</Say>
 </Response>`;
 }
+
+/** No-answer handoff to the AI receptionist. Recorded through the same pipeline; no further action (no loop). */
+export function buildAiHandoffTwiml(aiNumber: string, baseUrl: string): string {
+  const base = baseUrl.replace(/\/$/, '');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST"><Number>${esc(aiNumber)}</Number></Dial>
+</Response>`;
+}

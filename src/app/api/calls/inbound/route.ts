@@ -43,7 +43,7 @@ export async function POST(req: NextRequest) {
   // Ring timeout (s): default 60 so a Google Voice ring group can roll to Mike (~35s) before Twilio gives up.
   const t = parseInt(q.get('timeout') || process.env.PHONE_CALL_RING_TIMEOUT || '60', 10);
   const timeout = Number.isFinite(t) ? Math.min(Math.max(t, 10), 120) : 60;
-  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId, timeout, actionQuery: line ? `?line=${line.key}` : undefined }));
+  return xml(buildInboundTwiml({ shopNumbers: targets, baseUrl: base, callerId, timeout, actionQuery: (() => { const a = new URLSearchParams(); if (line) a.set('line', line.key); if (q.get('ai') === '1') a.set('ai', '1'); const t = a.toString(); return t ? `?${t}` : undefined; })() }));
 }
 
 export async function GET() {

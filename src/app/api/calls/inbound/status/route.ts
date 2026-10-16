@@ -1,8 +1,8 @@
 /** <Dial action> callback: records how the shop leg ended. Returns empty TwiML (call ends). */
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
-import { EMPTY_RESPONSE, buildVoicemailTwiml } from '@/lib/phone-calls/twiml';
-import { publicUrl, PORTED_LINES } from '@/lib/phone-calls/config';
+import { EMPTY_RESPONSE, buildVoicemailTwiml, buildAiHandoffTwiml } from '@/lib/phone-calls/twiml';
+import { publicUrl, PORTED_LINES, aiFallbackNumber } from '@/lib/phone-calls/config';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -22,6 +22,12 @@ export async function POST(req: NextRequest) {
     } catch (e) { console.error('[phone-calls] status failed', e instanceof Error ? e.message : e); }
   }
   const line = new URL(req.url).searchParams.get('line');
+  const q = new URL(req.url).searchParams;
+  const ai = aiFallbackNumber(q);
+  // Shop leg not answered: hand off to the AI receptionist (before voicemail). Never on an answered call.
+  if (ai && params.DialCallStatus !== 'completed' && params.To !== ai) {
+    return new NextResponse(buildAiHandoffTwiml(ai, new URL(publicUrl(req)).origin), { headers: { 'Content-Type': 'text/xml' } });
+  }
   if (line && PORTED_LINES[line] && params.DialCallStatus !== 'completed') {
     return new NextResponse(buildVoicemailTwiml(new URL(publicUrl(req)).origin), { headers: { 'Content-Type': 'text/xml' } });
   }
