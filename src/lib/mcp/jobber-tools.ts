@@ -72,9 +72,10 @@ import {
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
+import { qboStatus, runQboQuery, runQboReport } from '../quickbooks/durable-read.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.11.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.12.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -1020,6 +1021,36 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'qbo_status',
+    description: 'READ-ONLY. QuickBooks Online connection health: realm, company name, token freshness. Returns reconnectUrl if a one-time consent is needed.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'qbo_report',
+    description:
+      'READ-ONLY. Run a QuickBooks Online Reports API report (TaxSummary, ProfitAndLoss, ProfitAndLossDetail, BalanceSheet, GeneralLedger, TransactionList, TrialBalance, CashFlow, AgedReceivables, AgedPayables, CustomerSales, ItemSales, etc.). Returns raw report JSON. Note: the sales tax payable balance is known to be overstated; never quote it as tax due.',
+    inputSchema: {
+      type: 'object',
+      required: ['report'],
+      properties: {
+        report: { type: 'string', description: 'Report name, e.g. TaxSummary' },
+        params: {
+          type: 'object',
+          description: 'Report query params, e.g. {"start_date":"2025-10-01","end_date":"2025-12-31","accounting_method":"Accrual","columns":"...","summarize_column_by":"Month"}',
+        },
+      },
+    },
+  },
+  {
+    name: 'qbo_query',
+    description: 'READ-ONLY. Run a QuickBooks Online SELECT query, e.g. "select * from TaxRate" or "select * from Invoice where TxnDate >= \'2025-10-01\' MAXRESULTS 1000". Only single SELECT statements.',
+    inputSchema: {
+      type: 'object',
+      required: ['query'],
+      properties: { query: { type: 'string' } },
+    },
+  },
 ];
 
 export function normalizeJobberMcpToolName(name: string): string {
@@ -1804,6 +1835,15 @@ export async function callJobberMcpTool(
               : 'Catalog already matched. productsAndServicesEdit was not called. Nothing was deleted.',
         });
       }
+      case 'qbo_status':
+        return textResult(await qboStatus());
+      case 'qbo_report': {
+        const report = requiredString(args, 'report');
+        const params = (args.params && typeof args.params === 'object' ? args.params : {}) as Record<string, unknown>;
+        return textResult(await runQboReport(report, params));
+      }
+      case 'qbo_query':
+        return textResult(await runQboQuery(requiredString(args, 'query')));
       default:
         return errorResult(`Unknown tool: ${name}`);
     }
@@ -1867,6 +1907,8 @@ export async function jobberMcpHealthBody(
       notifiesClients: false,
       paymentOptionEdits: true,
       payroll: false,
+      quickbooksReadOnly: true,
+      quickbooksWrites: false,
       forbidden: [...FORBIDDEN_JOBBER_MCP_TOOLS],
     },
     durableTokenStore,

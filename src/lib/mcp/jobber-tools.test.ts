@@ -52,6 +52,8 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_invoice'));
     assert.ok(names.includes('search_jobs'));
     assert.ok(names.includes('get_job'));
+    assert.ok(names.includes('qbo_report'));
+    assert.ok(names.includes('qbo_query'));
     const jobSchema = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'search_jobs')?.inputSchema as {
       properties?: { includeVisits?: { type?: string } };
     };
@@ -81,7 +83,7 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('get_products'));
     assert.ok(names.includes('edit_product'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.11.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.12.0');
     assert.ok(names.includes('delete_quote_draft'));
     assert.equal(names.includes('delete_quote'), false);
     const deleteDraftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'delete_quote_draft');
