@@ -9,6 +9,8 @@ export const TRACKING_SOURCES: Record<string, string> = {
   '+17602791262': 'gbp_ramona',
   '+19516510957': 'gbp_anza',
   '+17604937719': 'direct',
+  '+18773863995': 'toll_free',
+  '+17608237963': 'line_7963',
 };
 export function shopNumbers(env: NodeJS.ProcessEnv = process.env): string[] {
   const raw = env.PHONE_CALL_SHOP_NUMBERS?.trim();

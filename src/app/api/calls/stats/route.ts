@@ -35,7 +35,7 @@ export async function GET(request: NextRequest) {
       avg_duration: number;
     }> = {};
     
-    const sources = ['seo', 'google_ads', 'gmb', 'gbp_ramona', 'gbp_anza', 'direct', 'yelp', 'apple_maps', 'unknown'];
+    const sources = ['seo', 'google_ads', 'gmb', 'gbp_ramona', 'gbp_anza', 'direct', 'yelp', 'apple_maps', 'toll_free', 'line_7963', 'unknown'];
     sources.forEach(source => {
       stats[source] = { total_calls: 0, completed_calls: 0, total_duration: 0, avg_duration: 0 };
     });
