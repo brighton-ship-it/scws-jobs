@@ -29,6 +29,8 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   // Inbound provider webhooks
   { method: 'POST', path: '/api/sms/inbound', match: 'exact' },
   { method: 'POST', path: '/api/sms/collections-inbound', match: 'exact' },
+  // Signed by Twilio (route verifies X-Twilio-Signature).
+  { method: 'POST', path: '/api/sms/forward', match: 'exact' },
   { method: 'POST', path: '/api/calls/webhook', match: 'exact' },
   { method: 'POST', path: '/api/calls/status', match: 'exact' },
   // Recorded inbound line (Twilio-signed; routes validate X-Twilio-Signature)
