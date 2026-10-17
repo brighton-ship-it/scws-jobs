@@ -1,12 +1,14 @@
 /**
  * Readers over the Jobber mirror (see sync.ts). Each returns the exact node shape the old live Jobber
  * loaders returned, so dashboard / metrics calculations are unchanged. Every reader returns null when the
- * mirror is not ready (backfill unfinished, or last good sync > 40 min old); callers then fall back to live Jobber.
+ * mirror is not ready (backfill unfinished, or last good sync > 2 h old); callers then fall back to live Jobber.
  */
 import { createServiceClient } from '../supabase/service.ts';
 import { BACKFILL_FIELDS } from './sync.ts';
 
-const STALE_MS = 40 * 60_000;
+/** Mirror is used while its last good sync is < 2 h old. A stale mirror sends every dashboard load to live Jobber,
+ *  which is throttled by the same 10k-point bucket and makes pages hang; a slightly older mirror is far better. */
+const STALE_MS = 2 * 60 * 60_000;
 let tsBlocked = false;
 let stateMemo: { at: number; v: { ready: boolean; asOf: string | null } } | null = null;
 const db = () => { try { return createServiceClient() as any; } catch { return null; } };
