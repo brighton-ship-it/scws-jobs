@@ -1,5 +1,5 @@
 /**
- * POST /api/sms/forward — Twilio SMS webhook for the ported main (440-8520) and Ransom (789-5955) lines.
+ * POST /api/sms/forward — Twilio SMS webhook for every SCWS line except toll-free (main, Ransom, 823-7963 and the tracking lines).
  * Relays each inbound text (and MMS media) to the office (SMS_FORWARD_TO, default Liz) from the registered
  * Messaging Service. Never replies to the texter, never touches Jobber. X-Twilio-Signature is required.
  * Each text is also logged to sms_conversations so it shows on the dashboard Messages page (best effort).
