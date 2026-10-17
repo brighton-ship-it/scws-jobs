@@ -130,6 +130,7 @@ export function SpendRevenueChart({ series }: { series: SeriesDay[] }) {
 
 /** Calls per day (answered + missed/short bars, left axis) with Google Ads spend per day (line, right axis). */
 export function CallsSpendChart({ series, spendFrom }: { series: SeriesDay[]; spendFrom?: string | null }) {
+  const W = 1100, H = 260; // wide: one chart spans the card on desktop
   const P = { l: 40, r: 52, t: 12, b: 26 };
   const max = niceMax(Math.max(...series.map((d) => d.answered + d.missed), 1));
   const spendOf = (d: SeriesDay) => (spendFrom && d.date < spendFrom ? null : d.spend);
