@@ -43,3 +43,13 @@ export function buildAiHandoffTwiml(aiNumber: string, baseUrl: string): string {
   <Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST"><Number>${esc(aiNumber)}</Number></Dial>
 </Response>`;
 }
+
+/** After hours: recording notice, then straight to the AI receptionist (no ring group). Recorded through the same
+ * pipeline; the <Dial action> logs how the leg ended (no ai=1 on it, so no second handoff). */
+export function buildAfterHoursAiTwiml(opts: { aiNumber: string; baseUrl: string; notice?: string; actionQuery?: string }): string {
+  const base = opts.baseUrl.replace(/\/$/, '');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  ${opts.notice ? `<Say voice="Polly.Joanna">${esc(opts.notice)}</Say>` : ''}<Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status${esc(opts.actionQuery ?? '')}" method="POST"><Number>${esc(opts.aiNumber)}</Number></Dial>
+</Response>`;
+}
