@@ -157,7 +157,7 @@ async function findExisting(item: CreateProductItem, deps?: ProductToolDeps) {
       if (id && (sameName || skuHit)) hits.set(id, { id, name, visible: typeof node.visible === 'boolean' ? node.visible : null });
     }
   }
-  return [...hits.values()];
+  return Array.from(hits.values());
 }
 
 export async function createProducts(input: CreateProductsInput, deps?: ProductToolDeps): Promise<CreateProductOutcome[]> {
