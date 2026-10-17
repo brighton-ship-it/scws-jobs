@@ -3,9 +3,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { SOURCE_LABEL, Transcript, fmtPhone, splitSummary, useRecordedCalls, type RecordedCall } from './PhoneCallTranscripts';
 import { useSearchParams } from 'next/navigation';
-import { CALLS_TABS, type CallsTab } from './OpsNav';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
+const SECTIONS = ['today', 'sales', 'ads', 'collections'] as const;
 import {
   CallsSpendChart, Funnel, Gauge, Sparkline, WeeklyBars, WeeklyCashBars, compactUsd, mult, palette, usd,
 } from './call-dash/charts';
@@ -458,7 +458,7 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
         ) : null}
         <div className="min-w-0 lg:col-span-2"><p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Invoiced (bar) · paid on those invoices (teal)</p><WeeklyBars weeks={weekly.weeks} /><p className="mb-0.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cash collected by payment date</p><WeeklyCashBars weeks={weekly.weeks} /></div>
       </div>
-      <p className="mt-3 text-[11px] text-slate-400">Close rates (call to booking, quote close rate) are on <a className="underline" href="/ops/calls?tab=ads">Ads &amp; leads → Ad performance</a>.</p>
+      <p className="mt-3 text-[11px] text-slate-400">Close rates (call to booking, quote close rate) are on <a className="underline" href="#ads">Ads &amp; leads → Ad performance</a>.</p>
       <details className="mt-1 text-[11px] text-slate-400"><summary className="cursor-pointer">Sources &amp; definitions</summary>
         <ul className="mt-1 list-disc space-y-0.5 pl-4">{weekly.sources.map((x) => <li key={x}>{x}</li>)}{weekly.gaps.map((x) => <li key={x} className="text-amber-600">{x}</li>)}</ul>
       </details>
@@ -478,16 +478,17 @@ export function splitUnavailable(text: string | null | undefined): { text: strin
   return { text: cleaned.trim(), missing };
 }
 
-function Tile({ label, value, sub, tone = 'plain', href }: { label: string; value: string; sub?: string; tone?: 'plain' | 'alert'; href?: string }) {
+function Tile({ label, value, sub, tone = 'plain', href, spark, sparkColor, hint }: { label: string; value: string; sub?: string; tone?: 'plain' | 'alert'; href?: string; spark?: number[]; sparkColor?: string; hint?: string }) {
   const cls = `block min-w-0 rounded-2xl border p-4 shadow-[0_1px_2px_rgba(15,23,42,.04)] ${tone === 'alert' ? 'border-rose-200 bg-rose-50/70' : 'border-slate-200/80 bg-white'} ${href ? 'transition-colors hover:border-slate-300' : ''}`;
   const body = (
     <>
       <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
       <p className="mt-1 whitespace-nowrap text-[1.75rem] font-bold leading-tight tracking-tight tabular-nums text-slate-900" data-tile={label}>{value}</p>
       {sub ? <p className="mt-0.5 text-xs leading-snug text-slate-500">{sub}</p> : null}
+      {spark && spark.length > 1 ? <div className="mt-2"><Sparkline values={spark} color={sparkColor ?? palette.booked} height={28} /></div> : null}
     </>
   );
-  return href ? <a href={href} className={cls}>{body}</a> : <div className={cls}>{body}</div>;
+  return href ? <a href={href} className={cls} title={hint}>{body}</a> : <div className={cls} title={hint}>{body}</div>;
 }
 
 const SCROLL = 'max-h-[60vh] touch-pan-y overflow-y-auto overscroll-y-contain sm:max-h-[520px]';
@@ -534,7 +535,7 @@ function NeedsCallbackCard({ view, rangeLabel }: { view: Dashboard['needsCallbac
   const { recent, older } = splitByAge(rows, Date.now());
   const notice = missingNotice(rows);
   return (
-    <Card title={`Needs callback · ${view ? view.count : '—'}`} subtitle={`New leads (missed, voicemail, Mike) · ${rangeLabel} · newest first; older than ${OLDER_DAYS} days collapsed`} right={<span className="cursor-help text-xs text-slate-400" title={`${OUTREACH_TIP}\nSkips hang-ups under 10s, spam, vendors, AI bookings, dismissed leads, and any Jobber request, quote, job, visit or invoice on or after the call.`}>ⓘ</span>} delay={40}>
+    <Card title={`Needs callback${view ? ` · ${view.count}` : ''}`} subtitle={`New leads (missed, voicemail, Mike) · ${rangeLabel} · newest first; older than ${OLDER_DAYS} days collapsed`} right={<span className="cursor-help text-xs text-slate-400" title={`${OUTREACH_TIP}\nSkips hang-ups under 10s, spam, vendors, AI bookings, dismissed leads, and any Jobber request, quote, job, visit or invoice on or after the call.`}>ⓘ</span>} delay={40}>
       <p className="sr-only" data-needs-callback-count={view ? view.count : undefined}>{view?.count}</p>
       {notice ? <p className="mb-2 rounded-lg bg-slate-50 px-2 py-1 text-[11px] text-slate-500">{notice}</p> : null}
       <div className={SCROLL} data-scroll="needs-callback">
@@ -565,8 +566,8 @@ export function mergeCalls(feed: FeedRow[], recorded: RecordedCall[]): MergedCal
     if (rec) used.add(rec.call_sid);
     return { at: f.at, feed: f, rec };
   });
-  const oldestFeed = feed.length ? Math.min(...feed.map((f) => Date.parse(f.at))) : -Infinity;
-  for (const r of recorded) if (!used.has(r.call_sid) && Date.parse(r.started_at) >= oldestFeed) out.push({ at: r.started_at, feed: null, rec: r });
+  // Every recorded call stays, even older than the feed's last row (the old transcripts card listed the latest 25).
+  for (const r of recorded) if (!used.has(r.call_sid)) out.push({ at: r.started_at, feed: null, rec: r });
   return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
 }
 
@@ -580,13 +581,13 @@ function matchesFilter(c: MergedCall, f: CallFilter): boolean {
   return true;
 }
 
-function CallsCard({ feed, recorded, today }: { feed: FeedRow[] | null | undefined; recorded: RecordedCall[]; today?: { total: number; answered: number; forwardedAi: number; missed: number } }) {
+function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; recorded: RecordedCall[] }) {
   const [open, setOpen] = useState<string | null>(null);
   const [filter, setFilter] = useState<CallFilter>('all');
   const all = mergeCalls(feed ?? [], recorded);
   const list = all.filter((c) => matchesFilter(c, filter));
   return (
-    <Card title="Calls · summaries & transcripts" subtitle={`All incoming${today ? ` · today ${today.total} · ${today.answered} answered · ${today.forwardedAi} to Mike · ${today.missed} missed` : ''} · click a call for its summary and transcript`}
+    <Card title="Calls · summaries & transcripts" subtitle={`All incoming (Voice main/Ransom, tracking numbers, Mike) · last 40 + every recorded call (latest 25) · click a call for its summary and transcript`}
       right={<div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5" role="tablist" aria-label="Call filter">{CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${filter === v ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{l}</button>)}</div>} delay={60}>
       {feed == null && !recorded.length ? <p className="py-6 text-center text-sm text-slate-400">Call feed unavailable</p> : null}
       <ul className={`${SCROLL} -mx-1 divide-y divide-slate-100`} data-scroll="calls">
@@ -598,8 +599,10 @@ function CallsCard({ feed, recorded, today }: { feed: FeedRow[] | null | undefin
           const name = f?.name || r?.caller_name || null;
           const phone = f?.phone || fmtPhone(r?.caller_number ?? null);
           const line = f?.line || (r?.source ? SOURCE_LABEL[r.source] ?? r.source : '');
-          const outcome = f?.outcome ?? (r?.answered === false ? 'Missed' : 'Answered');
-          const summary = sm?.text || f?.summary || (r && r.processing_status !== 'done' ? `(${r.processing_status})` : '');
+          const outcome0 = f?.outcome ?? (r?.answered === false ? 'Missed' : 'Answered');
+          const stuck = !!(r && r.processing_status === 'pending' && !r.dial_status && Date.now() - Date.parse(r.started_at) > 30 * 60_000);
+          const summary = sm?.text || f?.summary || (stuck ? 'No recording or summary: Twilio never sent this call\'s final status, so it was never processed.' : r && r.processing_status !== 'done' ? `(${r.processing_status})` : '');
+          const outcome = stuck && outcome0 === 'Answered' ? 'Status unknown' : outcome0;
           const expandable = !!(r && (sm?.box.length || r.transcript));
           const isOpen = open === id;
           return (
@@ -685,7 +688,7 @@ function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {stat('ROAS (new customers)', ro ? mult(ro.newOnly.multipleInvoiced) : '—', ro ? <>{usd(ro.newOnly.invoiced)} invoiced ÷ {usd(ro.spend)} spend · Blended (all callers) <b className="text-slate-700">{mult(ro.overall.multipleInvoiced)}</b></> : 'Jobber invoices did not load', 'Jobber invoices to new customers who called an ad ÷ Google Ads spend')}
         {stat('Ad spend', usd(t.spend), <><Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} /> <span className="block">{usd(t.costPerCall, 2)}/ad call · {usd(t.costPerBooked)}/new booking</span></>)}
-        {stat('Ad + Mike calls', String(t.calls), <><Delta cur={t.calls} prev={prev?.calls} /> <span className="block">{t.answered} answered · {t.missedOrShort} missed/short</span></>, 'Google Ads tracked calls + calls answered by Mike (AI receptionist).')}
+        {stat('Ad + Mike calls', String(t.calls), <><Delta cur={t.calls} prev={prev?.calls} /> <span className="block">{t.answered} answered · {t.missedOrShort} missed/short</span></>, 'Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3).')}
         {stat('Call to booking (real leads)', pct(w?.closingRate), w ? `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads` : undefined, leadsHint(data.realLeads))}
       </div>
       <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
@@ -709,14 +712,14 @@ function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; 
             { label: `New customers invoiced${ro ? ` · ${usd(ro.newOnly.invoiced)}` : ''}`, value: ro ? ro.newOnly.clients : null, color: palette.revenue },
             { label: 'Paid in full', value: ro ? ro.newOnly.paidClients ?? null : null, color: palette.paid },
           ]} />
-          {data.funnel?.adCalls != null ? <p className="mt-2 text-[11px] text-slate-400">{data.funnel.adCalls} Google Ads + {data.funnel.calls - data.funnel.adCalls} Mike calls · {data.funnel.uniqueCallers ?? '—'} unique callers</p> : null}
+          <p className="mt-2 text-[11px] text-slate-400">{data.funnel?.adCalls != null ? `${data.funnel.adCalls} Google Ads + ${data.funnel.calls - data.funnel.adCalls} Mike calls · ${data.funnel.uniqueCallers ?? '—'} unique callers · ` : ''}invoiced/paid = same new-customer set and dollars as ROAS (new customers)</p>
         </div>
       </div>
       {data.adSplit ? (
         <div className="mt-4">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Pump vs drilling (Google Ads campaigns)</p>
           <AdSplitBlocks split={data.adSplit} />
-          <p className="mt-2 text-[11px] text-amber-600">Drilling return is early: drilling jobs invoice weeks to months after the call, so expect it to rise.</p>
+          <p className="mt-2 text-[11px] text-amber-600">Drilling return is early: drilling jobs invoice weeks to months after the call, so expect it to rise. Spend and clicks come straight from Google Ads; calls are Google Ads calls only.</p>
         </div>
       ) : null}
       {ro ? <details className="mt-3 text-[11px] text-slate-400"><summary className="cursor-pointer">How it is counted</summary><ul className="mt-1 list-disc space-y-0.5 pl-4">{ro.method.filter((m) => !m.startsWith('Paid')).map((m) => <li key={m}>{m}</li>)}<li>{leadsHint(data.realLeads).split('\n')[0]}</li></ul></details> : null}
@@ -724,29 +727,30 @@ function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; 
   );
 }
 
-function LeadsBySourceTable({ data, rangeLabel }: { data: Dashboard; rangeLabel: string }) {
-  type R = { key: string; label: string; numbers: string; calls: number; callers?: number; forms: string; booked: number | null; spend: number | null; note?: string | null };
+function LeadsBySourceTable({ data, rangeLabel, moneyLabel }: { data: Dashboard; rangeLabel: string; moneyLabel: string }) {
+  type R = { key: string; label: string; numbers: string; calls: number; callers?: number; detail?: string; forms: string; formsSplit?: string; booked: number | null; bookedSplit?: string; spend: number | null; note?: string | null };
+  const split = (x: { pump: number; drilling: number }) => `pump ${x.pump} · drilling ${x.drilling}`;
   const rows: R[] = [];
   for (const g of data.byCampaign ?? []) {
-    if (/^not from ads$/i.test(g.key)) continue;
-    rows.push({ key: `ads-${g.key}`, label: `Google Ads · ${g.key}`, numbers: 'Google forwarding numbers', calls: g.calls, forms: '—', booked: g.booked, spend: g.spend });
+    const detail = `${g.answered} answered · ${g.short} short${g.costPerCall != null ? ` · ${usd(g.costPerCall, 2)}/call` : ''}`;
+    if (/^not from ads$/i.test(g.key)) { rows.push({ key: 'not-ads', label: 'Not from ads (all other lines)', numbers: 'Main, Ransom, Mike and the tracking numbers below', calls: g.calls, detail, forms: '—', booked: g.booked, spend: null }); continue; }
+    rows.push({ key: `ads-${g.key}`, label: `Google Ads · ${g.key}`, numbers: 'Google forwarding numbers', calls: g.calls, detail, forms: '—', booked: g.booked, spend: g.spend });
   }
   for (const c of data.sourceCards ?? []) {
-    rows.push({ key: c.key, label: c.label, numbers: c.numbers.length ? c.numbers.join(' · ') : 'No tracking number yet', calls: c.calls, callers: c.callers, forms: String(c.forms.total), booked: c.booked.total, spend: null, note: c.note });
+    rows.push({ key: c.key, label: c.label, numbers: c.numbers.length ? c.numbers.join(' · ') : 'No tracking number yet', calls: c.calls, callers: c.callers, forms: String(c.forms.total), formsSplit: c.forms.total ? split(c.forms) : undefined, booked: c.booked.total, bookedSplit: c.booked.total ? split(c.booked) : undefined, spend: null, note: c.note });
   }
-  const notFromAds = (data.byCampaign ?? []).find((g) => /^not from ads$/i.test(g.key));
   return (
-    <Card title="Leads by source" subtitle={`Every lead source in one table · ${rangeLabel}`} delay={80}>
+    <Card title="Leads by source" subtitle={`Every lead source in one table · calls ${rangeLabel} · Google Ads spend ${moneyLabel}`} delay={80}>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[640px] text-left text-sm">
           <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-2 pr-3 font-semibold">Source</th><th className="py-2 pr-3 text-right font-semibold">Calls</th><th className="py-2 pr-3 text-right font-semibold">Forms</th><th className="py-2 pr-3 text-right font-semibold">Booked</th><th className="py-2 pr-3 text-right font-semibold">Spend</th><th className="py-2 text-right font-semibold">$ / booking</th></tr></thead>
           <tbody className="divide-y divide-slate-100 tabular-nums">
             {rows.length === 0 ? <tr><td colSpan={6} className="py-6 text-center text-slate-400">No source data</td></tr> : rows.map((r) => (
-              <tr key={r.key} title={r.note ?? undefined}>
-                <td className="py-2 pr-3"><div className="font-medium text-slate-900">{r.label}</div><div className="text-[11px] text-slate-500">{r.numbers}</div></td>
-                <td className="py-2 pr-3 text-right">{r.calls}{r.callers != null && r.calls ? <span className="block text-[11px] text-slate-400">{r.callers} callers</span> : null}</td>
-                <td className="py-2 pr-3 text-right">{r.forms}</td>
-                <td className="py-2 pr-3 text-right">{r.booked == null ? '—' : r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-400">0</span>}</td>
+              <tr key={r.key} className="align-top">
+                <td className="py-2 pr-3"><div className="font-medium text-slate-900">{r.label}</div><div className="text-[11px] text-slate-500">{r.numbers}</div>{r.note ? <div className="mt-0.5 text-[10px] leading-snug text-slate-400">{r.note}</div> : null}</td>
+                <td className="py-2 pr-3 text-right">{r.calls}{r.callers != null && r.calls ? <span className="block text-[11px] text-slate-400">{r.callers} caller{r.callers === 1 ? '' : 's'}</span> : null}{r.detail ? <span className="block whitespace-nowrap text-[11px] text-slate-400">{r.detail}</span> : null}</td>
+                <td className="py-2 pr-3 text-right">{r.forms}{r.formsSplit ? <span className="block whitespace-nowrap text-[11px] text-slate-400">{r.formsSplit}</span> : null}</td>
+                <td className="py-2 pr-3 text-right">{r.booked == null ? '—' : r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-400">0</span>}{r.bookedSplit ? <span className="block whitespace-nowrap text-[11px] text-slate-400">{r.bookedSplit}</span> : null}</td>
                 <td className="py-2 pr-3 text-right">{r.spend == null ? '—' : usd(r.spend)}</td>
                 <td className="py-2 text-right">{r.spend != null && r.booked ? usd(r.spend / r.booked) : '—'}</td>
               </tr>
@@ -754,7 +758,33 @@ function LeadsBySourceTable({ data, rangeLabel }: { data: Dashboard; rangeLabel:
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-[10px] text-slate-400">Google Ads rows: calls to Google forwarding numbers, booked = new customers (same as Ad performance). Other rows: calls to that source&apos;s tracking number, forms = website requests whose first visit came from that source, booked = a Jobber job within 30 days of first contact (site walks excluded).{notFromAds ? ` ${notFromAds.calls} calls in range were not from ads (main/Ransom/Mike and the tracking numbers above).` : ''}</p>
+      <p className="mt-2 text-[10px] text-slate-400">Google Ads rows: calls to Google forwarding numbers, booked = new customers (same as Ad performance). Other rows: calls to that source&apos;s tracking number, forms = website requests whose first visit came from that source, booked = a Jobber job created within 30 days of that caller&apos;s or form&apos;s first contact (site walks excluded); drilling vs pump from the job title, forms by the service picked.</p>
+    </Card>
+  );
+}
+
+const TRACKING_LABEL: Record<string, string> = { AD: 'Google Ads · ad call extension', LANDING_PAGE: 'Google Ads · website (landing page) number', 'Unknown (AI-handled)': 'Mike (AI), line unknown' };
+function GroupTable({ title, subtitle, rows, label }: { title: string; subtitle: string; rows: GroupRow[]; label?: (k: string) => string }) {
+  const maxCalls = Math.max(...rows.map((r) => r.calls), 1);
+  return (
+    <Card title={title} subtitle={subtitle} delay={90}>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left text-sm">
+          <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-2 pr-3 font-semibold">Name</th><th className="py-2 pr-3 text-right font-semibold">Calls</th><th className="py-2 pr-3 text-right font-semibold">Answered</th><th className="py-2 pr-3 text-right font-semibold">Short</th><th className="py-2 text-right font-semibold">New booked</th></tr></thead>
+          <tbody className="divide-y divide-slate-100 tabular-nums">
+            {rows.length === 0 ? <tr><td colSpan={5} className="py-6 text-center text-slate-400">No calls in this range</td></tr> : rows.map((r) => (
+              <tr key={r.key}>
+                <td className="py-2 pr-3"><div className="font-medium text-slate-800" title={r.key}>{label ? label(r.key) : r.key}</div>
+                  <div className="mt-1 h-1 w-full rounded bg-slate-100"><div className="h-1 rounded" style={{ width: `${(r.calls / maxCalls) * 100}%`, background: palette.revenue, opacity: 0.7 }} /></div></td>
+                <td className="py-2 pr-3 text-right">{r.calls}</td>
+                <td className="py-2 pr-3 text-right">{r.answered}</td>
+                <td className="py-2 pr-3 text-right">{r.short}</td>
+                <td className="py-2 text-right">{r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-300">0</span>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </Card>
   );
 }
@@ -765,11 +795,9 @@ function DataNotes({ gaps }: { gaps: string[] }) {
 
 export function CallDashboardPage() {
   const params = useSearchParams();
-  const tabParam = params?.get('tab') ?? 'today';
-  const tab: CallsTab = (CALLS_TABS as string[]).includes(tabParam) ? (tabParam as CallsTab) : 'today';
   const [range, setRangeState] = useState<string>('since');
   const rangeParam = params?.get('range');
-  useEffect(() => { // honor ?range= (tabs and TV mode carry it)
+  useEffect(() => { // honor ?range= (TV mode and old links carry it)
     if (rangeParam && RANGES.some((x) => x.v === rangeParam)) setRangeState(rangeParam);
   }, [rangeParam]);
   const setRange = (v: string) => {
@@ -778,23 +806,31 @@ export function CallDashboardPage() {
   };
   const { data, error, loading, reload } = useDashboard(range, 30_000);
   const recorded = useRecordedCalls();
+  // Old ?tab= links jump to that section of the single page.
+  const tabParam = params?.get('tab');
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (!data || jumped.current) return;
+    const target = tabParam && (SECTIONS as readonly string[]).includes(tabParam) ? tabParam : (typeof window !== 'undefined' ? window.location.hash.slice(1) : '');
+    if (target && target !== 'today') { jumped.current = true; setTimeout(() => document.getElementById(target)?.scrollIntoView({ block: 'start' }), 50); }
+  }, [data, tabParam]);
   const t = data?.totals;
   const s = data?.series ?? [];
   const rangeLabel = RANGES.find((r) => r.v === range)?.label ?? '';
   // Spend, revenue and ROAS start at Sep 18 (closed-loop tracking start) even when the toggle reaches further back.
   const moneyLabel = data?.start && data?.revenueStart && Date.parse(data.start) < Date.parse(data.revenueStart) ? 'Since Sep 18 (tracking start)' : rangeLabel;
-  const w = data?.weekly?.totals ?? (data?.weekly ? data.weekly.weeks[data.weekly.weeks.length - 1] : null);
   const today = data?.callLog?.today;
   const nc = data?.needsCallback;
   const ncSplit = nc ? splitByAge(nc.rows, Date.now()) : null;
-  const TITLES: Record<CallsTab, string> = { today: 'Today', sales: 'Sales', ads: 'Ads & leads', collections: 'Collections (office only)' };
+  const existingExcluded = data?.realLeads?.excluded.find((e) => e.reason === 'existing')?.count;
+  const sectionHead = (id: string, title: string) => <h2 id={id} className="scroll-mt-4 pt-3 text-lg font-bold tracking-tight text-slate-900">{title}</h2>;
   return (
-    <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased" data-tab={tab}>
+    <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased" data-tab="all">
       <style>{STYLES}</style>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="mr-auto">
-          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{TITLES[tab]}</h1>
-          <p className="text-xs text-slate-500">Office dashboard · Pacific time{(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <span className="text-slate-400"> · data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</span> : null}</p>
+          <h1 id="today" className="scroll-mt-4 text-xl font-bold tracking-tight sm:text-2xl">Office dashboard</h1>
+          <p className="text-xs text-slate-500">Calls, AI receptionist, sales, ads and collections · Pacific time{(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <span className="text-slate-400"> · data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</span> : null}</p>
         </div>
         <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
         <div className="inline-flex flex-wrap rounded-full border border-slate-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Date range">
@@ -811,40 +847,37 @@ export function CallDashboardPage() {
 
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
-          {tab === 'today' ? (
-            <>
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-                <Tile label="Calls today" value={today ? String(today.total) : '—'} sub={today ? `${today.answered} answered · ${today.forwardedAi} to Mike` : 'all incoming'} />
-                <Tile label="Missed today" value={today ? String(today.missed) : '—'} sub="all lines" tone={today && today.missed > 0 ? 'alert' : 'plain'} />
-                <Tile label="Needs callback" value={nc ? String(nc.count) : '—'} sub={ncSplit ? `${ncSplit.recent.length} in last ${OLDER_DAYS} days · ${ncSplit.older.length} older` : undefined} tone={ncSplit && ncSplit.recent.length > 0 ? 'alert' : 'plain'} />
-                <Tile label="Booked (new customers)" value={String(t.bookedNew)} sub={`${rangeLabel}${data.tv ? ` · ${data.tv.bookedToday} today · ${data.tv.bookedWeek} this week` : ''}`} />
-                <Tile label="Invoiced" value={w ? usd(w.invoiced) : '—'} sub={w ? `${w.label} · ${w.invoiceCount ?? 0} invoices, pre-tax` : 'Jobber did not load'} href="/ops/calls?tab=sales" />
-                <Tile label="Quotes sent" value={w ? compactUsd(w.quotesSentValue) : '—'} sub={w ? `${w.quotesSent ?? 0} quotes · ${w.label}` : undefined} href="/ops/calls?tab=sales" />
-              </div>
-              <div className="grid gap-4 lg:grid-cols-12">
-                <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
-                <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} today={today} /></div>
-              </div>
-            </>
-          ) : null}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <Tile label="Calls today" value={today ? String(today.total) : '—'} sub={today ? `${today.answered} answered · ${today.forwardedAi} to Mike · all incoming lines` : 'all incoming'} />
+            <Tile label="Missed today" value={today ? String(today.missed) : '—'} sub="missed or voicemail, all lines" tone={today && today.missed > 0 ? 'alert' : 'plain'} />
+            <Tile label="Needs callback" value={nc ? String(nc.count) : '—'} sub={ncSplit ? `${ncSplit.recent.length} in last ${OLDER_DAYS} days · ${ncSplit.older.length} older · ${rangeLabel}` : undefined} tone={ncSplit && ncSplit.recent.length > 0 ? 'alert' : 'plain'} />
+            <Tile label="Booked (new customers)" value={String(t.bookedNew)}
+              sub={`${rangeLabel}${data.tv ? ` · ${data.tv.bookedToday} today · ${data.tv.bookedWeek} this week` : ''}${data.realLeads ? ` · of ${data.realLeads.leads} real leads · ${existingExcluded ?? 0} existing-customer callers excluded` : ` · ${t.knownExisting} existing · ${t.unmatched} other`}`}
+              spark={s.map((d) => d.booked)} sparkColor={palette.booked} hint="New-customer jobs booked per day (sparkline)" />
+          </div>
+          <div className="grid gap-4 lg:grid-cols-12">
+            <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
+            <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} /></div>
+          </div>
 
-          {tab === 'sales' ? (
-            data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>
-          ) : null}
+          {sectionHead('sales', 'Sales')}
+          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
 
-          {tab === 'ads' ? (
-            <>
-              <AdPerformanceCard data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
-              <Card title="Calls & ad spend per day" subtitle={`${rangeLabel} · bars: answered / missed or short calls · line: Google Ads spend`} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short'], [palette.spend, 'Ad spend']]} />} delay={60}>
-                {s.length ? <CallsSpendChart series={s} spendFrom={data.revenueStart ? ptKey(data.revenueStart) : null} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
-              </Card>
-              <LeadsBySourceTable data={data} rangeLabel={rangeLabel} />
-            </>
-          ) : null}
+          {sectionHead('ads', 'Ads & leads')}
+          <AdPerformanceCard data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
+          <Card title="Calls & ad spend per day" subtitle={`${rangeLabel} · bars: answered / missed or short calls · line: Google Ads spend`} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short'], [palette.spend, 'Ad spend']]} />} delay={60}>
+            {s.length ? <CallsSpendChart series={s} spendFrom={data.revenueStart ? ptKey(data.revenueStart) : null} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
+          </Card>
+          <LeadsBySourceTable data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <GroupTable title="By keyword / ad group" subtitle={`Google Ads keyword or ad group of each call · ${rangeLabel}`} rows={data.byKeyword ?? []} />
+            <GroupTable title="By tracking number / source" subtitle={`Which number or Google Ads asset the call came in on · ${rangeLabel}`} rows={data.byTrackingNumber ?? []} label={(k) => TRACKING_LABEL[k] ?? k} />
+          </div>
 
-          {tab === 'collections' ? <InvoiceFollowUpCard view={data.invoiceFollowUp} rangeLabel={rangeLabel} /> : null}
+          {sectionHead('collections', 'Collections (office only)')}
+          <InvoiceFollowUpCard view={data.invoiceFollowUp} rangeLabel={rangeLabel} />
 
-          <DataNotes gaps={[...(tab === 'sales' && data.weekly ? [...data.weekly.sources, ...data.weekly.gaps] : []), ...data.gaps]} />
+          <DataNotes gaps={data.gaps} />
         </div>
       ) : null}
     </div>

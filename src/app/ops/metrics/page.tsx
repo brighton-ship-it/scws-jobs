@@ -77,10 +77,10 @@ export default function MetricsPage() {
         ))}
       </div>
       {hidden.length ? (
-        <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500" data-hidden-metrics={hidden.length}>
-          <summary className="cursor-pointer font-medium text-slate-600">{hidden.length} {hidden.length === 1 ? 'metric is' : 'metrics are'} hidden until the data exists: {hidden.map((c) => c.title).join(', ')}</summary>
-          <ul className="mt-2 list-disc space-y-1 pl-5">{hidden.map((c) => <li key={c.id}><b className="text-slate-600">{c.title}:</b> {c.needs ? c.needs.replace(/^needs\s*/i, 'needs ') : 'no data yet'}</li>)}</ul>
-        </details>
+        <section className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500" data-hidden-metrics={hidden.length}>
+          <p className="font-medium text-slate-600">No value yet ({hidden.length}):</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">{hidden.map((c) => <li key={c.id}><b className="text-slate-600">{c.title}:</b> — · {c.needs ? c.needs.replace(/^needs\s*/i, 'needs ') : 'no data yet'}</li>)}</ul>
+        </section>
       ) : null}
     </main>
   );
