@@ -287,10 +287,12 @@ const AI_LINE_SOURCE: Record<string, string> = {
   '7604937719': 'Direct',
   '7608914264': 'Yelp',
   '7604540365': 'Apple Maps',
+  '8773863995': 'Toll-free',
+  '7608237963': 'Line 823-7963',
 };
 const AI_RECORDING_SOURCE: Record<string, string> = {
   gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads',
-  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main', ransom_line: 'Ransom',
+  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main', ransom_line: 'Ransom', toll_free: 'Toll-free', line_7963: 'Line 823-7963',
 };
 
 export interface DialedSourceHint {
