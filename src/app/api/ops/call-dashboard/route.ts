@@ -18,6 +18,7 @@ import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
 import { LEAD_DISMISSALS_KEY, parseDismissals, type LeadDismissal } from '@/lib/ads/lead-dismissals';
 import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
+import { scrubForTv } from '@/lib/ads/tv-scrub';
 import { loadGmailCollection, invoiceNumbersIn, vercelOidcToken, SHOP_GMAIL_MAILBOXES, gmailSearchTargets, gmailTargetKey } from '@/lib/ads/gmail-collections';
 import { fetchTwilioCollectionMessages, type TwilioText } from '@/lib/ads/twilio-outbound';
 import { callbackVapiIds, dropBookedByMike, mikeOutreachAttempts, mikeStatusLabel, sourcesWithoutMikeLegs } from '@/lib/receptionist/mike-callback';
@@ -357,7 +358,10 @@ export async function GET(request: NextRequest) {
     dash.gaps.push('Invoice follow-up calls are outbound Google Voice calls from Liz (619-320-8264), Shanicey (442-227-2898), and Brighton (619-259-0410), matched to the customer phone or Jobber client after the invoice was issued. The Voice audit log starts in early October 2026, so earlier calls are not in it.');
     dash.gaps.push(...notes);
     const ms = await mirrorState();
-    return finish(NextResponse.json({ ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) }));
+    const payload = { ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) };
+    // TV mode may be on a shop screen: no collections or payment info leaves the server.
+    if (request.nextUrl.searchParams.get('view') === 'tv') return finish(NextResponse.json(scrubForTv(payload as unknown as Record<string, unknown>)));
+    return finish(NextResponse.json(payload));
   } catch (error) {
     console.error('[call-dashboard]', error instanceof Error ? error.message : 'error');
     return finish(NextResponse.json({ error: 'Failed to load dashboard' }, { status: 500 }));

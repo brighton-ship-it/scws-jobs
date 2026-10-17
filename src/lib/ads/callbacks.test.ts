@@ -614,3 +614,11 @@ test('twilio collection texts keep the invoice number and skip inbound', () => {
   assert.equal(rows[0].to, '+17604190997');
   assert.match(rows[0].body, /5656/);
 });
+
+test('past due follows the due date when Jobber gives one, else Jobber status', async () => {
+  const { invoiceIsPastDue } = await import('./callbacks.ts');
+  assert.equal(invoiceIsPastDue('past_due', 0), false); // due today: not past due yet
+  assert.equal(invoiceIsPastDue('awaiting_payment', 3), true); // due date passed, status not refreshed yet
+  assert.equal(invoiceIsPastDue('past_due', null), true);
+  assert.equal(invoiceIsPastDue('awaiting_payment', null), false);
+});

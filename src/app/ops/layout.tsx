@@ -1,4 +1,6 @@
 import type { Metadata } from 'next';
+import { Suspense } from 'react';
+import { OpsNav } from '@/components/ops/OpsNav';
 
 /**
  * Internal ops pages (office only).
@@ -31,6 +33,7 @@ export default function OpsLayout({ children }: { children: React.ReactNode }) {
           </div>
           <p className="text-xs text-slate-500">Not customer-facing. Not indexed.</p>
         </div>
+        <Suspense fallback={null}><OpsNav /></Suspense>
       </header>
       <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
     </div>

@@ -128,6 +128,41 @@ export function SpendRevenueChart({ series }: { series: SeriesDay[] }) {
   );
 }
 
+/** Calls per day (answered + missed/short bars, left axis) with Google Ads spend per day (line, right axis). */
+export function CallsSpendChart({ series, spendFrom }: { series: SeriesDay[]; spendFrom?: string | null }) {
+  const W = 1100, H = 260; // wide: one chart spans the card on desktop
+  const P = { l: 40, r: 52, t: 12, b: 26 };
+  const max = niceMax(Math.max(...series.map((d) => d.answered + d.missed), 1));
+  const spendOf = (d: SeriesDay) => (spendFrom && d.date < spendFrom ? null : d.spend);
+  const smax = niceMax(Math.max(...series.map((d) => spendOf(d) ?? 0), 1));
+  const inner = W - P.l - P.r, ih = H - P.t - P.b;
+  const bw = Math.min(26, (inner / series.length) * 0.62);
+  const x = (i: number) => P.l + (inner * (i + 0.5)) / series.length;
+  const ys = (v: number) => P.t + ih - (v / smax) * ih;
+  const pts = series.map((d, i) => [i, spendOf(d)] as const).filter(([, v]) => v != null) as Array<readonly [number, number]>;
+  const line = pts.map(([i, v], k) => `${k ? 'L' : 'M'}${x(i).toFixed(1)},${ys(v).toFixed(1)}`).join(' ');
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Calls per day and ad spend per day">
+      <Axis max={max} w={W - P.r + 10} h={H} pad={{ ...P, r: 10 }} fmt={(n) => String(Math.round(n))} />
+      {[0, 0.5, 1].map((t) => <text key={t} x={W - P.r + 6} y={P.t + ih * (1 - t) + 3.5} fontSize="10" fill={palette.spend}>{compactUsd(smax * t)}</text>)}
+      {series.map((d, i) => {
+        const ha = (d.answered / max) * ih, hm = (d.missed / max) * ih;
+        const yBase = P.t + ih;
+        return (
+          <g key={d.date} className="cd-bar" style={{ animationDelay: `${Math.min(i * 12, 400)}ms` }}>
+            <title>{`${shortDay(d.date)} · ${d.answered} answered · ${d.missed} missed/short · spend ${usd(spendOf(d))}`}</title>
+            <rect x={x(i) - bw / 2} y={yBase - ha} width={bw} height={ha} rx={ha > 3 ? 2 : 0} fill={palette.answered} opacity="0.85" />
+            <rect x={x(i) - bw / 2} y={yBase - ha - hm} width={bw} height={hm} rx={hm > 3 ? 2 : 0} fill={palette.missed} opacity="0.85" />
+            <rect x={x(i) - inner / series.length / 2} y={P.t} width={inner / series.length} height={ih} fill="transparent" />
+          </g>
+        );
+      })}
+      {pts.length > 1 ? <path className="cd-line" d={line} fill="none" stroke={palette.spend} strokeWidth="2.25" strokeLinejoin="round" strokeLinecap="round" /> : null}
+      <XLabels days={series.map((d) => d.date)} w={W - P.r + 10} pad={{ ...P, r: 10 }} h={H} />
+    </svg>
+  );
+}
+
 export function Funnel({ stages }: { stages: Array<{ label: string; value: number | null; color: string }> }) {
   const top = Math.max(stages[0]?.value ?? 0, 1);
   return (
@@ -175,7 +210,8 @@ export function Gauge({ value, label, dark = false }: { value: number | null; la
 }
 
 /** Weekly invoiced (bar) with paid (inner bar). Flex layout, so it never overflows horizontally. */
-export function WeeklyBars({ weeks, dark = false, height = 96 }: { weeks: WeekRow[]; dark?: boolean; height?: number }) {
+/** showPaid=false (TV mode) draws invoiced only, with no paid overlay or paid figure in the tooltip. */
+export function WeeklyBars({ weeks, dark = false, height = 96, showPaid = true }: { weeks: WeekRow[]; dark?: boolean; height?: number; showPaid?: boolean }) {
   const max = Math.max(1, ...weeks.map((w) => w.invoiced ?? 0));
   return (
     <div className="flex w-full min-w-0 items-end gap-1 sm:gap-1.5" style={{ height: height + 30 }} role="img" aria-label="Weekly invoiced sales, oldest to newest">
@@ -183,10 +219,10 @@ export function WeeklyBars({ weeks, dark = false, height = 96 }: { weeks: WeekRo
         const h = Math.max(2, Math.round(((w.invoiced ?? 0) / max) * height));
         const ph = Math.round(((w.paid ?? 0) / max) * height);
         return (
-          <div key={w.weekStart} className="flex min-w-0 flex-1 flex-col items-center justify-end" title={`${w.label}: invoiced ${usd(w.invoiced)} · paid ${usd(w.paid)}`}>
+          <div key={w.weekStart} className="flex min-w-0 flex-1 flex-col items-center justify-end" title={showPaid ? `${w.label}: invoiced ${usd(w.invoiced)} · paid ${usd(w.paid)}` : `${w.label}: invoiced ${usd(w.invoiced)}`}>
             <span className={`mb-0.5 max-w-full truncate text-[9px] tabular-nums ${dark ? 'text-slate-400' : 'text-slate-500'}`}>{compactUsd(w.invoiced)}</span>
             <div className="cd-bar relative w-full overflow-hidden rounded-t" style={{ height: h, background: w.current ? palette.revenue : dark ? '#475569' : '#c7d2fe' }}>
-              <div className="absolute inset-x-0 bottom-0" style={{ height: ph, background: palette.paid, opacity: 0.9 }} />
+              {showPaid ? <div className="absolute inset-x-0 bottom-0" style={{ height: ph, background: palette.paid, opacity: 0.9 }} /> : null}
             </div>
             <span className={`mt-0.5 text-[9px] ${w.current ? 'font-bold' : ''} ${dark ? 'text-slate-500' : 'text-slate-400'}`}>{shortDay(w.weekStart)}</span>
           </div>
