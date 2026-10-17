@@ -69,13 +69,19 @@ import {
   parseEditProductArgs,
   parseGetProductsArgs,
 } from '../jobber/mcp-products.ts';
+import {
+  createProducts,
+  listProductsPage,
+  parseCreateProductsArgs,
+  parseListProductsArgs,
+} from '../jobber/mcp-product-create.ts';
 import type { QuoteLineDraft } from '../jobber/shop-book.ts';
 import type { McpDispatcher, McpToolDefinition, McpToolResult } from './protocol.ts';
 import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 import { qboStatus, runQboQuery, runQboReport } from '../quickbooks/durable-read.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.12.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.13.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -1022,6 +1028,50 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
     },
   },
   {
+    name: 'create_products',
+    description:
+      'Create up to 25 Jobber products or services with productsAndServicesCreate. dryRun defaults to TRUE: pass dryRun:false to write. Each item: name (required, specific size and type), unitPrice (required, sent as defaultUnitCost), optional description, internalUnitCost, taxable (default true for PRODUCT), category PRODUCT|SERVICE (default PRODUCT), and sku. Skips an item when the catalog already has the same normalized name, or when its sku appears in an existing product name or description. Each created row is re-read by id. There is no delete; hide with edit_product visible:false.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['items'],
+      properties: {
+        items: {
+          type: 'array',
+          maxItems: 25,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['name', 'unitPrice'],
+            properties: {
+              name: { type: 'string' },
+              description: { type: 'string' },
+              unitPrice: { type: 'number' },
+              internalUnitCost: { type: 'number' },
+              taxable: { type: 'boolean' },
+              category: { type: 'string', enum: ['PRODUCT', 'SERVICE'] },
+              sku: { type: 'string', description: 'Vendor SKU used only for the duplicate check.' },
+            },
+          },
+        },
+        dryRun: { type: 'boolean', description: 'Default true. false creates the products.' },
+      },
+    },
+  },
+  {
+    name: 'list_products',
+    description:
+      'Read one page of the FULL Jobber catalog (products(first, after) with no search term), for backups and audits. Same fields as get_products plus totalCount. Read-only.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        first: { type: 'integer', minimum: 1, maximum: 50 },
+        after: { type: 'string' },
+      },
+    },
+  },
+  {
     name: 'qbo_status',
     description: 'READ-ONLY. QuickBooks Online connection health: realm, company name, token freshness. Returns reconnectUrl if a one-time consent is needed.',
     inputSchema: { type: 'object', properties: {} },
@@ -1834,6 +1884,24 @@ export async function callJobberMcpTool(
               ? 'Updated one product with productsAndServicesEdit. after is a fresh read. Pass before.internalUnitCost, before.unitPrice, before.markup, and before.visible to edit_product to revert. Nothing was deleted.'
               : 'Catalog already matched. productsAndServicesEdit was not called. Nothing was deleted.',
         });
+      }
+      case 'create_products': {
+        const parsed = parseCreateProductsArgs(args);
+        const results = await createProducts(parsed, deps);
+        const counts: Record<string, number> = {};
+        for (const row of results) counts[row.status] = (counts[row.status] || 0) + 1;
+        return textResult({
+          dryRun: parsed.dryRun,
+          counts,
+          results,
+          note: parsed.dryRun
+            ? 'dryRun: productsAndServicesCreate was not called. Pass dryRun:false to create would_create rows.'
+            : 'Created rows were re-read by id. Nothing was deleted. Hide a row with edit_product visible:false.',
+        });
+      }
+      case 'list_products': {
+        const result = await listProductsPage(parseListProductsArgs(args), deps);
+        return textResult({ ...result, count: result.products.length, note: 'Read-only full catalog page.' });
       }
       case 'qbo_status':
         return textResult(await qboStatus());

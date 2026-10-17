@@ -71,7 +71,7 @@ export const PRODUCT_SELECTION_FIELDS = [
 
 export const PRODUCT_NODE_FIELD_COST = PRODUCT_SELECTION_FIELDS.length;
 
-const PRODUCT_FIELDS = `
+export const PRODUCT_FIELDS = `
           id
           name
           description
@@ -479,7 +479,7 @@ function projectProduct(before: JobberProductDetail, edit: ProductEditInput): Jo
   return after;
 }
 
-async function graphql(
+export async function productGraphql(
   query: string,
   variables: Record<string, unknown>,
   operation: string,
@@ -532,8 +532,8 @@ async function graphql(
   throw new Error(lastMessage);
 }
 
-async function readProduct(productId: string, deps?: ProductToolDeps): Promise<JobberProductDetail> {
-  const result = await graphql(PRODUCT_BY_ID, { id: productId }, 'product', deps);
+export async function readProduct(productId: string, deps?: ProductToolDeps): Promise<JobberProductDetail> {
+  const result = await productGraphql(PRODUCT_BY_ID, { id: productId }, 'product', deps);
   const product = mapJobberProductDetail(result.data?.product);
   if (!product) throw new Error(`Product ${productId} was not found`);
   return product;
@@ -584,7 +584,7 @@ export async function getProducts(input: GetProductsInput, deps?: ProductToolDep
   const estimated = assertPageCost(first);
   const variables: Record<string, unknown> = { searchTerm: term, first };
   if (input.after) variables.after = input.after;
-  const result = await graphql(PRODUCTS_PAGE, variables, 'products', deps);
+  const result = await productGraphql(PRODUCTS_PAGE, variables, 'products', deps);
   const connection = result.data?.products as {
     nodes?: unknown[] | null;
     pageInfo?: { hasNextPage?: boolean | null; endCursor?: string | null } | null;
@@ -619,7 +619,7 @@ export async function editProduct(input: ProductEditInput, deps?: ProductToolDep
   }
 
   const attributes = buildProductEditInput(input, changes);
-  const edited = await graphql(
+  const edited = await productGraphql(
     PRODUCT_EDIT,
     { productOrServiceId: input.productId, input: attributes },
     'productsAndServicesEdit',

@@ -82,8 +82,10 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('search_products'));
     assert.ok(names.includes('get_products'));
     assert.ok(names.includes('edit_product'));
+    assert.ok(names.includes('create_products'));
+    assert.ok(names.includes('list_products'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.12.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.13.0');
     assert.ok(names.includes('delete_quote_draft'));
     assert.equal(names.includes('delete_quote'), false);
     const deleteDraftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'delete_quote_draft');
