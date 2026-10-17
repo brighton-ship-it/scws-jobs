@@ -587,7 +587,7 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
   const all = mergeCalls(feed ?? [], recorded);
   const list = all.filter((c) => matchesFilter(c, filter));
   return (
-    <Card title="Calls · summaries & transcripts" subtitle={`All incoming (Voice main/Ransom, tracking numbers, Mike) · last 40 + every recorded call (latest 25) · click a call for its summary and transcript`}
+    <Card title="Calls · summaries & transcripts" subtitle={`All incoming (Voice main/Ransom, tracking numbers, Mike) · last 60 + every recorded call (latest 25) · click a call for its summary and transcript`}
       right={<div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5" role="tablist" aria-label="Call filter">{CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${filter === v ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{l}</button>)}</div>} delay={60}>
       {feed == null && !recorded.length ? <p className="py-6 text-center text-sm text-slate-400">Call feed unavailable</p> : null}
       <ul className={`${SCROLL} -mx-1 divide-y divide-slate-100`} data-scroll="calls">

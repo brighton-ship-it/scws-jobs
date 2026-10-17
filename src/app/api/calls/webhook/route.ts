@@ -1,7 +1,4 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { optionalServiceClient } from '@/lib/supabase/service';
-
-const supabase = optionalServiceClient();
 
 // Tracking number to source mapping
 const TRACKING_NUMBERS: Record<string, string> = {
@@ -27,42 +24,18 @@ export async function POST(request: NextRequest) {
     const calledNumber = formData.get('Called') as string;
     const callerNumber = formData.get('From') as string;
     const callStatus = formData.get('CallStatus') as string;
-    const direction = formData.get('Direction') as string;
-    const callerCity = formData.get('CallerCity') as string;
-    const callerState = formData.get('CallerState') as string;
-    const callerZip = formData.get('CallerZip') as string;
-    const duration = formData.get('CallDuration') as string;
     
     // Determine source from tracking number
     const source = TRACKING_NUMBERS[calledNumber] || 'unknown';
     
-    // Upsert call record (don't await - fire and forget to avoid blocking)
-    supabase
-      ?.from('calls')
-      .upsert({
-        call_sid: callSid,
-        source,
-        tracking_number: calledNumber,
-        caller_number: callerNumber,
-        caller_city: callerCity,
-        caller_state: callerState,
-        caller_zip: callerZip,
-        call_status: callStatus,
-        direction: direction || 'inbound',
-        duration_seconds: duration ? parseInt(duration) : null,
-        started_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }, {
-        onConflict: 'call_sid',
-      })
-      .then(({ error }) => {
-        if (error) console.error('Error logging call:', error);
-        else console.log(`Logged call from ${source}: ${callerNumber}`);
-      });
-    
-    // Forward all calls directly to Sarah (AI Receptionist)
-    const SARAH_VAPI_NUMBER = '+17604915348';
-    
+    // No database write here. The old write targeted public.calls, which no longer exists, so every call
+    // logged a PGRST205 error. This line only bridges the caller to Mike; Mike's own webhook
+    // (/api/receptionist/webhook) records the call in receptionist_calls, which the dashboard reads.
+    console.log(`[calls/webhook] ${callStatus || 'ringing'} ${source} ${callSid || ''}`);
+
+    // Bridge to Mike (AI receptionist, Vapi line). Live routing for any number whose Voice URL is this route.
+    const MIKE_VAPI_NUMBER = '+17604915348';
+
     // Ensure caller ID is properly formatted (E.164)
     // Note: + in URL form data decodes as space, so we handle that
     let formattedCallerId = callerNumber?.trim() || '';
@@ -77,7 +50,7 @@ export async function POST(request: NextRequest) {
     const twiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial callerId="${formattedCallerId}" timeout="60">
-    <Number>${SARAH_VAPI_NUMBER}</Number>
+    <Number>${MIKE_VAPI_NUMBER}</Number>
   </Dial>
 </Response>`;
     
@@ -86,7 +59,7 @@ export async function POST(request: NextRequest) {
     });
   } catch (error) {
     console.error('Call webhook error:', error);
-    // Always return valid TwiML even on error - forward to Sarah directly
+    // Always return valid TwiML even on error so the caller still reaches Mike.
     const fallbackTwiml = `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   <Dial timeout="30">

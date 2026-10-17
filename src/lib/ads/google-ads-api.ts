@@ -7,7 +7,18 @@
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const ADS_HOST = 'https://googleads.googleapis.com';
 
-export const DEFAULT_GOOGLE_ADS_API_VERSION = 'v18';
+/** Current Google Ads API version (v25: released Jul 2026, sunset ~Aug 2027). See developers.google.com/google-ads/api/docs/sunset-dates. */
+export const DEFAULT_GOOGLE_ADS_API_VERSION = 'v25';
+/** Oldest version still served (v22 and earlier are past or at sunset). An env override older than this is ignored. */
+export const MIN_GOOGLE_ADS_API_MAJOR = 23;
+
+/** GOOGLE_ADS_API_VERSION if it names a supported version (e.g. v25, v25.1), else the default. */
+export function resolveGoogleAdsApiVersion(raw: string | undefined | null): string {
+  const v = (raw ?? '').trim().toLowerCase();
+  const m = /^v(\d+)(?:_\d+|\.\d+)?$/.exec(v);
+  if (!m || Number(m[1]) < MIN_GOOGLE_ADS_API_MAJOR) return DEFAULT_GOOGLE_ADS_API_VERSION;
+  return v.split(/[._]/)[0];
+}
 
 export const CALL_VIEW_GAQL = `
 SELECT
@@ -89,7 +100,7 @@ export function googleAdsConfig(env: Record<string, string | undefined> = proces
     refreshToken,
     customerId,
     loginCustomerId: (env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.trim() || '').replace(/-/g, '') || null,
-    apiVersion: env.GOOGLE_ADS_API_VERSION?.trim() || DEFAULT_GOOGLE_ADS_API_VERSION,
+    apiVersion: resolveGoogleAdsApiVersion(env.GOOGLE_ADS_API_VERSION),
     conversionAction: env.GOOGLE_ADS_OFFLINE_CONVERSION_ACTION?.trim() || null,
     dataManagerRefreshToken: env.GOOGLE_DATAMANAGER_REFRESH_TOKEN?.trim() || refreshToken,
     dataManagerClientId: env.GOOGLE_DATAMANAGER_CLIENT_ID?.trim() || clientId,
@@ -162,15 +173,37 @@ export async function googleAdsSearch(
 ): Promise<unknown> {
   const gaql = assertReadOnlyGaql(query);
   const url = `${ADS_HOST}/${config.apiVersion}/customers/${config.customerId}/googleAds:search`;
-  const response = await fetchImpl(url, {
+  const send = () => fetchImpl(url, {
     method: 'POST',
     headers: adsHeaders(config, accessToken),
     body: JSON.stringify({ query: gaql, pageToken: pageToken || undefined }),
   });
-  if (!response.ok) {
-    throw new Error(`Google Ads search failed (${response.status})`);
+  let response = await send();
+  // One retry for transient failures (429/5xx, or a 400 Google marks as transient/internal).
+  if (!response.ok && response.status !== 401 && response.status !== 403) {
+    const first = await adsErrorDetail(response);
+    if (response.status === 429 || response.status >= 500 || /TRANSIENT|INTERNAL|DEADLINE|UNAVAILABLE|RESOURCE_TEMPORARILY|CONCURRENT/i.test(first)) {
+      await new Promise((r) => setTimeout(r, 1500));
+      response = await send();
+      if (!response.ok) throw new Error(`Google Ads search failed (${response.status}): ${await adsErrorDetail(response)}`);
+    } else {
+      throw new Error(`Google Ads search failed (${response.status}): ${first}`);
+    }
   }
   return response.json();
+}
+
+/** Google Ads error code + message (no request data or tokens), trimmed for logs. */
+async function adsErrorDetail(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    try {
+      const j = JSON.parse(text) as any;
+      const errs = (j?.error?.details ?? []).flatMap((d: any) => d?.errors ?? []);
+      const parts = errs.slice(0, 3).map((e: any) => `${Object.entries(e?.errorCode ?? {}).map(([k, v]) => `${k}=${v}`).join(',')} ${e?.message ?? ''}`.trim());
+      return (parts.length ? parts.join(' | ') : `${j?.error?.status ?? ''} ${j?.error?.message ?? ''}`.trim()).slice(0, 400);
+    } catch { return text.slice(0, 300); }
+  } catch { return 'no body'; }
 }
 
 export function searchResultRows(payload: unknown): Array<Record<string, unknown>> {

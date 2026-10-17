@@ -76,7 +76,7 @@ describe('offline upload request', () => {
         dataManagerClientSecret: 'secret',
         customerId: '123',
         loginCustomerId: null,
-        apiVersion: 'v18',
+        apiVersion: 'v25',
         conversionAction: 'customers/123/conversionActions/9',
       },
       [{ order_id: 'J1', conversion_value: 10 }],
@@ -92,4 +92,13 @@ describe('offline upload request', () => {
     assert.equal(result.ok, true);
     assert.match(uploaded ?? '', /customers\/123:uploadClickConversions$/);
   });
+});
+
+import { resolveGoogleAdsApiVersion, DEFAULT_GOOGLE_ADS_API_VERSION } from './google-ads-api.ts';
+it('Google Ads API version: sunset overrides fall back to the supported default', () => {
+  assert.equal(resolveGoogleAdsApiVersion(undefined), DEFAULT_GOOGLE_ADS_API_VERSION);
+  assert.equal(resolveGoogleAdsApiVersion('v18'), DEFAULT_GOOGLE_ADS_API_VERSION);
+  assert.equal(resolveGoogleAdsApiVersion('v22'), DEFAULT_GOOGLE_ADS_API_VERSION);
+  assert.equal(resolveGoogleAdsApiVersion(' v26 '), 'v26');
+  assert.equal(resolveGoogleAdsApiVersion('v25.1'), 'v25');
 });

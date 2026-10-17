@@ -14,7 +14,7 @@ import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from
 import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
-import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
+import { buildCallFeed, mergeCallFeed, feedToday, markMikeHandoffs } from '@/lib/ads/call-feed';
 import { LEAD_DISMISSALS_KEY, parseDismissals, type LeadDismissal } from '@/lib/ads/lead-dismissals';
 import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
@@ -161,6 +161,8 @@ export async function GET(request: NextRequest) {
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
       const merged = mergeCallFeed({ log: inboundLog, recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && !callbackVapi.has(r.vapi_call_id)), bookedMike: bookingIds });
+      // Voice log card: a missed office leg that Mike then answered shows as Mike, not Missed.
+      if (!log.error && !mk.error) dash.callLog = buildCallLogView(markMikeHandoffs(inboundLog, (mk.data ?? []).filter((r: any) => !callbackVapi.has(r.vapi_call_id))), nowDash);
       const liveOut = await liveOutP;
       notes.push(...liveOut.notes);
       const outboundByKey = new Map<string, any>();
@@ -222,7 +224,7 @@ export async function GET(request: NextRequest) {
           bookedMike: bookingIds,
         }), mikeCallbacks.attempts);
         const withMike = <T extends { phone: string; at: string }>(rows: T[]) => rows.map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
-        dash.callFeed = withMike(annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work }));
+        dash.callFeed = withMike(annotateFeed(merged.slice(0, 60), sources, nowDash, { attempts, fromMs, pastDuePhones, work }));
         let dismissed: LeadDismissal[] = [];
         try {
           const ds = await db.from('settings').select('value').eq('key', LEAD_DISMISSALS_KEY).maybeSingle();
@@ -254,7 +256,7 @@ export async function GET(request: NextRequest) {
         dash.needsCallback = { ...queues.leads, rows: withMike(queues.leads.rows) };
         dash.invoiceFollowUp = queues.invoices;
       } catch (error) {
-        dash.callFeed = annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
+        dash.callFeed = annotateFeed(merged.slice(0, 60), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
         notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);
       }
       // Main page header and TV "today" tiles share this one count across every line.
