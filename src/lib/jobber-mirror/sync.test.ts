@@ -27,8 +27,10 @@ test('rolling windows: wide covers 200d quotes', () => {
 
 test('parseProgress reads a saved wide-pass position and rejects junk', async () => {
   const { parseProgress } = await import('./sync.ts');
-  assert.deepEqual(parseProgress(JSON.stringify({ i: 3, cursor: 'abc' })), { i: 3, cursor: 'abc' });
-  assert.deepEqual(parseProgress(JSON.stringify({ i: 0, cursor: null })), { i: 0, cursor: null });
+  const anchor = new Date(Date.now() - 600_000).toISOString();
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 3, cursor: 'abc', anchor })), { i: 3, cursor: 'abc', anchor });
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 0, cursor: null })), { i: 0, cursor: null, anchor: null });
+  assert.equal(parseProgress(JSON.stringify({ i: 2, cursor: 'x', anchor: new Date(Date.now() - 2 * 86400_000).toISOString() })), null);
   assert.equal(parseProgress(null), null);
   assert.equal(parseProgress(''), null);
   assert.equal(parseProgress('not json'), null);

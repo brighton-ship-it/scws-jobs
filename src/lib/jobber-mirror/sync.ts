@@ -164,12 +164,16 @@ async function setState(db: Db, key: string, patch: Record<string, unknown>) {
   if (r.error) throw new Error(`jobber_sync_state: ${r.error.message}`);
 }
 
-/** Saved wide-pass position ({ i, cursor } JSON); null when no wide pass is in progress. Exported for tests. */
-export function parseProgress(raw: unknown): { i: number; cursor: string | null } | null {
+/** Saved rolling-pass position ({ i, cursor, anchor } JSON); null when no pass is in progress. Exported for tests. */
+export function parseProgress(raw: unknown): { i: number; cursor: string | null; anchor: string | null } | null {
   if (typeof raw !== 'string' || !raw) return null;
   try {
     const v = JSON.parse(raw);
-    return Number.isInteger(v?.i) && v.i >= 0 ? { i: v.i, cursor: typeof v.cursor === 'string' ? v.cursor : null } : null;
+    if (!Number.isInteger(v?.i) || v.i < 0) return null;
+    const anchor = typeof v.anchor === 'string' && Number.isFinite(Date.parse(v.anchor)) ? v.anchor : null;
+    // A pass left unfinished for over a day restarts with fresh windows.
+    if (anchor && Date.now() - Date.parse(anchor) > 86400_000) return null;
+    return { i: v.i, cursor: typeof v.cursor === 'string' ? v.cursor : null, anchor };
   } catch { return null; }
 }
 
@@ -211,8 +215,9 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
     }
     const backfilled = BACKFILL_FIELDS.every((f) => st.get(`backfill:${f}`)?.done || (report[`backfill:${f}`] as any)?.done);
     // 2) Rolling refresh (only once history is in, so the first runs spend their budget on backfill).
-    //    a) Short windows EVERY run; this alone marks the mirror fresh ('rolling'), so dashboards read Supabase.
-    //    b) Wide windows hourly, resumable across runs (task index + cursor saved in 'rolling:wide-progress').
+    //    a) Short windows every run; a finished short pass alone marks the mirror fresh ('rolling').
+    //    b) Wide windows hourly. Both passes resume across runs (task index + cursor + window anchor saved in
+    //       'rolling:short-progress' / 'rolling:wide-progress').
     //    Before this split, a wide pass that could not finish in one budget (the 9k-point reserve sleeps between
     //    pages) never saved progress or freshness, so every run restarted the wide pass, the mirror went stale,
     //    and the dashboards fell back to live Jobber pulls that were throttled (call dashboard stuck loading).
@@ -232,23 +237,33 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
             } while (cursor);
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'error';
-            if (!optional || /throttl/i.test(msg)) throw e;
+            // Throttled: keep the position so the next run resumes here instead of starting over.
+            if (/throttl/i.test(msg)) { report.stopped = msg.slice(0, 180); return { n, done: false, at: { i, cursor } }; }
+            if (!optional) throw e;
             report[`skip:${t.field}`] = msg.slice(0, 180);
           }
         }
         return { n, done: true, at: null as null | { i: number; cursor: string | null } };
       };
-      const short = await runTasks(rollingTasks(now, false), { i: 0, cursor: null });
-      if (short.done) await setState(db, 'rolling', { done: true, last_success_at: new Date().toISOString(), last_error: null });
-      report.rolling = { wide: false, rows: short.n, complete: short.done };
+      // Each pass resumes where the last run stopped. The window anchor is saved with the cursor so a resumed
+      // cursor is always replayed against the exact same filter it came from.
+      const pass = async (kind: 'short' | 'wide') => {
+        const key = `rolling:${kind}-progress`;
+        const prog = parseProgress(st.get(key)?.cursor);
+        const anchor = prog?.anchor ? new Date(prog.anchor) : now;
+        const r = await runTasks(rollingTasks(anchor, kind === 'wide'), prog ?? { i: 0, cursor: null });
+        await setState(db, key, { cursor: r.done ? null : JSON.stringify({ ...r.at, anchor: anchor.toISOString() }), done: r.done });
+        return { rows: r.n, complete: r.done, ...(r.at ? { resumeAt: r.at.i } : {}), ...(prog ? { resumedFrom: prog.i } : {}) };
+      };
+      const short = await pass('short');
+      if (short.complete) await setState(db, 'rolling', { done: true, last_success_at: new Date().toISOString(), last_error: null });
+      report.rolling = { wide: false, ...short };
       const lastWide = Date.parse(st.get('rolling:wide')?.last_success_at || '') || 0;
-      const prog = parseProgress(st.get('rolling:wide-progress')?.cursor);
-      const wideDue = opts.forceWide || !!prog || Date.now() - lastWide > 55 * 60_000;
-      if (short.done && wideDue && left() > 45_000) {
-        const wide = await runTasks(rollingTasks(now, true), prog ?? { i: 0, cursor: null });
-        await setState(db, 'rolling:wide-progress', { cursor: wide.done ? null : JSON.stringify(wide.at), done: wide.done });
-        if (wide.done) await setState(db, 'rolling:wide', { done: true, last_success_at: new Date().toISOString() });
-        report.wide = { rows: wide.n, complete: wide.done, ...(wide.at ? { resumeAt: wide.at.i } : {}) };
+      const wideDue = opts.forceWide || !!parseProgress(st.get('rolling:wide-progress')?.cursor) || Date.now() - lastWide > 55 * 60_000;
+      if (short.complete && wideDue && left() > 45_000) {
+        const wide = await pass('wide');
+        if (wide.complete) await setState(db, 'rolling:wide', { done: true, last_success_at: new Date().toISOString() });
+        report.wide = wide;
       }
     }
     // 3) Daily resumable re-sweep of ALL quotes: old quotes can be approved months after creation (e.g. #2235 created
