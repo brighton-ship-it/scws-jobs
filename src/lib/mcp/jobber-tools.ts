@@ -140,7 +140,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
   'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
-  'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, and visible fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
+  'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, visible, and description fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
   'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. It can add, edit, or delete line items on an unsent draft only (quoteEditLineItems / quoteDeleteLineItems) and refuses a non-draft quote or a delete that would leave no lines. set_quote_salesperson changes only the salesperson on a quote in any status and never contacts the customer. Quote reads include salesperson id and name.',
   'list_notes reads note text (message, author, created time, attachment file names and URLs) for a job including notes on its visits, or for a client, quote, or request. Read-only.',
@@ -1003,7 +1003,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'edit_product',
     description:
-      'Edit ONE Jobber product or service with productsAndServicesEdit. Allowed fields only: internalUnitCost, unitPrice (sent as defaultUnitCost; Jobber has no unitPrice input), markup, and visible (false hides it from line-item autocomplete). Every other field is rejected. There is no delete. Reads the current row first and re-reads after a write so the result has before and after. dryRun returns the projected after without mutating. userErrors are returned on the error result with before.',
+      'Edit ONE Jobber product or service with productsAndServicesEdit. Allowed fields only: internalUnitCost, unitPrice (sent as defaultUnitCost; Jobber has no unitPrice input), markup, visible (false hides it from line-item autocomplete), and description (replaces the product description text). Every other field is rejected. There is no delete. Reads the current row first and re-reads after a write so the result has before and after. dryRun returns the projected after without mutating. userErrors are returned on the error result with before.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1019,6 +1019,10 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         visible: {
           type: 'boolean',
           description: 'false hides the item from quote, job, and invoice line-item autocomplete.',
+        },
+        description: {
+          type: 'string',
+          description: 'Replacement product description (full text, max 4000 chars). ProductsAndServicesEditInput.description.',
         },
         dryRun: {
           type: 'boolean',

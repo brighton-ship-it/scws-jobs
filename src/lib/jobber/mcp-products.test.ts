@@ -264,7 +264,6 @@ describe('editProduct', () => {
   it('rejects every field outside the allow-list before calling Jobber', () => {
     for (const extra of [
       { name: 'Renamed' },
-      { description: 'nope' },
       { taxable: false },
       { category: 'SERVICE' },
       { defaultUnitCost: 10 },
@@ -282,6 +281,14 @@ describe('editProduct', () => {
     assert.throws(() => parseEditProductArgs({ productId: 'a,b', visible: false }), /one product/);
     assert.throws(() => parseEditProductArgs({ productId: 'prod-25gbc', unitPrice: '900' }), /finite number/);
     assert.throws(() => parseEditProductArgs({ productId: 'prod-25gbc', visible: 'false' }), /boolean/);
+  });
+
+  it('accepts description and sends it to productsAndServicesEdit', () => {
+    const edit = parseEditProductArgs({ productId: 'prod-25gbc', description: '10/3 wire, per foot' });
+    assert.equal(edit.description, '10/3 wire, per foot');
+    const input = buildProductEditInput(edit, [{ field: 'description', before: 'old', after: '10/3 wire, per foot' }]);
+    assert.deepEqual(input, { description: '10/3 wire, per foot' });
+    assert.throws(() => parseEditProductArgs({ productId: 'prod-25gbc', description: 5 }), /string/);
   });
 
   it('dryRun returns before and projected after and does not mutate', async () => {

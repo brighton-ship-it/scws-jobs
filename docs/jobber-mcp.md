@@ -130,7 +130,7 @@ Checked against API version 2025-01-20 introspection. The gateway still sends `X
 - Job line items have **no** `productOrServiceId` (quote lines do). The tool copies catalog name and street price instead.
 - The 2025-04-16 changelog removed the older `clientNoteCreate`, `jobNoteCreate`, and `requestNoteCreate` names. The tools call `clientCreateNote`, `jobCreateNote`, and `requestCreateNote`, which were already on the 2025-01-20 schema.
 - Nothing in these tools sends, emails, texts, or notifies the client.
-- `ProductOrService` has no `unitPrice` field. The street/default price is `defaultUnitCost`. `edit_product` maps `unitPrice` onto `ProductsAndServicesEditInput.defaultUnitCost` and does not send `unitPrice` to GraphQL.
+- `ProductOrService` has no `unitPrice` field. The street/default price is `defaultUnitCost`. `edit_product` accepts `description` (sent as ProductsAndServicesEditInput.description) and maps `unitPrice` onto `ProductsAndServicesEditInput.defaultUnitCost` and does not send `unitPrice` to GraphQL.
 - The 2025-01-20 schema has `productsAndServicesEdit` and no product delete mutation. `visible: false` hides a catalog row from line-item autocomplete. There is no archived flag.
 
 ## Brighton: connect Travis / Damien in Grok Bot
