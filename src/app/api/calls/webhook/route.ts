@@ -14,6 +14,8 @@ const TRACKING_NUMBERS: Record<string, string> = {
   '+17604937719': 'direct',
   '+18773863995': 'toll_free',
   '+17608237963': 'line_7963',
+  '+17604408520': 'main_line',
+  '+17607895955': 'ransom_line',
 };
 
 export async function POST(request: NextRequest) {
