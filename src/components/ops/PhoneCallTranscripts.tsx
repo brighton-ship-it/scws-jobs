@@ -49,7 +49,7 @@ export function PhoneCallTranscripts() {
   return (
     <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
       <div className="border-b border-slate-100 px-5 py-3"><div className="text-sm font-semibold text-slate-800">Phone calls: summaries &amp; transcripts</div><div className="text-xs text-slate-400">Recorded tracking-line calls, latest 25 · click a call for the summary box and transcript</div></div>
-      <ul className="divide-y divide-slate-100">
+      <ul className="max-h-[60vh] divide-y divide-slate-100 overflow-y-auto sm:max-h-[520px]">
         {rows.map((r) => {
           const sm = splitSummary(r.summary);
           return (
