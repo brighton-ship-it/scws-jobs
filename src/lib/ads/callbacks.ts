@@ -192,6 +192,16 @@ export interface NeedsCallbackView {
   rows: NeedsCallbackRow[];
   /** Sum of known open-invoice balances. Invoice card only. */
   totalOwed?: number | null;
+  /** Invoice card only. Actually past due: due date before today (PT), or Jobber says past_due when no due date is known. */
+  pastDue?: { count: number; owed: number | null };
+  /** Invoice card only. Open but not yet past due (due today or later). */
+  notDue?: { count: number; owed: number | null };
+}
+
+/** Past due means the due date has passed (PT days). Without a due date, trust Jobber's past_due status. */
+export function invoiceIsPastDue(status: string, daysLate: number | null): boolean {
+  if (daysLate != null) return daysLate > 0;
+  return status === 'past_due';
 }
 
 const SOURCE_LINE: Record<string, string> = {
@@ -1013,11 +1023,16 @@ export function needsCallback(input: {
   const invoices: NeedsCallbackRow[] = [];
   let totalOwed = 0;
   let owedKnown = false;
+  const split = { pastDue: { count: 0, owed: 0, known: false }, notDue: { count: 0, owed: 0, known: false } };
   for (const inv of open) {
     const phone = inv.phones[0] ?? bestPastDuePhone(inv.phones, attempts, input.fromMs, now);
-    const isPastDue = inv.status === 'past_due';
+    const daysLate = daysPastDue(inv.dueAt, now);
+    const isPastDue = invoiceIsPastDue(inv.status, daysLate);
     const owed = inv.balance;
     if (owed != null && owed > 0) { totalOwed += owed; owedKnown = true; }
+    const bucket = isPastDue ? split.pastDue : split.notDue;
+    bucket.count += 1;
+    if (owed != null && owed > 0) { bucket.owed += owed; bucket.known = true; }
     const cold = phone ? summarizeOutreach({
       phone, attempts, fromMs: Date.parse(inv.issuedAt), now, anchorAt: inv.issuedAt,
       connected: !!handlingCallback(phone, inv.issuedAt, input.sources),
@@ -1042,7 +1057,7 @@ export function needsCallback(input: {
       pastDue: isPastDue,
       balance: owed,
       invoiceNumber: inv.number,
-      daysPastDue: daysPastDue(inv.dueAt, now),
+      daysPastDue: daysLate,
       calledAfter: calledAfterInvoice(inv.phones, inv.issuedAt, inbound),
       alsoCalledIn: false,
     });
@@ -1056,6 +1071,8 @@ export function needsCallback(input: {
       count: invoices.length,
       rows: invoices,
       totalOwed: owedKnown ? Math.round(totalOwed * 100) / 100 : null,
+      pastDue: { count: split.pastDue.count, owed: split.pastDue.known ? Math.round(split.pastDue.owed * 100) / 100 : (split.pastDue.count ? null : 0) },
+      notDue: { count: split.notDue.count, owed: split.notDue.known ? Math.round(split.notDue.owed * 100) / 100 : (split.notDue.count ? null : 0) },
     },
   };
 }

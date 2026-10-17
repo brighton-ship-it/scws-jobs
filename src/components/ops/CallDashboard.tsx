@@ -1,11 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PhoneCallTranscripts } from './PhoneCallTranscripts';
+import { SOURCE_LABEL, Transcript, fmtPhone, splitSummary, useRecordedCalls, type RecordedCall } from './PhoneCallTranscripts';
+import { useSearchParams } from 'next/navigation';
+import { CALLS_TABS, type CallsTab } from './OpsNav';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
 import {
-  CallsPerDayChart, Funnel, Gauge, Sparkline, SpendRevenueChart, WeeklyBars, WeeklyCashBars, compactUsd, mult, palette, usd,
+  CallsSpendChart, Funnel, Gauge, Sparkline, WeeklyBars, WeeklyCashBars, compactUsd, mult, palette, usd,
 } from './call-dash/charts';
 
 const KEY_STORAGE = 'quotes_gp_key';
@@ -24,7 +26,7 @@ type Live = { generatedAt?: string; jobberDataAsOf?: string | null };
 /** A dashboard request that has not answered by now is abandoned (server maxDuration is 180 s). */
 const FETCH_TIMEOUT_MS = 60_000;
 
-function useDashboard(range: string, refreshMs: number | null) {
+function useDashboard(range: string, refreshMs: number | null, view?: 'tv') {
   // One cached payload per period. A response only ever lands in its own period's slot, and the page shows
   // the selected period's payload only, so switching the toggle never shows the other period's numbers.
   const [byRange, setByRange] = useState<Record<string, Dashboard>>({});
@@ -51,7 +53,7 @@ function useDashboard(range: string, refreshMs: number | null) {
       const q = url.searchParams.get(QUOTES_GP_KEY_QUERY);
       if (q) { try { localStorage.setItem(KEY_STORAGE, q); } catch {} }
       let key = q; try { key = key || localStorage.getItem(KEY_STORAGE); } catch {}
-      const res = await fetch(`/api/ops/call-dashboard?range=${r}`, {
+      const res = await fetch(`/api/ops/call-dashboard?range=${r}${view ? `&view=${view}` : ''}`, {
         headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store', signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
@@ -66,7 +68,7 @@ function useDashboard(range: string, refreshMs: number | null) {
       clearTimeout(timer);
       if (inFlight.current[r] === mine) { inFlight.current[r] = undefined; if (current.current === r) setLoading(false); }
     }
-  }, [range]);
+  }, [range, view]);
   const load = useCallback(() => loadWith(false), [loadWith]);
   const reload = useCallback(() => loadWith(true), [loadWith]);
   useEffect(() => {
@@ -335,33 +337,6 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
   );
 }
 
-const th = 'sticky top-0 z-10 bg-slate-50/95 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500 backdrop-blur';
-
-function GroupTable({ title, rows, delay }: { title: string; rows: GroupRow[]; delay: number }) {
-  const maxCalls = Math.max(...rows.map((r) => r.calls), 1);
-  return (
-    <section className="cd-rise overflow-hidden rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04)]" style={{ animationDelay: `${delay}ms` }}>
-      <h2 className="px-5 pb-2 pt-4 text-sm font-semibold text-slate-900">{title}</h2>
-      <div className="max-h-[340px] overflow-auto">
-        <table className="w-full text-left text-sm">
-          <thead><tr><th className={th}>Name</th><th className={`${th} text-right`}>Calls</th><th className={`${th} text-right`}>New booked</th></tr></thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.length === 0 ? <tr><td colSpan={3} className="px-5 py-8 text-center text-sm text-slate-400">No calls in this range</td></tr> : rows.slice(0, 15).map((r) => (
-              <tr key={r.key} className="transition-colors hover:bg-slate-50/80">
-                <td className="max-w-[9rem] px-3 py-2 xl:max-w-[11rem]"><div className="truncate font-medium text-slate-800" title={r.key}>{r.key}</div>
-                  <div className="mt-1 h-1 w-full rounded bg-slate-100"><div className="h-1 rounded" style={{ width: `${(r.calls / maxCalls) * 100}%`, background: palette.revenue, opacity: 0.7 }} /></div></td>
-                <td className="px-3 py-2 text-right tabular-nums" title={`${r.answered} answered · ${r.short} short · ${usd(r.costPerCall, 2)}/call`}>{r.calls}</td>
-                <td className="px-3 py-2 text-right tabular-nums">{r.booked ? <span className="font-semibold text-emerald-700">{r.booked}</span> : <span className="text-slate-300">0</span>}</td>
-
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
-}
-
 function DashboardSkeleton() {
   return (
     <div className="space-y-5" aria-busy="true" aria-label="Loading dashboard">
@@ -406,22 +381,13 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
   );
 }
 
-function AdSplitCard({ split }: { split: NonNullable<Dashboard['adSplit']> }) {
-  return (
-    <Card title="Ad spend: pump vs drilling" subtitle="Google Ads campaigns · same calculation as the Return on ad spend card: Jobber invoices to callers whose latest prior ad call was this campaign ÷ Google Ads spend, same Pacific days · all = new + repeat customers" delay={100}>
-      <AdSplitBlocks split={split} />
-      <p className="mt-3 text-[11px] text-amber-600">Drilling return is early: drilling jobs invoice weeks to months after the call, so expect it to rise. Spend and clicks come straight from Google Ads; calls are Google Ads calls only.</p>
-    </Card>
-  );
-}
-
 function leadsHint(rl: Dashboard['realLeads']): string {
   const base = 'New-customer bookings ÷ real new leads (one per caller). Excluded: spam/robocalls/solicitors, hang-ups and short calls never reached, repeat calls, missed calls later reached, existing customers (Jobber job before the call), staff.';
   if (!rl) return base;
   return `${base}\n${rl.calls} ad + Mike calls → ${rl.leads} real leads.\n` + rl.excluded.filter((e) => e.count).map((e) => `− ${e.count} ${e.label}`).join('\n');
 }
 
-function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard['weekly']>; realLeads?: Dashboard['realLeads'] }) {
+function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> }) {
   const cw = weekly.weeks[weekly.weeks.length - 1];
   const prev = weekly.weeks[weekly.weeks.length - 2];
   const first = weekly.weeks[0];
@@ -434,13 +400,10 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
     ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
     ['Approved this period', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes approved (any send date)`],
-    ['Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads`, leadsHint(realLeads)],
-    ['Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0} of ${w.quotesSent ?? 0} sent in range approved to date`, 'Cohort: quotes sent in the selected range that are approved/converted as of now. Recent quotes may still close.'],
     ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
   ];
   const cats = weekly.totals?.byCategory;
   const lwc = weekly.lastWeekByCategory;
-  const cab = weekly.totals?.closingByAd;
   const CATS = [['drilling', 'Drilling'], ['pump', 'Pump & service'], ['service_call', 'Service calls']] as const;
   return (
     <Card title="Sales" subtitle={`${title} · bars: last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} + this week (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
@@ -465,7 +428,6 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               {CATS.map(([k, label]) => {
                 const c = cats[k];
-                const ac = k === 'service_call' ? null : cab?.[k];
                 const accent = k === 'drilling' ? 'border-l-amber-400' : k === 'pump' ? 'border-l-sky-500' : 'border-l-violet-500';
                 const svc = k === 'service_call';
                 const lines: Array<[string, string, string?]> = svc ? [
@@ -475,9 +437,7 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
                 ] : [
                   ['Jobs booked', `${c.jobsBooked}${c.siteVisits ? ` +${c.siteVisits} site walk${c.siteVisits === 1 ? '' : 's'}` : ''}`, 'Jobber jobs created; site walks / site visits counted separately'],
                   ['Quotes sent', `${c.quotesSent} · ${compactUsd(c.quotesSentValue)}`],
-                  ['Close rate (sent in period)', c.quotesSent ? `${pct((c.quotesSentApproved ?? 0) / c.quotesSent)} (${c.quotesSentApproved ?? 0}/${c.quotesSent})` : '—', 'of quotes sent in the range, share approved/converted to date (cohort)'],
                   ['Approved this period', `${c.quotesApproved} · ${compactUsd(c.quotesApprovedValue)}`, 'quotes approved in the range by approval date, including quotes sent earlier (e.g. an old drilling quote approved today)'],
-                  ['Call to booking', ac ? `${pct(ac.closingRate)} (${ac.booked}/${ac.calls})` : '—', 'new bookings ÷ real new leads of that type (one per caller; junk, repeat and existing customers excluded)'],
                   ['Last full week', lwc ? usd(lwc[k].invoiced) : '—'],
                 ];
                 return (
@@ -498,69 +458,352 @@ function WeeklySalesCard({ weekly, realLeads }: { weekly: NonNullable<Dashboard[
         ) : null}
         <div className="min-w-0 lg:col-span-2"><p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Invoiced (bar) · paid on those invoices (teal)</p><WeeklyBars weeks={weekly.weeks} /><p className="mb-0.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cash collected by payment date</p><WeeklyCashBars weeks={weekly.weeks} /></div>
       </div>
-      <details className="mt-3 text-[11px] text-slate-400"><summary className="cursor-pointer">Sources &amp; definitions</summary>
+      <p className="mt-3 text-[11px] text-slate-400">Close rates (call to booking, quote close rate) are on <a className="underline" href="/ops/calls?tab=ads">Ads &amp; leads → Ad performance</a>.</p>
+      <details className="mt-1 text-[11px] text-slate-400"><summary className="cursor-pointer">Sources &amp; definitions</summary>
         <ul className="mt-1 list-disc space-y-0.5 pl-4">{weekly.sources.map((x) => <li key={x}>{x}</li>)}{weekly.gaps.map((x) => <li key={x} className="text-amber-600">{x}</li>)}</ul>
       </details>
     </Card>
   );
 }
 
-const SOURCE_ACCENT: Record<string, string> = { gbp: '#2563eb', seo: '#16a34a', yelp: '#dc2626', apple_maps: '#475569' };
-function SourceCardsBlock({ cards, rangeLabel }: { cards: NonNullable<Dashboard['sourceCards']>; rangeLabel: string }) {
-  const split = (x: { pump: number; drilling: number }) => `pump ${x.pump} · drilling ${x.drilling}`;
+const DAY_MS = 86400_000;
+const OLDER_DAYS = 7;
+
+/** "Jobber texts unavailable" and friends: shown once per card, not on every row. */
+const UNAVAILABLE_RE = /\s*·?\s*\b(Jobber texts unavailable|Jobber emails unavailable|app texts unavailable|[A-Z][a-z]+ Gmail unavailable|Gmail unavailable|texts unavailable|email unavailable|calls unavailable)\b/g;
+export function splitUnavailable(text: string | null | undefined): { text: string; missing: string[] } {
+  if (!text) return { text: '', missing: [] };
+  const missing: string[] = [];
+  const cleaned = text.replace(UNAVAILABLE_RE, (_m, phrase: string) => { missing.push(phrase); return ''; }).replace(/^\s*·\s*/, '').replace(/\s*·\s*$/, '').replace(/(\s*·\s*){2,}/g, ' · ');
+  return { text: cleaned.trim(), missing };
+}
+
+function Tile({ label, value, sub, tone = 'plain', href }: { label: string; value: string; sub?: string; tone?: 'plain' | 'alert'; href?: string }) {
+  const cls = `block min-w-0 rounded-2xl border p-4 shadow-[0_1px_2px_rgba(15,23,42,.04)] ${tone === 'alert' ? 'border-rose-200 bg-rose-50/70' : 'border-slate-200/80 bg-white'} ${href ? 'transition-colors hover:border-slate-300' : ''}`;
+  const body = (
+    <>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="mt-1 whitespace-nowrap text-[1.75rem] font-bold leading-tight tracking-tight tabular-nums text-slate-900" data-tile={label}>{value}</p>
+      {sub ? <p className="mt-0.5 text-xs leading-snug text-slate-500">{sub}</p> : null}
+    </>
+  );
+  return href ? <a href={href} className={cls}>{body}</a> : <div className={cls}>{body}</div>;
+}
+
+const SCROLL = 'max-h-[60vh] touch-pan-y overflow-y-auto overscroll-y-contain sm:max-h-[520px]';
+
+function QueueRow({ r, metric }: { r: NonNullable<Dashboard['needsCallback']>['rows'][number]; metric: 'leads' | 'invoices' }) {
+  const out = splitUnavailable(r.outreach);
   return (
-    <Card title="Leads by source (not ads)" subtitle={`Google Business Profile, website search, Yelp and Apple Maps · ${rangeLabel} · Google Ads stays in the cards above`} delay={110}>
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        {cards.map((c) => (
-          <div key={c.key} className="min-w-0 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3" style={{ borderTop: `3px solid ${SOURCE_ACCENT[c.key] ?? '#64748b'}` }}>
-            <p className="truncate text-sm font-semibold text-slate-800">{c.label}</p>
-            <p className="truncate text-[11px] text-slate-500" title={c.numbers.join(' · ')}>{c.numbers.length ? c.numbers.join(' · ') : 'No tracking number yet'}</p>
-            <dl className="mt-2 grid grid-cols-3 gap-2">
-              {([['Calls', String(c.calls), c.calls ? `${c.callers} caller${c.callers === 1 ? '' : 's'}` : ''], ['Forms', String(c.forms.total), c.forms.total ? split(c.forms) : ''], ['Booked', String(c.booked.total), c.booked.total ? split(c.booked) : '']] as const).map(([k, v, sub]) => (
-                <div key={k} className="min-w-0"><dt className="text-[11px] uppercase tracking-wider text-slate-500">{k}</dt><dd className="text-xl font-bold tabular-nums text-slate-900">{v}</dd>{sub ? <dd className="truncate text-[10px] text-slate-500" title={sub}>{sub}</dd> : null}</div>
-              ))}
-            </dl>
-            {c.note ? <p className="mt-2 text-[10px] leading-snug text-slate-400">{c.note}</p> : null}
-          </div>
-        ))}
+    <li className="py-2.5 pr-1">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="break-words font-semibold text-slate-900">{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
+          <div className="break-words text-sm text-slate-600">{r.name ? <><a href={`tel:${r.phone}`}>{r.phone}</a> · </> : null}{metric === 'invoices' ? (r.invoiceNumber ? `Invoice #${r.invoiceNumber}` : 'Invoice # unavailable') : r.line} · {r.outcome}</div>
+          {metric === 'invoices' && r.balance != null && r.balance > 0 ? <div className="mt-1 text-xs font-semibold tabular-nums text-amber-800">Owes {usd(r.balance, Number.isInteger(r.balance) ? 0 : 2)}</div> : null}
+          {metric === 'invoices' ? <div className="mt-1 text-xs text-slate-600">{r.daysPastDue == null ? (r.pastDue ? 'Past due (due date unavailable)' : 'Due date unavailable') : r.daysPastDue === 0 ? 'Not past due' : `${r.daysPastDue} ${r.daysPastDue === 1 ? 'day' : 'days'} past due`}</div> : null}
+          {r.calledAfter ? <div className="mt-1 text-xs font-medium text-sky-800">{r.calledAfter}</div> : null}
+          {r.mike ? <MikeLine text={r.mike} dark={false} /> : null}
+          {out.text ? <OutreachLine text={out.text} cold={r.goingCold} dark={false} /> : null}
+          {metric === 'invoices' ? <InvoiceEmails emails={r.collectionEmails} dark={false} /> : null}
+        </div>
+        <span className="shrink-0 text-sm tabular-nums text-slate-600">{feedTime(r.at)}</span>
       </div>
-      <p className="mt-2 text-[10px] text-slate-400">Calls = calls to that source&apos;s tracking number. Forms = website requests whose first visit came from that source. Booked = a Jobber job created within 30 days of that caller&apos;s or form&apos;s first contact (site walks excluded); drilling vs pump from the job title, forms by the service picked.</p>
+    </li>
+  );
+}
+
+function missingNotice(rows: Array<{ outreach?: string | null }>): string | null {
+  const set = new Set<string>();
+  for (const r of rows) for (const m of splitUnavailable(r.outreach).missing) set.add(m);
+  if (!set.size) return null;
+  const list = Array.from(set);
+  return `${list.join(', ').replace(/^./, (c) => c.toUpperCase())}${list.length === 1 ? ' for every row' : ' for every row'}: those counts may be low.`;
+}
+
+export function splitByAge<T extends { at: string }>(rows: T[], nowMs: number, days = OLDER_DAYS): { recent: T[]; older: T[] } {
+  const cut = nowMs - days * DAY_MS;
+  const recent = rows.filter((r) => Date.parse(r.at) >= cut).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+  const older = rows.filter((r) => !(Date.parse(r.at) >= cut));
+  return { recent, older };
+}
+
+function NeedsCallbackCard({ view, rangeLabel }: { view: Dashboard['needsCallback']; rangeLabel: string }) {
+  const [showOlder, setShowOlder] = useState(false);
+  const rows = view?.rows ?? [];
+  const { recent, older } = splitByAge(rows, Date.now());
+  const notice = missingNotice(rows);
+  return (
+    <Card title={`Needs callback · ${view ? view.count : '—'}`} subtitle={`New leads (missed, voicemail, Mike) · ${rangeLabel} · newest first; older than ${OLDER_DAYS} days collapsed`} right={<span className="cursor-help text-xs text-slate-400" title={`${OUTREACH_TIP}\nSkips hang-ups under 10s, spam, vendors, AI bookings, dismissed leads, and any Jobber request, quote, job, visit or invoice on or after the call.`}>ⓘ</span>} delay={40}>
+      <p className="sr-only" data-needs-callback-count={view ? view.count : undefined}>{view?.count}</p>
+      {notice ? <p className="mb-2 rounded-lg bg-slate-50 px-2 py-1 text-[11px] text-slate-500">{notice}</p> : null}
+      <div className={SCROLL} data-scroll="needs-callback">
+        {recent.length === 0 ? <p className="py-3 text-sm text-slate-500">{view ? `No new leads from the last ${OLDER_DAYS} days waiting on a callback.` : ' '}</p> : (
+          <ul className="divide-y divide-slate-200">{recent.map((r, i) => <QueueRow key={`${r.at}-${r.phone}-${i}`} r={r} metric="leads" />)}</ul>
+        )}
+        {older.length ? (
+          <div className="border-t border-slate-200 pt-2">
+            <button type="button" onClick={() => setShowOlder((v) => !v)} className="text-sm font-semibold text-slate-700 underline decoration-dotted underline-offset-2" aria-expanded={showOlder}>
+              {showOlder ? 'Hide' : 'Show'} {older.length} older than {OLDER_DAYS} days
+            </button>
+            {showOlder ? <ul className="mt-1 divide-y divide-slate-200 opacity-90">{older.map((r, i) => <QueueRow key={`o-${r.at}-${r.phone}-${i}`} r={r} metric="leads" />)}</ul> : null}
+          </div>
+        ) : null}
+      </div>
     </Card>
   );
 }
 
+type MergedCall = { at: string; feed: FeedRow | null; rec: RecordedCall | null };
+const d10 = (p: string | null | undefined) => { const d = String(p ?? '').replace(/\D/g, ''); return d.length >= 10 ? d.slice(-10) : null; };
+/** One list: every feed call, with its recording (summary box + transcript) attached when the same number called within 15 minutes. */
+export function mergeCalls(feed: FeedRow[], recorded: RecordedCall[]): MergedCall[] {
+  const used = new Set<string>();
+  const out: MergedCall[] = feed.map((f) => {
+    const p = d10(f.phone); const t = Date.parse(f.at);
+    const rec = recorded.find((r) => !used.has(r.call_sid) && d10(r.caller_number) === p && Math.abs(Date.parse(r.started_at) - t) <= 15 * 60_000) ?? null;
+    if (rec) used.add(rec.call_sid);
+    return { at: f.at, feed: f, rec };
+  });
+  const oldestFeed = feed.length ? Math.min(...feed.map((f) => Date.parse(f.at))) : -Infinity;
+  for (const r of recorded) if (!used.has(r.call_sid) && Date.parse(r.started_at) >= oldestFeed) out.push({ at: r.started_at, feed: null, rec: r });
+  return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+}
+
+const CALL_FILTERS = [['all', 'All'], ['missed', 'Missed'], ['mike', 'Mike'], ['follow', 'Follow up']] as const;
+type CallFilter = (typeof CALL_FILTERS)[number][0];
+function matchesFilter(c: MergedCall, f: CallFilter): boolean {
+  const o = c.feed?.outcome ?? (c.rec?.answered === false ? 'Missed' : 'Answered');
+  if (f === 'missed') return o === 'Missed' || o === 'Voicemail';
+  if (f === 'mike') return o.startsWith('Mike');
+  if (f === 'follow') return !!c.rec?.needs_followup || !!c.feed?.goingCold || /^No callback/.test(c.feed?.callback ?? '');
+  return true;
+}
+
+function CallsCard({ feed, recorded, today }: { feed: FeedRow[] | null | undefined; recorded: RecordedCall[]; today?: { total: number; answered: number; forwardedAi: number; missed: number } }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [filter, setFilter] = useState<CallFilter>('all');
+  const all = mergeCalls(feed ?? [], recorded);
+  const list = all.filter((c) => matchesFilter(c, filter));
+  return (
+    <Card title="Calls · summaries & transcripts" subtitle={`All incoming${today ? ` · today ${today.total} · ${today.answered} answered · ${today.forwardedAi} to Mike · ${today.missed} missed` : ''} · click a call for its summary and transcript`}
+      right={<div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5" role="tablist" aria-label="Call filter">{CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${filter === v ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{l}</button>)}</div>} delay={60}>
+      {feed == null && !recorded.length ? <p className="py-6 text-center text-sm text-slate-400">Call feed unavailable</p> : null}
+      <ul className={`${SCROLL} -mx-1 divide-y divide-slate-100`} data-scroll="calls">
+        {list.length === 0 && (feed != null || recorded.length) ? <li className="px-1 py-6 text-center text-sm text-slate-500">No calls match</li> : null}
+        {list.map((c, i) => {
+          const f = c.feed, r = c.rec;
+          const id = r?.call_sid ?? `${c.at}-${i}`;
+          const sm = r ? splitSummary(r.summary) : null;
+          const name = f?.name || r?.caller_name || null;
+          const phone = f?.phone || fmtPhone(r?.caller_number ?? null);
+          const line = f?.line || (r?.source ? SOURCE_LABEL[r.source] ?? r.source : '');
+          const outcome = f?.outcome ?? (r?.answered === false ? 'Missed' : 'Answered');
+          const summary = sm?.text || f?.summary || (r && r.processing_status !== 'done' ? `(${r.processing_status})` : '');
+          const expandable = !!(r && (sm?.box.length || r.transcript));
+          const isOpen = open === id;
+          return (
+            <li key={id} className={`px-1 py-2.5 ${outcome === 'Missed' ? 'bg-rose-50/60' : ''}`}>
+              <button type="button" disabled={!expandable} onClick={() => setOpen(isOpen ? null : id)} className={`flex w-full items-start justify-between gap-3 text-left ${expandable ? 'cursor-pointer' : 'cursor-default'}`} aria-expanded={expandable ? isOpen : undefined}>
+                <span className="min-w-0">
+                  <span className="text-sm tabular-nums text-slate-500">{feedTime(c.at)} · {fmtDur(f?.durationSeconds ?? r?.duration_seconds ?? null)}</span>
+                  <span className="block break-words font-semibold text-slate-900">{name || phone}<span className="ml-2 text-sm font-normal text-slate-600">{name ? `${phone} · ` : ''}{line}</span></span>
+                  {summary ? <span className="mt-0.5 block text-sm text-slate-700">{summary}</span> : null}
+                  {f?.callback ? <CallbackLine text={f.callback} dark={false} /> : null}
+                  {f?.mike ? <MikeLine text={f.mike} dark={false} /> : null}
+                  {f?.outreach ? <OutreachLine text={f.outreach} cold={f.goingCold} dark={false} /> : null}
+                  {expandable ? <span className="mt-1 block text-xs font-medium text-sky-700">{isOpen ? '▾ Hide summary & transcript' : '▸ Summary & transcript'}</span> : null}
+                </span>
+                <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
+                  <OutcomePill o={outcome} by={f?.answeredBy} />
+                  {r?.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
+                  {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
+                  {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
+                </span>
+              </button>
+              {isOpen && r ? (
+                <div>
+                  {sm?.box.length ? (
+                    <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 rounded-lg border border-sky-200 bg-sky-50 p-4 text-[15px] sm:grid-cols-[auto_1fr]">
+                      {sm.box.map(([k, v]) => <div key={k} className="contents"><dt className="font-semibold text-sky-900">{k}</dt><dd className="text-slate-800">{v}</dd></div>)}
+                    </dl>
+                  ) : null}
+                  {r.transcript ? <Transcript text={r.transcript} /> : null}
+                </div>
+              ) : null}
+            </li>
+          );
+        })}
+      </ul>
+    </Card>
+  );
+}
+
+function InvoiceFollowUpCard({ view, rangeLabel }: { view: Dashboard['invoiceFollowUp']; rangeLabel: string }) {
+  const [showNotDue, setShowNotDue] = useState(false);
+  const rows = view?.rows ?? [];
+  const late = rows.filter((r) => r.pastDue);
+  const notDue = rows.filter((r) => !r.pastDue);
+  const notice = missingNotice(rows);
+  const money = (n: number | null | undefined) => (n == null ? '—' : usd(n, Number.isInteger(n) ? 0 : 2));
+  return (
+    <Card title="Invoice follow-up" subtitle={`Every open Jobber invoice · ${rangeLabel} · past due = due date before today (PT). Calls are shop Voice lines since the invoice date; emails count when they cite the invoice, amount due, or a pay link.`} delay={40}>
+      <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="rounded-xl bg-rose-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-rose-700">Past due</p><p className="text-3xl font-extrabold tabular-nums" data-invoice-follow-up-count={view ? late.length : undefined}>{view ? late.length : '—'}</p><p className="text-sm font-semibold tabular-nums text-rose-800" data-past-due-owed>{money(view?.pastDue?.owed)}</p></div>
+        <div className="rounded-xl bg-slate-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-slate-600">Not yet due</p><p className="text-3xl font-extrabold tabular-nums">{view ? notDue.length : '—'}</p><p className="text-sm font-semibold tabular-nums text-slate-700">{money(view?.notDue?.owed)}</p></div>
+        <div className="rounded-xl bg-amber-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-amber-700">All open</p><p className="text-3xl font-extrabold tabular-nums">{view ? view.count : '—'}</p><p className="text-sm font-semibold tabular-nums text-amber-800">{money(view?.totalOwed)}</p></div>
+      </div>
+      {notice ? <p className="mb-2 rounded-lg bg-slate-50 px-2 py-1 text-[11px] text-slate-500" data-unavailable-notice>{notice}</p> : null}
+      <div className={SCROLL} data-scroll="invoices">
+        {late.length === 0 ? <p className="py-3 text-sm text-slate-500">{view ? 'No past-due invoices.' : ' '}</p> : <ul className="divide-y divide-slate-200">{late.map((r, i) => <QueueRow key={`${r.at}-${r.invoiceNumber ?? ''}-${i}`} r={r} metric="invoices" />)}</ul>}
+        {notDue.length ? (
+          <div className="border-t border-slate-200 pt-2">
+            <button type="button" onClick={() => setShowNotDue((v) => !v)} className="text-sm font-semibold text-slate-700 underline decoration-dotted underline-offset-2" aria-expanded={showNotDue}>{showNotDue ? 'Hide' : 'Show'} {notDue.length} not yet due</button>
+            {showNotDue ? <ul className="mt-1 divide-y divide-slate-200">{notDue.map((r, i) => <QueueRow key={`n-${r.at}-${r.invoiceNumber ?? ''}-${i}`} r={r} metric="invoices" />)}</ul> : null}
+          </div>
+        ) : null}
+      </div>
+    </Card>
+  );
+}
+
+function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; rangeLabel: string; moneyLabel: string }) {
+  const t = data.totals; const prev = data.previous; const ro = data.roas;
+  const w = data.weekly?.totals ?? null;
+  const cab = w?.closingByAd;
+  const cats = w?.byCategory;
+  const quoteRate = (sent?: number | null, approved?: number | null) => (sent ? `${pct((approved ?? 0) / sent)} (${approved ?? 0}/${sent})` : '—');
+  const stat = (label: string, value: string, sub?: React.ReactNode, hint?: string) => (
+    <div className="min-w-0 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3" title={hint}>
+      <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
+      <p className="whitespace-nowrap text-2xl font-extrabold tabular-nums text-slate-900">{value}</p>
+      {sub ? <div className="mt-0.5 text-xs text-slate-500">{sub}</div> : null}
+    </div>
+  );
+  return (
+    <Card title="Ad performance" subtitle={`The one place for return on ad spend and close rates · calls ${rangeLabel} · money ${moneyLabel}`} delay={40}>
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+        {stat('ROAS (new customers)', ro ? mult(ro.newOnly.multipleInvoiced) : '—', ro ? <>{usd(ro.newOnly.invoiced)} invoiced ÷ {usd(ro.spend)} spend · Blended (all callers) <b className="text-slate-700">{mult(ro.overall.multipleInvoiced)}</b></> : 'Jobber invoices did not load', 'Jobber invoices to new customers who called an ad ÷ Google Ads spend')}
+        {stat('Ad spend', usd(t.spend), <><Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} /> <span className="block">{usd(t.costPerCall, 2)}/ad call · {usd(t.costPerBooked)}/new booking</span></>)}
+        {stat('Ad + Mike calls', String(t.calls), <><Delta cur={t.calls} prev={prev?.calls} /> <span className="block">{t.answered} answered · {t.missedOrShort} missed/short</span></>, 'Google Ads tracked calls + calls answered by Mike (AI receptionist).')}
+        {stat('Call to booking (real leads)', pct(w?.closingRate), w ? `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads` : undefined, leadsHint(data.realLeads))}
+      </div>
+      <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+        <div className="rounded-xl border border-slate-200/80 p-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Close rates by type · {w?.label ?? rangeLabel}</p>
+          <table className="w-full text-left text-sm">
+            <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-1 font-semibold">Type</th><th className="py-1 text-right font-semibold" title="new bookings ÷ real new leads of that type">Call to booking</th><th className="py-1 text-right font-semibold" title="Cohort: quotes sent in the range that are approved/converted as of now">Quote close rate</th></tr></thead>
+            <tbody className="divide-y divide-slate-100 tabular-nums">
+              <tr><td className="py-1.5 font-medium">All</td><td className="py-1.5 text-right">{pct(w?.closingRate)}</td><td className="py-1.5 text-right">{quoteRate(w?.quotesSent, w?.quotesSentApproved)}</td></tr>
+              <tr><td className="py-1.5 font-medium">Pump &amp; service</td><td className="py-1.5 text-right">{cab?.pump ? `${pct(cab.pump.closingRate)} (${cab.pump.booked}/${cab.pump.calls})` : '—'}</td><td className="py-1.5 text-right">{quoteRate(cats?.pump?.quotesSent, cats?.pump?.quotesSentApproved)}</td></tr>
+              <tr><td className="py-1.5 font-medium">Drilling</td><td className="py-1.5 text-right">{cab?.drilling ? `${pct(cab.drilling.closingRate)} (${cab.drilling.booked}/${cab.drilling.calls})` : '—'}</td><td className="py-1.5 text-right">{quoteRate(cats?.drilling?.quotesSent, cats?.drilling?.quotesSentApproved)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="rounded-xl border border-slate-200/80 p-3">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Conversion funnel · new-customer jobs credited to a call · {rangeLabel}</p>
+          <Funnel stages={[
+            { label: 'Ad + Mike calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
+            ...(data.realLeads ? [{ label: 'Real new leads', value: data.realLeads.leads, color: palette.answered }] : []),
+            { label: 'Booked jobs (new)', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
+            { label: `New customers invoiced${ro ? ` · ${usd(ro.newOnly.invoiced)}` : ''}`, value: ro ? ro.newOnly.clients : null, color: palette.revenue },
+            { label: 'Paid in full', value: ro ? ro.newOnly.paidClients ?? null : null, color: palette.paid },
+          ]} />
+          {data.funnel?.adCalls != null ? <p className="mt-2 text-[11px] text-slate-400">{data.funnel.adCalls} Google Ads + {data.funnel.calls - data.funnel.adCalls} Mike calls · {data.funnel.uniqueCallers ?? '—'} unique callers</p> : null}
+        </div>
+      </div>
+      {data.adSplit ? (
+        <div className="mt-4">
+          <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Pump vs drilling (Google Ads campaigns)</p>
+          <AdSplitBlocks split={data.adSplit} />
+          <p className="mt-2 text-[11px] text-amber-600">Drilling return is early: drilling jobs invoice weeks to months after the call, so expect it to rise.</p>
+        </div>
+      ) : null}
+      {ro ? <details className="mt-3 text-[11px] text-slate-400"><summary className="cursor-pointer">How it is counted</summary><ul className="mt-1 list-disc space-y-0.5 pl-4">{ro.method.filter((m) => !m.startsWith('Paid')).map((m) => <li key={m}>{m}</li>)}<li>{leadsHint(data.realLeads).split('\n')[0]}</li></ul></details> : null}
+    </Card>
+  );
+}
+
+function LeadsBySourceTable({ data, rangeLabel }: { data: Dashboard; rangeLabel: string }) {
+  type R = { key: string; label: string; numbers: string; calls: number; callers?: number; forms: string; booked: number | null; spend: number | null; note?: string | null };
+  const rows: R[] = [];
+  for (const g of data.byCampaign ?? []) {
+    if (/^not from ads$/i.test(g.key)) continue;
+    rows.push({ key: `ads-${g.key}`, label: `Google Ads · ${g.key}`, numbers: 'Google forwarding numbers', calls: g.calls, forms: '—', booked: g.booked, spend: g.spend });
+  }
+  for (const c of data.sourceCards ?? []) {
+    rows.push({ key: c.key, label: c.label, numbers: c.numbers.length ? c.numbers.join(' · ') : 'No tracking number yet', calls: c.calls, callers: c.callers, forms: String(c.forms.total), booked: c.booked.total, spend: null, note: c.note });
+  }
+  const notFromAds = (data.byCampaign ?? []).find((g) => /^not from ads$/i.test(g.key));
+  return (
+    <Card title="Leads by source" subtitle={`Every lead source in one table · ${rangeLabel}`} delay={80}>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-sm">
+          <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-2 pr-3 font-semibold">Source</th><th className="py-2 pr-3 text-right font-semibold">Calls</th><th className="py-2 pr-3 text-right font-semibold">Forms</th><th className="py-2 pr-3 text-right font-semibold">Booked</th><th className="py-2 pr-3 text-right font-semibold">Spend</th><th className="py-2 text-right font-semibold">$ / booking</th></tr></thead>
+          <tbody className="divide-y divide-slate-100 tabular-nums">
+            {rows.length === 0 ? <tr><td colSpan={6} className="py-6 text-center text-slate-400">No source data</td></tr> : rows.map((r) => (
+              <tr key={r.key} title={r.note ?? undefined}>
+                <td className="py-2 pr-3"><div className="font-medium text-slate-900">{r.label}</div><div className="text-[11px] text-slate-500">{r.numbers}</div></td>
+                <td className="py-2 pr-3 text-right">{r.calls}{r.callers != null && r.calls ? <span className="block text-[11px] text-slate-400">{r.callers} callers</span> : null}</td>
+                <td className="py-2 pr-3 text-right">{r.forms}</td>
+                <td className="py-2 pr-3 text-right">{r.booked == null ? '—' : r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-400">0</span>}</td>
+                <td className="py-2 pr-3 text-right">{r.spend == null ? '—' : usd(r.spend)}</td>
+                <td className="py-2 text-right">{r.spend != null && r.booked ? usd(r.spend / r.booked) : '—'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-2 text-[10px] text-slate-400">Google Ads rows: calls to Google forwarding numbers, booked = new customers (same as Ad performance). Other rows: calls to that source&apos;s tracking number, forms = website requests whose first visit came from that source, booked = a Jobber job within 30 days of first contact (site walks excluded).{notFromAds ? ` ${notFromAds.calls} calls in range were not from ads (main/Ransom/Mike and the tracking numbers above).` : ''}</p>
+    </Card>
+  );
+}
+
+function DataNotes({ gaps }: { gaps: string[] }) {
+  return <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-slate-600">How it&apos;s counted / data notes</summary><ul className="mt-2 list-disc space-y-1 pl-5">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul></details>;
+}
+
 export function CallDashboardPage() {
-  const [range, setRange] = useState<string>('since');
-  useEffect(() => { // honor ?range= (e.g. coming back from TV mode with its period)
-    const r = new URLSearchParams(window.location.search).get('range');
-    if (r && RANGES.some((x) => x.v === r)) setRange(r);
-  }, []);
+  const params = useSearchParams();
+  const tabParam = params?.get('tab') ?? 'today';
+  const tab: CallsTab = (CALLS_TABS as string[]).includes(tabParam) ? (tabParam as CallsTab) : 'today';
+  const [range, setRangeState] = useState<string>('since');
+  const rangeParam = params?.get('range');
+  useEffect(() => { // honor ?range= (tabs and TV mode carry it)
+    if (rangeParam && RANGES.some((x) => x.v === rangeParam)) setRangeState(rangeParam);
+  }, [rangeParam]);
+  const setRange = (v: string) => {
+    setRangeState(v);
+    try { const u = new URL(window.location.href); u.searchParams.set('range', v); window.history.replaceState(window.history.state, '', u.toString()); } catch {}
+  };
   const { data, error, loading, reload } = useDashboard(range, 30_000);
+  const recorded = useRecordedCalls();
   const t = data?.totals;
   const s = data?.series ?? [];
-  const prev = data?.previous;
   const rangeLabel = RANGES.find((r) => r.v === range)?.label ?? '';
   // Spend, revenue and ROAS start at Sep 18 (closed-loop tracking start) even when the toggle reaches further back.
   const moneyLabel = data?.start && data?.revenueStart && Date.parse(data.start) < Date.parse(data.revenueStart) ? 'Since Sep 18 (tracking start)' : rangeLabel;
-  const calls = s.map((d) => d.answered + d.missed);
+  const w = data?.weekly?.totals ?? (data?.weekly ? data.weekly.weeks[data.weekly.weeks.length - 1] : null);
+  const today = data?.callLog?.today;
+  const nc = data?.needsCallback;
+  const ncSplit = nc ? splitByAge(nc.rows, Date.now()) : null;
+  const TITLES: Record<CallsTab, string> = { today: 'Today', sales: 'Sales', ads: 'Ads & leads', collections: 'Collections (office only)' };
   return (
-    <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased">
+    <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased" data-tab={tab}>
       <style>{STYLES}</style>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="mr-auto">
-          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">Call performance</h1>
-          <p className="text-xs text-slate-500">Google Ads calls, AI receptionist and closed-loop revenue · Pacific time{(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <span className="text-slate-400"> · data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</span> : null}</p>
+          <h1 className="text-xl font-bold tracking-tight sm:text-2xl">{TITLES[tab]}</h1>
+          <p className="text-xs text-slate-500">Office dashboard · Pacific time{(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <span className="text-slate-400"> · data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</span> : null}</p>
         </div>
         <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
-        <div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Date range">
+        <div className="inline-flex flex-wrap rounded-full border border-slate-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Date range">
           {RANGES.map((r) => (
             <button key={r.v} role="tab" aria-selected={range === r.v} onClick={() => setRange(r.v)}
               className={`rounded-full px-3 py-1 text-xs font-medium transition-colors sm:text-sm ${range === r.v ? 'bg-slate-900 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}>{r.label}</button>
           ))}
         </div>
         <button onClick={reload} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 sm:text-sm">Refresh</button>
-        <a href="/ops/metrics" className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 sm:text-sm">Metrics</a>
-        <a href="/ops/calls/tv" className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white shadow-sm transition-colors hover:bg-slate-700 sm:text-sm">TV mode ↗</a>
       </div>
 
       {error ? <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"><span aria-hidden>⚠</span><span>{error}{data ? ' Showing the last data received.' : ''}</span></div> : null}
@@ -568,82 +811,40 @@ export function CallDashboardPage() {
 
       {data && t ? (
         <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
-          {data.weekly ? <WeeklySalesCard weekly={data.weekly} realLeads={data.realLeads} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
-
-          {data.adSplit ? <AdSplitCard split={data.adSplit} /> : null}
-
-          {data.sourceCards ? <SourceCardsBlock cards={data.sourceCards} rangeLabel={rangeLabel} /> : null}
-
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-            <Kpi delay={0} color={palette.answered} label="Ad + Mike calls" hint="Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3)." range={rangeLabel} value={String(t.calls)} sub={`${t.answered} answered · ${t.missedOrShort} missed/short`} spark={calls} delta={<Delta cur={t.calls} prev={prev?.calls} />} />
-            <Kpi delay={40} color={palette.booked} label="Booked (new customers)" range={rangeLabel} value={String(t.bookedNew)} sub={data.realLeads ? `of ${data.realLeads.leads} real leads · ${data.realLeads.excluded.find((e) => e.reason === 'existing')?.count ?? 0} existing-customer callers excluded` : `${t.knownExisting} existing · ${t.unmatched} other`} spark={s.map((d) => d.booked)} />
-            <Kpi delay={80} color={palette.spend} label="Ad spend" range={moneyLabel} value={usd(t.spend)} sub={`${usd(t.costPerCall, 2)}/ad call · ${usd(t.costPerBooked)}/new booking`} spark={s.filter((d) => !data.revenueStart || d.date >= ptKey(data.revenueStart)).map((d) => d.spend ?? 0)} delta={<Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} />} />
-            <Kpi delay={120} color={palette.revenue} label="ROAS (new customers)" range={moneyLabel} hint="Jobber invoices to new customers who called an ad ÷ Google Ads spend" value={data.roas ? mult(data.roas.newOnly.multipleInvoiced) : '—'} sub={data.roas ? `${usd(data.roas.newOnly.invoiced)} invoiced · Blended (all callers) ${mult(data.roas.overall.multipleInvoiced)}` : undefined} />
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card title="Calls per day" subtitle={rangeLabel} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short']]} />} delay={60}>
-              {s.length ? <CallsPerDayChart series={s} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
-            </Card>
-            <Card title="Daily ad spend" subtitle={`Google Ads spend per day · ${rangeLabel} (revenue: see Return on ad spend)`} right={<Legend items={[[palette.spend, 'Spend']]} />} delay={100}>
-              {s.length ? <SpendRevenueChart series={s.map((d) => ({ ...d, invoiced: 0 }))} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
-            </Card>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-2">
-            <Card title="New leads — needs callback" subtitle="Missed, voicemail, and Mike. Attempt counts include shop Voice lines and Mike's automated callbacks. Skips hang-ups under 10s, spam, vendors, AI bookings, and any Jobber request, quote, job (including cancelled), visit, or invoice on or after the call. Scroll for every row." right={<span className="cursor-help text-xs text-slate-400" title={OUTREACH_TIP}>Voice lines + Mike ⓘ</span>} delay={200}>
-              <NeedsCallbackList view={data.needsCallback} rangeLabel={rangeLabel} empty="No new leads waiting on a callback in this period." />
-            </Card>
-            <Card title="Invoice follow-up" subtitle="Every awaiting-payment and past-due invoice, called or not. Scroll for every row. Calls are shop Voice lines since the invoice date, matched to the customer phone or Jobber client. Texts are app invoice SMS plus Jobber texts when that history loads. An email counts when it cites that invoice number or amount due, includes a pay link, or clearly asks for payment. Quotes, scheduling, and ordinary replies do not. Hover or expand “Show email subjects” for the date, sender, and subject. A mailbox or source that cannot be read says unavailable." delay={220}>
-              <NeedsCallbackList metric="invoices" view={data.invoiceFollowUp} rangeLabel={rangeLabel} empty="No invoice follow-ups right now." />
-            </Card>
-          </div>
-
-          <div className="grid gap-4 lg:grid-cols-5">
-            <Card title="Conversion funnel" subtitle={`New-customer jobs credited to a call · ${rangeLabel}`} delay={140}>
-              <Funnel stages={[
-                { label: 'Ad + Mike calls', value: data.funnel?.calls ?? t.calls, color: palette.answered },
-                ...(data.realLeads ? [{ label: 'Real new leads', value: data.realLeads.leads, color: palette.answered }] : []),
-                { label: 'Booked jobs (new)', value: data.funnel?.booked ?? t.bookedNew, color: palette.booked },
-                { label: `New customers invoiced${data.roas ? ` · ${usd(data.roas.newOnly.invoiced)}` : ''}`, value: data.roas ? data.roas.newOnly.clients : null, color: palette.revenue },
-                { label: 'Paid in full', value: data.roas ? data.roas.newOnly.paidClients ?? null : null, color: palette.paid },
-              ]} />
-              <p className="mt-2 text-[11px] text-slate-400">
-                {data.funnel?.adCalls != null ? `${data.funnel.adCalls} Google Ads + ${data.funnel.calls - data.funnel.adCalls} Mike calls · ${data.funnel.uniqueCallers ?? '—'} unique callers` : null}
-                {' · invoiced/paid = same new-customer set and dollars as ROAS (new customers)'}
-              </p>
-            </Card>
-            <Card title="Return on ad spend" subtitle={`Jobber invoices ÷ Google Ads spend · ${rangeLabel}`} delay={180} className="lg:col-span-1">
-              {data.roas ? (
-                <>
-                  <Gauge value={data.roas.newOnly.multipleInvoiced} label="ROAS (new)" />
-                  <p className="-mt-1 text-center text-xs font-semibold uppercase tracking-wider text-slate-500">ROAS (new customers)</p>
-                  <p className="mt-1 text-center text-sm text-slate-500">{usd(data.roas.newOnly.invoiced)} invoiced ÷ {usd(data.roas.spend)} spend</p>
-                  <div className="mt-3 flex justify-center gap-6 text-center text-xs text-slate-500">
-                    <div><div className="text-lg font-bold tabular-nums text-slate-800">{mult(data.roas.overall.multipleInvoiced)}</div>Blended (all callers)</div>
-                  </div>
-                  <details className="mt-2 text-[10px] text-slate-400"><summary className="cursor-pointer">How it is counted</summary><ul className="list-disc pl-4">{data.roas.method.filter((m) => !m.startsWith('Paid')).map((m) => <li key={m}>{m}</li>)}</ul></details>
-                </>
-              ) : (
-                <p className="py-10 text-center text-sm text-slate-400">— Jobber invoices did not load; refresh in a minute.</p>
-              )}
-            </Card>
-            <Card title="Recent calls" subtitle={data.callLog ? `All incoming · today ${data.callLog.today.total} · ${data.callLog.today.answered} answered · ${data.callLog.today.forwardedAi} to Mike · ${data.callLog.today.missed} missed` : 'All incoming'} delay={220} className="lg:col-span-3 !p-0">
-              <div className="-mx-5 -mb-5 max-h-[520px] overflow-auto">
-                {data.callFeed ? <CallFeedTable rows={data.callFeed} /> : <p className="px-5 py-8 text-center text-slate-400">Call feed unavailable</p>}
+          {tab === 'today' ? (
+            <>
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+                <Tile label="Calls today" value={today ? String(today.total) : '—'} sub={today ? `${today.answered} answered · ${today.forwardedAi} to Mike` : 'all incoming'} />
+                <Tile label="Missed today" value={today ? String(today.missed) : '—'} sub="all lines" tone={today && today.missed > 0 ? 'alert' : 'plain'} />
+                <Tile label="Needs callback" value={nc ? String(nc.count) : '—'} sub={ncSplit ? `${ncSplit.recent.length} in last ${OLDER_DAYS} days · ${ncSplit.older.length} older` : undefined} tone={ncSplit && ncSplit.recent.length > 0 ? 'alert' : 'plain'} />
+                <Tile label="Booked (new customers)" value={String(t.bookedNew)} sub={`${rangeLabel}${data.tv ? ` · ${data.tv.bookedToday} today · ${data.tv.bookedWeek} this week` : ''}`} />
+                <Tile label="Invoiced" value={w ? usd(w.invoiced) : '—'} sub={w ? `${w.label} · ${w.invoiceCount ?? 0} invoices, pre-tax` : 'Jobber did not load'} href="/ops/calls?tab=sales" />
+                <Tile label="Quotes sent" value={w ? compactUsd(w.quotesSentValue) : '—'} sub={w ? `${w.quotesSent ?? 0} quotes · ${w.label}` : undefined} href="/ops/calls?tab=sales" />
               </div>
-            </Card>
-          </div>
+              <div className="grid gap-4 lg:grid-cols-12">
+                <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
+                <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} today={today} /></div>
+              </div>
+            </>
+          ) : null}
 
-          <div className="grid gap-4 lg:grid-cols-3">
-            <GroupTable title={moneyLabel !== rangeLabel ? "By campaign (spend & $/call since Sep 18)" : "By campaign"} rows={data.byCampaign} delay={240} />
-            <GroupTable title="By keyword / ad group" rows={data.byKeyword} delay={270} />
-            <GroupTable title="By tracking number / source" rows={data.byTrackingNumber} delay={300} />
-          </div>
+          {tab === 'sales' ? (
+            data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>
+          ) : null}
 
-          <PhoneCallTranscripts />
+          {tab === 'ads' ? (
+            <>
+              <AdPerformanceCard data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
+              <Card title="Calls & ad spend per day" subtitle={`${rangeLabel} · bars: answered / missed or short calls · line: Google Ads spend`} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short'], [palette.spend, 'Ad spend']]} />} delay={60}>
+                {s.length ? <CallsSpendChart series={s} spendFrom={data.revenueStart ? ptKey(data.revenueStart) : null} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
+              </Card>
+              <LeadsBySourceTable data={data} rangeLabel={rangeLabel} />
+            </>
+          ) : null}
 
-          <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-slate-600">Data notes</summary><ul className="mt-2 list-disc space-y-1 pl-5">{data.gaps.map((g, i) => <li key={i}>{g}</li>)}</ul></details>
+          {tab === 'collections' ? <InvoiceFollowUpCard view={data.invoiceFollowUp} rangeLabel={rangeLabel} /> : null}
+
+          <DataNotes gaps={[...(tab === 'sales' && data.weekly ? [...data.weekly.sources, ...data.weekly.gaps] : []), ...data.gaps]} />
         </div>
       ) : null}
     </div>
@@ -666,7 +867,8 @@ function BigTile({ label, range, value, sub, accent, spark, delta, delay }: { la
 
 export function CallDashboardTv() {
   const [view, setView] = useState<'since' | 'month'>('since');
-  const { data, error } = useDashboard(view, 60_000);
+  // view=tv: the API strips collections and payment figures server-side (TV can be on a shop screen).
+  const { data, error } = useDashboard(view, 60_000, 'tv');
   const tv = data?.tv;
   const tt = data?.totals;
   const s = data?.series ?? [];
@@ -679,7 +881,7 @@ export function CallDashboardTv() {
   const sinceRange = 'Since Sep 18';
   const mainRange = view === 'month' ? `This month · ${monthRange}` : sinceRange; // every period number follows the toggle (API range)
   const ro = data?.roas ?? null;
-  const mainRev = ro ? { invoiced: ro.newOnly.invoiced, paid: ro.newOnly.paid } : null; // one strict new-customer source; '—' on failure
+  const mainRev = ro ? { invoiced: ro.newOnly.invoiced } : null; // one strict new-customer source; '—' on failure
   const wk = data?.adSplit?.week;
   const weekNew = wk && wk.rows.every((r) => r.invoicedNew != null) ? wk.rows.reduce((a, r) => a + (r.invoicedNew ?? 0), 0) : null;
   const mainSpend = ro ? ro.spend : tt?.spend ?? null;
@@ -735,18 +937,16 @@ export function CallDashboardTv() {
         const head = data.weekly.totals?.title ?? `This week to date ${w.label}`;
         const cell = (l: string, v: string, sub?: string) => (<div className="min-w-0"><p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500 xl:text-base">{l}</p><p className="whitespace-nowrap text-lg font-bold tabular-nums xl:text-2xl 2xl:text-3xl">{v}</p>{sub ? <p className="text-[10px] leading-tight text-slate-500 xl:text-base">{sub}</p> : null}</div>);
         return (
-          <div className="grid shrink-0 grid-cols-2 items-start gap-x-4 gap-y-3 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-3 md:grid-cols-5 2xl:grid-cols-[repeat(9,minmax(0,1fr))_minmax(0,2.2fr)] 2xl:items-end xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
+          <div className="grid shrink-0 grid-cols-2 items-start gap-x-4 gap-y-3 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:grid-cols-3 md:grid-cols-5 2xl:grid-cols-[repeat(7,minmax(0,1fr))_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] 2xl:items-end xl:gap-x-5 xl:px-6 xl:py-4" aria-label="Sales">
             <p className="col-span-full text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 xl:text-sm">Sales · {head} · bars: invoiced, last 9 weeks, Mon–Sun</p>
             {cell('Invoiced', usd(w.invoiced))}
-            {cell('Paid on invoices', usd(w.paid), `issued ${w.label}`)}
-            {cell('Cash collected', usd(w.cash), `received ${w.label}`)}
             {cell('Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked))}
             {cell('Completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted))}
             {cell('Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes`)}
             {cell('Approved', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes`)}
             {cell('Quote close rate', pct(w.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null), `${w.quotesSentApproved ?? 0}/${w.quotesSent ?? 0} sent, approved to date · ${w.quotesApproved ?? 0} approved this period`)}
             {cell('Call to booking (real leads)', pct(w.closingRate), `${w.bookedCalls ?? 0}/${w.calls} real leads`)}
-            <div className="col-span-full mt-2 min-w-0 2xl:col-span-1"><WeeklyBars dark weeks={ws} height={40} /><p className="mb-0.5 mt-1 text-[10px] uppercase tracking-wider text-slate-500">Cash collected / wk</p><WeeklyCashBars dark weeks={ws} height={28} /></div>
+            <div className="col-span-full mt-2 min-w-0 2xl:col-span-3"><WeeklyBars dark weeks={ws} height={56} showPaid={false} /></div>
           </div>
         );
       })() : null}
@@ -762,15 +962,10 @@ export function CallDashboardTv() {
           <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · {mainRange}. Counts include Mike's automated callbacks. Personal cell calls are not logged.</p>
           <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} empty="No new leads waiting on a callback in this period." />
         </div>
-        <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="Invoice follow-up">
-          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Invoice follow-up</p>
-          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Every open invoice · scroll for all · {mainRange}. Expand “Show email subjects” for each counted email.</p>
-          <NeedsCallbackList dark metric="invoices" view={data?.invoiceFollowUp} rangeLabel={mainRange} empty="No invoice follow-ups right now." />
+        <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Recent calls</p>
+          {data?.callFeed ? <CallFeedTable dark rows={data.callFeed} max={6} /> : <p className="text-slate-500">{tv ? 'No recent calls' : ' '}</p>}
         </div>
-      </div>
-      <div className="shrink-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base">Recent calls</p>
-        {data?.callFeed ? <CallFeedTable dark rows={data.callFeed} max={6} /> : <p className="text-slate-500">{tv ? 'No recent calls' : ' '}</p>}
       </div>
     </div>
   );

@@ -32,6 +32,9 @@ export default function MetricsPage() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { load(); }, [load]);
+  // A card with no value yet ("—") is hidden until its data exists; what it needs is listed below the grid.
+  const shown = (cards ?? []).filter((c) => c.value !== '—');
+  const hidden = (cards ?? []).filter((c) => c.value === '—');
 
   return (
     <main className="mx-auto max-w-6xl space-y-4 px-3 py-4 sm:px-4">
@@ -42,13 +45,13 @@ export default function MetricsPage() {
         </div>
         <div className="flex gap-2">
           <button onClick={load} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50">Refresh</button>
-          <a href={`/ops/calls${key ? `?key=${encodeURIComponent(key)}` : ''}`} className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-slate-700">← Calls</a>
+          <a href={`/ops/calls${key ? `?key=${encodeURIComponent(key)}` : ''}`} className="rounded-full bg-slate-900 px-3 py-1 text-xs font-medium text-white shadow-sm hover:bg-slate-700">← Today</a>
         </div>
       </div>
       {error ? <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800">{error}</div> : null}
       {!cards && loading ? <p className="text-sm text-slate-500">Pulling Jobber history…</p> : null}
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {(cards ?? []).map((c) => (
+        {shown.map((c) => (
           <section key={c.id} className="flex flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">{c.title}</h3>
             {c.badge ? <p className="mt-0.5 text-[10px] font-medium text-emerald-700">{c.badge}</p> : null}
@@ -73,6 +76,12 @@ export default function MetricsPage() {
           </section>
         ))}
       </div>
+      {hidden.length ? (
+        <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500" data-hidden-metrics={hidden.length}>
+          <summary className="cursor-pointer font-medium text-slate-600">{hidden.length} {hidden.length === 1 ? 'metric is' : 'metrics are'} hidden until the data exists: {hidden.map((c) => c.title).join(', ')}</summary>
+          <ul className="mt-2 list-disc space-y-1 pl-5">{hidden.map((c) => <li key={c.id}><b className="text-slate-600">{c.title}:</b> {c.needs ? c.needs.replace(/^needs\s*/i, 'needs ') : 'no data yet'}</li>)}</ul>
+        </details>
+      ) : null}
     </main>
   );
 }

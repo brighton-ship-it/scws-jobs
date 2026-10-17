@@ -136,19 +136,52 @@ export function commsFromNodes(
   return { events, classified };
 }
 
-async function probeInvoiceComms(gql: Gql): Promise<{ selection: string; dated: boolean; upper: boolean } | null> {
+/**
+ * Jobber's InvoiceFilterAttributes takes `status` (one InvoiceStatusTypeEnum). Older code sent
+ * `invoiceStatus: [..]`, which Jobber rejects ("Field is not defined on InvoiceFilterAttributes").
+ * Tried in order; the first shape Jobber accepts is used for every page.
+ */
+export type InvoiceStatusFilterShape = 'status' | 'STATUS' | 'invoiceStatus' | 'INVOICE_STATUS';
+export const INVOICE_FILTER_SHAPES: InvoiceStatusFilterShape[] = ['status', 'STATUS', 'invoiceStatus', 'INVOICE_STATUS'];
+
+export function invoiceStatusFilter(shape: InvoiceStatusFilterShape, status: string): Record<string, unknown> {
+  const lower = status.toLowerCase();
+  switch (shape) {
+    case 'status': return { status: lower };
+    case 'STATUS': return { status: lower.toUpperCase() };
+    case 'invoiceStatus': return { invoiceStatus: [lower] };
+    case 'INVOICE_STATUS': return { invoiceStatus: [lower.toUpperCase()] };
+  }
+}
+
+function filterShapeError(msg: string): boolean {
+  return /invoiceStatus|status|InvoiceStatusTypeEnum|enum|InvoiceFilterAttributes|invalid value/i.test(msg);
+}
+
+/** First filter shape Jobber accepts for a past-due invoice read (no comms selection). */
+export async function probeInvoiceFilter(gql: Gql): Promise<InvoiceStatusFilterShape | null> {
+  let lastError: unknown = null;
+  for (const shape of INVOICE_FILTER_SHAPES) {
+    try {
+      await read(gql, INVOICES.replace('COMMS', ''), { first: 1, after: null, filter: invoiceStatusFilter(shape, 'past_due') });
+      return shape;
+    } catch (error) {
+      lastError = error;
+      const msg = error instanceof Error ? error.message : '';
+      if (!filterShapeError(msg)) throw error;
+    }
+  }
+  if (lastError) throw lastError;
+  return null;
+}
+
+async function probeInvoiceComms(gql: Gql, shape: InvoiceStatusFilterShape): Promise<{ selection: string; dated: boolean } | null> {
   for (const selection of COMM_PROBES) {
-    for (const status of ['past_due', 'PAST_DUE']) {
-      try {
-        await read(gql, INVOICES.replace('COMMS', selection), { first: 1, after: null, filter: { invoiceStatus: [status] } });
-        return { selection, dated: /createdAt|sentAt|timestamp/.test(selection), upper: status === 'PAST_DUE' };
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : '';
-        const statusErr = /invoiceStatus|enum/i.test(msg);
-        const fieldErr = /linkedCommunications|createdAt|sentAt|timestamp|channel|commType|EmailMessage|SmsMessage|TextMessage|ClientEmail|ClientSms|Cannot query|unknown field/i.test(msg);
-        if (statusErr && !fieldErr && status === 'past_due') continue;
-        break;
-      }
+    try {
+      await read(gql, INVOICES.replace('COMMS', selection), { first: 1, after: null, filter: invoiceStatusFilter(shape, 'past_due') });
+      return { selection, dated: /createdAt|sentAt|timestamp/.test(selection) };
+    } catch {
+      // that selection is not in this Jobber schema; try the next one
     }
   }
   return null;
@@ -231,7 +264,9 @@ export async function loadJobberFollowUp(sinceIso: string, gql: Gql = jobberGrap
   const invoices: JobberInvoiceExtra[] = [];
   let commsOk = false;
   try {
-    const probed = await probeInvoiceComms(gql);
+    const shape = await probeInvoiceFilter(gql);
+    if (!shape) throw new Error('Jobber rejected every invoice status filter');
+    const probed = await probeInvoiceComms(gql, shape);
     const selection = probed?.dated ? probed.selection : '';
     commsOk = !!probed?.dated;
     if (!probed) notes.push('Jobber invoice emails and texts unavailable');
@@ -243,13 +278,13 @@ export async function loadJobberFollowUp(sinceIso: string, gql: Gql = jobberGrap
       next: data?.invoices?.pageInfo?.hasNextPage ? data.invoices.pageInfo.endCursor : null,
     });
     for (const status of ['past_due', 'awaiting_payment']) {
-      const filterStatus = probed?.upper ? status.toUpperCase() : status;
+      const filter = invoiceStatusFilter(shape, status);
       try {
-        const nodes = await pageAll(gql, INVOICES.replace('COMMS', selection), { invoiceStatus: [filterStatus] }, pick, 10);
+        const nodes = await pageAll(gql, INVOICES.replace('COMMS', selection), filter, pick, 10);
         collected.push(...nodes);
       } catch (error) {
         pageFailed = true;
-        const nodes = await pageAll(gql, INVOICES.replace('COMMS', ''), { invoiceStatus: [filterStatus] }, pick, 10);
+        const nodes = await pageAll(gql, INVOICES.replace('COMMS', ''), filter, pick, 10);
         collected.push(...nodes);
         notes.push(`Jobber send history: ${error instanceof Error ? error.message : 'error'}`);
       }

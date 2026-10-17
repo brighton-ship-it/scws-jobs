@@ -77,6 +77,8 @@ const navigationGroups: { name: string; items: NavItemDef[] }[] = [
       { name: 'Marketing', href: '/marketing', icon: Megaphone, permissions: ['view_marketing'] },
       { name: 'Permit Research', href: '/permits/research', icon: Search, permissions: ['view_permit_research'] },
       { name: 'Reports', href: '/reports', icon: BarChart3, permissions: ['view_reports'] },
+      { name: 'Office Dashboard', href: '/ops/calls', icon: PhoneCall, permissions: ['view_reports'] },
+      { name: 'Business Metrics', href: '/ops/metrics', icon: BarChart3, permissions: ['view_reports'] },
       { name: 'Quote GP', href: '/ops/quotes-gp', icon: Target, permissions: ['view_reports'] },
       { name: 'Team Performance', href: '/team-performance', icon: UserCheck, permissions: ['view_reports'] },
     ],

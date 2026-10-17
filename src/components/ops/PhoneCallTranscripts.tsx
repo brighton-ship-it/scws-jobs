@@ -2,12 +2,12 @@
 import { Fragment, useEffect, useState } from 'react';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 
-type Row = { call_sid: string; started_at: string; caller_number: string | null; source: string | null; dial_status: string | null; answered: boolean | null; duration_seconds: number | null; processing_status: string; transcript: string | null; summary: string | null; outcome: string | null; caller_name: string | null; needs_followup: boolean | null; jobber_client_id?: string | null; processing_error?: string | null };
+export type RecordedCall = { call_sid: string; started_at: string; caller_number: string | null; source: string | null; dial_status: string | null; answered: boolean | null; duration_seconds: number | null; processing_status: string; transcript: string | null; summary: string | null; outcome: string | null; caller_name: string | null; needs_followup: boolean | null; jobber_client_id?: string | null; processing_error?: string | null };
 
-function fmtPhone(p: string | null) { const d = (p ?? '').replace(/\D/g, '').slice(-10); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || 'Unknown'); }
+export function fmtPhone(p: string | null) { const d = (p ?? '').replace(/\D/g, '').slice(-10); return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || 'Unknown'); }
 function fmtDur(s: number | null) { return s == null ? '—' : s >= 60 ? `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s` : `${s}s`; }
 /** "Key: value" lines after the first summary line become the summary box. */
-function splitSummary(summary: string | null) {
+export function splitSummary(summary: string | null) {
   const lines = (summary ?? '').split('\n');
   const box: Array<[string, string]> = [];
   for (const l of lines.slice(1)) { const m = l.match(/^(Who|Address|Issue|Next step|Booked):\s*(.+)$/); if (m) box.push([m[1], m[2]]); }
@@ -18,7 +18,7 @@ function turnsOf(t: string): Array<{ who: 'SCWS' | 'Caller'; text: string }> | n
   if (lines.length < 2 || !lines.every((l) => /^(SCWS|Shop|Caller|AI|Mike|User|Assistant)\s*:/i.test(l))) return null;
   return lines.map((l) => { const i = l.indexOf(':'); const sp = l.slice(0, i).trim(); return { who: /caller|user/i.test(sp) ? 'Caller' : 'SCWS', text: l.slice(i + 1).trim() }; });
 }
-function Transcript({ text }: { text: string }) {
+export function Transcript({ text }: { text: string }) {
   const turns = turnsOf(text);
   if (!turns) return <div className="mt-3 max-h-96 overflow-auto rounded-lg bg-slate-50 p-4 text-[15px] leading-relaxed text-slate-800">{text.split(/(?<=[.?!])\s+/).map((s, i) => <p key={i} className="mb-1">{s}</p>)}</div>;
   return (
@@ -34,10 +34,10 @@ function Transcript({ text }: { text: string }) {
   );
 }
 
-const SOURCE_LABEL: Record<string, string> = { gbp_ramona: 'Google profile · Ramona', gbp_anza: 'Google profile · Anza', gmb: 'Google profile', google_ads: 'Google Ads', seo: 'Website (SEO)', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main line', toll_free: 'Toll-free (877)', line_7963: 'Line 823-7963' };
+export const SOURCE_LABEL: Record<string, string> = { gbp_ramona: 'Google profile · Ramona', gbp_anza: 'Google profile · Anza', gmb: 'Google profile', google_ads: 'Google Ads', seo: 'Website (SEO)', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main line', toll_free: 'Toll-free (877)', line_7963: 'Line 823-7963' };
 
 export function PhoneCallTranscripts() {
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<RecordedCall[]>([]);
   const [open, setOpen] = useState<string | null>(null);
   useEffect(() => {
     let key: string | null = null;
@@ -82,4 +82,19 @@ export function PhoneCallTranscripts() {
       </ul>
     </div>
   );
+}
+
+/** Recorded tracking-line calls (latest 25) for the merged Calls list. */
+export function useRecordedCalls(): RecordedCall[] {
+  const [rows, setRows] = useState<RecordedCall[]>([]);
+  useEffect(() => {
+    let key: string | null = null;
+    try { key = new URL(window.location.href).searchParams.get(QUOTES_GP_KEY_QUERY) || localStorage.getItem('quotes_gp_key'); } catch {}
+    const load = () => fetch('/api/ops/phone-calls', { headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : { calls: [] })).then((j) => setRows(j.calls ?? [])).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return rows;
 }
