@@ -4,6 +4,7 @@
  * or a later inbound call from that number that a staff member answered.
  */
 import { digits10 } from './call-dashboard.ts';
+import { isDismissed, type LeadDismissal } from './lead-dismissals.ts';
 import { formatDuration, formatPhone, type FeedRow } from './call-feed.ts';
 import { staffLabel, staffLines, type StaffLine } from './staff-lines.ts';
 
@@ -953,6 +954,8 @@ export function needsCallback(input: {
   inbound?: InboundTouch[];
   collections?: CollectionEvent[];
   channels?: CollectionChannels;
+  /** Reversible office dismissals (settings.lead_callback_dismissals). */
+  dismissed?: LeadDismissal[];
 }): CallbackQueues {
   const now = input.now ?? new Date();
   const attempts = input.attempts ?? [];
@@ -987,6 +990,7 @@ export function needsCallback(input: {
     if (invoicePhones.has(phone)) continue;
     if (hasWorkOnOrAfter(c.phone, c.at, input.work)) continue;
     if (handlingCallback(c.phone, c.at, input.sources)) continue;
+    if (input.dismissed?.length && isDismissed(c.phone, c.at, input.dismissed)) continue;
     if (seen.has(phone)) continue;
     seen.add(phone);
     const outreach = summarizeOutreach({

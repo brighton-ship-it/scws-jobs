@@ -15,6 +15,7 @@ import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
 import { buildCallFeed, mergeCallFeed, feedToday } from '@/lib/ads/call-feed';
+import { LEAD_DISMISSALS_KEY, parseDismissals, type LeadDismissal } from '@/lib/ads/lead-dismissals';
 import { annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, groupPastDueClients, indexWorkTimes, listOpenInvoices, needsCallback, requestResolvesCallback, voiceAttempts, type CollectionEvent, type OpenInvoice, type PastDueClient } from '@/lib/ads/callbacks';
 import { loadJobberFollowUp } from '@/lib/ads/jobber-followup';
 import { loadGmailCollection, invoiceNumbersIn, vercelOidcToken, SHOP_GMAIL_MAILBOXES, gmailSearchTargets, gmailTargetKey } from '@/lib/ads/gmail-collections';
@@ -221,8 +222,13 @@ export async function GET(request: NextRequest) {
         }), mikeCallbacks.attempts);
         const withMike = <T extends { phone: string; at: string }>(rows: T[]) => rows.map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
         dash.callFeed = withMike(annotateFeed(merged.slice(0, 40), sources, nowDash, { attempts, fromMs, pastDuePhones, work }));
+        let dismissed: LeadDismissal[] = [];
+        try {
+          const ds = await db.from('settings').select('value').eq('key', LEAD_DISMISSALS_KEY).maybeSingle();
+          if (ds.error) notes.push(`lead dismissals: ${ds.error.message}`); else dismissed = parseDismissals(ds.data?.value);
+        } catch (e) { notes.push(`lead dismissals: ${e instanceof Error ? e.message : 'error'}`); }
         const queues = needsCallback({
-          candidates, sources, work, fromMs, now: nowDash, attempts,
+          candidates, sources, work, fromMs, now: nowDash, attempts, dismissed,
           openInvoices: open,
           inbound: [
             ...inboundLog.map((r: any) => ({ at: r.started_at, phone: r.caller_phone ?? null })),
