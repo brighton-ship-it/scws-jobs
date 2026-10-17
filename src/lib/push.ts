@@ -2,8 +2,9 @@ import webpush from 'web-push';
 import { createServiceClient } from '@/lib/supabase/service';
 
 // VAPID keys for push notifications
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '';
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY || '';
+// Trim: the stored env values carry a trailing newline, which web-push rejects ("must be URL safe Base 64").
+const VAPID_PUBLIC_KEY = (process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || '').trim();
+const VAPID_PRIVATE_KEY = (process.env.VAPID_PRIVATE_KEY || '').trim();
 const VAPID_SUBJECT = 'mailto:brighton@scwellservice.com';
 
 let vapidConfigured = false;
