@@ -3,6 +3,9 @@
  * (durable single-writer OAuth; no separate refresh path). Resumable: backfill cursors and the
  * run lock live in jobber_sync_state. Each run: finish backfills (all history), then re-pull rolling
  * windows (short every run, wide once an hour) so status/payment changes on recent records land.
+ * A finished window also drops mirror rows Jobber no longer returns (deleted jobs/invoices/quotes/
+ * payments). A partial, throttled, or failed sweep never deletes, and a short pass still marks the
+ * mirror fresh before any wide or full-history work.
  */
 import { jobberGraphql } from '../jobber/client.ts';
 
@@ -164,8 +167,44 @@ async function setState(db: Db, key: string, patch: Record<string, unknown>) {
   if (r.error) throw new Error(`jobber_sync_state: ${r.error.message}`);
 }
 
-/** Saved rolling-pass position ({ i, cursor, anchor } JSON); null when no pass is in progress. Exported for tests. */
-export function parseProgress(raw: unknown): { i: number; cursor: string | null; anchor: string | null } | null {
+/** Refuse to delete when a finished sweep disagrees with the mirror by more than this. A real delete is one or a few rows; a partial page walk is hundreds. */
+export const MAX_MIRROR_PRUNE = 25;
+
+export type PruneSpec = { table: string; column: string | null; after: string | null; before: string | null };
+export type SweepPart = 'dated' | 'archived';
+export type SweepWindows = Record<string, { dated?: string[]; archived?: string[] }>;
+export type SyncProgress = { i: number; cursor: string | null; anchor: string | null; seen: string[] | null; windows: SweepWindows };
+type Gone = 'gone' | 'present' | 'unknown';
+
+const TABLES: Record<Field, string> = {
+  invoices: 'jobber_invoices', jobs: 'jobber_jobs', quotes: 'jobber_quotes', paymentRecords: 'jobber_payments', timeSheetEntries: 'jobber_timesheets',
+};
+/** By-id reads. Payments and timesheets have no singular query; a finished entry-date / start window is the proof for those. */
+const BY_ID: Partial<Record<Field, { query: string; root: string }>> = {
+  jobs: { query: 'query MirGoneJob($id: EncodedId!) { job(id: $id) { id } }', root: 'job' },
+  invoices: { query: 'query MirGoneInv($id: EncodedId!) { invoice(id: $id) { id } }', root: 'invoice' },
+  quotes: { query: 'query MirGoneQuote($id: EncodedId!) { quote(id: $id) { id } }', root: 'quote' },
+};
+
+function asStringList(v: unknown): string[] | null {
+  if (!Array.isArray(v) || !v.every((s) => typeof s === 'string')) return null;
+  return v;
+}
+
+function parseWindows(raw: unknown): SweepWindows {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: SweepWindows = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const dated = asStringList((value as { dated?: unknown })?.dated);
+    const archived = asStringList((value as { archived?: unknown })?.archived);
+    if (!dated && !archived) continue;
+    out[key] = { ...(dated ? { dated } : {}), ...(archived ? { archived } : {}) };
+  }
+  return out;
+}
+
+/** Saved rolling-pass position. `seen` is null when a resumed cursor has no ids from the pages already pulled (not safe to prune). Exported for tests. */
+export function parseProgress(raw: unknown): SyncProgress | null {
   if (typeof raw !== 'string' || !raw) return null;
   try {
     const v = JSON.parse(raw);
@@ -173,11 +212,206 @@ export function parseProgress(raw: unknown): { i: number; cursor: string | null;
     const anchor = typeof v.anchor === 'string' && Number.isFinite(Date.parse(v.anchor)) ? v.anchor : null;
     // A pass left unfinished for over a day restarts with fresh windows.
     if (anchor && Date.now() - Date.parse(anchor) > 86400_000) return null;
-    return { i: v.i, cursor: typeof v.cursor === 'string' ? v.cursor : null, anchor };
+    const cursor = typeof v.cursor === 'string' ? v.cursor : null;
+    const listed = asStringList(v.seen);
+    // A saved cursor without the ids already pulled cannot prove the rest of the walk is the whole window.
+    const seen = listed ?? (cursor ? null : []);
+    return { i: v.i, cursor, anchor, seen, windows: parseWindows(v.windows) };
   } catch { return null; }
 }
 
+/**
+ * Date window whose rows are the full population of that column. Status slices (archived jobs,
+ * approved quotes, past-due invoices) are not, and neither is jobs.completedAt. Jobs are pruned
+ * only from the union of the open createdAt walk and the archived createdAt walk (see jobWindowId).
+ */
+export function pruneSpec(field: Field, filter: Record<string, unknown> | null): PruneSpec | null {
+  if (!filter) return null;
+  const map: Partial<Record<Field, { key: string; column: string; table: string }>> = {
+    invoices: { key: 'issuedDate', column: 'issued_date', table: 'jobber_invoices' },
+    quotes: { key: 'createdAt', column: 'created_at', table: 'jobber_quotes' },
+    paymentRecords: { key: 'entryDate', column: 'entry_date', table: 'jobber_payments' },
+    timeSheetEntries: { key: 'startAt', column: 'start_at', table: 'jobber_timesheets' },
+  };
+  const spec = map[field];
+  if (!spec || Object.keys(filter).length !== 1 || !(spec.key in filter)) return null;
+  const range = filter[spec.key];
+  if (!range || typeof range !== 'object') return null;
+  if (Object.keys(range as object).some((k) => k !== 'after' && k !== 'before')) return null;
+  const after = (range as { after?: unknown }).after;
+  const before = (range as { before?: unknown }).before;
+  if (typeof after !== 'string' || !after) return null;
+  if (before != null && typeof before !== 'string') return null;
+  return { table: spec.table, column: spec.column, after, before: typeof before === 'string' ? before : null };
+}
+
+/** Jobber's default jobs connection omits archived jobs, so both walks of the same createdAt window are required. `null` is the unfiltered history walk. */
+export function jobWindowId(filter: Record<string, unknown> | null): { id: string; part: SweepPart } | null {
+  if (filter == null) return { id: 'jobs:all', part: 'dated' };
+  const keys = Object.keys(filter);
+  if (keys.length === 1 && keys[0] === 'status' && filter.status === 'archived') return { id: 'jobs:all', part: 'archived' };
+  const created = filter.createdAt as { after?: unknown; before?: unknown } | undefined;
+  const after = typeof created?.after === 'string' ? created.after : null;
+  if (!after) return null;
+  const before = typeof created?.before === 'string' ? created.before : '';
+  const sorted = keys.slice().sort();
+  if (sorted.length === 1 && sorted[0] === 'createdAt') return { id: `jobs|${after}|${before}`, part: 'dated' };
+  if (filter.status === 'archived' && sorted.length === 2 && sorted[0] === 'createdAt' && sorted[1] === 'status') {
+    return { id: `jobs|${after}|${before}`, part: 'archived' };
+  }
+  return null;
+}
+
+export function withSweepIds(windows: SweepWindows, id: string, part: SweepPart, ids: string[]): SweepWindows {
+  return { ...windows, [id]: { ...windows[id], [part]: ids.slice() } };
+}
+
+/** Null until both the open walk and the archived walk of this window have finished. */
+export function readyJobIds(parts: { dated?: string[]; archived?: string[] } | undefined): string[] | null {
+  if (!parts?.dated || !parts?.archived) return null;
+  return [...parts.dated, ...parts.archived];
+}
+
+export function jobPruneSpec(windowId: string): PruneSpec | null {
+  if (windowId === 'jobs:all') return { table: 'jobber_jobs', column: null, after: null, before: null };
+  const split = windowId.split('|');
+  if (split.length !== 3 || split[0] !== 'jobs' || !split[1]) return null;
+  return { table: 'jobber_jobs', column: 'created_at', after: split[1], before: split[2] || null };
+}
+
+/** Mirror ids a finished sweep did not return. Null `seen` (incomplete walk) and an empty walk delete nothing. */
+export function idsMissingFromSweep(mirrorIds: string[], seenIds: string[] | null, max = MAX_MIRROR_PRUNE): { deleteIds: string[]; skipped: string | null } {
+  if (seenIds == null) return { deleteIds: [], skipped: 'incomplete' };
+  const seen = new Set(seenIds);
+  const missing: string[] = [];
+  const once = new Set<string>();
+  for (const id of mirrorIds) {
+    if (!id || once.has(id)) continue;
+    once.add(id);
+    if (!seen.has(id)) missing.push(id);
+  }
+  if (seenIds.length === 0 && missing.length > 0) return { deleteIds: [], skipped: 'empty-sweep' };
+  if (missing.length > max) return { deleteIds: [], skipped: `too-many:${missing.length}` };
+  return { deleteIds: missing, skipped: null };
+}
+
+/** Jobber's answer for one id. Schema errors and throttling are unknown, never "gone". */
+export function goneVerdict(res: { data?: Record<string, { id?: string } | null>; errors?: Array<{ message?: string }> } | null | undefined, root: string): Gone {
+  if (!res || typeof res !== 'object') return 'unknown';
+  const errors = Array.isArray(res.errors) ? res.errors : [];
+  const msg = errors.map((e) => String(e?.message ?? '')).join(' ');
+  if (/throttl|rate|cost|timeout|429/i.test(msg)) return 'unknown';
+  if (/cannot query field|unknown argument|doesn't exist on type|undefinedField|Field '[^']+' doesn't exist/i.test(msg)) return 'unknown';
+  const node = res.data?.[root];
+  if (node?.id) return 'present';
+  if (errors.length === 0 && res.data && node == null) return 'gone';
+  if (node == null && /not found|does not exist|couldn't find|could not find|no .+ found/i.test(msg)) return 'gone';
+  return 'unknown';
+}
+
+/** Confirm mode deletes only ids Jobber says are gone. Sweep mode deletes the finished-window diff (payments / timesheets). */
+export function confirmedDeletes(missing: string[], verdicts: Gone[] | null, mode: 'confirm' | 'sweep'): string[] {
+  if (mode === 'sweep') return missing;
+  if (!verdicts || verdicts.length !== missing.length) return [];
+  const out: string[] = [];
+  for (let i = 0; i < missing.length; i++) {
+    if (verdicts[i] === 'unknown') break;
+    if (verdicts[i] === 'gone') out.push(missing[i]);
+  }
+  return out;
+}
+
 export const BACKFILL_FIELDS: Field[] = ['jobs', 'invoices', 'quotes', 'paymentRecords', 'timeSheetEntries'];
+
+async function mirrorIdsFor(db: Db, spec: PruneSpec): Promise<string[] | null> {
+  const ids: string[] = [];
+  for (let from = 0; ; from += 1000) {
+    let q = db.from(spec.table).select('id');
+    if (spec.column && spec.after) q = q.gt(spec.column, spec.after);
+    if (spec.column && spec.before) q = q.lt(spec.column, spec.before);
+    const { data, error } = await q.order('id').range(from, from + 999);
+    if (error) return null;
+    const rows = data ?? [];
+    for (const row of rows) if (row?.id) ids.push(String(row.id));
+    if (rows.length < 1000) return ids;
+  }
+}
+
+/** Delete mirror rows a finished sweep proved are gone. Exported for tests. Confirm mode asks Jobber about each id first. */
+export async function pruneMirrorRows(
+  db: Db,
+  spec: PruneSpec,
+  seen: string[] | null,
+  opts: { mode: 'confirm' | 'sweep'; confirm?: (id: string) => Promise<Gone>; max?: number }
+): Promise<{ deleted: string[]; skipped: string | null; missing: number }> {
+  if (opts.mode === 'confirm' && !opts.confirm) return { deleted: [], skipped: 'no-confirm', missing: 0 };
+  const mirror = await mirrorIdsFor(db, spec);
+  if (!mirror) return { deleted: [], skipped: 'mirror-read', missing: 0 };
+  const plan = idsMissingFromSweep(mirror, seen, opts.max ?? MAX_MIRROR_PRUNE);
+  if (plan.skipped || !plan.deleteIds.length) return { deleted: [], skipped: plan.skipped, missing: plan.deleteIds.length };
+  const verdicts: Gone[] = [];
+  if (opts.mode === 'confirm') {
+    for (const id of plan.deleteIds) {
+      const verdict = await opts.confirm!(id);
+      verdicts.push(verdict);
+      if (verdict === 'unknown') break;
+    }
+    while (verdicts.length < plan.deleteIds.length) verdicts.push('unknown');
+  }
+  const doomed = confirmedDeletes(plan.deleteIds, opts.mode === 'confirm' ? verdicts : null, opts.mode);
+  const deleted: string[] = [];
+  for (const id of doomed) {
+    const r = await db.from(spec.table).delete().eq('id', id);
+    if (r?.error) return { deleted, skipped: String(r.error.message ?? 'delete failed'), missing: plan.deleteIds.length };
+    deleted.push(id);
+  }
+  return { deleted, skipped: null, missing: plan.deleteIds.length };
+}
+
+async function confirmGone(field: Field, id: string, left: () => number): Promise<Gone> {
+  const spec = BY_ID[field];
+  if (!spec) return 'unknown';
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (left() < 8_000) return 'unknown';
+    let res: any;
+    try { res = await jobberGraphql(spec.query, { id }); }
+    catch (e) {
+      const msg = e instanceof Error ? e.message : '';
+      if (!/throttl|rate|cost/i.test(msg) || attempt === 2) return 'unknown';
+      await sleep(2000 * (attempt + 1));
+      continue;
+    }
+    const msg = (res?.errors ?? []).map((e: { message?: string }) => e?.message ?? '').join(' ');
+    const verdict = goneVerdict(res, spec.root);
+    if (verdict !== 'unknown' || !/throttl|rate|cost/i.test(msg)) return verdict;
+    await sleep(2000 * (attempt + 1));
+  }
+  return 'unknown';
+}
+
+async function pruneFinished(
+  db: Db,
+  windows: SweepWindows,
+  singles: Array<{ field: Field; filter: Record<string, unknown>; seen: string[] | null }>,
+  left: () => number,
+) {
+  const out: Array<Record<string, unknown>> = [];
+  const run = async (field: Field, spec: PruneSpec | null, seen: string[] | null) => {
+    if (!spec || !seen) return;
+    const mode = BY_ID[field] ? 'confirm' as const : 'sweep' as const;
+    const result = await pruneMirrorRows(db, spec, seen, {
+      mode,
+      confirm: mode === 'confirm' ? (id) => confirmGone(field, id, left) : undefined,
+    });
+    if (result.deleted.length || result.skipped) out.push({ field, table: spec.table, deleted: result.deleted, skipped: result.skipped, missing: result.missing });
+  };
+  for (const [id, parts] of Object.entries(windows)) await run('jobs', jobPruneSpec(id), readyJobIds(parts));
+  for (const single of singles) {
+    if (single.field === 'jobs') continue;
+    await run(single.field, pruneSpec(single.field, single.filter), single.seen);
+  }
+  return out;
+}
 
 export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide?: boolean; now?: Date } = {}) {
   const t0 = Date.now(); const budget = opts.budgetMs ?? 230_000; const now = opts.now ?? new Date();
@@ -190,7 +424,7 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
   if (!claim.data?.length) return { skipped: 'locked' };
   const report: Record<string, unknown> = {};
   try {
-    const { data: states } = await db.from('jobber_sync_state').select('key, cursor, done, last_success_at, last_error');
+    const { data: states } = await db.from('jobber_sync_state').select('key, cursor, done, last_success_at, last_error, meta');
     const st = new Map<string, any>((states ?? []).map((s: any) => [s.key, s]));
     // 1) Backfills (resumable).
     for (const f of BACKFILL_FIELDS) {
@@ -222,65 +456,179 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
     //    pages) never saved progress or freshness, so every run restarted the wide pass, the mirror went stale,
     //    and the dashboards fell back to live Jobber pulls that were throttled (call dashboard stuck loading).
     if (backfilled && left() > 45_000) {
-      const runTasks = async (tasks: Array<{ field: Field; filter: Record<string, unknown> }>, start: { i: number; cursor: string | null }) => {
+      const runTasks = async (tasks: Array<{ field: Field; filter: Record<string, unknown> }>, start: SyncProgress) => {
         let n = 0;
+        let windows: SweepWindows = { ...start.windows };
+        const singles: Array<{ field: Field; filter: Record<string, unknown>; seen: string[] | null }> = [];
+        const stop = (i: number, cursor: string | null, seen: string[] | null) => ({ n, done: false as const, at: { i, cursor, seen, windows }, singles });
         for (let i = start.i; i < tasks.length; i++) {
           const t = tasks[i];
-          let cursor: string | null = i === start.i ? start.cursor : null;
+          const resuming = i === start.i;
+          let cursor: string | null = resuming ? start.cursor : null;
+          // A cursor saved before ids were recorded (or by an older deploy) is not a complete window.
+          const untrusted = resuming && !!cursor && start.seen == null;
+          let seen: string[] = resuming && !untrusted ? [...(start.seen ?? [])] : [];
+          const trusted = !untrusted;
           if (t.field === 'timeSheetEntries' && st.get('backfill:timeSheetEntries')?.last_error === 'permission') continue;
           const optional = (t.filter as { status?: string }).status === 'archived' || 'invoiceStatus' in t.filter;
+          const part = t.field === 'jobs' ? jobWindowId(t.filter) : null;
+          const singleSpec = part ? null : pruneSpec(t.field, t.filter);
+          const track = !!(part || singleSpec);
           try {
             do {
-              if (left() < 15_000) return { n, done: false, at: { i, cursor } };
+              if (left() < 15_000) return stop(i, cursor, trusted ? seen : null);
               const p = await page(t.field, t.filter, cursor);
+              if (trusted && track) for (const node of p.nodes) if (node?.id) seen.push(String(node.id));
               n += await store(db, t.field, p.nodes); cursor = p.next;
             } while (cursor);
           } catch (e) {
             const msg = e instanceof Error ? e.message : 'error';
-            // Throttled: keep the position so the next run resumes here instead of starting over.
-            if (/throttl/i.test(msg)) { report.stopped = msg.slice(0, 180); return { n, done: false, at: { i, cursor } }; }
+            // Throttled: keep the position so the next run resumes here instead of starting over. Do not prune.
+            if (/throttl/i.test(msg)) { report.stopped = msg.slice(0, 180); return stop(i, cursor, trusted ? seen : null); }
             if (!optional) throw e;
             report[`skip:${t.field}`] = msg.slice(0, 180);
+            continue;
           }
+          if (trusted && part) windows = withSweepIds(windows, part.id, part.part, seen);
+          else if (trusted && singleSpec) singles.push({ field: t.field, filter: t.filter, seen });
         }
-        return { n, done: true, at: null as null | { i: number; cursor: string | null } };
+        return { n, done: true as const, at: null, windows, singles };
       };
       // Each pass resumes where the last run stopped. The window anchor is saved with the cursor so a resumed
-      // cursor is always replayed against the exact same filter it came from.
+      // cursor is always replayed against the exact same filter it came from. Seen ids ride along so a sweep
+      // that spans runs can still prune, and only once both halves of a job window have finished.
       const pass = async (kind: 'short' | 'wide') => {
         const key = `rolling:${kind}-progress`;
         const prog = parseProgress(st.get(key)?.cursor);
         const anchor = prog?.anchor ? new Date(prog.anchor) : now;
-        const r = await runTasks(rollingTasks(anchor, kind === 'wide'), prog ?? { i: 0, cursor: null });
-        await setState(db, key, { cursor: r.done ? null : JSON.stringify({ ...r.at, anchor: anchor.toISOString() }), done: r.done });
-        return { rows: r.n, complete: r.done, ...(r.at ? { resumeAt: r.at.i } : {}), ...(prog ? { resumedFrom: prog.i } : {}) };
+        const r = await runTasks(rollingTasks(anchor, kind === 'wide'), prog ?? { i: 0, cursor: null, anchor: null, seen: [], windows: {} });
+        await setState(db, key, {
+          cursor: r.done ? null : JSON.stringify({ i: r.at!.i, cursor: r.at!.cursor, anchor: anchor.toISOString(), seen: r.at!.seen, windows: r.at!.windows }),
+          done: r.done,
+        });
+        return {
+          rows: r.n, complete: r.done, windows: r.done ? r.windows : {}, singles: r.done ? r.singles : [],
+          ...(r.at ? { resumeAt: r.at.i } : {}), ...(prog ? { resumedFrom: prog.i } : {}),
+        };
       };
       const short = await pass('short');
+      // Freshness is the finished short pass alone, saved before prune / wide / full sweeps.
       if (short.complete) await setState(db, 'rolling', { done: true, last_success_at: new Date().toISOString(), last_error: null });
-      report.rolling = { wide: false, ...short };
+      const { windows: shortWindows, singles: shortSingles, ...shortReport } = short;
+      report.rolling = { wide: false, ...shortReport };
+      if (short.complete) {
+        try {
+          const pruned = await pruneFinished(db, shortWindows, shortSingles, left);
+          if (pruned.length) report.pruned = [...((report.pruned as Array<Record<string, unknown>> | undefined) ?? []), ...pruned];
+        } catch (e) { report.pruneError = e instanceof Error ? e.message.slice(0, 180) : 'prune failed'; }
+      }
       const lastWide = Date.parse(st.get('rolling:wide')?.last_success_at || '') || 0;
       const wideDue = opts.forceWide || !!parseProgress(st.get('rolling:wide-progress')?.cursor) || Date.now() - lastWide > 55 * 60_000;
       if (short.complete && wideDue && left() > 45_000) {
         const wide = await pass('wide');
         if (wide.complete) await setState(db, 'rolling:wide', { done: true, last_success_at: new Date().toISOString() });
-        report.wide = wide;
+        const { windows: wideWindows, singles: wideSingles, ...wideReport } = wide;
+        report.wide = wideReport;
+        if (wide.complete) {
+          try {
+            const pruned = await pruneFinished(db, wideWindows, wideSingles, left);
+            if (pruned.length) report.pruned = [...((report.pruned as Array<Record<string, unknown>> | undefined) ?? []), ...pruned];
+          } catch (e) { report.pruneError = e instanceof Error ? e.message.slice(0, 180) : 'prune failed'; }
+        }
       }
     }
     // 3) Daily resumable re-sweep of ALL quotes: old quotes can be approved months after creation (e.g. #2235 created
     //    Feb 2026, approved Oct 5), outside the 200-day rolling window. Cursor is saved so a short budget just resumes.
     // Only after the short pass finished: freshness first (the full quote sweep used to eat the budget a throttled short pass needed).
-    if (backfilled && (report.rolling as { complete?: boolean } | undefined)?.complete && left() > 45_000) {
+    const shortDone = (report.rolling as { complete?: boolean } | undefined)?.complete;
+    if (backfilled && shortDone && left() > 45_000) {
       const fq = st.get('rolling:quotes-full');
       const due = opts.forceWide || !!fq?.cursor || Date.now() - (Date.parse(fq?.last_success_at || '') || 0) > 23 * 3600_000;
       if (due) {
-        let cursor: string | null = fq?.cursor ?? null; let n = 0;
+        let cursor: string | null = fq?.cursor ?? null;
+        let seen: string[] = asStringList(fq?.meta?.seen) ?? [];
+        if (cursor && !asStringList(fq?.meta?.seen)) { cursor = null; seen = []; } // pages already pulled were not recorded; start over rather than prune a fragment
+        if (!cursor) seen = [];
+        const filter = { createdAt: { after: BACKFILL_FROM } };
+        let n = 0;
         while (left() > 30_000) {
-          const p = await page('quotes', { createdAt: { after: BACKFILL_FROM } }, cursor);
+          const p = await page('quotes', filter, cursor);
+          for (const node of p.nodes) if (node?.id) seen.push(String(node.id));
           n += await store(db, 'quotes', p.nodes); cursor = p.next;
-          await setState(db, 'rolling:quotes-full', { cursor, done: !cursor, ...(cursor ? {} : { last_success_at: new Date().toISOString() }) });
+          await setState(db, 'rolling:quotes-full', { cursor, done: !cursor, meta: { seen }, ...(cursor ? {} : { last_success_at: new Date().toISOString() }) });
           if (!cursor) break;
         }
-        report.quotesFull = { rows: n, done: !cursor };
+        let pruned: { deleted: string[]; skipped: string | null; missing: number } | null = null;
+        if (!cursor) {
+          pruned = await pruneMirrorRows(db, pruneSpec('quotes', filter)!, seen, { mode: 'confirm', confirm: (id) => confirmGone('quotes', id, left) });
+          await setState(db, 'rolling:quotes-full', { meta: { seen: [] } });
+        }
+        report.quotesFull = { rows: n, done: !cursor, ...(pruned && (pruned.deleted.length || pruned.skipped) ? { pruned } : {}) };
+      }
+    }
+    // 4) Daily resumable walk of every job (open + archived). The 60-day rolling window will not see a delete
+    //    older than that, and Since Sep 18 / the 90-day dashboard grow past it. Same freshness rule: only after
+    //    the short pass. Prune only when BOTH halves finish; a throttle keeps the cursor and deletes nothing.
+    if (backfilled && shortDone && left() > 45_000) {
+      const key = 'rolling:jobs-reconcile';
+      const row = st.get(key);
+      const meta = row?.meta ?? {};
+      const last = Date.parse(row?.last_success_at || '') || 0;
+      const due = opts.forceWide || !!row?.cursor || meta.phase === 'archived' || Date.now() - last > 23 * 3600_000;
+      if (due) {
+        let phase: 'dated' | 'archived' = meta.phase === 'archived' ? 'archived' : 'dated';
+        let cursor: string | null = row?.cursor ?? null;
+        let seenDated = asStringList(meta.seenDated) ?? [];
+        let seenArchived = asStringList(meta.seenArchived) ?? [];
+        if (cursor && phase === 'dated' && !asStringList(meta.seenDated)) { cursor = null; seenDated = []; }
+        if (cursor && phase === 'archived' && !asStringList(meta.seenArchived)) { cursor = null; seenArchived = []; }
+        if (!cursor && phase === 'dated') seenDated = [];
+        const save = (patch: Record<string, unknown>) => setState(db, key, patch);
+        const pull = async (filter: Record<string, unknown> | null, seen: string[]) => {
+          let n = 0;
+          while (left() > 30_000) {
+            let p;
+            try { p = await page('jobs', filter, cursor); }
+            catch (e) {
+              const msg = e instanceof Error ? e.message : 'error';
+              if (/throttl/i.test(msg)) return { n, done: false, stopped: msg.slice(0, 180) };
+              throw e;
+            }
+            for (const node of p.nodes) if (node?.id) seen.push(String(node.id));
+            n += await store(db, 'jobs', p.nodes);
+            cursor = p.next;
+            await save({ cursor, meta: { phase, seenDated, seenArchived } });
+            if (!cursor) return { n, done: true, stopped: null as string | null };
+          }
+          return { n, done: false, stopped: null as string | null };
+        };
+        let rows = 0;
+        if (phase === 'dated') {
+          const pulled = await pull(null, seenDated);
+          rows += pulled.n;
+          if (!pulled.done) { report.jobsReconcile = { phase, rows, done: false, ...(pulled.stopped ? { stopped: pulled.stopped } : {}) }; }
+          else { phase = 'archived'; cursor = null; await save({ cursor: null, meta: { phase, seenDated, seenArchived } }); }
+        }
+        if (!report.jobsReconcile && left() > 30_000) {
+          try {
+            const pulled = await pull({ status: 'archived' }, seenArchived);
+            rows += pulled.n;
+            if (!pulled.done) report.jobsReconcile = { phase: 'archived', rows, done: false, ...(pulled.stopped ? { stopped: pulled.stopped } : {}) };
+            else {
+              const pruned = await pruneMirrorRows(db, jobPruneSpec('jobs:all')!, [...seenDated, ...seenArchived], { mode: 'confirm', confirm: (id) => confirmGone('jobs', id, left) });
+              await save({ cursor: null, done: true, last_success_at: new Date().toISOString(), last_error: null, meta: { phase: 'dated', seenDated: [], seenArchived: [] } });
+              report.jobsReconcile = { phase: 'done', rows, done: true, ...(pruned.deleted.length || pruned.skipped ? { pruned } : {}) };
+            }
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : 'error';
+            if (/throttl/i.test(msg)) report.jobsReconcile = { phase: 'archived', rows, done: false, stopped: msg.slice(0, 180) };
+            else {
+              // No archived half means the open walk is not the full job list. Do not prune.
+              await save({ cursor: null, done: true, last_success_at: new Date().toISOString(), last_error: msg.slice(0, 180), meta: { phase: 'dated', seenDated: [], seenArchived: [] } });
+              report.jobsReconcile = { phase: 'archived', rows, done: false, skipped: msg.slice(0, 180) };
+            }
+          }
+        } else if (!report.jobsReconcile) report.jobsReconcile = { phase, rows, done: false };
       }
     }
     return report;

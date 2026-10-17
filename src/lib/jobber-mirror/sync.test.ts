@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rowsFor, rollingTasks } from './sync.ts';
+import { confirmedDeletes, goneVerdict, idsMissingFromSweep, jobPruneSpec, jobWindowId, parseProgress, pruneMirrorRows, pruneSpec, readyJobIds, rollingTasks, rowsFor, withSweepIds } from './sync.ts';
 
 test('invoice rows strip nested client to id and collect client + job ids', () => {
   const r = rowsFor('invoices', [{ id: 'I1', invoiceNumber: '5806', invoiceStatus: 'paid', issuedDate: '2026-10-01T00:00:00Z', dueDate: '2026-10-15T00:00:00Z', subject: 'Pump', amounts: { subtotal: 100 }, jobs: { nodes: [{ id: 'J1', title: 'Pump repair' }] }, client: { id: 'C1', name: 'A', createdAt: '2025-02-01T00:00:00Z', phones: [{ number: '+1 (760) 555-1212' }], emails: [{ address: 'Nancy@Example.com' }, { address: 'nancy@example.com' }] } }]);
@@ -26,13 +26,109 @@ test('rolling windows: wide covers 200d quotes', () => {
 });
 
 test('parseProgress reads a saved wide-pass position and rejects junk', async () => {
-  const { parseProgress } = await import('./sync.ts');
   const anchor = new Date(Date.now() - 600_000).toISOString();
-  assert.deepEqual(parseProgress(JSON.stringify({ i: 3, cursor: 'abc', anchor })), { i: 3, cursor: 'abc', anchor });
-  assert.deepEqual(parseProgress(JSON.stringify({ i: 0, cursor: null })), { i: 0, cursor: null, anchor: null });
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 3, cursor: 'abc', anchor })), { i: 3, cursor: 'abc', anchor, seen: null, windows: {} });
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 0, cursor: null })), { i: 0, cursor: null, anchor: null, seen: [], windows: {} });
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 1, cursor: 'abc', anchor, seen: ['J1'], windows: { 'jobs|a|b': { dated: ['J1'] } } })), {
+    i: 1, cursor: 'abc', anchor, seen: ['J1'], windows: { 'jobs|a|b': { dated: ['J1'] } },
+  });
+  // A cursor from before ids were saved is not a finished window.
+  assert.equal(parseProgress(JSON.stringify({ i: 4, cursor: 'abc', anchor }))!.seen, null);
   assert.equal(parseProgress(JSON.stringify({ i: 2, cursor: 'x', anchor: new Date(Date.now() - 2 * 86400_000).toISOString() })), null);
   assert.equal(parseProgress(null), null);
   assert.equal(parseProgress(''), null);
   assert.equal(parseProgress('not json'), null);
   assert.equal(parseProgress(JSON.stringify({ i: -1 })), null);
+});
+
+test('only a full date window is prunable; status slices are not', () => {
+  const window = { after: '2026-10-03T00:00:00.000Z', before: '2026-10-19T00:00:00.000Z' };
+  assert.deepEqual(pruneSpec('invoices', { issuedDate: window }), { table: 'jobber_invoices', column: 'issued_date', after: window.after, before: window.before });
+  assert.deepEqual(pruneSpec('quotes', { createdAt: { after: '2025-01-01T00:00:00Z' } }), { table: 'jobber_quotes', column: 'created_at', after: '2025-01-01T00:00:00Z', before: null });
+  assert.equal(pruneSpec('paymentRecords', { entryDate: window })?.table, 'jobber_payments');
+  assert.equal(pruneSpec('invoices', { invoiceStatus: ['past_due'] }), null);
+  assert.equal(pruneSpec('quotes', { status: 'approved' }), null);
+  assert.equal(pruneSpec('jobs', { createdAt: window }), null);
+  assert.equal(pruneSpec('jobs', { completedAt: window }), null);
+  assert.equal(pruneSpec('jobs', null), null);
+});
+
+test('a deleted job is the diff of both createdAt walks, never of one walk or a partial cursor', () => {
+  const window = { after: '2026-10-03T00:00:00.000Z', before: '2026-10-19T00:00:00.000Z' };
+  const dated = jobWindowId({ createdAt: window });
+  const archived = jobWindowId({ status: 'archived', createdAt: window });
+  assert.equal(dated?.id, archived?.id);
+  assert.equal(dated?.part, 'dated');
+  assert.equal(archived?.part, 'archived');
+  assert.equal(jobWindowId({ completedAt: window }), null);
+  assert.equal(jobWindowId({ status: 'archived' })?.id, 'jobs:all');
+  assert.equal(jobWindowId(null)?.part, 'dated');
+
+  const half = withSweepIds({}, dated!.id, 'dated', ['live', 'also-live']);
+  assert.equal(readyJobIds(half[dated!.id]), null);
+  const both = withSweepIds(half, archived!.id, 'archived', ['archived-live']);
+  const seen = readyJobIds(both[dated!.id]);
+  assert.deepEqual(idsMissingFromSweep(['live', 'also-live', 'archived-live', 'deleted-3570'], seen), { deleteIds: ['deleted-3570'], skipped: null });
+  assert.deepEqual(idsMissingFromSweep(['live', 'deleted-3570'], null), { deleteIds: [], skipped: 'incomplete' });
+  assert.equal(idsMissingFromSweep(['live', 'deleted-3570'], []).skipped, 'empty-sweep');
+  const many = Array.from({ length: 30 }, (_, i) => `J${i}`);
+  assert.equal(idsMissingFromSweep(many, ['J0']).skipped, 'too-many:29');
+  assert.deepEqual(jobPruneSpec(dated!.id), { table: 'jobber_jobs', column: 'created_at', after: window.after, before: window.before });
+  assert.deepEqual(jobPruneSpec('jobs:all'), { table: 'jobber_jobs', column: null, after: null, before: null });
+});
+
+test('id checks delete only a record Jobber says is gone', () => {
+  assert.equal(goneVerdict({ data: { job: null } }, 'job'), 'gone');
+  assert.equal(goneVerdict({ data: { job: null }, errors: [{ message: 'Job not found' }] }, 'job'), 'gone');
+  assert.equal(goneVerdict({ data: { job: { id: 'J1' } } }, 'job'), 'present');
+  assert.equal(goneVerdict({ errors: [{ message: 'Throttled' }] }, 'job'), 'unknown');
+  assert.equal(goneVerdict({ errors: [{ message: 'Cannot query field "paymentRecord" on type "Query"' }] }, 'paymentRecord'), 'unknown');
+  assert.deepEqual(confirmedDeletes(['a', 'b', 'c'], ['gone', 'present', 'gone'], 'confirm'), ['a', 'c']);
+  assert.deepEqual(confirmedDeletes(['a', 'b'], ['gone', 'unknown'], 'confirm'), ['a']);
+  assert.deepEqual(confirmedDeletes(['a', 'b'], null, 'sweep'), ['a', 'b']);
+  assert.deepEqual(confirmedDeletes(['a'], null, 'confirm'), []);
+});
+
+test('prune deletes the id Jobber no longer has and keeps rows a partial or live read still owns', async () => {
+  const rows = [
+    { id: 'border', created_at: '2026-10-03T00:00:00.000Z' },
+    { id: 'live', created_at: '2026-10-08T00:00:00.000Z' },
+    { id: 'deleted-3570', created_at: '2026-10-08T22:38:03.000Z' },
+    { id: 'later', created_at: '2026-10-19T00:00:00.000Z' },
+  ];
+  const deleted: string[] = [];
+  const db = {
+    from() {
+      const filters: Array<[string, string, string]> = [];
+      const api: any = {
+        select() { return api; },
+        gt(col: string, val: string) { filters.push(['gt', col, val]); return api; },
+        lt(col: string, val: string) { filters.push(['lt', col, val]); return api; },
+        order() { return api; },
+        range(from: number, to: number) {
+          const list = rows.filter((row) => filters.every(([op, col, val]) => {
+            const cell = (row as Record<string, string>)[col];
+            return op === 'gt' ? cell > val : cell < val;
+          }));
+          return Promise.resolve({ data: list.slice(from, to + 1).map((row) => ({ id: row.id })), error: null });
+        },
+        delete() {
+          return { eq(_col: string, id: string) { deleted.push(id); return Promise.resolve({ error: null }); } };
+        },
+      };
+      return api;
+    },
+  };
+  const spec = { table: 'jobber_jobs', column: 'created_at', after: '2026-10-03T00:00:00.000Z', before: '2026-10-19T00:00:00.000Z' };
+  const seen = ['live'];
+  const verdict: Record<string, 'gone' | 'present' | 'unknown'> = { 'deleted-3570': 'gone', live: 'present' };
+  const result = await pruneMirrorRows(db, spec, seen, { mode: 'confirm', confirm: async (id) => verdict[id] ?? 'unknown' });
+  assert.deepEqual(result.deleted, ['deleted-3570']);
+  assert.deepEqual(deleted, ['deleted-3570']);
+  assert.equal(rows.some((row) => row.id === 'border'), true);
+
+  const blocked = await pruneMirrorRows(db, spec, null, { mode: 'confirm', confirm: async () => 'gone' });
+  assert.deepEqual(blocked.deleted, []);
+  assert.equal(blocked.skipped, 'incomplete');
+  assert.deepEqual(deleted, ['deleted-3570']);
 });
