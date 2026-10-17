@@ -21,6 +21,9 @@ const clock = (iso: string | null | undefined) =>
 
 type Live = { generatedAt?: string; jobberDataAsOf?: string | null };
 
+/** A dashboard request that has not answered by now is abandoned (server maxDuration is 180 s). */
+const FETCH_TIMEOUT_MS = 60_000;
+
 function useDashboard(range: string, refreshMs: number | null) {
   // One cached payload per period. A response only ever lands in its own period's slot, and the page shows
   // the selected period's payload only, so switching the toggle never shows the other period's numbers.
@@ -29,34 +32,57 @@ function useDashboard(range: string, refreshMs: number | null) {
   const [loading, setLoading] = useState(true);
   const current = useRef(range);
   current.current = range;
-  const inFlight = useRef<Record<string, boolean>>({});
-  const load = useCallback(async () => {
+  // One request per period at a time, but never forever: iOS Safari can leave a fetch pending after the tab is
+  // backgrounded, which used to keep inFlight set so every refresh (and the Refresh button) was skipped and the
+  // page sat on skeletons with "Connecting…". Each request now aborts after FETCH_TIMEOUT_MS, Refresh aborts a
+  // stuck request and starts over, and coming back to the tab reloads.
+  const inFlight = useRef<Record<string, { ctrl: AbortController; at: number } | undefined>>({});
+  const loadWith = useCallback(async (force: boolean) => {
     const r = range;
-    if (inFlight.current[r]) return; // never stack requests (keeps Jobber load flat while a cold load runs)
-    inFlight.current[r] = true;
+    const busy = inFlight.current[r];
+    if (busy && !force && Date.now() - busy.at < FETCH_TIMEOUT_MS) return; // keeps Jobber load flat while a cold load runs
+    busy?.ctrl.abort();
+    const ctrl = new AbortController();
+    const mine = { ctrl, at: Date.now() };
+    inFlight.current[r] = mine;
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
     try {
       const url = new URL(window.location.href);
       const q = url.searchParams.get(QUOTES_GP_KEY_QUERY);
       if (q) { try { localStorage.setItem(KEY_STORAGE, q); } catch {} }
       let key = q; try { key = key || localStorage.getItem(KEY_STORAGE); } catch {}
       const res = await fetch(`/api/ops/call-dashboard?range=${r}`, {
-        headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store',
+        headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store', signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
       const json = await res.json();
       setByRange((m) => ({ ...m, [r]: json }));
       if (current.current === r) setError(null);
-    } catch (e) { if (current.current === r) setError(e instanceof Error ? e.message : 'Failed to load'); }
-    finally { inFlight.current[r] = false; if (current.current === r) setLoading(false); }
+    } catch (e) {
+      if (inFlight.current[r] !== mine) return; // replaced by a newer request (Refresh / tab return)
+      const msg = ctrl.signal.aborted ? 'Taking too long to load. Tap Refresh to try again.' : e instanceof Error ? e.message : 'Failed to load';
+      if (current.current === r) setError(msg);
+    } finally {
+      clearTimeout(timer);
+      if (inFlight.current[r] === mine) { inFlight.current[r] = undefined; if (current.current === r) setLoading(false); }
+    }
   }, [range]);
+  const load = useCallback(() => loadWith(false), [loadWith]);
+  const reload = useCallback(() => loadWith(true), [loadWith]);
   useEffect(() => {
     setLoading(true); setError(null);
     load();
-    if (!refreshMs) return;
-    const t = setInterval(load, refreshMs);
-    return () => clearInterval(t);
+    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pageshow', onVisible);
+    const t = refreshMs ? setInterval(load, refreshMs) : null;
+    return () => {
+      if (t) clearInterval(t);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+    };
   }, [load, refreshMs]);
-  return { data: byRange[range] ?? null, error, loading, reload: load };
+  return { data: byRange[range] ?? null, error, loading, reload };
 }
 
 function useNow(ms = 1000) {

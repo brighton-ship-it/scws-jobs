@@ -24,3 +24,13 @@ test('rolling windows: wide covers 200d quotes', () => {
   assert.ok(rollingTasks(new Date(), false).some((x) => x.field === 'quotes' && (x.filter as any).status === 'approved'));
   assert.ok(rollingTasks(new Date(), false).some((x) => x.field === 'jobs' && (x.filter as any).status === 'archived'));
 });
+
+test('parseProgress reads a saved wide-pass position and rejects junk', async () => {
+  const { parseProgress } = await import('./sync.ts');
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 3, cursor: 'abc' })), { i: 3, cursor: 'abc' });
+  assert.deepEqual(parseProgress(JSON.stringify({ i: 0, cursor: null })), { i: 0, cursor: null });
+  assert.equal(parseProgress(null), null);
+  assert.equal(parseProgress(''), null);
+  assert.equal(parseProgress('not json'), null);
+  assert.equal(parseProgress(JSON.stringify({ i: -1 })), null);
+});
