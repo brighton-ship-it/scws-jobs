@@ -113,11 +113,11 @@ const PRODUCT_EDIT = `
 `;
 
 /** Tool arguments. unitPrice is sent as GraphQL defaultUnitCost. */
-export const PRODUCT_EDIT_FIELDS = ['internalUnitCost', 'unitPrice', 'markup', 'visible'] as const;
+export const PRODUCT_EDIT_FIELDS = ['internalUnitCost', 'unitPrice', 'markup', 'visible', 'description'] as const;
 export type ProductEditField = (typeof PRODUCT_EDIT_FIELDS)[number];
 
 const PRODUCT_EDIT_ARGUMENT_KEYS = new Set<string>(['productId', 'dryRun', ...PRODUCT_EDIT_FIELDS]);
-const GRAPHQL_EDIT_KEYS = new Set(['internalUnitCost', 'defaultUnitCost', 'markup', 'visible']);
+const GRAPHQL_EDIT_KEYS = new Set(['internalUnitCost', 'defaultUnitCost', 'markup', 'visible', 'description']);
 const GET_PRODUCT_ARGUMENT_KEYS = new Set(['ids', 'id', 'productId', 'query', 'first', 'after']);
 
 export type ProductToolDeps = JobberDeps & {
@@ -171,13 +171,14 @@ export type ProductEditInput = {
   unitPrice?: number;
   markup?: number;
   visible?: boolean;
+  description?: string;
   dryRun: boolean;
 };
 
 export type ProductFieldChange = {
   field: ProductEditField;
-  before: number | boolean | null;
-  after: number | boolean | null;
+  before: number | boolean | string | null;
+  after: number | boolean | string | null;
 };
 
 export type ProductUserError = {
@@ -340,7 +341,7 @@ export function parseEditProductArgs(args: Record<string, unknown>): ProductEdit
   const rejected = rejectedKeys(args, PRODUCT_EDIT_ARGUMENT_KEYS);
   if (rejected.length) {
     throw new Error(
-      `edit_product only accepts productId, internalUnitCost, unitPrice, markup, visible, and dryRun. Rejected: ${rejected.join(', ')}.`
+      `edit_product only accepts productId, internalUnitCost, unitPrice, markup, visible, description, and dryRun. Rejected: ${rejected.join(', ')}.`
     );
   }
   if (typeof args.productId !== 'string' || !args.productId.trim()) {
@@ -375,8 +376,14 @@ export function parseEditProductArgs(args: Record<string, unknown>): ProductEdit
     edit.visible = args.visible;
     fields += 1;
   }
+  if ('description' in args) {
+    if (typeof args.description !== 'string') throw new Error('description must be a string');
+    if (args.description.length > 4000) throw new Error('description must be 4000 characters or fewer');
+    edit.description = args.description;
+    fields += 1;
+  }
   if (!fields) {
-    throw new Error('edit_product needs internalUnitCost, unitPrice, markup, or visible.');
+    throw new Error('edit_product needs internalUnitCost, unitPrice, markup, visible, or description.');
   }
   return edit;
 }
@@ -392,12 +399,13 @@ export function buildProductEditInput(
   if (changed.has('unitPrice')) input.defaultUnitCost = edit.unitPrice;
   if (changed.has('markup')) input.markup = edit.markup;
   if (changed.has('visible')) input.visible = edit.visible;
+  if (changed.has('description')) input.description = edit.description;
   for (const key of Object.keys(input)) {
     if (!GRAPHQL_EDIT_KEYS.has(key)) {
       throw new Error(`Refusing to send ${key} to productsAndServicesEdit`);
     }
   }
-  if ('unitPrice' in input || 'name' in input || 'description' in input || 'delete' in input) {
+  if ('unitPrice' in input || 'name' in input || 'delete' in input) {
     throw new Error('Refusing to send a field productsAndServicesEdit does not accept');
   }
   return input;
@@ -458,6 +466,9 @@ function productChanges(before: JobberProductDetail, edit: ProductEditInput): Pr
   if (edit.visible !== undefined && edit.visible !== before.visible) {
     changes.push({ field: 'visible', before: before.visible, after: edit.visible });
   }
+  if (edit.description !== undefined && edit.description !== before.description) {
+    changes.push({ field: 'description', before: before.description, after: edit.description });
+  }
   return changes;
 }
 
@@ -476,6 +487,7 @@ function projectProduct(before: JobberProductDetail, edit: ProductEditInput): Jo
     after.visible = edit.visible;
     after.archived = edit.visible === false;
   }
+  if (edit.description !== undefined) after.description = edit.description;
   return after;
 }
 
