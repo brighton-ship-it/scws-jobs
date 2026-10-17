@@ -1,5 +1,5 @@
 /**
- * Inbound-text forwarding for the ported Google Voice lines (main 440-8520, Ransom 789-5955).
+ * Inbound-text forwarding for every SCWS line except the toll-free (877 keeps the AI receptionist).
  * Every text to those lines is relayed to the office phone (Liz by default). No reply goes back
  * to the customer and nothing is created in Jobber. Pure helpers here; the route does the I/O.
  */
@@ -29,12 +29,30 @@ export function forwardMessagingServiceSid(env: NodeJS.ProcessEnv = process.env)
   return env.SMS_FORWARD_MESSAGING_SERVICE_SID?.trim() || DEFAULT_FORWARD_MESSAGING_SERVICE_SID;
 }
 
-/** Which ported line was texted, or null if this number isn't one we forward. */
+/** Twilio-native tracking lines whose texts are forwarded (label shown in the forward). Toll-free is NOT here. */
+export const TRACKING_SMS_LINES: Record<string, { number: string; source: string; label: string }> = {
+  line_7963: { number: '+17608237963', source: 'line_7963', label: 'Line 823-7963' },
+  seo: { number: '+17604630493', source: 'seo', label: 'SEO line (463-0493)' },
+  gbp_ramona: { number: '+17602791262', source: 'gbp_ramona', label: 'Ramona GBP line (279-1262)' },
+  gbp_anza: { number: '+19516510957', source: 'gbp_anza', label: 'Anza GBP line (651-0957)' },
+  google_ads: { number: '+17603312502', source: 'google_ads', label: 'Google Ads line (331-2502)' },
+  yelp: { number: '+17608914264', source: 'yelp', label: 'Yelp line (891-4264)' },
+  apple_maps: { number: '+17604540365', source: 'apple_maps', label: 'Apple Maps line (454-0365)' },
+  direct: { number: '+17604937719', source: 'direct', label: 'Direct line (493-7719)' },
+};
+
+/** Which SCWS line was texted, or null if this number isn't one we forward (e.g. toll-free). */
 export function forwardLine(to: string | null | undefined): { key: string; number: string; label: string; source: string } | null {
-  const hit = Object.entries(PORTED_LINES).find(([, l]) => l.number === (to ?? '').trim());
-  if (!hit) return null;
-  const [key, l] = hit;
-  return { key, number: l.number, label: `${l.label} line`, source: l.source };
+  const n = (to ?? '').trim();
+  const ported = Object.entries(PORTED_LINES).find(([, l]) => l.number === n);
+  if (ported) {
+    const [key, l] = ported;
+    return { key, number: l.number, label: `${l.label} line`, source: l.source };
+  }
+  const tracked = Object.entries(TRACKING_SMS_LINES).find(([, l]) => l.number === n);
+  if (!tracked) return null;
+  const [key, l] = tracked;
+  return { key, number: l.number, label: l.label, source: l.source };
 }
 
 export function mediaUrls(params: Record<string, string>): string[] {
