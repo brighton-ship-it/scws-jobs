@@ -306,6 +306,61 @@ export function storedAdsCall(
   };
 }
 
+/** Resolution columns a later import must not null out. */
+export interface AdsCallResolution {
+  call_view_resource: string;
+  caller_phone: string | null;
+  voice_call_id: string | null;
+  customer_id: string | null;
+  jobber_client_id: string | null;
+  match_method: StoredAdsCall['match_method'];
+}
+
+function phonesMatch(a: string | null | undefined, b: string | null | undefined): boolean {
+  const left = normalizePhone(a);
+  const right = normalizePhone(b);
+  return Boolean(left && right && left === right);
+}
+
+/**
+ * A re-import that cannot see the Voice log must not wipe a phone, voice id,
+ * customer, Jobber client, or match method already stored. A new voice match
+ * replaces the phone and voice id. Party links from this run win; when this
+ * run matched the same phone but found no party, the stored links stay.
+ */
+export function preserveResolvedAdsCall(
+  incoming: StoredAdsCall,
+  existing: AdsCallResolution | null | undefined
+): StoredAdsCall {
+  if (!existing) return incoming;
+  const existingResolved =
+    Boolean(existing.caller_phone) ||
+    Boolean(existing.voice_call_id) ||
+    Boolean(existing.customer_id) ||
+    Boolean(existing.jobber_client_id) ||
+    Boolean(existing.match_method && existing.match_method !== 'unmatched');
+  if (!incoming.caller_phone) {
+    if (!existingResolved) return incoming;
+    return {
+      ...incoming,
+      caller_phone: existing.caller_phone,
+      voice_call_id: existing.voice_call_id,
+      customer_id: existing.customer_id,
+      jobber_client_id: existing.jobber_client_id,
+      match_method:
+        existing.match_method && existing.match_method !== 'unmatched'
+          ? existing.match_method
+          : existing.match_method ?? incoming.match_method,
+    };
+  }
+  const same = phonesMatch(incoming.caller_phone, existing.caller_phone);
+  return {
+    ...incoming,
+    customer_id: incoming.customer_id ?? (same ? existing.customer_id : null),
+    jobber_client_id: incoming.jobber_client_id ?? (same ? existing.jobber_client_id : null),
+  };
+}
+
 /**
  * UTC ISO instant for a call_view start. Naive strings are account-local
  * wall clocks (America/Los_Angeles). Strings that already carry an offset
@@ -382,11 +437,14 @@ export async function importAdsCalls(input: {
   drafts: AdsCallDraft[];
   voiceCalls: VoiceCall[];
   parties: PhoneParty[];
+  /** Rows already stored. Resolution fields are kept when this run cannot match. */
+  existing?: readonly AdsCallResolution[];
   lookupCustomer?: (phone: string) => Promise<PhoneParty | null>;
   lookupJobber?: (phone: string) => Promise<PhoneParty | null>;
   save: (row: StoredAdsCall) => Promise<void>;
 }): Promise<{ seen: number; matchedVoice: number; matchedCustomer: number; matchedJobber: number }> {
   const result = { seen: 0, matchedVoice: 0, matchedCustomer: 0, matchedJobber: 0 };
+  const prior = new Map((input.existing ?? []).map((row) => [row.call_view_resource, row]));
   const voices = assignAdsVoices(input.drafts, input.voiceCalls);
   for (const draft of input.drafts) {
     result.seen += 1;
@@ -401,7 +459,166 @@ export async function importAdsCalls(input: {
     }
     if (party?.kind === 'customer') result.matchedCustomer += 1;
     if (party?.kind === 'jobber_client') result.matchedJobber += 1;
-    await input.save(storedAdsCall(draft, voice, party));
+    await input.save(preserveResolvedAdsCall(storedAdsCall(draft, voice, party), prior.get(draft.resourceName)));
   }
   return result;
+}
+
+/**
+ * Voice history pulled with each ads-calls import. Wider than call_view's
+ * 30 Pacific days so a call that has aged out of the rolling `now - 30 days`
+ * window can still be re-matched, including rows a previous run nulled.
+ */
+export const ADS_CALL_VOICE_LOOKBACK_DAYS = 60;
+
+/** Start of the Pacific day `days` ago. Inclusive of that whole boundary day. */
+export function voiceActivityStartIso(
+  now: Date = new Date(),
+  days = ADS_CALL_VOICE_LOOKBACK_DAYS,
+  timeZone = ADS_ACCOUNT_TIME_ZONE
+): string {
+  const from = new Intl.DateTimeFormat('en-CA', { timeZone }).format(new Date(now.getTime() - days * 86400_000));
+  const ms = parseAdsDateTime(`${from} 00:00:00`, timeZone);
+  if (!Number.isFinite(ms)) return new Date(now.getTime() - days * 86400_000).toISOString();
+  return new Date(ms).toISOString();
+}
+
+export interface AdsCallPhoneRow {
+  call_view_resource: string;
+  started_at: string | null;
+  duration_seconds: number | null;
+  campaign_name: string | null;
+  caller_phone: string | null;
+  voice_call_id?: string | null;
+}
+
+export interface AdCallPhoneSnapshot {
+  at: string;
+  phone: string | null;
+  campaign: string | null;
+}
+
+export interface AdsCallPhoneRestore {
+  call_view_resource: string;
+  caller_phone: string;
+  voice_call_id: string | null;
+  match_method: 'voice_time' | 'phone_only';
+}
+
+/**
+ * Fill caller_phone on rows that lost it. Voice time/duration wins. A
+ * snapshot of (at, phone, campaign) is only used when Voice has no match.
+ * `usedVoiceIds` are logs already written onto another ad call this run.
+ */
+export function planNullPhoneRestores(
+  rows: readonly AdsCallPhoneRow[],
+  voiceCalls: readonly VoiceCall[],
+  options?: {
+    usedVoiceIds?: ReadonlySet<string>;
+    snapshots?: readonly AdCallPhoneSnapshot[];
+  }
+): AdsCallPhoneRestore[] {
+  const used = options?.usedVoiceIds;
+  const open = rows.filter((row) => row.call_view_resource && row.started_at && !normalizePhone(row.caller_phone));
+  const drafts: AdsCallDraft[] = open.map((row) => ({
+    resourceName: row.call_view_resource,
+    startedAt: row.started_at,
+    durationSeconds: row.duration_seconds,
+    campaignId: null,
+    campaignName: row.campaign_name,
+    adGroupName: null,
+    keyword: null,
+    callerAreaCode: null,
+    callStatus: null,
+    callSource: null,
+  }));
+  const voices = used ? voiceCalls.filter((voice) => !used.has(voice.id)) : voiceCalls;
+  const assigned = assignAdsVoices(drafts, voices as VoiceCall[]);
+  const restores: AdsCallPhoneRestore[] = [];
+  const restored = new Set<string>();
+  for (const row of open) {
+    const voice = assigned.get(row.call_view_resource);
+    const phone = normalizePhone(voice?.callerPhone);
+    if (!voice || !phone) continue;
+    restores.push({
+      call_view_resource: row.call_view_resource,
+      caller_phone: phone,
+      voice_call_id: voice.id,
+      match_method: 'voice_time',
+    });
+    restored.add(row.call_view_resource);
+  }
+
+  const snapshots = options?.snapshots ?? [];
+  if (!snapshots.length) return restores;
+  const byCampaign = new Map<string, AdCallPhoneSnapshot[]>();
+  for (const snap of snapshots) {
+    if (!normalizePhone(snap.phone) || !Number.isFinite(Date.parse(snap.at))) continue;
+    const key = snap.campaign || '';
+    const list = byCampaign.get(key) ?? [];
+    list.push(snap);
+    byCampaign.set(key, list);
+  }
+  const usedSnap = new Set<AdCallPhoneSnapshot>();
+  for (const row of open) {
+    if (restored.has(row.call_view_resource)) continue;
+    const at = Date.parse(row.started_at || '');
+    if (!Number.isFinite(at)) continue;
+    let best: AdCallPhoneSnapshot | null = null;
+    let bestDelta = Infinity;
+    for (const snap of byCampaign.get(row.campaign_name || '') ?? []) {
+      if (usedSnap.has(snap)) continue;
+      const delta = Math.abs(Date.parse(snap.at) - at);
+      if (delta <= 2000 && delta < bestDelta) {
+        best = snap;
+        bestDelta = delta;
+      }
+    }
+    const phone = normalizePhone(best?.phone);
+    if (!best || !phone) continue;
+    usedSnap.add(best);
+    restores.push({
+      call_view_resource: row.call_view_resource,
+      caller_phone: phone,
+      voice_call_id: null,
+      match_method: 'phone_only',
+    });
+  }
+  return restores;
+}
+
+/**
+ * Rows that already have a caller phone but lost voice_call_id. Attach the
+ * Voice log only when it is the same caller. Never changes the phone.
+ */
+export function planVoiceIdFills(
+  rows: readonly AdsCallPhoneRow[],
+  voiceCalls: readonly VoiceCall[],
+  usedVoiceIds?: ReadonlySet<string>
+): Array<{ call_view_resource: string; voice_call_id: string; match_method: 'voice_time' }> {
+  const open = rows.filter(
+    (row) => row.call_view_resource && row.started_at && normalizePhone(row.caller_phone) && !row.voice_call_id
+  );
+  const drafts: AdsCallDraft[] = open.map((row) => ({
+    resourceName: row.call_view_resource,
+    startedAt: row.started_at,
+    durationSeconds: row.duration_seconds,
+    campaignId: null,
+    campaignName: row.campaign_name,
+    adGroupName: null,
+    keyword: null,
+    callerAreaCode: null,
+    callStatus: null,
+    callSource: null,
+  }));
+  const voices = usedVoiceIds ? voiceCalls.filter((voice) => !usedVoiceIds.has(voice.id)) : voiceCalls;
+  const assigned = assignAdsVoices(drafts, voices as VoiceCall[]);
+  const fills: Array<{ call_view_resource: string; voice_call_id: string; match_method: 'voice_time' }> = [];
+  for (const row of open) {
+    const voice = assigned.get(row.call_view_resource);
+    const phone = normalizePhone(voice?.callerPhone);
+    if (!voice || !phone || phone !== normalizePhone(row.caller_phone)) continue;
+    fills.push({ call_view_resource: row.call_view_resource, voice_call_id: voice.id, match_method: 'voice_time' });
+  }
+  return fills;
 }

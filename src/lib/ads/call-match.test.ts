@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  ADS_CALL_VOICE_LOOKBACK_DAYS,
   adsStartedAtIso,
   assignAdsVoices,
   backfillPartyPatch,
@@ -12,11 +13,16 @@ import {
   parseVoiceActivities,
   phoneLookupVariants,
   planAdsCallTimeRepairs,
+  planNullPhoneRestores,
+  planVoiceIdFills,
+  preserveResolvedAdsCall,
   repairAdsStartedAtStoredAsUtc,
   storedAdsCall,
+  voiceActivityStartIso,
   type StoredAdsCall,
 } from './call-match.ts';
-import type { AdsCallDraft } from './google-ads-api.ts';
+import { callViewDateWindow, callViewGaql, type AdsCallDraft } from './google-ads-api.ts';
+import { ADS_CALL_PHONE_BACKFILL_20261014 } from './ads-call-phone-backfill-20261014.ts';
 
 const draft: AdsCallDraft = {
   resourceName: 'customers/1/callViews/9',
@@ -295,5 +301,186 @@ describe('ads caller matching', () => {
     assert.notEqual(calls[0].id, calls[1].id);
     assert.equal(calls[0].id, '2026-10-13T14:28:49.000Z:-5731400795139174326:0');
     assert.equal(calls[1].callerPhone, '+18184148884');
+  });
+});
+
+const resolved = {
+  call_view_resource: draft.resourceName,
+  caller_phone: '6199252869',
+  voice_call_id: '2026-09-17T20:23:41.000Z:q:0',
+  customer_id: 'cust-doug',
+  jobber_client_id: 'jobber-doug',
+  match_method: 'voice_time' as const,
+};
+
+describe('ads call re-import does not drop a resolved phone', () => {
+  it('keeps phone, voice id, customer, Jobber client, and match method when Voice misses', () => {
+    const incoming = storedAdsCall({ ...draft, startedAt: '2026-09-17 13:23:41', durationSeconds: 140, campaignName: 'Leads-Search-1' }, null, null);
+    assert.equal(incoming.caller_phone, null);
+    assert.equal(incoming.match_method, 'unmatched');
+    const kept = preserveResolvedAdsCall(incoming, resolved);
+    assert.equal(kept.caller_phone, '6199252869');
+    assert.equal(kept.voice_call_id, resolved.voice_call_id);
+    assert.equal(kept.customer_id, 'cust-doug');
+    assert.equal(kept.jobber_client_id, 'jobber-doug');
+    assert.equal(kept.match_method, 'voice_time');
+    assert.equal(kept.duration_seconds, 140);
+    assert.equal(kept.campaign_name, 'Leads-Search-1');
+    assert.equal(kept.started_at, '2026-09-17T20:23:41.000Z');
+  });
+
+  it('keeps a resolved row when the Voice log fails for the whole window', async () => {
+    const saved: StoredAdsCall[] = [];
+    const result = await importAdsCalls({
+      drafts: [{ ...draft, startedAt: '2026-09-17 13:23:41', durationSeconds: 137, campaignName: 'Leads-Search-1' }],
+      voiceCalls: [],
+      parties: [],
+      existing: [resolved],
+      lookupCustomer: async () => {
+        throw new Error('lookup should not run without a voice phone');
+      },
+      save: async (row) => {
+        saved.push(row);
+      },
+    });
+    assert.equal(result.matchedVoice, 0);
+    assert.equal(saved[0].caller_phone, '6199252869');
+    assert.equal(saved[0].voice_call_id, resolved.voice_call_id);
+    assert.equal(saved[0].customer_id, 'cust-doug');
+    assert.equal(saved[0].jobber_client_id, 'jobber-doug');
+    assert.equal(saved[0].match_method, 'voice_time');
+    assert.equal(saved[0].campaign_name, 'Leads-Search-1');
+  });
+
+  it('replaces a stored phone with a new voice match and keeps party links for that same phone', async () => {
+    const saved: StoredAdsCall[] = [];
+    await importAdsCalls({
+      drafts: [{ ...draft, startedAt: '2026-09-17 13:23:41', durationSeconds: 137 }],
+      voiceCalls: [
+        {
+          id: 'voice-new',
+          startedAt: '2026-09-17T20:23:41.000Z',
+          durationSeconds: 137,
+          callerPhone: '+1 (619) 925-2869',
+        },
+      ],
+      parties: [],
+      existing: [resolved],
+      save: async (row) => {
+        saved.push(row);
+      },
+    });
+    assert.equal(saved[0].caller_phone, '6199252869');
+    assert.equal(saved[0].voice_call_id, 'voice-new');
+    assert.equal(saved[0].match_method, 'voice_time');
+    assert.equal(saved[0].customer_id, 'cust-doug');
+    assert.equal(saved[0].jobber_client_id, 'jobber-doug');
+  });
+
+  it('drops party links when the new voice match is a different caller', () => {
+    const incoming = storedAdsCall(
+      draft,
+      { id: 'voice-other', startedAt: draft.startedAt!, durationSeconds: 83, callerPhone: '7605551212' },
+      null
+    );
+    const kept = preserveResolvedAdsCall(incoming, resolved);
+    assert.equal(kept.caller_phone, '7605551212');
+    assert.equal(kept.voice_call_id, 'voice-other');
+    assert.equal(kept.customer_id, null);
+    assert.equal(kept.jobber_client_id, null);
+  });
+});
+
+describe('restore phones already nulled by a previous import', () => {
+  const nulled = {
+    call_view_resource: 'customers/1/callViews/doug',
+    started_at: '2026-09-17T20:23:41.000Z',
+    duration_seconds: 137,
+    campaign_name: 'Leads-Search-1',
+    caller_phone: null,
+  };
+
+  it('re-matches Voice outside the 30-day call_view window and does not reuse a voice id', () => {
+    const now = new Date('2026-10-18T12:52:00.000Z');
+    const rolling = now.getTime() - 30 * 86400_000;
+    const aligned = Date.parse(voiceActivityStartIso(now, 30));
+    assert.ok(aligned < rolling);
+    assert.equal(new Date(aligned).toISOString(), '2026-09-18T07:00:00.000Z');
+    assert.equal(callViewDateWindow(now, 30).from, '2026-09-18');
+    assert.match(callViewGaql(now, 30), /BETWEEN '2026-09-18' AND '2026-10-19'/);
+    const wide = Date.parse(voiceActivityStartIso(now, ADS_CALL_VOICE_LOOKBACK_DAYS));
+    assert.ok(wide <= Date.parse('2026-09-14T14:01:14Z'));
+
+    const voice = {
+      id: 'voice-doug',
+      startedAt: '2026-09-17T20:23:41.000Z',
+      durationSeconds: 137,
+      callerPhone: '+16199252869',
+    };
+    const taken = {
+      id: 'voice-taken',
+      startedAt: '2026-09-17T20:23:41.000Z',
+      durationSeconds: 137,
+      callerPhone: '+17605550000',
+    };
+    const restores = planNullPhoneRestores([nulled], [voice, taken], { usedVoiceIds: new Set(['voice-taken']) });
+    assert.deepEqual(restores, [
+      {
+        call_view_resource: nulled.call_view_resource,
+        caller_phone: '6199252869',
+        voice_call_id: 'voice-doug',
+        match_method: 'voice_time',
+      },
+    ]);
+  });
+
+  it('uses the snapshot phone only when Voice has no match', () => {
+    const restores = planNullPhoneRestores([nulled], [], {
+      snapshots: [
+        { at: '2026-09-17T20:23:41+00:00', phone: '7608151349', campaign: 'Leads-Search-1' },
+        { at: '2026-09-17T20:23:41+00:00', phone: '9995550100', campaign: 'Leads-Search-Drilling' },
+      ],
+    });
+    assert.equal(restores.length, 1);
+    assert.equal(restores[0].caller_phone, '7608151349');
+    assert.equal(restores[0].voice_call_id, null);
+    assert.equal(restores[0].match_method, 'phone_only');
+    const skipped = planNullPhoneRestores([{ ...nulled, caller_phone: '7608151349' }], [], {
+      snapshots: [{ at: '2026-09-17T20:23:41+00:00', phone: '6199252869', campaign: 'Leads-Search-1' }],
+    });
+    assert.deepEqual(skipped, []);
+  });
+
+  it('carries the 37 phones cleared between the Oct 14 and Oct 18 dashboards', () => {
+    assert.equal(ADS_CALL_PHONE_BACKFILL_20261014.length, 37);
+    const call = ADS_CALL_PHONE_BACKFILL_20261014.find((row) => row.at.startsWith('2026-09-17T20:23:41'));
+    assert.equal(call?.campaign, 'Leads-Search-1');
+    assert.equal(call?.phone, '7608151349');
+    const restores = planNullPhoneRestores(
+      ADS_CALL_PHONE_BACKFILL_20261014.map((row, index) => ({
+        call_view_resource: `r-${index}`,
+        started_at: row.at,
+        duration_seconds: null,
+        campaign_name: row.campaign,
+        caller_phone: null,
+      })),
+      [],
+      { snapshots: ADS_CALL_PHONE_BACKFILL_20261014 }
+    );
+    assert.equal(restores.length, 37);
+  });
+
+  it('fills a missing voice id only when the log is the same caller', () => {
+    const row = { ...nulled, caller_phone: '7608151349', voice_call_id: null };
+    const same = planVoiceIdFills(
+      [row],
+      [{ id: 'v1', startedAt: '2026-09-17T20:23:41.000Z', durationSeconds: 137, callerPhone: '+1 760-815-1349' }]
+    );
+    assert.deepEqual(same, [{ call_view_resource: row.call_view_resource, voice_call_id: 'v1', match_method: 'voice_time' }]);
+    const other = planVoiceIdFills(
+      [row],
+      [{ id: 'v2', startedAt: '2026-09-17T20:23:41.000Z', durationSeconds: 137, callerPhone: '6199252869' }]
+    );
+    assert.deepEqual(other, []);
   });
 });
