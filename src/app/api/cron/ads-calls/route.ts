@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 import {
+  ADS_CALL_VOICE_LOOKBACK_DAYS,
   ADS_CALLS_TIME_REPAIR_KEY,
   backfillPartyPatch,
   importAdsCalls,
@@ -9,6 +10,10 @@ import {
   customerPhoneOrFilter,
   phoneLookupVariants,
   planAdsCallTimeRepairs,
+  planNullPhoneRestores,
+  planVoiceIdFills,
+  voiceActivityStartIso,
+  type AdsCallResolution,
   type PhoneParty,
 } from '@/lib/ads/call-match';
 import { customerAdsPatch, type CustomerAdsState } from '@/lib/ads/lead-tag';
@@ -22,6 +27,7 @@ import {
   type AdsCallDraft,
 } from '@/lib/ads/google-ads-api';
 import { fetchVoiceActivityPayload, voiceLogConfig } from '@/lib/ads/voice-log';
+import { ADS_CALL_PHONE_BACKFILL_20261014 } from '@/lib/ads/ads-call-phone-backfill-20261014';
 import { findExistingClient, searchClientsByPhone } from '@/lib/jobber/quotes';
 import { normalizePhone } from '@/lib/ads/book-job';
 
@@ -293,8 +299,11 @@ export async function POST(request: NextRequest) {
     const voice = voiceLogConfig();
     if (voice) {
       try {
-        const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-        voiceCalls = parseVoiceActivities(await fetchVoiceActivityPayload(voice, fetch, start));
+        // call_view includes the whole Pacific boundary day. A rolling
+        // now-30d start drops that morning, and the upsert used to write
+        // caller_phone null over a phone resolved on an earlier run.
+        const start = voiceActivityStartIso(new Date(), ADS_CALL_VOICE_LOOKBACK_DAYS);
+        voiceCalls = parseVoiceActivities(await fetchVoiceActivityPayload(voice, fetch, start, 80));
       } catch (error) {
         voiceError = error instanceof Error ? error.message : 'voice log failed';
         console.warn('[ads_calls] Voice log skipped:', voiceError);
@@ -408,11 +417,26 @@ export async function POST(request: NextRequest) {
     }
 
     let hasUtcColumn = await startedAtUtcColumnExists(db);
+    const existingLoad = await loadAdsCallRows(
+      db,
+      'call_view_resource, started_at, duration_seconds, campaign_name, caller_phone, voice_call_id, customer_id, jobber_client_id, match_method'
+    );
+    if (existingLoad.error) {
+      throw new Error(`refusing to upsert ads_calls; could not read existing rows: ${existingLoad.error}`);
+    }
+    const existing = existingLoad.rows as Array<AdsCallResolution & {
+      started_at: string | null;
+      duration_seconds: number | null;
+      campaign_name: string | null;
+    }>;
     const imported = new Set<string>();
+    const savedVoiceIds = new Set<string>();
+    const savedPhones = new Map<string, string | null>();
     const result = await importAdsCalls({
       drafts,
       voiceCalls,
       parties: [],
+      existing,
       lookupCustomer,
       lookupJobber,
       save: async (row) => {
@@ -424,9 +448,69 @@ export async function POST(request: NextRequest) {
         }
         if (error) throw new Error(error.message);
         imported.add(row.call_view_resource);
+        savedPhones.set(row.call_view_resource, row.caller_phone);
+        if (row.voice_call_id) savedVoiceIds.add(row.voice_call_id);
         if (row.customer_id) await tagCustomer(row.customer_id, row.campaign_name, row.keyword);
       },
     });
+
+    let restoredPhones = 0;
+    const restoreErrors: string[] = [];
+    // Snapshot fallback still applies when Voice failed: it only fills rows that are still null.
+    {
+      const candidates = existing.filter((row) => !savedPhones.get(row.call_view_resource));
+      for (const row of existing) {
+        if (row.caller_phone && row.voice_call_id) savedVoiceIds.add(row.voice_call_id);
+      }
+      const restores = planNullPhoneRestores(candidates, voiceError ? [] : voiceCalls, {
+        usedVoiceIds: savedVoiceIds,
+        snapshots: ADS_CALL_PHONE_BACKFILL_20261014,
+      });
+      for (const patch of restores) {
+        const { data, error } = await db
+          .from('ads_calls')
+          .update({
+            caller_phone: patch.caller_phone,
+            voice_call_id: patch.voice_call_id,
+            match_method: patch.match_method,
+            updated_at: new Date().toISOString(),
+          })
+          .eq('call_view_resource', patch.call_view_resource)
+          .is('caller_phone', null)
+          .select('call_view_resource');
+        if (error) restoreErrors.push(`${patch.call_view_resource}: ${error.message}`);
+        else restoredPhones += data?.length ?? 0;
+        if (patch.voice_call_id) savedVoiceIds.add(patch.voice_call_id);
+      }
+      if (!voiceError) {
+        const phoneNow = new Map(existing.map((row) => [row.call_view_resource, row.caller_phone]));
+        for (const [resource, phone] of savedPhones) phoneNow.set(resource, phone);
+        for (const patch of restores) phoneNow.set(patch.call_view_resource, patch.caller_phone);
+        const voiceFills = planVoiceIdFills(
+          existing.map((row) => ({
+            call_view_resource: row.call_view_resource,
+            started_at: row.started_at,
+            duration_seconds: row.duration_seconds,
+            campaign_name: row.campaign_name,
+            caller_phone: phoneNow.get(row.call_view_resource) ?? row.caller_phone,
+            voice_call_id: row.voice_call_id,
+          })),
+          voiceCalls,
+          savedVoiceIds
+        );
+        for (const fill of voiceFills) {
+          const { error } = await db
+            .from('ads_calls')
+            .update({ voice_call_id: fill.voice_call_id, match_method: fill.match_method, updated_at: new Date().toISOString() })
+            .eq('call_view_resource', fill.call_view_resource)
+            .is('voice_call_id', null);
+          if (error) restoreErrors.push(`${fill.call_view_resource}: ${error.message}`);
+        }
+      }
+      if (restoredPhones || restoreErrors.length) {
+        console.log(`[ads_calls] restored ${restoredPhones} caller phones`);
+      }
+    }
 
     const repair = await repairExistingAdsCalls(db, {
       hasUtcColumn,
@@ -442,6 +526,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: true,
       ...result,
+      restoredPhones,
+      restoreErrors: restoreErrors.slice(0, 20),
       voiceError,
       jobberLookups,
       jobberNotes: jobberNotes.slice(0, 30),

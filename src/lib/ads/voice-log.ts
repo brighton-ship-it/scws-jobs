@@ -25,13 +25,15 @@ export function voiceLogConfig(env: NodeJS.ProcessEnv = process.env): VoiceLogCo
 export async function fetchVoiceActivityPayload(
   config: VoiceLogConfig,
   fetchImpl: typeof fetch,
-  startTime: string
+  startTime: string,
+  maxPages = 40
 ): Promise<unknown> {
   const token = await refreshGoogleAccessToken(config, fetchImpl);
   const items: unknown[] = [];
   let pageToken: string | null = null;
   // The report returns newest first, 500 per page (about 4 days). Page through the window.
-  for (let page = 0; page < 40; page += 1) {
+  const pages = Math.max(1, Math.min(maxPages, 120));
+  for (let page = 0; page < pages; page += 1) {
     const url = new URL(REPORTS_URL);
     url.searchParams.set('startTime', startTime);
     url.searchParams.set('maxResults', '500');
