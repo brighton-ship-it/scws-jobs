@@ -362,7 +362,7 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     assert.ok(result.openSlots.length > 0);
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] Anza: Doug open and Cowin booked → Doug only, never Travis', async () => {
+  it('Anza: Doug (deactivated) open and Cowin booked → never offers Doug, never Travis', async () => {
     const friday = computeOpenSlots({
       occupied: [],
       now: THU_530PM,
@@ -389,9 +389,10 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     );
 
     assert.equal(result.lookupStatus, 'ok');
-    assert.deepEqual(result.allowlistedTechIds, ['user-doug', 'user-cowin']);
-    assert.ok(result.openSlots.length > 0);
-    assert.equal(result.openSlots[0].technicianId, 'user-doug');
+    assert.deepEqual(result.allowlistedTechIds.filter((id) => id === 'user-doug' || id === 'user-cowin'), ['user-cowin']);
+    assert.equal(result.assignedTechName, 'Cowin');
+    assert.equal(result.openSlots.some((slot) => slot.technicianId === 'user-doug' || /doug/i.test(slot.technician)), false);
+    assert.equal(result.openSlots.some((slot) => slot.startAt === friday.startAt && slot.technicianId === 'user-cowin'), false);
     assert.equal(
       result.openSlots.some((slot) => slot.technicianId === 'user-travis' || slot.technician === 'Travis C Sego'),
       false
@@ -430,58 +431,6 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     assert.equal(first?.technician, 'Cowin');
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] Anza: both open → Doug first, Cowin still allowlisted, no Travis', async () => {
-    const result = await lookupOpenSlots(
-      { city: 'Anza' },
-      {
-        now: THU_530PM,
-        accessToken: 'test-token',
-        fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS, BRIAN]),
-      }
-    );
-
-    assert.ok(result.openSlots.length > 0);
-    assert.equal(result.openSlots[0].technicianId, 'user-doug');
-    assert.deepEqual(result.allowlistedTechIds, ['user-doug', 'user-cowin']);
-    assert.equal(result.assignedTechName, 'Doug Pollack or Cowin');
-    assert.equal(
-      result.openSlots.some((slot) => slot.technicianId === 'user-travis' || slot.technicianId === 'user-brian'),
-      false
-    );
-  });
-
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] Anza: neither allowed tech has a slot → no bookable times', async () => {
-    const windows = computeOpenSlots({
-      occupied: [],
-      now: THU_530PM,
-      technicianId: 'user-doug',
-      technicianName: 'Doug Pollack',
-      maxSlots: 50,
-    });
-    const occupied = windows.flatMap((slot) => [
-      {
-        startAt: slot.startAt,
-        endAt: slot.endAt,
-        assignedUsers: { nodes: [{ id: 'user-doug', name: { full: 'Doug Pollack' } }] },
-      },
-      {
-        startAt: slot.startAt,
-        endAt: slot.endAt,
-        assignedUsers: { nodes: [{ id: 'user-cowin', name: { full: 'Cowin' } }] },
-      },
-    ]);
-    const result = await lookupOpenSlots(
-      { city: 'Anza' },
-      {
-        now: THU_530PM,
-        accessToken: 'test-token',
-        fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS], occupied),
-      }
-    );
-
-    assert.deepEqual(result.openSlots, []);
-    assert.deepEqual(result.allowlistedTechIds, ['user-doug', 'user-cowin']);
-  });
 
   it('Ramona stays Brian Eads only even when Doug and Cowin are in Jobber', async () => {
     const result = await lookupOpenSlots(
@@ -502,36 +451,6 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     );
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] Borrego Springs: Brian booked Mon–Wed, Anza tech open → earliest slot is the Anza tech, not Thursday', async () => {
-    // THU_530PM → first candidate is Fri Sep 4 8 AM. Block Brian for the next 4 weekdays.
-    const brianWindows = computeOpenSlots({
-      occupied: [],
-      now: THU_530PM,
-      technicianId: 'user-brian',
-      technicianName: 'Brian Eads',
-      maxSlots: 6,
-    });
-    const occupied = brianWindows.map((slot) => ({
-      startAt: slot.startAt,
-      endAt: slot.endAt,
-      assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
-    }));
-    const result = await lookupOpenSlots(
-      { city: 'Borrego Springs' },
-      {
-        now: THU_530PM,
-        accessToken: 'test-token',
-        fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS, BRIAN], occupied),
-      }
-    );
-
-    assert.ok(result.openSlots.length > 0);
-    assert.equal(result.openSlots[0].startAt, brianWindows[0].startAt);
-    assert.equal(result.openSlots[0].technicianId, 'user-doug');
-    assert.deepEqual(result.allowlistedTechIds, ['user-doug', 'user-cowin', 'user-brian']);
-    assert.equal(result.openSlots.some((slot) => slot.technicianId === 'user-travis'), false);
-  });
-
   it('Borrego Springs: Anza techs booked, Brian open → Brian still bookable', async () => {
     const windows = computeOpenSlots({
       occupied: [],
@@ -550,14 +469,6 @@ describe('lookupOpenSlots — Brighton allowlist', () => {
     );
     assert.ok(result.openSlots.length > 0);
     assert.equal(result.openSlots[0].technicianId, 'user-brian');
-  });
-
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] Borrego Springs: all three open → Doug wins the tie', async () => {
-    const result = await lookupOpenSlots(
-      { city: 'Borrego Springs' },
-      { now: THU_530PM, accessToken: 'test-token', fetchFn: mockUsersAndVisits([DOUG, COWIN, TRAVIS, BRIAN]) }
-    );
-    assert.equal(result.openSlots[0].technicianId, 'user-doug');
   });
 
   it('returns no slots when Jobber only has Travis', async () => {

@@ -2,10 +2,10 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   BLOCKED_SERVICE_EMAILS,
+  BLOCKED_USER_IDS,
   SERVICE_TECH_ROSTER,
   TECH_BRIAN_EADS,
   TECH_COWIN,
-  TECH_DOUG_POLLACK,
   allowedTechSpokenName,
   allowedTechsForLocation,
   assignShopTech,
@@ -62,17 +62,14 @@ const DOUG = {
 };
 
 describe('assignShopTerritory / allowed techs', () => {
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] sends Anza / high-desert to Doug Pollack or Cowin (Doug first)', () => {
+  it('sends Anza / high-desert to Cowin only (Doug Pollack deactivated)', () => {
     assert.equal(assignShopTerritory({ city: 'Anza' }), 'anza');
-    assert.deepEqual(
-      allowedTechsForLocation({ city: 'Anza' }).map((tech) => tech.name),
-      [TECH_DOUG_POLLACK, TECH_COWIN]
-    );
-    assert.equal(assignShopTech({ city: 'Anza' }).name, TECH_DOUG_POLLACK);
-    assert.equal(assignShopTech({ city: 'Aguanga' }).name, TECH_DOUG_POLLACK);
-    assert.equal(assignShopTech({ address: '12 Well Rd', zip: '92539' }).name, TECH_DOUG_POLLACK);
-    assert.equal(assignShopTech({ city: 'Hemet' }).name, TECH_DOUG_POLLACK);
-    assert.equal(allowedTechSpokenName({ city: 'Anza' }), 'Doug Pollack or Cowin');
+    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((tech) => tech.name), [TECH_COWIN]);
+    for (const loc of [{ city: 'Anza' }, { city: 'Aguanga' }, { address: '12 Well Rd', zip: '92539' }, { city: 'Hemet' }]) {
+      assert.equal(assignShopTech(loc).name, TECH_COWIN);
+    }
+    assert.equal(allowedTechSpokenName({ city: 'Anza' }), 'Cowin');
+    assert.equal('doug' in SERVICE_TECH_ROSTER, false);
   });
 
   it('sends west/central San Diego to Brian Eads only', () => {
@@ -94,65 +91,37 @@ describe('assignShopTerritory / allowed techs', () => {
 describe('service tech identity — roster emails / Brighton name, not guesses', () => {
   const roster = [TRAVIS, BRIGHTON, HAZE, CHRIS, SCHROEDER, BRIAN, COWIN, DOUG];
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] resolves Brian and Cowin from repo emails and Doug from exact name', () => {
-    const brian = SERVICE_TECH_ROSTER.brian;
-    const cowin = SERVICE_TECH_ROSTER.cowin;
-    const doug = SERVICE_TECH_ROSTER.doug;
-    assert.deepEqual(resolveTechUserId(brian, roster, {}), { id: 'user-brian', name: 'Brian Eads' });
-    assert.deepEqual(resolveTechUserId(cowin, roster, {}), { id: 'user-cowin', name: 'Cowin' });
-    assert.deepEqual(resolveTechUserId(doug, roster, {}), { id: 'user-doug', name: 'Doug Pollack' });
-    assert.equal(userMatchesTech({ id: 'user-doug', name: { full: 'Douglas Pollack' } }, doug), true);
-    assert.equal(userMatchesTech({ id: 'x', name: { full: 'Doug' } }, doug), false);
-    assert.equal(userMatchesTech(TRAVIS, doug), false);
+  it('resolves Brian and Cowin from repo emails; Doug is blocked by name and Jobber id', () => {
+    assert.deepEqual(resolveTechUserId(SERVICE_TECH_ROSTER.brian, roster, {}), { id: 'user-brian', name: 'Brian Eads' });
+    assert.deepEqual(resolveTechUserId(SERVICE_TECH_ROSTER.cowin, roster, {}), { id: 'user-cowin', name: 'Cowin' });
+    assert.equal(isBlockedAssignee(DOUG), true);
+    assert.equal(isBlockedAssignee({ id: 'x', name: { full: 'Douglas Pollack' } }), true);
+    assert.equal(isBlockedAssignee({ id: 'Z2lkOi8vSm9iYmVyL1VzZXIvMjg5NzE4Mg==', name: { full: 'Renamed User' } }), true);
+    assert.ok(BLOCKED_USER_IDS.has('Z2lkOi8vSm9iYmVyL1VzZXIvMjg5NzE4Mg=='));
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] resolves Anza to Doug then Cowin and never Travis', () => {
-    assert.deepEqual(
-      resolveTechsForLocation({ city: 'Anza' }, roster, {}).map((tech) => tech.id),
-      ['user-doug', 'user-cowin']
-    );
-    assert.deepEqual(resolveTechsForLocation({ city: 'Ramona' }, roster, {}).map((tech) => tech.id), [
-      'user-brian',
-    ]);
-    assert.deepEqual(resolveTechsForLocation({ city: 'Anza' }, [COWIN, TRAVIS], {}).map((tech) => tech.id), [
-      'user-cowin',
-    ]);
-    assert.deepEqual(resolveTechsForLocation({ city: 'Anza' }, [TRAVIS], {}), []);
+  it('resolves Anza to Cowin only, never Doug or Travis', () => {
+    assert.deepEqual(resolveTechsForLocation({ city: 'Anza' }, roster, {}).map((tech) => tech.id), ['user-cowin']);
+    assert.deepEqual(resolveTechsForLocation({ city: 'Ramona' }, roster, {}).map((tech) => tech.id), ['user-brian']);
+    assert.deepEqual(resolveTechsForLocation({ city: 'Anza' }, [DOUG, TRAVIS], {}), []);
   });
 
   it('never matches Travis, Brighton, or Brian Schroeder to any service tech', () => {
     const brian = SERVICE_TECH_ROSTER.brian;
     const cowin = SERVICE_TECH_ROSTER.cowin;
-    const doug = SERVICE_TECH_ROSTER.doug;
     for (const blocked of [TRAVIS, BRIGHTON, SCHROEDER]) {
       assert.equal(userMatchesTech(blocked, brian), false);
       assert.equal(userMatchesTech(blocked, cowin), false);
-      assert.equal(userMatchesTech(blocked, doug), false);
       assert.equal(isBlockedAssignee(blocked), true);
     }
     assert.equal(resolveTechUserId(brian, [TRAVIS, SCHROEDER], {}), null);
     assert.equal(resolveTechUserId(cowin, [TRAVIS, HAZE, CHRIS], {}), null);
     assert.equal(userMatchesTech(HAZE, cowin), false);
-    assert.equal(resolveTechUserId(doug, [TRAVIS], {}), null);
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] rejects an env id that points at Travis instead of the roster tech', () => {
-    assert.equal(
-      resolveTechUserId(SERVICE_TECH_ROSTER.cowin, roster, { JOBBER_TECH_COWIN_ID: TRAVIS.id }),
-      null
-    );
-    assert.equal(
-      resolveTechUserId(SERVICE_TECH_ROSTER.doug, roster, { JOBBER_TECH_DOUG_POLLACK_ID: TRAVIS.id }),
-      null
-    );
-    assert.equal(
-      resolveTechUserId(SERVICE_TECH_ROSTER.cowin, roster, { JOBBER_TECH_COWIN_ID: COWIN.id })?.id,
-      'user-cowin'
-    );
-    assert.equal(
-      resolveTechUserId(SERVICE_TECH_ROSTER.doug, roster, { JOBBER_TECH_DOUG_POLLACK_ID: DOUG.id })?.id,
-      'user-doug'
-    );
+  it('rejects an env id that points at Travis instead of the roster tech', () => {
+    assert.equal(resolveTechUserId(SERVICE_TECH_ROSTER.cowin, roster, { JOBBER_TECH_COWIN_ID: TRAVIS.id }), null);
+    assert.equal(resolveTechUserId(SERVICE_TECH_ROSTER.cowin, roster, { JOBBER_TECH_COWIN_ID: COWIN.id })?.id, 'user-cowin');
   });
 
   it('does not treat first-name Brian as Brian Eads', () => {
@@ -170,30 +139,27 @@ describe('service tech identity — roster emails / Brighton name, not guesses',
     assert.equal(isAllowlistedTechId('user-cowin', ['user-doug', 'user-cowin']), true);
     assert.equal(isAllowlistedTechId('user-travis', ['user-doug', 'user-cowin']), false);
     assert.equal(isAllowlistedTechId(null, ['user-brian']), false);
-    assert.equal(formatTechNames(['Doug Pollack', 'Cowin']), 'Doug Pollack or Cowin');
+    assert.equal(formatTechNames(['Cowin', 'Brian Eads']), 'Cowin or Brian Eads');
   });
 });
 
 describe('Anza-side desert towns (Borrego Springs)', () => {
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] assigns Doug, Cowin and Brian so the earliest slot wins across techs', () => {
+  it('assigns Cowin and Brian so the earliest slot wins across both', () => {
     for (const city of ['Borrego Springs', 'Ocotillo Wells', 'Shelter Valley']) {
       assert.equal(assignShopTerritory({ city }), 'desert');
-      assert.deepEqual(
-        allowedTechsForLocation({ city }).map((t) => t.name),
-        [TECH_DOUG_POLLACK, TECH_COWIN, TECH_BRIAN_EADS]
-      );
+      assert.deepEqual(allowedTechsForLocation({ city }).map((t) => t.name), [TECH_COWIN, TECH_BRIAN_EADS]);
     }
     assert.equal(assignShopTerritory({ zip: '92004' }), 'desert');
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] leaves Ramona and Anza territories unchanged', () => {
+  it('leaves Ramona and Anza territories unchanged', () => {
     assert.deepEqual(allowedTechsForLocation({ city: 'Ramona' }).map((t) => t.name), [TECH_BRIAN_EADS]);
-    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), [TECH_DOUG_POLLACK, TECH_COWIN]);
+    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), [TECH_COWIN]);
   });
 
-  it.skip('[obsolete: Doug Pollack let go Oct 2026] resolves all three allowlisted users and never Travis', () => {
+  it('resolves Cowin and Brian for the desert, never Doug or Travis', () => {
     const ids = resolveTechsForLocation({ city: 'Borrego Springs' }, [TRAVIS, BRIAN, COWIN, DOUG]).map((t) => t.id);
-    assert.deepEqual(ids, ['user-doug', 'user-cowin', 'user-brian']);
+    assert.deepEqual(ids, ['user-cowin', 'user-brian']);
   });
 });
 

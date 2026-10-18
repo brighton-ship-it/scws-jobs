@@ -3,13 +3,12 @@
  *
  * Territories (Brighton, authoritative):
  *   Ramona / west / central SD → Brian Eads only
- *   Anza / high-desert         → Doug Pollack or Cowin (whoever has an open slot)
- *   Borrego / Anza-side desert → Doug, Cowin AND Brian (earliest open slot across all three)
+ *   Anza / high-desert         → Cowin
+ *   Borrego / Anza-side desert → Cowin AND Brian (earliest open slot across both)
  *
  * Brian and Cowin are identified from this repo's team roster emails
- * (scripts/seed-team.ts). Doug Pollack is not in that seed file; this repo
- * also has no Jobber user GIDs. His identity is Brighton's exact name,
- * then the Jobber users query id for that person. Never guess Travis.
+ * (scripts/seed-team.ts), then the Jobber users query id. Never guess Travis.
+ * Doug Pollack is deactivated in Jobber (Oct 2026) and is blocked by name and user id.
  *
  * Fallback service techs (Oct 10 2026, Brighton): Chris Glass, Haze Tarbell, Colton
  * Hagler, Sergio Valdovinos Mendez. They are offered only when their Jobber calendar is
@@ -24,11 +23,10 @@ import { getCountyByCity } from '../tax-rates.ts';
 
 export const TECH_COWIN = 'Cowin';
 export const TECH_BRIAN_EADS = 'Brian Eads';
-export const TECH_DOUG_POLLACK = 'Doug Pollack';
 
 export type ShopTerritory = 'ramona' | 'anza' | 'desert';
 
-/** Exact identities — roster emails where this repo has them; Doug by Brighton’s name. */
+/** Exact identities — roster emails. */
 export const SERVICE_TECH_ROSTER = {
   brian: {
     key: 'brian' as const,
@@ -43,13 +41,6 @@ export const SERVICE_TECH_ROSTER = {
     email: 'cowin@scwellservice.com',
     altNames: [] as string[],
     envIdKey: 'JOBBER_TECH_COWIN_ID' as const,
-  },
-  doug: {
-    key: 'doug' as const,
-    name: TECH_DOUG_POLLACK,
-    email: '',
-    altNames: ['Douglas Pollack'],
-    envIdKey: 'JOBBER_TECH_DOUG_POLLACK_ID' as const,
   },
 };
 
@@ -67,6 +58,11 @@ export const BLOCKED_SERVICE_EMAILS = new Set([
   'dylan@scwellservice.com',
   'jeff@scwellservice.com',
   'marshall@scwellservice.com',
+]);
+
+/** Deactivated / former Jobber users, blocked by id even if their name changes. */
+export const BLOCKED_USER_IDS = new Set([
+  'Z2lkOi8vSm9iYmVyL1VzZXIvMjg5NzE4Mg==', // Doug Pollack (deactivated Oct 2026)
 ]);
 
 const BLOCKED_NAME_EXACT = new Set([
@@ -124,7 +120,7 @@ export const FALLBACK_TECH_ROSTER = {
 };
 
 export type ShopTech = {
-  key: 'cowin' | 'brian' | 'doug' | 'chris' | 'haze' | 'colton' | 'sergio';
+  key: 'cowin' | 'brian' | 'chris' | 'haze' | 'colton' | 'sergio';
   name: string;
   email: string;
   altNames: string[];
@@ -183,7 +179,7 @@ const DESERT_ZIPS = new Set([
 
 /**
  * Southwest Riverside County (Oct 12 2026): Murrieta / Temecula area is closer to the
- * Anza shop than to Ramona, so it goes to the Anza pool (Doug / Cowin), not Brian.
+ * Anza shop than to Ramona, so it goes to the Anza pool (Cowin), not Brian.
  * Before this, Murrieta matched no list and silently defaulted to Ramona.
  */
 const RIVERSIDE_WEST_CITIES = [
@@ -347,8 +343,7 @@ export function allowedTechsForLocation(input: {
 }): ShopTech[] {
   const territory = assignShopTerritory(input);
   if (territory === 'desert') {
-    // Anza techs first so ties go to them; Brian is merged in so the earliest slot wins.
-    // Doug Pollack was let go (Oct 2026): never offer or book his slots.
+    // Anza tech first so ties go to Cowin; Brian is merged in so the earliest slot wins.
     return [{ ...SERVICE_TECH_ROSTER.cowin }, { ...SERVICE_TECH_ROSTER.brian }];
   }
   if (territory === 'anza') {
@@ -396,6 +391,7 @@ export function userEmail(user: JobberUser): string {
 }
 
 export function isBlockedAssignee(user: JobberUser): boolean {
+  if (user?.id && BLOCKED_USER_IDS.has(user.id)) return true;
   const email = userEmail(user);
   if (email && BLOCKED_SERVICE_EMAILS.has(email)) return true;
   const name = userDisplayName(user).toLowerCase();
@@ -483,7 +479,7 @@ export function resolveFallbackTechs(
   return resolved;
 }
 
-/** Spoken list: "Brian Eads" or "Doug Pollack or Cowin". */
+/** Spoken list: "Brian Eads" or "Cowin or Brian Eads". */
 export function formatTechNames(names: string[]): string {
   const unique = names.map((name) => name.trim()).filter(Boolean);
   if (unique.length === 0) return '';
