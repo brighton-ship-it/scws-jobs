@@ -79,6 +79,8 @@ export type ScheduleLookupResult = {
   /** Upcoming visit on a job created in the last RECENT_BOOKING_DAYS days (duplicate-booking guard). */
   recentBooking?: ScheduleVisit;
   alreadyBooked?: boolean;
+  /** Already-booked caller only: open slots sooner than their visit (office moves it). */
+  earlierSlots?: OpenSlotSummary[];
 };
 
 export type CheckScheduleInput = {
@@ -375,10 +377,23 @@ export function scheduleLookupError(message?: string): ScheduleLookupResult {
   };
 }
 
+/**
+ * Internal SCWS visits (shop meetings, training, time off) sometimes live on a
+ * real client record (e.g. the owner's own account at the Anza shop). Mike must
+ * never read one back as the caller's appointment, so checkSchedule drops them.
+ */
+const INTERNAL_VISIT_TITLE =
+  /\b(?:shop|staff|team|crew|safety|company|all[- ]hands|weekly|monthly|tech|office)\s+meeting\b|\bmeeting\s*[-:\u2013]\s*(?:anza|ramona|shop)\b|\binternal\b|\btraining\b|\bshop\s+(?:day|clean[- ]?up|work)\b|\btime\s+off\b|\bPTO\b/i;
+
+export function isInternalVisitTitle(title: string | null | undefined): boolean {
+  return INTERNAL_VISIT_TITLE.test(String(title || ''));
+}
+
 function collectVisits(jobs: any[], now: Date): ScheduleVisit[] {
   const visits: ScheduleVisit[] = [];
 
   for (const job of jobs) {
+    if (isInternalVisitTitle(job?.title)) continue;
     for (const visit of job.visits?.nodes || []) {
       if (!visit?.startAt || !isOnOrAfterTodayPt(visit.startAt, now)) continue;
 
@@ -568,6 +583,19 @@ export async function lookupUpcomingVisits(
   return visitsFoundResult(clientName, visits);
 }
 
+/** Open slots that start before the caller's existing visit (earliest first, max 3). */
+export function earlierSlotsThan<T extends { startAt: string }>(slots: T[], visit: { startAt: string }): T[] {
+  const cutoff = Date.parse(visit.startAt);
+  if (Number.isNaN(cutoff)) return [];
+  return slots
+    .filter((slot) => {
+      const t = Date.parse(slot.startAt);
+      return !Number.isNaN(t) && t < cutoff;
+    })
+    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))
+    .slice(0, 3);
+}
+
 function asCheckScheduleInput(phoneOrInput: string | CheckScheduleInput): CheckScheduleInput {
   return typeof phoneOrInput === 'string' ? { phone: phoneOrInput } : phoneOrInput;
 }
@@ -626,6 +654,18 @@ export async function handleCheckSchedule(
 
     const recent = findRecentBooking(result.visits || [], deps.now ?? new Date());
     if (recent && !isDifferentAddress(input.address, recent.address)) {
+      // A no-water caller who is already booked may be offered a sooner slot
+      // (moved by the office via createCallback). Never blocks the guard.
+      let earlier: OpenSlotSummary[] = [];
+      try {
+        const slots = await lookupOpenSlots(
+          { city: input.city, address: input.address, zip: input.zip || input.postalCode },
+          deps
+        );
+        if (slots.lookupStatus !== 'error') earlier = earlierSlotsThan(slots.openSlots, recent);
+      } catch {
+        earlier = [];
+      }
       return {
         result: {
           ...result,
@@ -634,6 +674,7 @@ export async function handleCheckSchedule(
           recentBooking: recent,
           openSlots: [],
           availableSlots: [],
+          earlierSlots: withSlotIds(earlier),
           bookingBlockReason: 'already_booked',
           bookingMessage: alreadyBookedMessage(recent),
         },
