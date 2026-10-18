@@ -29,7 +29,7 @@ RESPONSE GUIDELINES:
 - Be warm but concise (SMS character limits)
 - Use simple language
 - If emergency (no water, flooding): "Our on-call tech will reach out ASAP"
-- Normal hours (Mon-Fri 7am-4pm): "We'll call back within 2-4 hours"
+- Normal hours (every day, 7am-5pm Pacific): "We'll call back within 2-4 hours"
 - After hours: "We'll call first thing tomorrow morning"
 
 SERVICES:
