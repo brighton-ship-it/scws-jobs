@@ -458,7 +458,16 @@ export async function POST(request: NextRequest) {
     const restoreErrors: string[] = [];
     // Snapshot fallback still applies when Voice failed: it only fills rows that are still null.
     {
-      const candidates = existing.filter((row) => !savedPhones.get(row.call_view_resource));
+      // Only the Sep 14–17 calls that this bug nulled. Older rows that were
+      // already unmatched on Oct 14 stay unmatched; a 60-day Voice pull will
+      // otherwise attach phones they never had and move ROAS.
+      const wipedFrom = Date.parse('2026-09-14T00:00:00.000Z');
+      const wipedTo = Date.parse('2026-09-18T00:00:00.000Z');
+      const candidates = existing.filter((row) => {
+        if (savedPhones.get(row.call_view_resource)) return false;
+        const at = Date.parse(row.started_at || '');
+        return Number.isFinite(at) && at >= wipedFrom && at < wipedTo;
+      });
       for (const row of existing) {
         if (row.caller_phone && row.voice_call_id) savedVoiceIds.add(row.voice_call_id);
       }
