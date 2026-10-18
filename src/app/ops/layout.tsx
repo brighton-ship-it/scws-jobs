@@ -22,20 +22,21 @@ export const metadata: Metadata = {
 
 export default function OpsLayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
+    <div className="min-h-screen bg-slate-100 text-slate-900">
       <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-              Southern California Well Service — internal
+        <div className="h-1 bg-emerald-700" />
+        <div className="mx-auto flex max-w-[1440px] flex-wrap items-end justify-between gap-2 px-4 py-3 sm:px-6">
+          <div className="min-w-0">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
+              Southern California Well Service
             </p>
-            <h1 className="text-lg font-bold text-slate-900">Office ops</h1>
+            <h1 className="text-lg font-semibold tracking-tight text-slate-900">Office ops</h1>
           </div>
-          <p className="text-xs text-slate-500">Not customer-facing. Not indexed.</p>
+          <p className="text-xs text-slate-500">Internal · not indexed</p>
         </div>
         <Suspense fallback={null}><OpsNav /></Suspense>
       </header>
-      <main className="mx-auto max-w-7xl px-4 py-6">{children}</main>
+      <main className="mx-auto max-w-[1440px] px-4 py-5 sm:px-6 sm:py-6">{children}</main>
     </div>
   );
 }

@@ -46,19 +46,21 @@ interface TableCellProps {
   children?: ReactNode;
   header?: boolean;
   className?: string;
+  title?: string;
 }
 
-export function TableCell({ children, header = false, className = '' }: TableCellProps) {
+export function TableCell({ children, header = false, className = '', title }: TableCellProps) {
   if (header) {
+    const align = className.includes('text-right') || className.includes('text-center') ? '' : 'text-left';
     return (
-      <th className={`px-5 py-3 text-left text-xs font-semibold uppercase tracking-wider text-gray-500 ${className}`}>
+      <th title={title} className={`px-5 py-3 text-xs font-semibold uppercase tracking-wider text-gray-500 ${align} ${className}`}>
         {children}
       </th>
     );
   }
   
   return (
-    <td className={`px-5 py-4 text-sm text-gray-700 ${className}`}>
+    <td title={title} className={`px-5 py-4 text-sm text-gray-700 ${className}`}>
       {children}
     </td>
   );

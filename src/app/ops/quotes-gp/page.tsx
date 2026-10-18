@@ -94,6 +94,7 @@ export default function QuotesGpPage() {
   const [createdAfter, setCreatedAfter] = useState('');
   const [createdBefore, setCreatedBefore] = useState('');
   const [sort, setSort] = useState<SortKey>('missing_desc');
+  const [loadedAt, setLoadedAt] = useState<string | null>(null);
 
   useEffect(() => {
     setKey(storedKey());
@@ -115,6 +116,7 @@ export default function QuotesGpPage() {
         throw new Error('Unauthorized');
       }
       setAuth('ok');
+      setLoadedAt(new Date().toISOString());
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data.error || 'Failed to load Jobber quotes');
@@ -259,17 +261,22 @@ export default function QuotesGpPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Jobber quote GP</h2>
+          <h2 className="text-2xl font-semibold tracking-tight text-slate-900">Jobber quote GP</h2>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
             Street prices stay street. Target ≥60% GP. Under-60% is flagged here only — not on quote
             titles, messages, or the client Hub. Missing cost is unknown. Read-only; this page does not
             send or edit Jobber quotes.
           </p>
+          <p className="mt-2 inline-flex flex-wrap items-center gap-x-1.5 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-600" data-freshness="live">
+            <span className="font-semibold text-amber-800">Live Jobber</span>
+            <span className="text-slate-400">·</span>
+            <span>{loadedAt ? `as of ${new Date(loadedAt).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })} PT` : loading ? 'loading quotes…' : 'sync time unavailable'}</span>
+          </p>
         </div>
         <button
           type="button"
           onClick={() => void loadAll(key)}
-          className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50"
+          className="inline-flex min-h-11 items-center gap-2 rounded-full border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"
         >
           <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           Reload
@@ -321,7 +328,7 @@ export default function QuotesGpPage() {
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search client or quote #"
-                className="h-10 w-full rounded-lg border border-slate-300 bg-white pl-10 pr-3 text-sm"
+                className="h-11 w-full rounded-lg border border-slate-300 bg-white pl-10 pr-3 text-sm"
               />
             </div>
             <label className="inline-flex items-center gap-2 text-sm text-slate-700">
@@ -335,7 +342,7 @@ export default function QuotesGpPage() {
             <select
               value={sort}
               onChange={(event) => setSort(event.target.value as SortKey)}
-              className="h-10 rounded-lg border border-slate-300 bg-white px-3 text-sm"
+              className="h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm sm:w-auto"
             >
               <option value="missing_desc">Missing margin $ (high)</option>
               <option value="missing_asc">Missing margin $ (low)</option>
@@ -351,7 +358,7 @@ export default function QuotesGpPage() {
                 key={filter.value}
                 type="button"
                 onClick={() => setStatus(filter.value)}
-                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${
+                className={`inline-flex min-h-11 items-center rounded-full px-3 text-sm font-medium ${
                   status === filter.value
                     ? 'bg-emerald-700 text-white'
                     : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
@@ -366,7 +373,7 @@ export default function QuotesGpPage() {
                 type="date"
                 value={createdAfter}
                 onChange={(event) => setCreatedAfter(event.target.value)}
-                className="h-9 rounded-lg border border-slate-300 px-2 text-sm"
+                className="h-11 rounded-lg border border-slate-300 px-2 text-sm"
               />
             </label>
             <label className="flex items-center gap-2 text-sm text-slate-600">
@@ -375,7 +382,7 @@ export default function QuotesGpPage() {
                 type="date"
                 value={createdBefore}
                 onChange={(event) => setCreatedBefore(event.target.value)}
-                className="h-9 rounded-lg border border-slate-300 px-2 text-sm"
+                className="h-11 rounded-lg border border-slate-300 px-2 text-sm"
               />
             </label>
           </div>
@@ -394,21 +401,65 @@ export default function QuotesGpPage() {
         </div>
       )}
 
-      <Table>
+      <div className="space-y-3 md:hidden">
+        {loading && quotes.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">Loading live Jobber quotes…</div>
+        ) : sorted.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">No quotes match these filters.</div>
+        ) : sorted.map((quote) => (
+          <article key={quote.id} className={`rounded-2xl border bg-white p-4 shadow-sm ${quote.flaggedUnder60 ? 'border-red-200 bg-red-50/50' : 'border-slate-200'}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="font-semibold text-slate-900">#{quote.quoteNumber || '—'}</p>
+                <p className="truncate text-sm text-slate-700" title={quote.client}>{quote.client}</p>
+              </div>
+              <QuoteStatusBadge status={quote.status} />
+            </div>
+            <p className="mt-2 truncate text-sm text-slate-600" title={quote.title}>{quote.title}</p>
+            <p className="mt-1 text-xs capitalize text-slate-500">{quote.shop || '—'}{quote.city ? ` · ${quote.city}` : ''}</p>
+            <dl className="mt-3 space-y-1.5 text-sm">
+              {([
+                ['Subtotal', moneyExact(quote.subtotal)],
+                ['Est. cost', quote.estimatedCost == null ? 'unknown' : moneyExact(quote.estimatedCost)],
+                ['GP $', quote.gpDollars == null ? 'unknown' : moneyExact(quote.gpDollars)],
+                ['GP %', gpLabel(quote.gpPercent, quote.costStatus)],
+              ] as const).map(([label, value]) => (
+                <div key={label} className="flex items-baseline justify-between gap-3">
+                  <dt className="text-slate-500">{label}</dt>
+                  <dd className={`text-right font-semibold tabular-nums ${label === 'GP %' ? (quote.gpPercent == null ? 'text-slate-400' : quote.underTarget ? 'text-red-700' : 'text-emerald-700') : 'text-slate-900'}`}>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500">
+              <span>
+                {quote.flaggedUnder60 ? <Badge variant="danger">FLAG</Badge> : quote.costStatus === 'unknown' ? <Badge variant="default">unknown</Badge> : quote.costStatus === 'partial' ? <Badge variant="warning">partial cost</Badge> : <Badge variant="success">ok</Badge>}
+              </span>
+              <span>{dateLabel(quote.createdAt)}{quote.sentAt ? ` · sent ${dateLabel(quote.sentAt)}` : ''}</span>
+            </div>
+            {quote.jobberWebUri ? (
+              <a href={quote.jobberWebUri} target="_blank" rel="noreferrer" className="mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-medium text-emerald-700">
+                Open in Jobber <ExternalLink className="h-3 w-3" />
+              </a>
+            ) : null}
+          </article>
+        ))}
+      </div>
+
+      <Table className="hidden max-h-[70vh] overflow-auto md:block">
         <TableHeader>
           <TableRow>
-            <TableCell header>Quote</TableCell>
-            <TableCell header>Client</TableCell>
-            <TableCell header>Title</TableCell>
-            <TableCell header>Status</TableCell>
-            <TableCell header>Shop / city</TableCell>
-            <TableCell header className="text-right">Subtotal</TableCell>
-            <TableCell header className="text-right">Est. cost</TableCell>
-            <TableCell header className="text-right">GP $</TableCell>
-            <TableCell header className="text-right">GP %</TableCell>
-            <TableCell header>60% flag</TableCell>
-            <TableCell header>Created / sent</TableCell>
-            <TableCell header>Jobber</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Quote</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Client</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Title</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Status</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Shop / city</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50 text-right">Subtotal</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50 text-right">Est. cost</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50 text-right">GP $</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50 text-right">GP %</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">60% flag</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Created / sent</TableCell>
+            <TableCell header className="sticky top-0 z-10 bg-slate-50">Jobber</TableCell>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -420,7 +471,7 @@ export default function QuotesGpPage() {
             sorted.map((quote) => (
               <TableRow key={quote.id} className={quote.flaggedUnder60 ? 'bg-red-50/60' : ''}>
                 <TableCell className="font-medium text-slate-900">#{quote.quoteNumber || '—'}</TableCell>
-                <TableCell>{quote.client}</TableCell>
+                <TableCell className="max-w-[10rem] truncate" title={quote.client}>{quote.client}</TableCell>
                 <TableCell className="max-w-xs truncate" title={quote.title}>
                   {quote.title}
                 </TableCell>
