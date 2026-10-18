@@ -33,14 +33,15 @@ export async function POST(req: NextRequest) {
     } catch (e) { console.error('[phone-calls] log start failed', e instanceof Error ? e.message : e); }
   }
   const base = new URL(publicUrl(req)).origin;
-  // After hours (default outside Mon-Fri 7:00-17:00 PT): skip the ring group, straight to Mike after the notice.
+  // After hours (default outside Mon-Fri 7:00-17:00 PT): skip the ring group, straight to Mike. No Twilio <Say>:
+  // Mike speaks the recording notice himself in his first message, so callers hear Mike first.
   // ?at=<ISO> overrides the clock for signed test requests only (test=1).
   const ai = aiFallbackNumber(q);
   const atParam = q.get('test') === '1' ? q.get('at') : null;
   const at = atParam && Number.isFinite(Date.parse(atParam)) ? new Date(atParam) : new Date();
   if (ai && directToAi(at, ai)) {
     const a = new URLSearchParams(); if (line) a.set('line', line.key); a.set('afterhours', '1');
-    return xml(buildAfterHoursAiTwiml({ aiNumber: ai, baseUrl: base, notice: RECORDING_NOTICE, actionQuery: `?${a.toString()}` }));
+    return xml(buildAfterHoursAiTwiml({ aiNumber: ai, baseUrl: base, actionQuery: `?${a.toString()}` }));
   }
   // Per-number ring override via the (signed) voice URL, e.g. ?ring=+17604408520
   const ring = q.get('ring')?.split(',').map((x) => x.trim()).filter((x) => /^\+\d{10,15}$/.test(x));

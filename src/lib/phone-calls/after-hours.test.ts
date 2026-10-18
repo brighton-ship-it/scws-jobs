@@ -57,9 +57,10 @@ describe('office hours (default Mon-Fri 07:00-17:00 America/Los_Angeles)', () =>
 });
 
 describe('after-hours TwiML', () => {
-  const x = buildAfterHoursAiTwiml({ aiNumber: AI_RECEPTIONIST, baseUrl: 'https://scws-jobs.vercel.app/', notice: 'This call may be recorded.', actionQuery: '?afterhours=1' });
-  it('notice, then dials only Mike, recorded, with status action and no ai=1 (no second handoff)', () => {
-    assert.match(x, /<Say[^>]*>This call may be recorded\.<\/Say><Dial /);
+  const x = buildAfterHoursAiTwiml({ aiNumber: AI_RECEPTIONIST, baseUrl: 'https://scws-jobs.vercel.app/', actionQuery: '?afterhours=1' });
+  it('no Twilio <Say> (Mike speaks first), dials only Mike, recorded, with status action and no ai=1', () => {
+    assert.doesNotMatch(x, /<Say/);
+    assert.match(x, /<Response>\s*<Dial /);
     assert.match(x, /<Number>\+17604915348<\/Number><\/Dial>/);
     assert.doesNotMatch(x, /17602763468/);
     assert.match(x, /record="record-from-answer-dual"/);

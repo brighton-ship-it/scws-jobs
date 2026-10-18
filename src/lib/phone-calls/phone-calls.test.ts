@@ -116,5 +116,6 @@ describe('recording notice', () => {
   it('says the notice before dialing', () => {
     const x = buildInboundTwiml({ shopNumbers: ['+17602763468'], baseUrl: 'https://x.test', notice: 'This call may be recorded for quality and training purposes.' });
     assert.ok(x.indexOf('<Say') > -1 && x.indexOf('<Say') < x.indexOf('<Dial'));
+    assert.match(x, /<Say voice="Polly\.Joanna-Neural">/);
   });
 });
