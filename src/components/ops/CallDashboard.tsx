@@ -112,18 +112,72 @@ const STYLES = `
 @media (prefers-reduced-motion:reduce){.cd-live,.cd-rise,.cd-bar rect,.cd-line,.cd-skel,.cd-skel-dark{animation:none!important}}
 `;
 
-function LiveBadge({ at, refreshMs, error, dark = false }: { at?: string; refreshMs: number; error: string | null; dark?: boolean }) {
+function LiveBadge({ at, refreshMs, error, dark = false, large = false }: { at?: string; refreshMs: number; error: string | null; dark?: boolean; large?: boolean }) {
   const now = useNow(1000);
   const age = at ? Math.max(0, Math.round((now - Date.parse(at)) / 1000)) : null;
   const stale = !!error || (age != null && age * 1000 > refreshMs * 2.5);
   const dot = error ? 'bg-rose-500' : stale ? 'bg-amber-500' : 'bg-emerald-500 cd-live';
   const text = dark ? 'text-slate-300' : 'text-slate-600';
+  const size = large ? 'xl:px-5 xl:py-2 xl:text-xl' : 'min-h-9';
   return (
-    <div className={`inline-flex max-w-full shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 py-1 text-xs xl:px-5 xl:py-2 xl:text-xl font-medium tabular-nums ${dark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'} ${text}`} role="status">
-      <span className={`h-2 w-2 rounded-full ${dot}`} />
+    <div className={`inline-flex max-w-full shrink-0 items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium tabular-nums ${size} ${dark ? 'border-slate-700 bg-slate-900' : 'border-slate-200 bg-white'} ${text}`} role="status">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${dot}`} />
       <span className="font-semibold">{error ? 'Offline' : stale ? 'Delayed' : 'Live'}</span>
-      <span className={`truncate ${dark ? 'text-slate-500' : 'text-slate-400'}`}>{at ? `Updated ${clock(at)} PT${age != null ? ` · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} ago` : ''}` : 'Connecting…'}</span>
+      <span className={`min-w-0 truncate ${dark ? 'text-slate-500' : 'text-slate-400'}`}>{at ? `Updated ${clock(at)} PT${age != null ? ` · ${age < 60 ? `${age}s` : `${Math.floor(age / 60)}m`} ago` : ''}` : 'Connecting…'}</span>
     </div>
+  );
+}
+
+/** Mirror when the API has a Jobber sync time; otherwise the page is on live Jobber. */
+function Freshness({ mirrorAsOf, generatedAt, dark = false }: { mirrorAsOf?: string | null; generatedAt?: string | null; dark?: boolean }) {
+  const mirror = !!mirrorAsOf;
+  const when = mirror ? hm(mirrorAsOf ?? null) : generatedAt ? hm(generatedAt) : null;
+  const tone = mirror ? (dark ? 'text-sky-300' : 'text-sky-800') : (dark ? 'text-amber-300' : 'text-amber-800');
+  const box = dark ? 'border-slate-700 bg-slate-900 text-slate-300' : 'border-slate-200 bg-white text-slate-600';
+  return (
+    <p className={`inline-flex max-w-full flex-wrap items-center gap-x-1.5 rounded-full border px-3 py-1 text-xs ${box}`} data-freshness={mirror ? 'mirror' : 'live'}>
+      <span className={`font-semibold ${tone}`}>{mirror ? 'Jobber mirror' : 'Live Jobber'}</span>
+      <span className={dark ? 'text-slate-500' : 'text-slate-400'}>·</span>
+      <span>{mirror ? `last synced ${when ?? '—'} PT` : generatedAt ? `as of ${when} PT` : 'waiting for a sync time'}</span>
+    </p>
+  );
+}
+
+function SectionHead({ id, title, hint }: { id: string; title: string; hint?: string }) {
+  return (
+    <div id={id} className="scroll-mt-6 border-b border-slate-200/80 pb-2 pt-1">
+      <h2 className="text-lg font-semibold tracking-tight text-slate-900">{title}</h2>
+      {hint ? <p className="mt-0.5 max-w-3xl text-sm text-slate-500">{hint}</p> : null}
+    </div>
+  );
+}
+
+function HeadlineKpis({ data, rangeLabel, moneyLabel }: { data: Dashboard; rangeLabel: string; moneyLabel: string }) {
+  const w = data.weekly?.totals ?? null;
+  const ro = data.roas;
+  const t = data.totals;
+  const quoteClose = w?.quotesSent ? (w.quotesSentApproved ?? 0) / w.quotesSent : null;
+  const items: Array<{ label: string; value: string; sub: string; period: string; hint?: string }> = [
+    { label: 'Revenue invoiced', value: usd(w?.invoiced), sub: w ? `${w.invoiceCount ?? 0} invoices, pre-tax${w.zeroInvoices ? ` · ${w.zeroInvoices} at $0` : ''}` : 'Sales did not load', period: w?.title || rangeLabel },
+    { label: 'Cash collected', value: usd(w?.cash), sub: w ? `${w.cashCount ?? 0} payments, any invoice` : 'Sales did not load', period: rangeLabel },
+    { label: 'Jobs booked / completed', value: w ? `${w.jobsBooked == null ? '—' : w.jobsBooked} / ${w.jobsCompleted == null ? '—' : w.jobsCompleted}` : '—', sub: 'created / finished', period: rangeLabel },
+    { label: 'Quotes approved', value: w ? usd(w.quotesApprovedValue) : '—', sub: w ? `${w.quotesApproved ?? 0} approved this period` : 'Sales did not load', period: rangeLabel },
+    { label: 'Close rate', value: pct(quoteClose), sub: w ? `${w.quotesSentApproved ?? 0} of ${w.quotesSent ?? 0} quotes sent · calls ${pct(w.closingRate)}` : 'Quote close rate', period: rangeLabel, hint: 'Big number is the quote close rate: quotes sent in the range that are approved or converted. The calls figure is call to booking on real leads.' },
+    { label: 'New-customer ROAS', value: ro ? mult(ro.newOnly.multipleInvoiced) : '—', sub: ro ? `${usd(ro.newOnly.invoiced)} invoiced ÷ ${usd(ro.spend)} spend` : 'Jobber invoices did not load', period: moneyLabel, hint: 'Jobber invoices to new customers who called an ad, divided by Google Ads spend.' },
+    { label: 'Ad spend', value: usd(t.spend), sub: `${usd(t.costPerCall, 2)} per ad call · ${usd(t.costPerBooked)} per new booking`, period: moneyLabel },
+    { label: 'Ad calls', value: String(t.calls), sub: `${t.answered} answered · ${t.missedOrShort} missed or short · includes Mike`, period: rangeLabel, hint: 'Google Ads tracked calls plus calls answered by Mike. Staff lines answered on the main, Ransom, and GBP numbers are not in this count.' },
+  ];
+  return (
+    <section aria-label="Headline metrics" className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      {items.map((item) => (
+        <div key={item.label} title={item.hint} className="flex min-h-[128px] min-w-0 flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.12)]">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{item.label}</p>
+          <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400" title={item.period}>{item.period}</p>
+          <p className="mt-1.5 break-words text-[1.65rem] font-semibold leading-none tracking-tight text-slate-900 tabular-nums sm:text-[1.85rem]">{item.value}</p>
+          <p className="mt-2 text-xs leading-snug text-slate-500">{item.sub}</p>
+        </div>
+      ))}
+    </section>
   );
 }
 
@@ -145,12 +199,12 @@ function Delta({ cur, prev, goodWhenUp = true, dark = false }: { cur: number | n
 
 function Card({ title, subtitle, right, children, className = '', delay = 0 }: { title: string; subtitle?: string; right?: React.ReactNode; children: React.ReactNode; className?: string; delay?: number }) {
   return (
-    <section className={`cd-rise min-w-0 rounded-2xl border border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04),0_4px_16px_-8px_rgba(15,23,42,.08)] ${className}`} style={{ animationDelay: `${delay}ms` }}>
-      <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 px-5 pb-1 pt-4">
-        <div><h2 className="text-sm font-semibold text-slate-900">{title}</h2>{subtitle ? <p className="mt-0.5 text-xs text-slate-500">{subtitle}</p> : null}</div>
+    <section className={`cd-rise min-w-0 rounded-2xl border border-slate-200 bg-white shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.1)] ${className}`} style={{ animationDelay: `${delay}ms` }}>
+      <header className="flex flex-wrap items-start justify-between gap-x-3 gap-y-2 border-b border-slate-100 px-4 py-3 sm:px-5">
+        <div className="min-w-0"><h3 className="text-sm font-semibold text-slate-900">{title}</h3>{subtitle ? <p className="mt-0.5 text-xs leading-snug text-slate-500">{subtitle}</p> : null}</div>
         {right}
       </header>
-      <div className="px-5 pb-5 pt-3">{children}</div>
+      <div className="px-4 pb-4 pt-3 sm:px-5 sm:pb-5">{children}</div>
     </section>
   );
 }
@@ -299,24 +353,25 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
   return (
     <>
     <ul className={`min-[769px]:hidden ${dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}`}>
-      {list.length === 0 ? <li className={`px-4 py-6 text-center ${sub}`}>No calls yet</li> : list.map((r, i) => (
-        <li key={i} className={`px-4 py-3 ${r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}`}>
-          <div className="flex items-center justify-between gap-3">
-            <span className={`whitespace-nowrap text-sm tabular-nums ${sub}`}>{feedTime(r.at)} · {fmtDur(r.durationSeconds)}</span>
-            <span className="shrink-0 text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} /></span>
+      {list.length === 0 ? <li className={`px-4 py-8 text-center ${sub}`}>No calls yet</li> : list.map((r, i) => (
+        <li key={i} className={`min-w-0 px-1 py-3 ${r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}`}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className={`text-sm tabular-nums ${sub}`}>{feedTime(r.at)} · {fmtDur(r.durationSeconds)}</span>
+            <span className="text-sm"><OutcomePill o={r.outcome} by={r.answeredBy} dark={dark} /></span>
           </div>
-          <div className={`mt-1 break-words text-base font-semibold ${ink}`}>{r.name || <a href={`tel:${r.phone}`}>{r.phone}</a>}</div>
-          <div className={`break-words text-sm ${sub}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}</div>
-          {r.summary ? <div className={`mt-1 text-sm ${sub}`}>{r.summary}</div> : null}
+          <div className={`mt-1 truncate text-base font-semibold ${ink}`} title={r.name || r.phone}>{r.name || <a className="underline decoration-slate-300 underline-offset-2" href={`tel:${r.phone}`}>{r.phone}</a>}</div>
+          <div className={`truncate text-sm ${sub}`} title={`${r.phone} · ${r.line}`}>{r.name ? <a href={`tel:${r.phone}`}>{r.phone}</a> : null}{r.name ? ' · ' : ''}{r.line}</div>
+          {r.summary ? <div className={`mt-1 break-words text-sm ${sub}`}>{r.summary}</div> : null}
           {r.callback ? <CallbackLine text={r.callback} dark={dark} /> : null}
           {r.mike ? <MikeLine text={r.mike} dark={dark} /> : null}
           {r.outreach ? <OutreachLine text={r.outreach} cold={r.goingCold} dark={dark} /> : null}
         </li>
       ))}
     </ul>
-    <table className={`hidden w-full table-fixed text-left min-[769px]:table ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
+    <div className="hidden max-h-[32rem] overflow-auto min-[769px]:block">
+    <table className={`w-full table-fixed text-left ${dark ? 'text-base xl:text-xl' : 'text-[15px]'}`}>
       <colgroup><col className="w-[19%]" /><col className="w-[28%]" /><col className="w-[14%]" /><col className="w-[26%]" /><col className="w-[13%]" /></colgroup>
-      <thead><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'xl:text-sm' : ''}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
+      <thead className="sticky top-0 z-10"><tr className={`text-xs font-semibold uppercase tracking-wider ${head} ${dark ? 'bg-slate-900 xl:text-sm' : 'bg-white'}`}><th className="px-3 py-2">Time</th><th className="px-3 py-2">Caller</th><th className="px-3 py-2">Line</th><th className="px-3 py-2">Outcome</th><th className="px-3 py-2 text-right">Duration</th></tr></thead>
       <tbody className={dark ? 'divide-y divide-slate-800' : 'divide-y divide-slate-200'}>
         {list.length === 0 ? <tr><td colSpan={5} className={`px-3 py-6 text-center ${sub}`}>No calls yet</td></tr> : list.map((r, i) => (
           <tr key={i} className={r.outcome === 'Missed' ? (dark ? 'bg-rose-950/40' : 'bg-rose-50') : ''}>
@@ -333,6 +388,7 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
         ))}
       </tbody>
     </table>
+    </div>
     </>
   );
 }
@@ -340,38 +396,45 @@ export function CallFeedTable({ rows, dark = false, max }: { rows: FeedRow[]; da
 function DashboardSkeleton() {
   return (
     <div className="space-y-5" aria-busy="true" aria-label="Loading dashboard">
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel h-[148px]" />)}</div>
+      <p className="text-sm text-slate-500">Loading office numbers… the first pull can take a minute.</p>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">{Array.from({ length: 8 }).map((_, i) => <div key={i} className="cd-skel h-[128px]" />)}</div>
       <div className="grid gap-4 lg:grid-cols-2"><div className="cd-skel h-72" /><div className="cd-skel h-72" /></div>
-      <div className="grid gap-4 lg:grid-cols-3"><div className="cd-skel h-64" /><div className="cd-skel h-64" /><div className="cd-skel h-64" /></div>
+      <div className="cd-skel h-64" />
     </div>
   );
 }
 
-const pct = (n: number | null | undefined) => (n == null ? '—' : `${Math.round(n * 100)}%`);
+const pct = (n: number | null | undefined) => {
+  if (n == null || !Number.isFinite(n)) return '—';
+  const v = Math.round(n * 1000) / 10;
+  return Number.isInteger(v) ? `${v}%` : `${v.toFixed(1)}%`;
+};
 
 
 const CAT_LABEL = { pump: 'Pump / service (Search-1)', drilling: 'Drilling' } as const;
 function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['adSplit']>; dark?: boolean }) {
   const ink = dark ? 'text-slate-100' : 'text-slate-900';
   const mut = dark ? 'text-slate-500' : 'text-slate-500';
-  const box = dark ? 'border-slate-800 bg-slate-950/50' : 'border-slate-200 bg-slate-50/60';
+  const box = dark ? 'border-slate-800 bg-slate-950/50' : 'border-slate-200 bg-white';
+  const tone = (category: string) => category === 'drilling' ? 'border-l-amber-500' : 'border-l-sky-500';
+  const labelTone = (category: string) => category === 'drilling' ? (dark ? 'text-amber-300' : 'text-amber-800') : (dark ? 'text-sky-300' : 'text-sky-800');
   return (
     <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-2">
       {([split.since, split.week] as const).map((win) => (
         <div key={win.label} className="min-w-0 space-y-2">
           <p className={`text-[10px] font-semibold uppercase tracking-wider ${mut} ${dark ? 'xl:text-base' : ''}`}>{win.label}</p>
           {win.rows.map((r) => (
-            <div key={r.category} className={`min-w-0 rounded-xl border p-3 ${box}`}>
-              <div className="flex items-baseline justify-between gap-2">
-                <p className={`min-w-0 text-xs font-semibold leading-tight ${ink} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
-                <p className={`shrink-0 text-2xl font-extrabold tabular-nums ${ink} ${dark ? 'xl:text-4xl' : ''}`} title="ROAS (new customers) = new-customer invoiced ÷ spend">{r.multipleNew === undefined ? '—' : mult(r.multipleNew)}<span className="ml-1 text-[10px] font-medium text-slate-400 xl:text-sm">ROAS (new customers)</span>{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
+            <div key={r.category} className={`min-w-0 rounded-xl border border-l-4 p-3 ${tone(r.category)} ${box}`}>
+              <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between sm:gap-2">
+                <p className={`min-w-0 text-xs font-semibold leading-tight ${labelTone(r.category)} ${dark ? 'xl:text-xl' : ''}`}>{CAT_LABEL[r.category]}</p>
+                <p className={`min-w-0 text-2xl font-semibold tabular-nums ${ink} ${dark ? 'xl:text-4xl' : ''}`} title="ROAS (new customers) = new-customer invoiced ÷ spend">{r.multipleNew === undefined ? '—' : mult(r.multipleNew)}<span className="ml-1 text-[10px] font-medium text-slate-400 xl:text-sm">ROAS (new customers)</span>{r.category === 'drilling' ? <span className="ml-1 text-[10px] font-medium text-amber-500 xl:text-sm">early</span> : null}</p>
               </div>
-              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 min-[480px]:grid-cols-4">
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 sm:grid-cols-4">
                 {([['Spend', usd(r.spend)], ['Calls', String(r.calls)], ['New booked', String(r.booked)], ['Invoiced (new)', r.invoicedNew == null ? '—' : usd(r.invoicedNew)]] as const).map(([k, v]) => (
-                  <div key={k} className="min-w-0"><dt className={`text-[11px] uppercase leading-tight tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-bold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
+                  <div key={k} className="min-w-0"><dt className={`text-[11px] uppercase leading-tight tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-semibold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
                 ))}
               </dl>
-              <p className={`mt-2 text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}{r.leads != null ? <span title="new booked ÷ real new leads (one per caller; junk, repeat and existing customers excluded)"> · Call to booking (real leads) {r.leads ? `${pct(Math.min(1, r.booked / r.leads))} (${r.booked}/${r.leads})` : '—'}</span> : null}</p>
+              <p className={`mt-2 break-words text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}{r.leads != null ? <span title="new booked ÷ real new leads (one per caller; junk, repeat and existing customers excluded)"> · Call to booking (real leads) {r.leads ? `${pct(Math.min(1, r.booked / r.leads))} (${r.booked}/${r.leads})` : '—'}</span> : null}</p>
             </div>
           ))}
           {win.otherBooked != null ? <p className={`text-[11px] ${mut} ${dark ? 'xl:text-sm' : ''}`}>{win.otherBooked > 0 ? `+${win.otherBooked} booked via Mike calls · ` : ''}{win.rows.reduce((a, r) => a + r.booked, 0) + win.otherBooked} new booked total</p> : null}
@@ -395,70 +458,86 @@ function WeeklySalesCard({ weekly }: { weekly: NonNullable<Dashboard['weekly']> 
   const w = weekly.totals ?? cw;
   const title = weekly.totals?.title ?? `This week to date: ${cw.label}`;
   const span = w.label;
-  const rows: Array<[string, string, string?, string?]> = [
+  const jobRows: Array<[string, string, string?, string?]> = [
     ['Jobs booked', w.jobsBooked == null ? '—' : String(w.jobsBooked), 'jobs created'],
     ['Jobs completed', w.jobsCompleted == null ? '—' : String(w.jobsCompleted), 'finished'],
-    ['Quotes sent', compactUsd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
-    ['Approved this period', compactUsd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes approved (any send date)`],
-    ['Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`],
+  ];
+  const quoteRows: Array<[string, string, string?, string?]> = [
+    ['Quotes sent', usd(w.quotesSentValue), `${w.quotesSent ?? 0} quotes sent`],
+    ['Approved this period', usd(w.quotesApprovedValue), `${w.quotesApproved ?? 0} quotes approved (any send date)`],
   ];
   const cats = weekly.totals?.byCategory;
   const lwc = weekly.lastWeekByCategory;
   const CATS = [['drilling', 'Drilling'], ['pump', 'Pump & service'], ['service_call', 'Service calls']] as const;
+  const tone = { drilling: { bar: 'border-l-amber-500', label: 'text-amber-800', dot: 'bg-amber-500' }, pump: { bar: 'border-l-sky-500', label: 'text-sky-800', dot: 'bg-sky-500' }, service_call: { bar: 'border-l-violet-500', label: 'text-violet-800', dot: 'bg-violet-500' } } as const;
+  const stat = (label: string, value: string, sub?: string, hint?: string) => (
+    <div key={label} className="min-w-0 rounded-xl border border-slate-100 bg-slate-50 px-3 py-2.5" title={hint}>
+      <p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500">{label}</p>
+      <p className="mt-0.5 break-words text-lg font-semibold tabular-nums text-slate-900">{value}</p>
+      {sub ? <p className="text-[11px] leading-tight text-slate-400">{sub}</p> : null}
+    </div>
+  );
   return (
-    <Card title="Sales" subtitle={`${title} · bars: last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} + this week (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
-      <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-3">
-        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{span} · {w.invoiceCount ?? 0} invoices{w.zeroInvoices ? ` (${w.zeroInvoices} at $0)` : ""}, pre-tax</p></div>
-        <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid on those invoices</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.paid)}</p><p className="text-xs text-slate-500">invoices issued {span}</p></div>
-        <div className="col-span-2 min-w-0 rounded-xl bg-emerald-50 px-4 py-3 sm:col-span-1"><p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">Cash collected</p><p className="whitespace-nowrap text-3xl font-extrabold tabular-nums text-slate-900 sm:text-4xl">{usd(w.cash)}</p><p className="text-xs text-slate-500">payments received {span} · {w.cashCount ?? 0} payments, any invoice</p></div>
+    <Card title="Sales and revenue" subtitle={`${title} · bars: last 8 weeks ${first.label.split('–')[0]}–${prev?.label.split('–')[1] ?? ''} + this week (Mon–Sun, PT)`} right={<Legend items={[[palette.revenue, 'Invoiced'], [palette.paid, 'Paid on invoices / cash']]} />} delay={90}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="min-w-0 rounded-xl bg-indigo-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-indigo-700">Invoiced</p><p className="break-words text-3xl font-semibold tabular-nums text-slate-900">{usd(w.invoiced)}</p><p className="text-xs text-slate-500">{span} · {w.invoiceCount ?? 0} invoices{w.zeroInvoices ? ` (${w.zeroInvoices} at $0)` : ""}, pre-tax</p></div>
+        <div className="min-w-0 rounded-xl bg-teal-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-teal-700">Paid on those invoices</p><p className="break-words text-3xl font-semibold tabular-nums text-slate-900">{usd(w.paid)}</p><p className="text-xs text-slate-500">invoices issued {span}</p></div>
+        <div className="min-w-0 rounded-xl bg-emerald-50 px-4 py-3"><p className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">Cash collected</p><p className="break-words text-3xl font-semibold tabular-nums text-slate-900">{usd(w.cash)}</p><p className="text-xs text-slate-500">payments received {span} · {w.cashCount ?? 0} payments, any invoice</p></div>
       </div>
-      <div className="grid gap-4 lg:grid-cols-5">
-        <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 sm:grid-cols-4 lg:col-span-3">
-          {rows.map(([label, value, sub, hint]) => (
-            <div key={label} className="min-w-0" title={hint}>
-              <p className="text-[10px] font-semibold uppercase leading-tight tracking-wider text-slate-500">{label}</p>
-              <p className="whitespace-nowrap text-lg font-bold tabular-nums text-slate-900">{value}</p>
-              <p className="text-[11px] leading-tight text-slate-400">{sub}</p>
-            </div>
-          ))}
-        </div>
-        {cats ? (
-          <div className="min-w-0 lg:col-span-3">
-            <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">By type · {span}</p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              {CATS.map(([k, label]) => {
-                const c = cats[k];
-                const accent = k === 'drilling' ? 'border-l-amber-400' : k === 'pump' ? 'border-l-sky-500' : 'border-l-violet-500';
-                const svc = k === 'service_call';
-                const lines: Array<[string, string, string?]> = svc ? [
-                  ['Completed', String(c.jobsCompleted ?? 0)],
-                  ['Invoiced', usd(c.invoiced), `${c.invoiceCount} invoices`],
-                  ['Last full week', lwc ? `${lwc[k].jobsBooked} booked` : '—'],
-                ] : [
-                  ['Jobs booked', `${c.jobsBooked}${c.siteVisits ? ` +${c.siteVisits} site walk${c.siteVisits === 1 ? '' : 's'}` : ''}`, 'Jobber jobs created; site walks / site visits counted separately'],
-                  ['Quotes sent', `${c.quotesSent} · ${compactUsd(c.quotesSentValue)}`],
-                  ['Approved this period', `${c.quotesApproved} · ${compactUsd(c.quotesApprovedValue)}`, 'quotes approved in the range by approval date, including quotes sent earlier (e.g. an old drilling quote approved today)'],
-                  ['Last full week', lwc ? usd(lwc[k].invoiced) : '—'],
-                ];
-                return (
-                  <section key={k} className={`min-w-0 rounded-xl border border-slate-100 border-l-4 ${accent} bg-white px-3 py-2.5 shadow-sm`}>
-                    <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-                    <p className="whitespace-nowrap text-2xl font-extrabold tabular-nums text-slate-900">{svc ? c.jobsBooked : usd(c.invoiced)}</p>
-                    <p className="text-[11px] text-slate-400">{svc ? 'service-call jobs booked' : `invoiced · ${c.invoiceCount} invoices`}</p>
-                    <dl className="mt-2 space-y-1 text-xs">
-                      {lines.map(([l, v, h]) => (
-                        <div key={l} className="flex items-baseline justify-between gap-2" title={h}><dt className="text-slate-500">{l}</dt><dd className="whitespace-nowrap font-semibold tabular-nums text-slate-800">{v}</dd></div>
-                      ))}
-                    </dl>
-                  </section>
-                );
-              })}
-            </div>
+      <div className="mt-5 grid gap-6 lg:grid-cols-5">
+        <div className="space-y-5 lg:col-span-3">
+          <div id="operations">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Operations / jobs</h4>
+            <div className="mt-2 grid grid-cols-1 gap-3 min-[420px]:grid-cols-2">{jobRows.map(([label, value, sub, hint]) => stat(label, value, sub, hint))}</div>
           </div>
-        ) : null}
-        <div className="min-w-0 lg:col-span-2"><p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Invoiced (bar) · paid on those invoices (teal)</p><WeeklyBars weeks={weekly.weeks} /><p className="mb-0.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cash collected by payment date</p><WeeklyCashBars weeks={weekly.weeks} /></div>
+          <div id="quotes">
+            <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Quotes</h4>
+            <div className="mt-2 grid grid-cols-1 gap-3 min-[420px]:grid-cols-2">{quoteRows.map(([label, value, sub, hint]) => stat(label, value, sub, hint))}</div>
+          </div>
+          <div>{stat('Last full week', usd(prev?.invoiced), `invoiced ${prev?.label ?? ''}`)}</div>
+        </div>
+        <div className="min-w-0 overflow-hidden lg:col-span-2">
+          <p className="mb-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Invoiced (bar) · paid on those invoices (teal)</p>
+          <WeeklyBars weeks={weekly.weeks} />
+          <p className="mb-0.5 mt-3 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Cash collected by payment date</p>
+          <WeeklyCashBars weeks={weekly.weeks} />
+        </div>
       </div>
-      <p className="mt-3 text-[11px] text-slate-400">Close rates (call to booking, quote close rate) are on <a className="underline" href="#ads">Ads &amp; leads → Ad performance</a>.</p>
+      {cats ? (
+        <div className="mt-5 min-w-0">
+          <p className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">By type · {span}</p>
+          <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+            {CATS.map(([k, label]) => {
+              const c = cats[k];
+              const accent = tone[k];
+              const svc = k === 'service_call';
+              const lines: Array<[string, string, string?]> = svc ? [
+                ['Completed', String(c.jobsCompleted ?? 0)],
+                ['Invoiced', usd(c.invoiced), `${c.invoiceCount} invoices`],
+                ['Last full week', lwc ? `${lwc[k].jobsBooked} booked` : '—'],
+              ] : [
+                ['Jobs booked', `${c.jobsBooked}${c.siteVisits ? ` +${c.siteVisits} site walk${c.siteVisits === 1 ? '' : 's'}` : ''}`, 'Jobber jobs created; site walks / site visits counted separately'],
+                ['Quotes sent', `${c.quotesSent} · ${usd(c.quotesSentValue)}`],
+                ['Approved this period', `${c.quotesApproved} · ${usd(c.quotesApprovedValue)}`, 'quotes approved in the range by approval date, including quotes sent earlier (e.g. an old drilling quote approved today)'],
+                ['Last full week', lwc ? usd(lwc[k].invoiced) : '—'],
+              ];
+              return (
+                <section key={k} className={`min-w-0 rounded-xl border border-slate-100 border-l-4 ${accent.bar} bg-slate-50/60 px-3 py-2.5`}>
+                  <p className={`inline-flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider ${accent.label}`}><span className={`h-1.5 w-1.5 rounded-full ${accent.dot}`} />{label}</p>
+                  <p className="break-words text-2xl font-semibold tabular-nums text-slate-900">{svc ? c.jobsBooked : usd(c.invoiced)}</p>
+                  <p className="text-[11px] text-slate-400">{svc ? 'service-call jobs booked' : `invoiced · ${c.invoiceCount} invoices`}</p>
+                  <dl className="mt-2 space-y-1.5 text-xs">
+                    {lines.map(([l, v, h]) => (
+                      <div key={l} className="flex items-baseline justify-between gap-3" title={h}><dt className="text-slate-500">{l}</dt><dd className="text-right font-semibold tabular-nums text-slate-800">{v}</dd></div>
+                    ))}
+                  </dl>
+                </section>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+      <p className="mt-3 text-[11px] text-slate-400">Close rates (call to booking, quote close rate) are on <a className="underline" href="#ads">Marketing / ads → Ad performance</a>.</p>
       <details className="mt-1 text-[11px] text-slate-400"><summary className="cursor-pointer">Sources &amp; definitions</summary>
         <ul className="mt-1 list-disc space-y-0.5 pl-4">{weekly.sources.map((x) => <li key={x}>{x}</li>)}{weekly.gaps.map((x) => <li key={x} className="text-amber-600">{x}</li>)}</ul>
       </details>
@@ -483,7 +562,7 @@ function Tile({ label, value, sub, tone = 'plain', href, spark, sparkColor, hint
   const body = (
     <>
       <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="mt-1 whitespace-nowrap text-[1.75rem] font-bold leading-tight tracking-tight tabular-nums text-slate-900" data-tile={label}>{value}</p>
+      <p className="mt-1 break-words text-[1.75rem] font-semibold leading-tight tracking-tight tabular-nums text-slate-900" data-tile={label}>{value}</p>
       {sub ? <p className="mt-0.5 text-xs leading-snug text-slate-500">{sub}</p> : null}
       {spark && spark.length > 1 ? <div className="mt-2"><Sparkline values={spark} color={sparkColor ?? palette.booked} height={28} /></div> : null}
     </>
@@ -587,11 +666,13 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
   const all = mergeCalls(feed ?? [], recorded);
   const list = all.filter((c) => matchesFilter(c, filter));
   return (
-    <Card title="Calls · summaries & transcripts" subtitle={`All incoming (Voice main/Ransom, tracking numbers, Mike) · last 60 + every recorded call (latest 25) · click a call for its summary and transcript`}
-      right={<div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5" role="tablist" aria-label="Call filter">{CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${filter === v ? 'bg-slate-900 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{l}</button>)}</div>} delay={60}>
-      {feed == null && !recorded.length ? <p className="py-6 text-center text-sm text-slate-400">Call feed unavailable</p> : null}
+    <Card title="Calls · summaries & transcripts" subtitle="All incoming (Voice main/Ransom, tracking numbers, Mike) · last 60 + every recorded call (latest 25) · tap a call for its summary and transcript" delay={60}>
+      <div className="mb-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Call filter">
+        {CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`inline-flex min-h-11 items-center rounded-full px-3 text-sm font-medium ${filter === v ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{l}</button>)}
+      </div>
+      {feed == null && !recorded.length ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">Call feed unavailable</div> : null}
       <ul className={`${SCROLL} -mx-1 divide-y divide-slate-100`} data-scroll="calls">
-        {list.length === 0 && (feed != null || recorded.length) ? <li className="px-1 py-6 text-center text-sm text-slate-500">No calls match</li> : null}
+        {list.length === 0 && (feed != null || recorded.length) ? <li className="px-1 py-8 text-center text-sm text-slate-500">No calls match</li> : null}
         {list.map((c, i) => {
           const f = c.feed, r = c.rec;
           const id = r?.call_sid ?? `${c.at}-${i}`;
@@ -605,30 +686,34 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
           const outcome = stuck && outcome0 === 'Answered' ? 'Status unknown' : outcome0;
           const expandable = !!(r && (sm?.box.length || r.transcript));
           const isOpen = open === id;
+          const who = name || phone;
           return (
-            <li key={id} className={`px-1 py-2.5 ${outcome === 'Missed' ? 'bg-rose-50/60' : ''}`}>
-              <button type="button" disabled={!expandable} onClick={() => setOpen(isOpen ? null : id)} className={`flex w-full items-start justify-between gap-3 text-left ${expandable ? 'cursor-pointer' : 'cursor-default'}`} aria-expanded={expandable ? isOpen : undefined}>
-                <span className="min-w-0">
+            <li key={id} className={`px-1 py-3 ${outcome === 'Missed' ? 'bg-rose-50/70' : ''}`}>
+              <button type="button" disabled={!expandable} onClick={() => setOpen(isOpen ? null : id)} className={`flex w-full min-w-0 flex-col gap-2 text-left ${expandable ? 'cursor-pointer' : 'cursor-default'}`} aria-expanded={expandable ? isOpen : undefined}>
+                <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                   <span className="text-sm tabular-nums text-slate-500">{feedTime(c.at)} · {fmtDur(f?.durationSeconds ?? r?.duration_seconds ?? null)}</span>
-                  <span className="block break-words font-semibold text-slate-900">{name || phone}<span className="ml-2 text-sm font-normal text-slate-600">{name ? `${phone} · ` : ''}{line}</span></span>
-                  {summary ? <span className="mt-0.5 block text-sm text-slate-700">{summary}</span> : null}
+                  <span className="flex max-w-full flex-wrap items-center gap-1 text-xs">
+                    <OutcomePill o={outcome} by={f?.answeredBy} />
+                    {r?.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
+                    {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
+                    {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
+                  </span>
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold text-slate-900" title={who}>{who}</span>
+                  <span className="block truncate text-sm text-slate-600" title={`${phone}${line ? ` · ${line}` : ''}`}>{name ? `${phone} · ` : ''}{line}</span>
+                  {summary ? <span className="mt-1 block break-words text-sm leading-snug text-slate-700">{summary}</span> : null}
                   {f?.callback ? <CallbackLine text={f.callback} dark={false} /> : null}
                   {f?.mike ? <MikeLine text={f.mike} dark={false} /> : null}
                   {f?.outreach ? <OutreachLine text={f.outreach} cold={f.goingCold} dark={false} /> : null}
-                  {expandable ? <span className="mt-1 block text-xs font-medium text-sky-700">{isOpen ? '▾ Hide summary & transcript' : '▸ Summary & transcript'}</span> : null}
-                </span>
-                <span className="flex shrink-0 flex-col items-end gap-1 text-xs">
-                  <OutcomePill o={outcome} by={f?.answeredBy} />
-                  {r?.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
-                  {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
-                  {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
+                  {expandable ? <span className="mt-1.5 inline-flex min-h-11 items-center text-sm font-medium text-sky-800">{isOpen ? 'Hide summary & transcript' : 'Summary & transcript'}</span> : null}
                 </span>
               </button>
               {isOpen && r ? (
                 <div>
                   {sm?.box.length ? (
                     <dl className="mt-3 grid grid-cols-1 gap-x-6 gap-y-1 rounded-lg border border-sky-200 bg-sky-50 p-4 text-[15px] sm:grid-cols-[auto_1fr]">
-                      {sm.box.map(([k, v]) => <div key={k} className="contents"><dt className="font-semibold text-sky-900">{k}</dt><dd className="text-slate-800">{v}</dd></div>)}
+                      {sm.box.map(([k, v]) => <div key={k} className="contents"><dt className="font-semibold text-sky-900">{k}</dt><dd className="break-words text-slate-800">{v}</dd></div>)}
                     </dl>
                   ) : null}
                   {r.transcript ? <Transcript text={r.transcript} /> : null}
@@ -679,13 +764,13 @@ function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; 
   const stat = (label: string, value: string, sub?: React.ReactNode, hint?: string) => (
     <div className="min-w-0 rounded-xl border border-slate-200/80 bg-slate-50/60 p-3" title={hint}>
       <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</p>
-      <p className="whitespace-nowrap text-2xl font-extrabold tabular-nums text-slate-900">{value}</p>
+      <p className="break-words text-2xl font-semibold tabular-nums text-slate-900">{value}</p>
       {sub ? <div className="mt-0.5 text-xs text-slate-500">{sub}</div> : null}
     </div>
   );
   return (
     <Card title="Ad performance" subtitle={`The one place for return on ad spend and close rates · calls ${rangeLabel} · money ${moneyLabel}`} delay={40}>
-      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {stat('ROAS (new customers)', ro ? mult(ro.newOnly.multipleInvoiced) : '—', ro ? <>{usd(ro.newOnly.invoiced)} invoiced ÷ {usd(ro.spend)} spend · Blended (all callers) <b className="text-slate-700">{mult(ro.overall.multipleInvoiced)}</b></> : 'Jobber invoices did not load', 'Jobber invoices to new customers who called an ad ÷ Google Ads spend')}
         {stat('Ad spend', usd(t.spend), <><Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} /> <span className="block">{usd(t.costPerCall, 2)}/ad call · {usd(t.costPerBooked)}/new booking</span></>)}
         {stat('Ad + Mike calls', String(t.calls), <><Delta cur={t.calls} prev={prev?.calls} /> <span className="block">{t.answered} answered · {t.missedOrShort} missed/short</span></>, 'Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3).')}
@@ -694,12 +779,12 @@ function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; 
       <div className="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
         <div className="rounded-xl border border-slate-200/80 p-3">
           <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-500">Close rates by type · {w?.label ?? rangeLabel}</p>
-          <table className="w-full text-left text-sm">
+          <table className="w-full text-left text-xs sm:text-sm">
             <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-1 font-semibold">Type</th><th className="py-1 text-right font-semibold" title="new bookings ÷ real new leads of that type">Call to booking</th><th className="py-1 text-right font-semibold" title="Cohort: quotes sent in the range that are approved/converted as of now">Quote close rate</th></tr></thead>
             <tbody className="divide-y divide-slate-100 tabular-nums">
-              <tr><td className="py-1.5 font-medium">All</td><td className="py-1.5 text-right">{pct(w?.closingRate)}</td><td className="py-1.5 text-right">{quoteRate(w?.quotesSent, w?.quotesSentApproved)}</td></tr>
-              <tr><td className="py-1.5 font-medium">Pump &amp; service</td><td className="py-1.5 text-right">{cab?.pump ? `${pct(cab.pump.closingRate)} (${cab.pump.booked}/${cab.pump.calls})` : '—'}</td><td className="py-1.5 text-right">{quoteRate(cats?.pump?.quotesSent, cats?.pump?.quotesSentApproved)}</td></tr>
-              <tr><td className="py-1.5 font-medium">Drilling</td><td className="py-1.5 text-right">{cab?.drilling ? `${pct(cab.drilling.closingRate)} (${cab.drilling.booked}/${cab.drilling.calls})` : '—'}</td><td className="py-1.5 text-right">{quoteRate(cats?.drilling?.quotesSent, cats?.drilling?.quotesSentApproved)}</td></tr>
+              <tr><td className="py-2 font-medium">All</td><td className="py-2 text-right">{pct(w?.closingRate)}</td><td className="py-2 text-right">{quoteRate(w?.quotesSent, w?.quotesSentApproved)}</td></tr>
+              <tr><td className="py-2 font-medium text-sky-800">Pump &amp; service</td><td className="py-2 text-right">{cab?.pump ? `${pct(cab.pump.closingRate)} (${cab.pump.booked}/${cab.pump.calls})` : '—'}</td><td className="py-2 text-right">{quoteRate(cats?.pump?.quotesSent, cats?.pump?.quotesSentApproved)}</td></tr>
+              <tr><td className="py-2 font-medium text-amber-800">Drilling</td><td className="py-2 text-right">{cab?.drilling ? `${pct(cab.drilling.closingRate)} (${cab.drilling.booked}/${cab.drilling.calls})` : '—'}</td><td className="py-2 text-right">{quoteRate(cats?.drilling?.quotesSent, cats?.drilling?.quotesSentApproved)}</td></tr>
             </tbody>
           </table>
         </div>
@@ -739,26 +824,50 @@ function LeadsBySourceTable({ data, rangeLabel, moneyLabel }: { data: Dashboard;
   for (const c of data.sourceCards ?? []) {
     rows.push({ key: c.key, label: c.label, numbers: c.numbers.length ? c.numbers.join(' · ') : 'No tracking number yet', calls: c.calls, callers: c.callers, forms: String(c.forms.total), formsSplit: c.forms.total ? split(c.forms) : undefined, booked: c.booked.total, bookedSplit: c.booked.total ? split(c.booked) : undefined, spend: null, note: c.note });
   }
+  const cells = (r: R) => [
+    ['Calls', <>{r.calls}{r.callers != null && r.calls ? <span className="block text-[11px] font-normal text-slate-400">{r.callers} caller{r.callers === 1 ? '' : 's'}</span> : null}{r.detail ? <span className="block text-[11px] font-normal text-slate-400">{r.detail}</span> : null}</>],
+    ['Forms', <>{r.forms}{r.formsSplit ? <span className="block text-[11px] font-normal text-slate-400">{r.formsSplit}</span> : null}</>],
+    ['Booked', r.booked == null ? '—' : r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-400">0</span>],
+    ['Spend', r.spend == null ? '—' : usd(r.spend)],
+    ['$ / booking', r.spend != null && r.booked ? usd(r.spend / r.booked) : '—'],
+  ] as const;
   return (
     <Card title="Leads by source" subtitle={`Every lead source in one table · calls ${rangeLabel} · Google Ads spend ${moneyLabel}`} delay={80}>
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[640px] text-left text-sm">
-          <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-2 pr-3 font-semibold">Source</th><th className="py-2 pr-3 text-right font-semibold">Calls</th><th className="py-2 pr-3 text-right font-semibold">Forms</th><th className="py-2 pr-3 text-right font-semibold">Booked</th><th className="py-2 pr-3 text-right font-semibold">Spend</th><th className="py-2 text-right font-semibold">$ / booking</th></tr></thead>
-          <tbody className="divide-y divide-slate-100 tabular-nums">
-            {rows.length === 0 ? <tr><td colSpan={6} className="py-6 text-center text-slate-400">No source data</td></tr> : rows.map((r) => (
-              <tr key={r.key} className="align-top">
-                <td className="py-2 pr-3"><div className="font-medium text-slate-900">{r.label}</div><div className="text-[11px] text-slate-500">{r.numbers}</div>{r.note ? <div className="mt-0.5 text-[10px] leading-snug text-slate-400">{r.note}</div> : null}</td>
-                <td className="py-2 pr-3 text-right">{r.calls}{r.callers != null && r.calls ? <span className="block text-[11px] text-slate-400">{r.callers} caller{r.callers === 1 ? '' : 's'}</span> : null}{r.detail ? <span className="block whitespace-nowrap text-[11px] text-slate-400">{r.detail}</span> : null}</td>
-                <td className="py-2 pr-3 text-right">{r.forms}{r.formsSplit ? <span className="block whitespace-nowrap text-[11px] text-slate-400">{r.formsSplit}</span> : null}</td>
-                <td className="py-2 pr-3 text-right">{r.booked == null ? '—' : r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-400">0</span>}{r.bookedSplit ? <span className="block whitespace-nowrap text-[11px] text-slate-400">{r.bookedSplit}</span> : null}</td>
-                <td className="py-2 pr-3 text-right">{r.spend == null ? '—' : usd(r.spend)}</td>
-                <td className="py-2 text-right">{r.spend != null && r.booked ? usd(r.spend / r.booked) : '—'}</td>
-              </tr>
+      {rows.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No source data</div> : (
+        <>
+          <ul className="space-y-3 md:hidden">
+            {rows.map((r) => (
+              <li key={r.key} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                <p className="truncate font-semibold text-slate-900" title={r.label}>{r.label}</p>
+                <p className="truncate text-[11px] text-slate-500" title={r.numbers}>{r.numbers}</p>
+                {r.note ? <p className="mt-0.5 text-[11px] leading-snug text-slate-400">{r.note}</p> : null}
+                {r.bookedSplit ? <p className="mt-1 text-[11px] text-slate-400">Booked {r.bookedSplit}</p> : null}
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-2 text-sm tabular-nums">
+                  {cells(r).map(([k, v]) => <div key={k} className="flex items-baseline justify-between gap-2"><dt className="text-[11px] uppercase tracking-wider text-slate-500">{k}</dt><dd className="text-right font-semibold text-slate-900">{v}</dd></div>)}
+                </dl>
+              </li>
             ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="mt-2 text-[10px] text-slate-400">Google Ads rows: calls to Google forwarding numbers, booked = new customers (same as Ad performance). Other rows: calls to that source&apos;s tracking number, forms = website requests whose first visit came from that source, booked = a Jobber job created within 30 days of that caller&apos;s or form&apos;s first contact (site walks excluded); drilling vs pump from the job title, forms by the service picked.</p>
+          </ul>
+          <div className="hidden max-h-[32rem] overflow-auto md:block">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-0 z-10 bg-white"><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="bg-white py-2 pr-3 font-semibold">Source</th><th className="bg-white py-2 pr-3 text-right font-semibold">Calls</th><th className="bg-white py-2 pr-3 text-right font-semibold">Forms</th><th className="bg-white py-2 pr-3 text-right font-semibold">Booked</th><th className="bg-white py-2 pr-3 text-right font-semibold">Spend</th><th className="bg-white py-2 text-right font-semibold">$ / booking</th></tr></thead>
+              <tbody className="divide-y divide-slate-100 tabular-nums">
+                {rows.map((r) => (
+                  <tr key={r.key} className="align-top">
+                    <td className="max-w-[16rem] py-2.5 pr-3"><div className="truncate font-medium text-slate-900" title={r.label}>{r.label}</div><div className="truncate text-[11px] text-slate-500" title={r.numbers}>{r.numbers}</div>{r.note ? <div className="mt-0.5 text-[11px] leading-snug text-slate-400">{r.note}</div> : null}</td>
+                    <td className="py-2.5 pr-3 text-right">{r.calls}{r.callers != null && r.calls ? <span className="block text-[11px] text-slate-400">{r.callers} caller{r.callers === 1 ? '' : 's'}</span> : null}{r.detail ? <span className="block text-[11px] text-slate-400">{r.detail}</span> : null}</td>
+                    <td className="py-2.5 pr-3 text-right">{r.forms}{r.formsSplit ? <span className="block text-[11px] text-slate-400">{r.formsSplit}</span> : null}</td>
+                    <td className="py-2.5 pr-3 text-right">{r.booked == null ? '—' : r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-400">0</span>}{r.bookedSplit ? <span className="block text-[11px] text-slate-400">{r.bookedSplit}</span> : null}</td>
+                    <td className="py-2.5 pr-3 text-right">{r.spend == null ? '—' : usd(r.spend)}</td>
+                    <td className="py-2.5 text-right">{r.spend != null && r.booked ? usd(r.spend / r.booked) : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+      <p className="mt-2 text-[11px] leading-snug text-slate-400">Google Ads rows: calls to Google forwarding numbers, booked = new customers (same as Ad performance). Other rows: calls to that source&apos;s tracking number, forms = website requests whose first visit came from that source, booked = a Jobber job created within 30 days of that caller&apos;s or form&apos;s first contact (site walks excluded); drilling vs pump from the job title, forms by the service picked.</p>
     </Card>
   );
 }
@@ -766,25 +875,43 @@ function LeadsBySourceTable({ data, rangeLabel, moneyLabel }: { data: Dashboard;
 const TRACKING_LABEL: Record<string, string> = { AD: 'Google Ads · ad call extension', LANDING_PAGE: 'Google Ads · website (landing page) number', 'Unknown (AI-handled)': 'Mike (AI), line unknown' };
 function GroupTable({ title, subtitle, rows, label }: { title: string; subtitle: string; rows: GroupRow[]; label?: (k: string) => string }) {
   const maxCalls = Math.max(...rows.map((r) => r.calls), 1);
+  const nameOf = (r: GroupRow) => label ? label(r.key) : r.key;
   return (
     <Card title={title} subtitle={subtitle} delay={90}>
-      <div className="overflow-x-auto">
-        <table className="w-full text-left text-sm">
-          <thead><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="py-2 pr-3 font-semibold">Name</th><th className="py-2 pr-3 text-right font-semibold">Calls</th><th className="py-2 pr-3 text-right font-semibold">Answered</th><th className="py-2 pr-3 text-right font-semibold">Short</th><th className="py-2 text-right font-semibold">New booked</th></tr></thead>
-          <tbody className="divide-y divide-slate-100 tabular-nums">
-            {rows.length === 0 ? <tr><td colSpan={5} className="py-6 text-center text-slate-400">No calls in this range</td></tr> : rows.map((r) => (
-              <tr key={r.key}>
-                <td className="py-2 pr-3"><div className="font-medium text-slate-800" title={r.key}>{label ? label(r.key) : r.key}</div>
-                  <div className="mt-1 h-1 w-full rounded bg-slate-100"><div className="h-1 rounded" style={{ width: `${(r.calls / maxCalls) * 100}%`, background: palette.revenue, opacity: 0.7 }} /></div></td>
-                <td className="py-2 pr-3 text-right">{r.calls}</td>
-                <td className="py-2 pr-3 text-right">{r.answered}</td>
-                <td className="py-2 pr-3 text-right">{r.short}</td>
-                <td className="py-2 text-right">{r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-300">0</span>}</td>
-              </tr>
+      {rows.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No calls in this range</div> : (
+        <>
+          <ul className="space-y-3 sm:hidden">
+            {rows.map((r) => (
+              <li key={r.key} className="rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                <p className="truncate font-medium text-slate-800" title={r.key}>{nameOf(r)}</p>
+                <div className="mt-1 h-1 w-full rounded bg-slate-200"><div className="h-1 rounded bg-sky-500" style={{ width: `${(r.calls / maxCalls) * 100}%` }} /></div>
+                <dl className="mt-2 grid grid-cols-2 gap-2 text-sm tabular-nums">
+                  {([['Calls', r.calls], ['Answered', r.answered], ['Short', r.short], ['New booked', r.booked ? r.booked : 0]] as const).map(([k, v]) => (
+                    <div key={k} className="flex items-baseline justify-between gap-2"><dt className="text-[11px] uppercase tracking-wider text-slate-500">{k}</dt><dd className={`font-semibold ${k === 'New booked' && v ? 'text-emerald-700' : 'text-slate-900'}`}>{v}</dd></div>
+                  ))}
+                </dl>
+              </li>
             ))}
-          </tbody>
-        </table>
-      </div>
+          </ul>
+          <div className="hidden max-h-[28rem] overflow-auto sm:block">
+            <table className="w-full text-left text-sm">
+              <thead className="sticky top-0 z-10 bg-white"><tr className="text-[11px] uppercase tracking-wider text-slate-500"><th className="bg-white py-2 pr-3 font-semibold">Name</th><th className="bg-white py-2 pr-3 text-right font-semibold">Calls</th><th className="bg-white py-2 pr-3 text-right font-semibold">Answered</th><th className="bg-white py-2 pr-3 text-right font-semibold">Short</th><th className="bg-white py-2 text-right font-semibold">New booked</th></tr></thead>
+              <tbody className="divide-y divide-slate-100 tabular-nums">
+                {rows.map((r) => (
+                  <tr key={r.key}>
+                    <td className="max-w-[18rem] py-2.5 pr-3"><div className="truncate font-medium text-slate-800" title={r.key}>{nameOf(r)}</div>
+                      <div className="mt-1 h-1 w-full rounded bg-slate-100"><div className="h-1 rounded bg-sky-500" style={{ width: `${(r.calls / maxCalls) * 100}%` }} /></div></td>
+                    <td className="py-2.5 pr-3 text-right">{r.calls}</td>
+                    <td className="py-2.5 pr-3 text-right">{r.answered}</td>
+                    <td className="py-2.5 pr-3 text-right">{r.short}</td>
+                    <td className="py-2.5 text-right">{r.booked ? <b className="text-emerald-700">{r.booked}</b> : <span className="text-slate-300">0</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
     </Card>
   );
 }
@@ -823,59 +950,74 @@ export function CallDashboardPage() {
   const nc = data?.needsCallback;
   const ncSplit = nc ? splitByAge(nc.rows, Date.now()) : null;
   const existingExcluded = data?.realLeads?.excluded.find((e) => e.reason === 'existing')?.count;
-  const sectionHead = (id: string, title: string) => <h2 id={id} className="scroll-mt-4 pt-3 text-lg font-bold tracking-tight text-slate-900">{title}</h2>;
+  const live = data as (Dashboard & Live) | null;
   return (
-    <div className="mx-auto max-w-[1400px] space-y-5 text-slate-900 antialiased" data-tab="all">
+    <div className="min-w-0 space-y-5 overflow-x-clip text-slate-900 antialiased" data-tab="all">
       <style>{STYLES}</style>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
-        <div className="mr-auto">
-          <h1 id="today" className="scroll-mt-4 text-xl font-bold tracking-tight sm:text-2xl">Office dashboard</h1>
-          <p className="text-xs text-slate-500">Calls, AI receptionist, sales, ads and collections · Pacific time{(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <span className="text-slate-400"> · data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</span> : null}</p>
+      <div className="flex flex-wrap items-start gap-x-4 gap-y-3">
+        <div className="mr-auto min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight text-slate-900 sm:text-2xl">Office dashboard</h1>
+          <p className="mt-0.5 text-sm text-slate-600">{rangeLabel}{moneyLabel !== rangeLabel ? ` · money ${moneyLabel}` : ''} · Pacific time</p>
+          <div className="mt-2"><Freshness mirrorAsOf={live?.jobberDataAsOf} generatedAt={live?.generatedAt} /></div>
         </div>
-        <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
-        <div className="inline-flex flex-wrap rounded-full border border-slate-200 bg-white p-0.5 shadow-sm" role="tablist" aria-label="Date range">
+        <LiveBadge at={live?.generatedAt} refreshMs={30_000} error={error} />
+        <div className="flex w-full flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm sm:w-auto" role="tablist" aria-label="Date range">
           {RANGES.map((r) => (
             <button key={r.v} role="tab" aria-selected={range === r.v} onClick={() => setRange(r.v)}
-              className={`rounded-full px-3 py-1 text-xs font-medium transition-colors sm:text-sm ${range === r.v ? 'bg-slate-900 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}>{r.label}</button>
+              className={`inline-flex min-h-11 items-center rounded-full px-3 text-sm font-medium transition-colors ${range === r.v ? 'bg-slate-900 text-white shadow' : 'text-slate-600 hover:bg-slate-100'}`}>{r.label}</button>
           ))}
         </div>
-        <button onClick={reload} className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 sm:text-sm">Refresh</button>
+        <button onClick={reload} className="inline-flex min-h-11 items-center rounded-full border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50">Refresh</button>
       </div>
 
       {error ? <div role="alert" className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-800"><span aria-hidden>⚠</span><span>{error}{data ? ' Showing the last data received.' : ''}</span></div> : null}
       {!data && !error ? <DashboardSkeleton /> : null}
+      {!data && error ? <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">Nothing on screen until the dashboard loads. Tap Refresh to try again.</div> : null}
 
       {data && t ? (
-        <div className={`space-y-5 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
-          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <Tile label="Calls today" value={today ? String(today.total) : '—'} sub={today ? `${today.answered} answered · ${today.forwardedAi} to Mike · all incoming lines` : 'all incoming'} />
-            <Tile label="Missed today" value={today ? String(today.missed) : '—'} sub="missed or voicemail, all lines" tone={today && today.missed > 0 ? 'alert' : 'plain'} />
-            <Tile label="Needs callback" value={nc ? String(nc.count) : '—'} sub={ncSplit ? `${ncSplit.recent.length} in last ${OLDER_DAYS} days · ${ncSplit.older.length} older · ${rangeLabel}` : undefined} tone={ncSplit && ncSplit.recent.length > 0 ? 'alert' : 'plain'} />
-            <Tile label="Booked (new customers)" value={String(t.bookedNew)}
-              sub={`${rangeLabel}${data.tv ? ` · ${data.tv.bookedToday} today · ${data.tv.bookedWeek} this week` : ''}${data.realLeads ? ` · of ${data.realLeads.leads} real leads · ${existingExcluded ?? 0} existing-customer callers excluded` : ` · ${t.knownExisting} existing · ${t.unmatched} other`}`}
-              spark={s.map((d) => d.booked)} sparkColor={palette.booked} hint="New-customer jobs booked per day (sparkline)" />
-          </div>
-          <div className="grid gap-4 lg:grid-cols-12">
-            <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
-            <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} /></div>
-          </div>
+        <div className={`space-y-8 transition-opacity duration-300 ${loading ? 'opacity-60' : 'opacity-100'}`}>
+          <HeadlineKpis data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
 
-          {sectionHead('sales', 'Sales')}
-          {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+          <section className="space-y-4">
+            <SectionHead id="today" title="Calls and leads" hint={`Today’s lines, callbacks still open, and the call list · ${rangeLabel}.`} />
+            <div className="grid grid-cols-1 gap-3 min-[520px]:grid-cols-2 lg:grid-cols-4">
+              <Tile label="Calls today" value={today ? String(today.total) : '—'} sub={today ? `${today.answered} answered · ${today.forwardedAi} to Mike · all incoming lines` : 'all incoming'} />
+              <Tile label="Missed today" value={today ? String(today.missed) : '—'} sub="missed or voicemail, all lines" tone={today && today.missed > 0 ? 'alert' : 'plain'} />
+              <Tile label="Needs callback" value={nc ? String(nc.count) : '—'} sub={ncSplit ? `${ncSplit.recent.length} in last ${OLDER_DAYS} days · ${ncSplit.older.length} older · ${rangeLabel}` : undefined} tone={ncSplit && ncSplit.recent.length > 0 ? 'alert' : 'plain'} />
+              <Tile label="Booked (new customers)" value={String(t.bookedNew)}
+                sub={`${rangeLabel}${data.tv ? ` · ${data.tv.bookedToday} today · ${data.tv.bookedWeek} this week` : ''}${data.realLeads ? ` · of ${data.realLeads.leads} real leads · ${existingExcluded ?? 0} existing-customer callers excluded` : ` · ${t.knownExisting} existing · ${t.unmatched} other`}`}
+                spark={s.map((d) => d.booked)} sparkColor={palette.booked} hint="New-customer jobs booked per day (sparkline)" />
+            </div>
+            <div className="grid gap-4 lg:grid-cols-12">
+              <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
+              <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} /></div>
+            </div>
+          </section>
 
-          {sectionHead('ads', 'Ads & leads')}
-          <AdPerformanceCard data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
-          <Card title="Calls & ad spend per day" subtitle={`${rangeLabel} · bars: answered / missed or short calls · line: Google Ads spend`} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short'], [palette.spend, 'Ad spend']]} />} delay={60}>
-            {s.length ? <CallsSpendChart series={s} spendFrom={data.revenueStart ? ptKey(data.revenueStart) : null} /> : <p className="py-16 text-center text-sm text-slate-400">No data</p>}
-          </Card>
-          <LeadsBySourceTable data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
-          <div className="grid gap-4 lg:grid-cols-2">
-            <GroupTable title="By keyword / ad group" subtitle={`Google Ads keyword or ad group of each call · ${rangeLabel}`} rows={data.byKeyword ?? []} />
-            <GroupTable title="By tracking number / source" subtitle={`Which number or Google Ads asset the call came in on · ${rangeLabel}`} rows={data.byTrackingNumber ?? []} label={(k) => TRACKING_LABEL[k] ?? k} />
-          </div>
+          <section className="space-y-4">
+            <SectionHead id="sales" title="Sales and revenue" hint="Invoices, cash collected, jobs, and quotes for the period above. Drilling is amber, pump is blue." />
+            {data.weekly ? <WeeklySalesCard weekly={data.weekly} /> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">Sales unavailable right now (Jobber data did not load). {data.gaps?.filter((g) => g.startsWith('weekly')).join(' ')}</div>}
+          </section>
 
-          {sectionHead('collections', 'Collections (office only)')}
-          <InvoiceFollowUpCard view={data.invoiceFollowUp} rangeLabel={rangeLabel} />
+          <section className="space-y-4">
+            <SectionHead id="ads" title="Marketing / ads" hint={`Return, spend, and where leads came from · calls ${rangeLabel} · money ${moneyLabel}.`} />
+            <AdPerformanceCard data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
+            <Card title="Calls & ad spend per day" subtitle={`${rangeLabel} · bars: answered / missed or short calls · line: Google Ads spend`} right={<Legend items={[[palette.answered, 'Answered'], [palette.missed, 'Missed / short'], [palette.spend, 'Ad spend']]} />} delay={60}>
+              <div className="min-w-0 overflow-hidden">
+                {s.length ? <CallsSpendChart series={s} spendFrom={data.revenueStart ? ptKey(data.revenueStart) : null} /> : <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-10 text-center text-sm text-slate-500">No calls in this range</div>}
+              </div>
+            </Card>
+            <LeadsBySourceTable data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <GroupTable title="By keyword / ad group" subtitle={`Google Ads keyword or ad group of each call · ${rangeLabel}`} rows={data.byKeyword ?? []} />
+              <GroupTable title="By tracking number / source" subtitle={`Which number or Google Ads asset the call came in on · ${rangeLabel}`} rows={data.byTrackingNumber ?? []} label={(k) => TRACKING_LABEL[k] ?? k} />
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <SectionHead id="collections" title="Collections" hint="Open invoices for the office. Nothing here is customer-facing." />
+            <InvoiceFollowUpCard view={data.invoiceFollowUp} rangeLabel={rangeLabel} />
+          </section>
 
           <DataNotes gaps={data.gaps} />
         </div>
@@ -936,11 +1078,11 @@ export function CallDashboardTv() {
             ))}
           </div>
           </div>
-          <LiveBadge dark at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={60_000} error={error} />
+          <LiveBadge dark large at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={60_000} error={error} />
           <p className="order-first shrink-0 text-2xl font-bold tabular-nums sm:order-last xl:text-5xl">{clockStr}</p>
         </div>
       </div>
-      {(data as (Dashboard & Live) | null)?.jobberDataAsOf ? <p className="-mt-1 text-right text-[10px] text-slate-500 xl:text-sm">data as of {hm((data as Dashboard & Live).jobberDataAsOf)} PT</p> : null}
+      <div className="flex justify-end"><Freshness dark mirrorAsOf={(data as (Dashboard & Live) | null)?.jobberDataAsOf} generatedAt={(data as (Dashboard & Live) | null)?.generatedAt} /></div>
       {!data && !error ? <p className="text-sm text-slate-400 xl:text-xl" aria-live="polite">Loading {view === 'month' ? 'this month' : 'since Sep 18'} numbers…</p> : null}
       {error && !tv ? <div role="alert" className="rounded-xl border border-rose-800 bg-rose-950/60 p-4 text-rose-200 xl:text-2xl">{error}</div> : null}
       {tv ? (
@@ -992,7 +1134,7 @@ export function CallDashboardTv() {
       <div className="grid shrink-0 gap-3 lg:grid-cols-2">
         <div className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4" aria-label="New leads — needs callback">
           <p className="mb-1 text-xs font-semibold uppercase tracking-[0.2em] text-slate-400 xl:text-base" title={OUTREACH_TIP}>New leads — needs callback</p>
-          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · {mainRange}. Counts include Mike's automated callbacks. Personal cell calls are not logged.</p>
+          <p className="mb-2 text-[11px] text-slate-500 xl:text-sm">Missed, voicemail, and Mike · {mainRange}. Counts include Mike&apos;s automated callbacks. Personal cell calls are not logged.</p>
           <NeedsCallbackList dark view={data?.needsCallback} rangeLabel={mainRange} empty="No new leads waiting on a callback in this period." />
         </div>
         <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 px-3.5 py-3 sm:px-4 xl:px-6 xl:py-4">
