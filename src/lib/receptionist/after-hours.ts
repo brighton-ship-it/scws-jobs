@@ -6,8 +6,8 @@
  *   Friday 5:00pm PT through Monday 7:00am PT
  *
  * Visit days (Jobber startAt, America/Los_Angeles):
- *   Monday–Friday only. Never Saturday or Sunday.
- *   Friday-night / weekend after-hours callers may land on the next weekday.
+ *   Any day (Oct 18 2026: open 7 days). Saturday/Sunday slots exist only for techs in
+ *   RECEPTIONIST_WEEKEND_TECHS (see open-slots.ts); otherwise callers land on the next weekday.
  *
  * Daytime weekday service calls stay with Liz — Sarah takes a message.
  * A caller who needs someone NOW this weekend is not a Monday $200 visit.

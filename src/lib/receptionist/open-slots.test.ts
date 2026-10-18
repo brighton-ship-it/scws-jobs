@@ -2,14 +2,19 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeOpenSlots,
+  isVisitDayAllowed,
   isWeekdayVisitStart,
   lookupOpenSlots,
+  techWorksWeekends,
+  weekendTechNames,
   mergeOpenSlots,
   mergeWithFallbackSlots,
   ptWeekday,
   slotMatchesRequest,
   visitsOverlapSlot,
 } from './open-slots.ts';
+
+const envOf = (vars: Record<string, string>) => vars as unknown as NodeJS.ProcessEnv;
 
 /** Thursday Sep 3 2026 5:30 PM PT */
 const THU_530PM = new Date('2026-09-04T00:30:00.000Z');
@@ -51,7 +56,7 @@ describe('computeOpenSlots', () => {
     assert.ok(blocked.length >= 1);
   });
 
-  it('never returns Saturday or Sunday visit windows', () => {
+  it('no weekend roster: never returns Saturday or Sunday visit windows', () => {
     const slots = computeOpenSlots({
       occupied: [],
       now: THU_530PM,
@@ -68,7 +73,7 @@ describe('computeOpenSlots', () => {
     }
   });
 
-  it('Friday night after-hours offers Monday, not Saturday or Sunday', () => {
+  it('no weekend roster: Friday night after-hours offers Monday, not Saturday or Sunday', () => {
     const fridayNight = new Date('2026-09-05T01:00:00.000Z');
     const slots = computeOpenSlots({
       occupied: [],
@@ -113,6 +118,59 @@ describe('computeOpenSlots', () => {
       blocked.some((slot) => slot.date === day.date),
       false
     );
+  });
+});
+
+describe('weekend visits (open 7 days, Oct 18 2026)', () => {
+  const fridayNight = new Date('2026-09-05T01:00:00.000Z'); // Fri Sep 4 6 PM PT
+  it('a tech on the weekend roster gets Saturday 8 AM first, same board rules', () => {
+    const slots = computeOpenSlots({
+      occupied: [],
+      now: fridayNight,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 3,
+      env: envOf({ RECEPTIONIST_WEEKEND_TECHS: 'Brian Eads' }),
+    });
+    assert.match(slots[0].date, /Saturday/i);
+    assert.equal(slots[0].startAt, '2026-09-05T15:00:00.000Z');
+    const busy = computeOpenSlots({
+      occupied: [{ startAt: '2026-09-05T15:00:00.000Z', allDay: true, title: 'Drill new well', technicianIds: ['user-brian'], technicianNames: ['Brian Eads'] }],
+      now: fridayNight,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 3,
+      allowWeekend: true,
+    });
+    assert.match(busy[0].date, /Sunday/i);
+  });
+  it('a tech not on the roster stays weekday-only', () => {
+    const slots = computeOpenSlots({
+      occupied: [],
+      now: fridayNight,
+      technicianId: 'user-doug',
+      technicianName: 'Doug Pollack',
+      maxSlots: 3,
+      env: envOf({ RECEPTIONIST_WEEKEND_TECHS: 'Brian Eads' }),
+    });
+    assert.match(slots[0].date, /Monday/i);
+  });
+  it('parses RECEPTIONIST_WEEKEND_TECHS', () => {
+    assert.deepEqual(weekendTechNames(envOf({})), []);
+    assert.equal(weekendTechNames(envOf({ RECEPTIONIST_WEEKEND_TECHS: 'all' })), 'all');
+    assert.deepEqual(weekendTechNames(envOf({ RECEPTIONIST_WEEKEND_TECHS: ' Brian Eads, Cowin ' })), ['brian eads', 'cowin']);
+    assert.equal(techWorksWeekends('Cowin', envOf({ RECEPTIONIST_WEEKEND_TECHS: 'brian eads,cowin' })), true);
+    assert.equal(techWorksWeekends('Doug Pollack', envOf({ RECEPTIONIST_WEEKEND_TECHS: 'brian eads,cowin' })), false);
+    assert.equal(techWorksWeekends('Anyone', envOf({ RECEPTIONIST_WEEKEND_TECHS: 'all' })), true);
+  });
+  it('isVisitDayAllowed: weekdays always, weekends only for roster techs', () => {
+    const sat = '2026-09-05T15:00:00.000Z';
+    const mon = '2026-09-07T15:00:00.000Z';
+    const env = envOf({ RECEPTIONIST_WEEKEND_TECHS: 'Cowin' });
+    assert.equal(isVisitDayAllowed(mon, 'Brian Eads', env), true);
+    assert.equal(isVisitDayAllowed(sat, 'Brian Eads', env), false);
+    assert.equal(isVisitDayAllowed(sat, 'Cowin', env), true);
+    assert.equal(isVisitDayAllowed('', 'Cowin', env), false);
   });
 });
 

@@ -1,12 +1,15 @@
 /**
  * Open service-call slots from the live Jobber calendar.
  *
- * Candidate windows are shop service-call hours on weekdays only
- * (Monday–Friday Pacific). Never Saturday or Sunday. A slot is returned
+ * Candidate windows are shop service-call hours, any day of the week (Oct 18 2026:
+ * SCWS is open 7 days). Saturday/Sunday windows are offered ONLY for techs listed in
+ * RECEPTIONIST_WEEKEND_TECHS (comma-separated names, or "all"); Jobber has no
+ * working-days data and the service techs historically have no weekend visits, so an
+ * empty board on a weekend must not be read as "available". A slot is returned
  * only when it does not overlap a Jobber visit for an allowlisted tech
  * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin; plus fallback techs
  * Chris/Haze/Colton/Sergio only when strictly earlier and fully open). After-hours callers
- * (including Friday night) are offered the next weekday window. If neither
+ * (including Friday night) are offered the next open window. If neither
  * allowed tech has a window, return no slots. If Jobber is down, return no
  * slots — never invent times or assign Travis.
  *
@@ -318,13 +321,46 @@ export function ptWeekday(date: Date): number {
   return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(label);
 }
 
-/** Jobber service-call visits may land Monday–Friday PT only. */
+/** True when the visit starts Monday–Friday PT. */
 export function isWeekdayVisitStart(startAt: string | Date | null | undefined): boolean {
   if (!startAt) return false;
   const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
   if (Number.isNaN(date.getTime())) return false;
   const weekday = ptWeekday(date);
   return weekday >= 1 && weekday <= 5;
+}
+
+/**
+ * Techs who work weekends, from RECEPTIONIST_WEEKEND_TECHS (comma-separated names or
+ * "all"). Empty (default) = nobody, so no Saturday/Sunday slots are generated.
+ */
+export function weekendTechNames(env: NodeJS.ProcessEnv = process.env): string[] | 'all' {
+  const raw = String(env.RECEPTIONIST_WEEKEND_TECHS || '').trim();
+  if (/^(all|\*)$/i.test(raw)) return 'all';
+  return raw
+    .split(',')
+    .map((name) => name.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+export function techWorksWeekends(techName: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const roster = weekendTechNames(env);
+  if (roster === 'all') return true;
+  const needle = techName.trim().toLowerCase();
+  if (!needle) return false;
+  return roster.some((name) => needle.includes(name) || name.includes(needle));
+}
+
+/** Any day for weekday starts; Saturday/Sunday only for a tech who works weekends. */
+export function isVisitDayAllowed(
+  startAt: string | Date | null | undefined,
+  techName: string,
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (!startAt) return false;
+  const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
+  if (Number.isNaN(date.getTime())) return false;
+  return isWeekdayVisitStart(date) || techWorksWeekends(techName, env);
 }
 
 function addPtDays(now: Date, days: number): string {
@@ -431,9 +467,14 @@ export function computeOpenSlots(options: {
   siteCity?: string | null;
   /** Cap of scheduled stops per tech per day. */
   maxStops?: number;
+  /** Offer Saturday/Sunday windows for this tech (default: RECEPTIONIST_WEEKEND_TECHS). */
+  allowWeekend?: boolean;
+  env?: NodeJS.ProcessEnv;
 }): OpenSlot[] {
   const maxSlots = options.maxSlots ?? MAX_OPEN_SLOTS;
   const maxStops = options.maxStops ?? maxStopsPerDay();
+  const allowWeekend = options.allowWeekend ?? techWorksWeekends(options.technicianName, options.env ?? process.env);
+  const dayOk = (date: Date) => allowWeekend || isWeekdayVisitStart(date);
   const slots: OpenSlot[] = [];
   const techOccupied = options.occupied.filter((visit) =>
     visitBelongsToTech(visit, options.technicianId, options.technicianName)
@@ -442,7 +483,7 @@ export function computeOpenSlots(options: {
   for (let day = 0; day <= SLOT_LOOKAHEAD_DAYS && slots.length < maxSlots; day++) {
     const dateStr = addPtDays(options.now, day);
     const weekdayDate = zonedDate(dateStr, 12, 0);
-    if (!isWeekdayVisitStart(weekdayDate)) continue;
+    if (!dayOk(weekdayDate)) continue;
 
     // Whole-day closers: all-day drill/install (or unidentified all-day) visits.
     if (techOccupied.some((visit) => allDayVisitBlocksDay(visit) && visitCoversPtDay(visit, dateStr))) {
@@ -460,7 +501,7 @@ export function computeOpenSlots(options: {
       const start = zonedDate(dateStr, hour, 0);
       const end = new Date(start.getTime() + SLOT_DURATION_MINUTES * 60_000);
       if (start <= options.now) continue;
-      if (!isWeekdayVisitStart(start)) continue;
+      if (!dayOk(start)) continue;
 
       const blocked = timedToday.some((visit) => {
         const vs = new Date(visit.startAt);
@@ -500,7 +541,6 @@ export function mergeOpenSlots(slotsByTech: OpenSlot[][], maxSlots = MAX_OPEN_SL
     }
   }
   return [...byStart.values()]
-    .filter((slot) => isWeekdayVisitStart(slot.startAt))
     .sort((a, b) => a.startAt.localeCompare(b.startAt))
     .slice(0, maxSlots);
 }
@@ -727,6 +767,7 @@ export async function lookupOpenSlots(
         technicianName: tech.name,
         maxSlots: perTechMax,
         siteCity,
+        env: deps.env ?? process.env,
       }).filter((slot) => isAllowlistedTechId(slot.technicianId, allowlistedTechIds))
     );
     const primarySlots = mergeOpenSlots(slotsByTech, perTechMax * Math.max(resolved.length, 1));
@@ -744,6 +785,7 @@ export async function lookupOpenSlots(
               technicianName: tech.name,
               maxSlots: perTechMax,
               siteCity,
+              env: deps.env ?? process.env,
             }),
             occupied,
             technicianId: tech.id,
@@ -760,7 +802,7 @@ export async function lookupOpenSlots(
       perTechMax * Math.max(fallbackResolved.length, 1)
     );
     const openSlots = mergeWithFallbackSlots(primarySlots, fallbackSlots).filter((slot) =>
-      isWeekdayVisitStart(slot.startAt)
+      isVisitDayAllowed(slot.startAt, slot.technician, deps.env ?? process.env)
     );
     const allIds = [...allowlistedTechIds, ...(complete ? fallbackResolved.map((tech) => tech.id) : [])];
 

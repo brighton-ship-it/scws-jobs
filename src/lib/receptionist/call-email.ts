@@ -221,7 +221,7 @@ export function whatMikeDid(outcome: CallOutcome): string {
   }
   if (outcome.emergency) {
     lines.push(outcome.booked
-      ? 'Flagged an emergency (no-water). The visit above is the earliest weekday slot; the on-call team still needs to decide about sooner help.'
+      ? 'Flagged an emergency (no-water). The visit above is the earliest open slot; the on-call team still needs to decide about sooner help.'
       : 'Flagged an emergency. No visit was booked. Call them back now.');
   }
   if (outcome.callback && !outcome.booked) lines.push('Asked the office to call this person back.');

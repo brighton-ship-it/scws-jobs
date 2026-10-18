@@ -30,8 +30,10 @@ import {
   resolveReceptionistJobberToken,
 } from './check-schedule.ts';
 import {
+  isVisitDayAllowed,
   isWeekdayVisitStart,
   lookupOpenSlots,
+  weekendTechNames,
   slotMatchesRequest,
   type OpenSlot,
   type OpenSlotsDeps,
@@ -45,6 +47,11 @@ import {
 import { jobberClientProperties, type JobberProperties } from '../jobber/quotes.ts';
 
 const FORBIDDEN_SARAH_JOB = /\b(drill|drilling|pump|quote|estimate|rehab|rehabilitation|crew)\b/i;
+
+
+/** Spoken when a Saturday/Sunday time has no weekend tech on the calendar. */
+export const WEEKEND_SLOT_NOT_OPEN_SPOKEN =
+  "I don't have that weekend time open on the calendar. I can book the earliest open slot I do have, or have the office call you back.";
 
 export function isSarahServiceCallTitle(title: string | null | undefined): boolean {
   const value = String(title || '').trim();
@@ -649,12 +656,12 @@ export async function bookServiceCall(
     );
   }
 
-  if (input.startAt && !isWeekdayVisitStart(input.startAt)) {
-    return blockedResult(
-      'weekend_visit',
-      "I can only schedule a service call Monday through Friday. I won't put a Saturday or Sunday visit on the calendar. I'll have the office call you back.",
-      NO_VISIT_CONFIRMATION_RULE
-    );
+  // Weekend visits (Oct 18 2026) are bookable only when some tech works weekends
+  // (RECEPTIONIST_WEEKEND_TECHS). With nobody on the weekend roster, skip the board read.
+  const bookingEnv = deps.env ?? process.env;
+  const weekendRoster = weekendTechNames(bookingEnv);
+  if (input.startAt && !isWeekdayVisitStart(input.startAt) && weekendRoster !== 'all' && weekendRoster.length === 0) {
+    return blockedResult('weekend_visit', WEEKEND_SLOT_NOT_OPEN_SPOKEN, NO_VISIT_CONFIRMATION_RULE);
   }
 
   // Duplicate-booking guard: same caller already has an upcoming visit on a job
@@ -728,13 +735,13 @@ export async function bookServiceCall(
     );
   }
 
-  if (!isWeekdayVisitStart(chosen.startAt)) {
+  if (!isVisitDayAllowed(chosen.startAt, chosen.technician, bookingEnv)) {
     return blockedResult(
       'weekend_visit',
-      "I can only schedule a service call Monday through Friday. I won't put a Saturday or Sunday visit on the calendar. I'll have the office call you back.",
+      WEEKEND_SLOT_NOT_OPEN_SPOKEN,
       NO_VISIT_CONFIRMATION_RULE,
       {
-        openSlots: slots.openSlots.filter((slot) => isWeekdayVisitStart(slot.startAt)),
+        openSlots: slots.openSlots.filter((slot) => isVisitDayAllowed(slot.startAt, slot.technician, bookingEnv)),
         assignedTechName: slots.assignedTechName,
       }
     );

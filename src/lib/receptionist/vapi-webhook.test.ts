@@ -208,8 +208,9 @@ describe('getBusinessHours', () => {
     const { result } = getBusinessHours();
     const blob = JSON.stringify(result);
     assert.equal(result.note, BUSINESS_HOURS_SPOKEN);
-    assert.match(blob, /Monday–Friday 7 AM–5 PM Pacific/);
-    assert.match(blob, /closed weekends/i);
+    assert.match(blob, /Monday–Sunday 7 AM–5 PM Pacific/);
+    assert.match(blob, /open 7 days/i);
+    assert.doesNotMatch(blob, /closed weekends/i);
     assert.match(blob, /after hours/i);
     assert.doesNotMatch(blob, /4\s*PM|7 AM to 4|within 15|15 minutes/i);
   });

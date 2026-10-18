@@ -18,7 +18,7 @@ const THU_4PM = new Date('2026-09-03T23:00:00.000Z');
 const THU_530PM = new Date('2026-09-04T00:30:00.000Z');
 const FRI_6PM = new Date('2026-09-05T01:00:00.000Z');
 const SAT_10AM = new Date('2026-09-05T17:00:00.000Z');
-/** Saturday Sep 5 2026 8:00 AM PT — not a bookable visit day. */
+/** Saturday Sep 5 2026 8:00 AM PT — bookable only for a weekend-roster tech. */
 const SAT_8AM_START = '2026-09-05T15:00:00.000Z';
 
 const BRIAN = {
@@ -335,7 +335,7 @@ describe('handleBookServiceCall', () => {
     assert.match(weekendEmergencyFlag({ name: 'Pat Wells' }).subject, /do not book Monday/i);
   });
 
-  it('refuses a Saturday or Sunday visit startAt', async () => {
+  it('refuses a Saturday or Sunday startAt when no tech works weekends', async () => {
     const { result } = await handleBookServiceCall(
       {
         phone: '7605550100',
@@ -357,7 +357,8 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.booked, false);
     assert.equal(result.canConfirm, false);
     assert.equal(result.bookingBlockReason, 'weekend_visit');
-    assert.match(result.message, /Monday through Friday|Saturday or Sunday/i);
+    assert.match(result.message, /weekend time open/i);
+    assert.doesNotMatch(result.message, /Monday through Friday/i);
   });
 
   it('Friday night after-hours books the next weekday (Monday), not Saturday', async () => {
@@ -398,6 +399,47 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.canConfirm, true);
     assert.equal(result.visit?.startAt, monday.startAt);
     assert.match(result.visit?.date || '', /Monday/i);
+    assert.deepEqual(result.visit?.technicians, ['Brian Eads']);
+  });
+
+  it('books a Saturday visit when the tech is on the weekend roster (same tech/board logic)', async () => {
+    const env = { ...process.env, RECEPTIONIST_WEEKEND_TECHS: 'Brian Eads' } as NodeJS.ProcessEnv;
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: SAT_8AM_START,
+        urgency: 'normal',
+      },
+      {
+        now: FRI_6PM,
+        accessToken: 'test-token',
+        env,
+        fetchFn: mockJobber({
+          createdJob: {
+            id: 'job-saturday',
+            title: SERVICE_CALL_TITLE,
+            visits: {
+              nodes: [
+                {
+                  id: 'visit-saturday',
+                  startAt: SAT_8AM_START,
+                  endAt: '2026-09-05T17:00:00.000Z',
+                  assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+                },
+              ],
+            },
+          },
+        }),
+      }
+    );
+
+    assert.equal(result.booked, true, result.message);
+    assert.equal(result.canConfirm, true);
+    assert.equal(result.visit?.startAt, SAT_8AM_START);
+    assert.match(result.visit?.date || '', /Saturday/i);
     assert.deepEqual(result.visit?.technicians, ['Brian Eads']);
   });
 
