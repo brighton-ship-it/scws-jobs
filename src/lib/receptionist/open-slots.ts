@@ -7,7 +7,7 @@
  * working-days data and the service techs historically have no weekend visits, so an
  * empty board on a weekend must not be read as "available". A slot is returned
  * only when it does not overlap a Jobber visit for an allowlisted tech
- * (Ramona: Brian Eads; Anza: Doug Pollack or Cowin; plus fallback techs
+ * (Ramona: Brian Eads; Anza: Cowin; plus fallback techs
  * Chris/Haze/Colton/Sergio only when strictly earlier and fully open). After-hours callers
  * (including Friday night) are offered the next open window. If neither
  * allowed tech has a window, return no slots. If Jobber is down, return no
@@ -530,7 +530,7 @@ export function computeOpenSlots(options: {
   return slots;
 }
 
-/** First allowlisted tech who is free at a window wins (Doug before Cowin on Anza). */
+/** First allowlisted tech who is free at a window wins (Cowin before Brian in the desert). */
 export function mergeOpenSlots(slotsByTech: OpenSlot[][], maxSlots = MAX_OPEN_SLOTS): OpenSlot[] {
   const byStart = new Map<string, OpenSlot>();
   for (const slots of slotsByTech) {
