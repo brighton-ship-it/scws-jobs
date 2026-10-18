@@ -1,3 +1,4 @@
+import { handleLookupCustomer } from '@/lib/receptionist/lookup-customer';
 import { normalizeBookJobParams, normalizeCheckScheduleParams } from '@/lib/receptionist/tool-params';
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
@@ -8,7 +9,6 @@ import { handleSendPayEmail, handleSendPayLink, paymentHostForLog } from '@/lib/
 import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall } from '@/lib/receptionist/book-service-call';
-import { getValidJobberAccessToken } from '@/lib/jobber/auth';
 import { buildCallEmail, extractCallOutcome } from '@/lib/receptionist/call-email';
 import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/call-duration';
 import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
@@ -872,61 +872,6 @@ async function updateOfficeBooking(id: string, patch: OfficeAlertPatch) {
 /**
  * Look up customer in Jobber by phone
  */
-async function handleLookupCustomer(phone: string) {
-  const normalized = phone.replace(/\D/g, '').slice(-10);
-  const searchTerm = normalized.slice(-7);
-  
-  const accessToken = await getValidJobberAccessToken();
-  const response = await fetch('https://api.getjobber.com/api/graphql', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'X-JOBBER-GRAPHQL-VERSION': '2026-02-17'
-    },
-    body: JSON.stringify({
-      query: `
-        query SearchClients($searchTerm: String!) {
-          clients(searchTerm: $searchTerm, first: 5) {
-            nodes {
-              id
-              name
-              phones { number }
-            }
-          }
-        }
-      `,
-      variables: { searchTerm }
-    })
-  });
-  
-  const data = await response.json();
-  const clients = data?.data?.clients?.nodes || [];
-  
-  // Find exact phone match
-  for (const client of clients) {
-    for (const phoneObj of client.phones || []) {
-      const clientPhone = phoneObj.number.replace(/\D/g, '').slice(-10);
-      if (clientPhone === normalized) {
-        return {
-          result: {
-            found: true,
-            customerName: client.name,
-            message: `Welcome back, ${client.name}! I have your account pulled up. How can I help you today?`
-          }
-        };
-      }
-    }
-  }
-  
-  return {
-    result: {
-      found: false,
-      message: "I don't see this number in our system yet - no problem! Can I get your name?"
-    }
-  };
-}
-
 /**
  * Get service info and pricing
  */

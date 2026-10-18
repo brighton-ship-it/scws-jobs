@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   handleCheckSchedule,
+  isInternalVisitTitle,
   isOnOrAfterTodayPt,
   scheduleLookupError,
   technicianNamesFromAssignedUsers,
@@ -384,5 +385,68 @@ describe('isOnOrAfterTodayPt', () => {
   it('includes a same-day PT visit and drops earlier calendar days', () => {
     assert.equal(isOnOrAfterTodayPt('2026-08-31T18:00:00.000Z', INCIDENT_NOW), true);
     assert.equal(isOnOrAfterTodayPt('2026-08-04T16:19:12.000Z', INCIDENT_NOW), false);
+  });
+});
+
+describe('internal visits (Oct 17 "Shop Meeting - Anza" incident)', () => {
+  const visit = (startAt: string, endAt: string, tech: string) => ({
+    nodes: [{ startAt, endAt, allDay: false, assignedUsers: { nodes: [{ name: { full: tech } }] } }],
+  });
+
+  it('flags shop meetings and other internal titles, but not customer work', () => {
+    for (const t of ['Shop Meeting - Anza', 'shop meeting', 'Staff Meeting', 'Safety meeting Ramona', 'Meeting - Anza', 'Internal: yard cleanup', 'Tech training', 'PTO - Cowin', 'Shop day']) {
+      assert.equal(isInternalVisitTitle(t), true, t);
+    }
+    for (const t of ['Service Call', 'No water - pump', 'Pump replacement', 'Pressure tank swap', 'Well inspection', null, '']) {
+      assert.equal(isInternalVisitTitle(t), false, String(t));
+    }
+  });
+
+  it('never returns a shop meeting as the caller\'s appointment', async () => {
+    const { result } = await handleCheckSchedule(GUY_PHONE, {
+      accessToken: 'test-token',
+      now: INCIDENT_NOW,
+      fetchFn: mockJobber({
+        client: guyClient,
+        jobs: [
+          {
+            title: 'Shop Meeting - Anza',
+            createdAt: '2026-08-30T18:00:00.000Z',
+            property: { address: { street1: '57174 Highway 371', city: 'Anza' } },
+            visits: visit('2026-09-01T14:00:00.000Z', '2026-09-01T15:00:00.000Z', 'Cowin'),
+          },
+        ],
+      }),
+    });
+    assert.equal(result.hasAppointments, false);
+    assert.equal(result.canConfirm, false);
+    assert.deepEqual(result.visits, []);
+    assert.equal(/shop meeting/i.test(JSON.stringify(result)), false);
+  });
+
+  it('keeps the real visit when a shop meeting is also on the account', async () => {
+    const { result } = await handleCheckSchedule(GUY_PHONE, {
+      accessToken: 'test-token',
+      now: INCIDENT_NOW,
+      fetchFn: mockJobber({
+        client: guyClient,
+        jobs: [
+          {
+            title: 'Shop Meeting - Anza',
+            property: { address: { street1: '57174 Highway 371', city: 'Anza' } },
+            visits: visit('2026-09-01T14:00:00.000Z', '2026-09-01T15:00:00.000Z', 'Cowin'),
+          },
+          {
+            title: 'Service Call',
+            property: { address: { street1: '123 Well Rd', city: 'Ramona' } },
+            visits: visit('2026-09-02T16:00:00.000Z', '2026-09-02T17:00:00.000Z', 'Brian Eads'),
+          },
+        ],
+      }),
+    });
+    assert.equal(result.canConfirm, true);
+    assert.equal(result.visits.length, 1);
+    assert.equal(result.nextAppointment?.service, 'Service Call');
+    assert.match(result.message, /September 2/);
   });
 });

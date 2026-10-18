@@ -375,10 +375,23 @@ export function scheduleLookupError(message?: string): ScheduleLookupResult {
   };
 }
 
+/**
+ * Internal SCWS visits (shop meetings, training, time off) sometimes live on a
+ * real client record (e.g. the owner's own account at the Anza shop). Mike must
+ * never read one back as the caller's appointment, so checkSchedule drops them.
+ */
+const INTERNAL_VISIT_TITLE =
+  /\b(?:shop|staff|team|crew|safety|company|all[- ]hands|weekly|monthly|tech|office)\s+meeting\b|\bmeeting\s*[-:\u2013]\s*(?:anza|ramona|shop)\b|\binternal\b|\btraining\b|\bshop\s+(?:day|clean[- ]?up|work)\b|\btime\s+off\b|\bPTO\b/i;
+
+export function isInternalVisitTitle(title: string | null | undefined): boolean {
+  return INTERNAL_VISIT_TITLE.test(String(title || ''));
+}
+
 function collectVisits(jobs: any[], now: Date): ScheduleVisit[] {
   const visits: ScheduleVisit[] = [];
 
   for (const job of jobs) {
+    if (isInternalVisitTitle(job?.title)) continue;
     for (const visit of job.visits?.nodes || []) {
       if (!visit?.startAt || !isOnOrAfterTodayPt(visit.startAt, now)) continue;
 
