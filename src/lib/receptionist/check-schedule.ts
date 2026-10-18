@@ -79,6 +79,8 @@ export type ScheduleLookupResult = {
   /** Upcoming visit on a job created in the last RECENT_BOOKING_DAYS days (duplicate-booking guard). */
   recentBooking?: ScheduleVisit;
   alreadyBooked?: boolean;
+  /** Already-booked caller only: open slots sooner than their visit (office moves it). */
+  earlierSlots?: OpenSlotSummary[];
 };
 
 export type CheckScheduleInput = {
@@ -581,6 +583,19 @@ export async function lookupUpcomingVisits(
   return visitsFoundResult(clientName, visits);
 }
 
+/** Open slots that start before the caller's existing visit (earliest first, max 3). */
+export function earlierSlotsThan<T extends { startAt: string }>(slots: T[], visit: { startAt: string }): T[] {
+  const cutoff = Date.parse(visit.startAt);
+  if (Number.isNaN(cutoff)) return [];
+  return slots
+    .filter((slot) => {
+      const t = Date.parse(slot.startAt);
+      return !Number.isNaN(t) && t < cutoff;
+    })
+    .sort((a, b) => Date.parse(a.startAt) - Date.parse(b.startAt))
+    .slice(0, 3);
+}
+
 function asCheckScheduleInput(phoneOrInput: string | CheckScheduleInput): CheckScheduleInput {
   return typeof phoneOrInput === 'string' ? { phone: phoneOrInput } : phoneOrInput;
 }
@@ -639,6 +654,18 @@ export async function handleCheckSchedule(
 
     const recent = findRecentBooking(result.visits || [], deps.now ?? new Date());
     if (recent && !isDifferentAddress(input.address, recent.address)) {
+      // A no-water caller who is already booked may be offered a sooner slot
+      // (moved by the office via createCallback). Never blocks the guard.
+      let earlier: OpenSlotSummary[] = [];
+      try {
+        const slots = await lookupOpenSlots(
+          { city: input.city, address: input.address, zip: input.zip || input.postalCode },
+          deps
+        );
+        if (slots.lookupStatus !== 'error') earlier = earlierSlotsThan(slots.openSlots, recent);
+      } catch {
+        earlier = [];
+      }
       return {
         result: {
           ...result,
@@ -647,6 +674,7 @@ export async function handleCheckSchedule(
           recentBooking: recent,
           openSlots: [],
           availableSlots: [],
+          earlierSlots: withSlotIds(earlier),
           bookingBlockReason: 'already_booked',
           bookingMessage: alreadyBookedMessage(recent),
         },

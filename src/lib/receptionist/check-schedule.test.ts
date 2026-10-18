@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   handleCheckSchedule,
+  earlierSlotsThan,
   isInternalVisitTitle,
   isOnOrAfterTodayPt,
   scheduleLookupError,
@@ -448,5 +449,22 @@ describe('internal visits (Oct 17 "Shop Meeting - Anza" incident)', () => {
     assert.equal(result.visits.length, 1);
     assert.equal(result.nextAppointment?.service, 'Service Call');
     assert.match(result.message, /September 2/);
+  });
+});
+
+describe('earlierSlotsThan', () => {
+  it('keeps only slots before the existing visit, earliest first, max 3', () => {
+    const visit = { startAt: '2026-10-19T14:00:00.000Z' };
+    const slots = [
+      { startAt: '2026-10-20T15:00:00.000Z' },
+      { startAt: '2026-10-19T13:00:00.000Z' },
+      { startAt: '2026-10-19T12:00:00.000Z' },
+      { startAt: 'bad' },
+    ];
+    assert.deepEqual(earlierSlotsThan(slots, visit).map((s) => s.startAt), [
+      '2026-10-19T12:00:00.000Z',
+      '2026-10-19T13:00:00.000Z',
+    ]);
+    assert.deepEqual(earlierSlotsThan(slots, { startAt: 'x' }), []);
   });
 });
