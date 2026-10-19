@@ -8,7 +8,7 @@ import { invoicePretaxUsd, isIssuedInvoice } from './invoice-value.ts';
 import { workCategory, isSiteVisit } from './work-category.ts';
 import { categoryTotals, buildWeeklySales, invoiceTitle, quoteValue, jobberDateKey } from './weekly-sales.ts';
 import { classifyRealLeads } from './real-leads.ts';
-import { buildRoasView } from './roas-view.ts';
+import { buildRoasView, buildBlendedRoas } from './roas-view.ts';
 
 const R = (startKey: string, endKey: string) => ({ range: 'x', startKey, endKey, name: 'x' });
 const base = { invoices: [], quotes: [], jobsCreated: [], jobsCompleted: [], callTimes: [], bookedAt: [] };
@@ -132,4 +132,37 @@ test('S32 ROAS: discounted invoice counts net of discount; draft invoice ignored
     invoices: [{ id: 'd', invoiceStatus: 'paid', issuedDate: '2026-10-05T18:00:00Z', amounts: { subtotal: 1000, discountAmount: 100, total: 900 }, client: { id: 'D', phones: [{ number: '7605550204' }], jobs: { nodes: [] } } },
       { id: 'e', invoiceStatus: 'draft', issuedDate: '2026-10-05T18:00:00Z', amounts: { subtotal: 7000, total: 7000 }, client: { id: 'D', phones: [{ number: '7605550204' }], jobs: { nodes: [] } } }] })!;
   assert.equal(v.newOnly.invoiced, 900);
+});
+
+// ---- Blended ROAS (all revenue ÷ all ad spend) ----
+test('S40 Blended ROAS = every issued pre-tax invoice in the window (any customer) ÷ all Google Ads spend', () => {
+  const v = buildRoasView({ spend, start: new Date('2026-10-01T07:00:00Z'), now: new Date('2026-10-12T20:00:00Z'),
+    adCalls: [{ started_at: '2026-10-02T18:00:00Z', caller_phone: '7605550201', campaign_name: 'Leads-Search-1' }],
+    invoices: [
+      { id: 'a', invoiceStatus: 'paid', issuedDate: '2026-10-05T18:00:00Z', amounts: { subtotal: 1000, total: 1077.5, taxAmount: 77.5 }, client: { id: 'A', phones: [{ number: '7605550201' }], jobs: { nodes: [] } } },
+      // never called an ad: not in ad ROAS, but IS in blended
+      { id: 'b', invoiceStatus: 'awaiting_payment', issuedDate: '2026-10-07', amounts: { subtotal: 3000, discountAmount: 500, total: 2500 }, client: { id: 'B', phones: [{ number: '7605559999' }], jobs: { nodes: [] } } } as any,
+      { id: 'c', invoiceStatus: 'draft', issuedDate: '2026-10-07', amounts: { subtotal: 9000, total: 9000 }, client: { id: 'C', phones: [], jobs: { nodes: [] } } },
+      { id: 'd', invoiceStatus: 'void', issuedDate: '2026-10-07', amounts: { subtotal: 9000, total: 9000 }, client: { id: 'C', phones: [], jobs: { nodes: [] } } },
+      // outside the window (before start / after today)
+      { id: 'e', invoiceStatus: 'paid', issuedDate: '2026-09-30', amounts: { subtotal: 4000, total: 4000 }, client: { id: 'E', phones: [], jobs: { nodes: [] } } },
+      { id: 'f', invoiceStatus: 'paid', issuedDate: '2026-10-13', amounts: { subtotal: 4000, total: 4000 }, client: { id: 'F', phones: [], jobs: { nodes: [] } } },
+    ] })!;
+  assert.equal(v.overall.invoiced, 1000);
+  assert.deepEqual(v.blended, { invoiced: 3500, invoices: 2, spend: 200, multiple: 17.5, startKey: '2026-10-01', endKey: '2026-10-12' });
+});
+test('S41 Blended ROAS: zero or unknown spend gives no multiple (UI shows —); spend outside the window is ignored', () => {
+  const inv = [{ id: 'a', invoiceStatus: 'paid', issuedDate: '2026-10-05', amounts: { subtotal: 500, total: 500 } }] as any;
+  const z = buildBlendedRoas({ invoices: inv, spend: [{ date: '2026-09-20', campaign: 'Leads-Search-1', costUsd: 300, clicks: 1 }], start: new Date('2026-10-01T07:00:00Z'), now: new Date('2026-10-12T20:00:00Z') })!;
+  assert.equal(z.spend, 0); assert.equal(z.multiple, null); assert.equal(z.invoiced, 500);
+  const n = buildBlendedRoas({ invoices: inv, spend: null, start: new Date('2026-10-01T07:00:00Z'), now: new Date('2026-10-12T20:00:00Z') })!;
+  assert.equal(n.spend, null); assert.equal(n.multiple, null);
+  assert.equal(buildBlendedRoas({ invoices: null, spend: [], start: new Date('2026-10-01T07:00:00Z'), now: new Date('2026-10-12T20:00:00Z') }), null);
+});
+test('S42 Blended ROAS follows the selected window: a shorter range only counts its own days', () => {
+  const sp = [{ date: '2026-10-02', campaign: 'Leads-Search-1', costUsd: 100, clicks: 1 }, { date: '2026-10-10', campaign: 'Leads-Search-Drilling', costUsd: 50, clicks: 1 }];
+  const inv = [{ id: 'a', invoiceStatus: 'paid', issuedDate: '2026-10-03', amounts: { subtotal: 1000, total: 1000 } }, { id: 'b', invoiceStatus: 'paid', issuedDate: '2026-10-11', amounts: { subtotal: 600, total: 600 } }] as any;
+  const all = buildBlendedRoas({ invoices: inv, spend: sp, start: new Date('2026-10-01T07:00:00Z'), now: new Date('2026-10-12T20:00:00Z') })!;
+  const wk = buildBlendedRoas({ invoices: inv, spend: sp, start: new Date('2026-10-06T07:00:00Z'), now: new Date('2026-10-12T20:00:00Z') })!;
+  assert.equal(all.multiple, 10.67); assert.equal(wk.multiple, 12); assert.equal(wk.invoiced, 600); assert.equal(wk.spend, 50);
 });

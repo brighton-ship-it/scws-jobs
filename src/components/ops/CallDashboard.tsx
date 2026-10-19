@@ -152,6 +152,8 @@ function SectionHead({ id, title, hint }: { id: string; title: string; hint?: st
   );
 }
 
+const BLENDED_ROAS_HINT = 'All revenue ÷ all ad spend. New-customer ROAS counts only revenue from new customers who came in through ads.';
+
 function HeadlineKpis({ data, rangeLabel, moneyLabel }: { data: Dashboard; rangeLabel: string; moneyLabel: string }) {
   const w = data.weekly?.totals ?? null;
   const ro = data.roas;
@@ -164,14 +166,15 @@ function HeadlineKpis({ data, rangeLabel, moneyLabel }: { data: Dashboard; range
     { label: 'Quotes approved', value: w ? usd(w.quotesApprovedValue) : '—', sub: w ? `${w.quotesApproved ?? 0} approved this period` : 'Sales did not load', period: rangeLabel },
     { label: 'Close rate', value: pct(quoteClose), sub: w ? `${w.quotesSentApproved ?? 0} of ${w.quotesSent ?? 0} quotes sent · calls ${pct(w.closingRate)}` : 'Quote close rate', period: rangeLabel, hint: 'Big number is the quote close rate: quotes sent in the range that are approved or converted. The calls figure is call to booking on real leads.' },
     { label: 'New-customer ROAS', value: ro ? mult(ro.newOnly.multipleInvoiced) : '—', sub: ro ? `${usd(ro.newOnly.invoiced)} invoiced ÷ ${usd(ro.spend)} spend` : 'Jobber invoices did not load', period: moneyLabel, hint: 'Jobber invoices to new customers who called an ad, divided by Google Ads spend.' },
+    { label: 'Blended ROAS', value: mult(ro?.blended?.multiple), sub: ro?.blended ? (ro.blended.spend ? `${usd(ro.blended.invoiced)} invoiced ÷ ${usd(ro.blended.spend)} spend` : `${usd(ro.blended.invoiced)} invoiced · no ad spend in this period`) : 'Jobber invoices did not load', period: moneyLabel, hint: BLENDED_ROAS_HINT },
     { label: 'Ad spend', value: usd(t.spend), sub: `${usd(t.costPerCall, 2)} per ad call · ${usd(t.costPerBooked)} per new booking`, period: moneyLabel },
     { label: 'Ad calls', value: String(t.calls), sub: `${t.answered} answered · ${t.missedOrShort} missed or short · includes Mike`, period: rangeLabel, hint: 'Google Ads tracked calls plus calls answered by Mike. Staff lines answered on the main, Ransom, and GBP numbers are not in this count.' },
   ];
   return (
-    <section aria-label="Headline metrics" className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-      {items.map((item) => (
-        <div key={item.label} title={item.hint} className="flex min-h-[128px] min-w-0 flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.12)]">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{item.label}</p>
+    <section aria-label="Headline metrics" className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {items.map((item, i) => (
+        <div key={item.label} title={item.hint} data-kpi={item.label} className={`${i === items.length - 1 && items.length % 2 ? 'sm:col-span-2 lg:col-span-1 ' : ''}flex min-h-[128px] min-w-0 flex-col rounded-2xl border border-slate-200 bg-white p-4 shadow-[0_1px_2px_rgba(15,23,42,.04),0_8px_24px_-12px_rgba(15,23,42,.12)]`}>
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{item.label}{item.hint ? <span className="ml-1 cursor-help normal-case text-slate-400" aria-label={item.hint}>ⓘ</span> : null}</p>
           <p className="mt-0.5 truncate text-[11px] font-medium text-slate-400" title={item.period}>{item.period}</p>
           <p className="mt-1.5 break-words text-[1.65rem] font-semibold leading-none tracking-tight text-slate-900 tabular-nums sm:text-[1.85rem]">{item.value}</p>
           <p className="mt-2 text-xs leading-snug text-slate-500">{item.sub}</p>
@@ -434,7 +437,7 @@ function AdSplitBlocks({ split, dark = false }: { split: NonNullable<Dashboard['
                   <div key={k} className="min-w-0"><dt className={`text-[11px] uppercase leading-tight tracking-wider ${mut} ${dark ? 'xl:text-sm' : ''}`}>{k}</dt><dd className={`truncate text-lg font-semibold tabular-nums ${ink} ${dark ? 'xl:text-3xl' : ''}`}>{v}</dd>{k === 'Spend' ? <MiniSpark values={r.dailySpend} color={palette.spend} title={`Daily Google Ads spend, ${win.dates ?? win.label}`} /> : null}</div>
                 ))}
               </dl>
-              <p className={`mt-2 break-words text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>Blended (all callers) {mult(r.multiple)}{r.leads != null ? <span title="new booked ÷ real new leads (one per caller; junk, repeat and existing customers excluded)"> · Call to booking (real leads) {r.leads ? `${pct(Math.min(1, r.booked / r.leads))} (${r.booked}/${r.leads})` : '—'}</span> : null}</p>
+              <p className={`mt-2 break-words text-xs ${mut} ${dark ? 'xl:text-base' : ''}`}>All ad callers {mult(r.multiple)}{r.leads != null ? <span title="new booked ÷ real new leads (one per caller; junk, repeat and existing customers excluded)"> · Call to booking (real leads) {r.leads ? `${pct(Math.min(1, r.booked / r.leads))} (${r.booked}/${r.leads})` : '—'}</span> : null}</p>
             </div>
           ))}
           {win.otherBooked != null ? <p className={`text-[11px] ${mut} ${dark ? 'xl:text-sm' : ''}`}>{win.otherBooked > 0 ? `+${win.otherBooked} booked via Mike calls · ` : ''}{win.rows.reduce((a, r) => a + r.booked, 0) + win.otherBooked} new booked total</p> : null}
@@ -771,7 +774,7 @@ function AdPerformanceCard({ data, rangeLabel, moneyLabel }: { data: Dashboard; 
   return (
     <Card title="Ad performance" subtitle={`The one place for return on ad spend and close rates · calls ${rangeLabel} · money ${moneyLabel}`} delay={40}>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {stat('ROAS (new customers)', ro ? mult(ro.newOnly.multipleInvoiced) : '—', ro ? <>{usd(ro.newOnly.invoiced)} invoiced ÷ {usd(ro.spend)} spend · Blended (all callers) <b className="text-slate-700">{mult(ro.overall.multipleInvoiced)}</b></> : 'Jobber invoices did not load', 'Jobber invoices to new customers who called an ad ÷ Google Ads spend')}
+        {stat('ROAS (new customers)', ro ? mult(ro.newOnly.multipleInvoiced) : '—', ro ? <>{usd(ro.newOnly.invoiced)} invoiced ÷ {usd(ro.spend)} spend · All ad callers <b className="text-slate-700">{mult(ro.overall.multipleInvoiced)}</b></> : 'Jobber invoices did not load', 'Jobber invoices to new customers who called an ad ÷ Google Ads spend')}
         {stat('Ad spend', usd(t.spend), <><Delta cur={t.spend} prev={prev?.spend} goodWhenUp={false} /> <span className="block">{usd(t.costPerCall, 2)}/ad call · {usd(t.costPerBooked)}/new booking</span></>)}
         {stat('Ad + Mike calls', String(t.calls), <><Delta cur={t.calls} prev={prev?.calls} /> <span className="block">{t.answered} answered · {t.missedOrShort} missed/short</span></>, 'Google Ads tracked calls + calls answered by Mike (AI receptionist). Main/Ransom/GBP lines answered by staff are not included (Voice history starts Oct 3).')}
         {stat('Call to booking (real leads)', pct(w?.closingRate), w ? `${w.bookedCalls ?? 0} new booked / ${w.calls} real leads` : undefined, leadsHint(data.realLeads))}
@@ -1103,7 +1106,7 @@ export function CallDashboardTv() {
             <span className="absolute inset-x-0 top-0 h-0.5 bg-emerald-500" />
             <p className="self-start text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400 xl:text-base">ROAS (new customers)<span className="block text-[10px] font-medium normal-case tracking-normal text-slate-500 xl:text-sm">{mainRange}</span></p>
             <div className="w-full max-w-[240px] xl:max-w-[300px]"><Gauge dark value={ro?.newOnly.multipleInvoiced ?? null} label="invoiced ÷ spend" /></div>
-            {ro ? <p className="text-sm text-slate-400 xl:text-xl">Blended (all callers) <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
+            {ro ? <p className="text-sm text-slate-400 xl:text-xl">All ad callers <span className="font-semibold text-slate-200">{mult(ro?.overall.multipleInvoiced ?? null)}</span></p> : null}
           </div>
         </div>
       ) : null}

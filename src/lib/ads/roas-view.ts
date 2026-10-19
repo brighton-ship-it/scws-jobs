@@ -6,12 +6,34 @@
  *    Google Ads call (not already a customer when they called).
  * Attribution goes to the campaign of the client's latest ad call before the invoice.
  */
-import { adCategory, digits10, ptDateKey, type AdCategory, type AdSplit, type AdSplitRow, type AdSplitWindow, type RoasSide, type RoasView, type SpendDay } from './call-dashboard.ts';
+import { adCategory, digits10, ptDateKey, type AdCategory, type AdSplit, type AdSplitRow, type AdSplitWindow, type BlendedRoas, type RoasSide, type RoasView, type SpendDay } from './call-dashboard.ts';
 import { invoicePretaxUsd } from './invoice-value.ts';
-import type { WeeklyInvoice } from './weekly-sales.ts';
+import { jobberDateKey, type WeeklyInvoice } from './weekly-sales.ts';
 
 const round = (n: number) => Math.round(n * 100) / 100;
 const DAY = 86400_000;
+
+/**
+ * Blended ROAS = every pre-tax Jobber invoice (not draft/void/bad debt) issued in the window, whoever the customer
+ * and however they found us, ÷ every Google Ads campaign's spend over the same Pacific days. Same invoice basis as the
+ * "Revenue invoiced" tile (jobberDateKey + invoicePretaxUsd), but the window starts where spend tracking starts so
+ * numerator and denominator always cover the same days. Zero or unknown spend => multiple null (UI shows "—").
+ */
+export function buildBlendedRoas(input: { invoices: WeeklyInvoice[] | null; spend: SpendDay[] | null; start: Date; now: Date }): BlendedRoas | null {
+  if (!input.invoices) return null;
+  const a = ptDateKey(input.start), b = ptDateKey(input.now);
+  let invoiced = 0, invoices = 0;
+  for (const inv of input.invoices) {
+    const key = jobberDateKey(inv.issuedDate);
+    if (!key || key < a || key > b) continue;
+    const pre = invoicePretaxUsd(inv);
+    if (!pre) continue;
+    invoiced += pre; invoices += 1;
+  }
+  invoiced = round(invoiced);
+  const spend = input.spend ? round(input.spend.filter((d) => d.date >= a && d.date <= b).reduce((x, d) => x + (Number.isFinite(d.costUsd) ? d.costUsd : 0), 0)) : null;
+  return { invoiced, invoices, spend, multiple: spend != null && spend > 0 ? round(invoiced / spend) : null, startKey: a, endKey: b };
+}
 
 export interface RoasDetailRow { invoiceId: string | null; issuedDate: string | null; clientId: string; pretax: number; paid: number; cat: AdCategory; isNew: boolean; firstAdCallAt: string; lastAdCallAt: string; priorJobs: number }
 
@@ -77,6 +99,7 @@ export function buildRoasView(input: {
   const spend = spendOf();
   const sp = spendOf('pump'), sd = spendOf('drilling');
   return {
+    blended: buildBlendedRoas({ invoices: input.invoices, spend: input.spend, start: input.start, now: input.now }),
     spend,
     overall: fin(S.all, spend),
     newOnly: fin(S.neu, spend),
@@ -85,6 +108,7 @@ export function buildRoasView(input: {
       drilling: { spend: sd, overall: fin(S.drilling.all, sd), newOnly: fin(S.drilling.neu, sd) },
     },
     method: [
+      'Blended ROAS = all pre-tax Jobber invoices (not draft/void) issued in the range, any customer or source, ÷ all Google Ads spend for the same Pacific days.',
       'ROAS overall = pre-tax Jobber invoices (not draft/void) issued in the range to any client whose phone called a Google Ads number before the invoice, ÷ Google Ads spend for the same Pacific days. Includes repeat customers.',
       'ROAS new customers = the same, limited to clients with no Jobber job created before their first Google Ads call (not already a customer when they called; repeat customers such as Cauzza are excluded).',
       'Paid = payments received to date on those invoices (pre-tax share). Credit goes to the campaign of the latest ad call before the invoice. Mike/AI receptionist calls are not ad calls and are excluded.',
