@@ -1,5 +1,11 @@
 # Supabase migrations
 
+## `20261018_missed_call_texts.sql`
+
+Adds `missed_call_texts`: one row per call the missed-call text follow-up looked at (sent, skipped and why), plus the AI text thread for replies. Written by `/api/cron/missed-call-texts` and `/api/sms/forward`. Until this is applied, the cron finds a missing-table note and texts nobody, and replies are only forwarded to the office as today. Apply it in the SQL Editor. Undo with `20261018_missed_call_texts_rollback.sql`.
+
+Texts stay off until `MISSED_CALL_TEXT_ENABLED=true`. `MISSED_CALL_TEXT_TEST_NUMBERS` texts only those numbers while the flag is unset.
+
 ## `20261014_mike_callback_attempts.sql`
 
 Adds `mike_callback_attempts`, one row per missed call Mike may call back. The cron at `/api/cron/mike-callbacks` writes it. Until this is applied, the cron logs a missing-table note and dials nobody (the dial is recorded before Twilio is called). `/ops/calls` keeps working and shows no Mike attempt line. Apply it in the SQL Editor. Undo with `20261014_mike_callback_attempts_rollback.sql`.

@@ -784,7 +784,7 @@ export function formatCollectionAttempts(input: {
 
 const textBlob = (name: string | null, summary: string | null) => `${summary ?? ''}\n${name ?? ''}`;
 
-function flags(name: string | null, summary: string | null, phone: string | null, outcome: string | null): { spam: boolean; vendor: boolean } {
+export function flags(name: string | null, summary: string | null, phone: string | null, outcome: string | null): { spam: boolean; vendor: boolean } {
   const text = textBlob(name, summary);
   const p = digits10(phone);
   const toll = !!p && TOLL_FREE.has(p.slice(0, 3));

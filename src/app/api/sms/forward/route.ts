@@ -9,8 +9,38 @@ import twilio from 'twilio';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { EMPTY_TWIML, forwardMessagingServiceSid, mediaUrls, planForward } from '@/lib/sms-forward/forward';
 import { optionalServiceClient } from '@/lib/supabase/service';
+import { textConfig } from '@/lib/receptionist/missed-call-text';
+import { handleTextReply, sendOfficeText, type ReplyOutcome } from '@/lib/receptionist/missed-call-text-run';
+import type { TextAgentTools } from '@/lib/receptionist/text-agent';
+import { handleLookupCustomer } from '@/lib/receptionist/lookup-customer';
+import { checkServiceArea } from '@/lib/receptionist/service-area';
+import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
+import { handleBookServiceCall } from '@/lib/receptionist/book-service-call';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 60;
+
+/** Mike's booking tools for the AI text thread (missed-call follow-up). */
+function textAgentTools(db: any): TextAgentTools {
+  return {
+    lookupCustomer: (phone) => handleLookupCustomer(phone),
+    checkServiceArea: async (location) => checkServiceArea(location),
+    checkSchedule: ({ phone, city, address }) => handleCheckSchedule({ phone, city, address, intent: 'book' }),
+    bookJob: ({ phone, name, address, city, startAt, notes }) => handleBookServiceCall({ phone, name, address, city, startAt, notes }),
+    handOff: async ({ phone, reason, urgent, summary }) => {
+      const last4 = phone.replace(/\D/g, '').slice(-4);
+      try {
+        await db?.from('booking_requests').insert({
+          service_type: urgent ? 'Emergency' : 'Callback', customer_name: `Texter: (${phone.slice(-10, -7)}) ${phone.slice(-7, -4)}-${last4}`,
+          phone: phone.replace(/\D/g, ''), address: '', city: '', status: 'pending', source: 'sms_ai',
+          notes: `💬 Missed-call text thread: ${reason}. ${summary}`.slice(0, 2000),
+        });
+      } catch (e) { console.error('[missed-call-text] handoff row failed', e instanceof Error ? e.message : e); }
+      await sendOfficeText(`${urgent ? 'URGENT ' : ''}Text follow-up needs you: ${phone} - ${reason}. ${summary}`, process.env);
+      return { ok: true, message: 'The office has it and will reach out.' };
+    },
+  };
+}
 const xml = (b: string, status = 200) => new NextResponse(b, { status, headers: { 'Content-Type': 'text/xml' } });
 
 export async function POST(req: NextRequest) {
@@ -18,6 +48,15 @@ export async function POST(req: NextRequest) {
   if (!valid) return new NextResponse('Forbidden', { status: 403 });
 
   const plan = planForward(params);
+  // Missed-call text thread (flag off = skipped without any read). Liz still gets every text below.
+  let ai: ReplyOutcome | null = null;
+  if (textConfig().mode !== 'off' && params.From && plan.action === 'forward') {
+    try {
+      const db: any = optionalServiceClient();
+      if (db) ai = await handleTextReply({ db, from: params.From, body: params.Body || '', env: process.env, now: new Date(), tools: textAgentTools(db) });
+    } catch (e) { console.error('[missed-call-text] reply failed', e instanceof Error ? e.message : e); }
+    if (ai?.handled && ai.label) plan.body = `[${ai.label}] ${plan.body}`.slice(0, 1500);
+  }
   const sent: Array<{ to: string; sid?: string; error?: string }> = [];
   if (plan.action === 'forward') {
     const sid = process.env.TWILIO_ACCOUNT_SID?.trim();
@@ -56,6 +95,7 @@ export async function POST(req: NextRequest) {
           to: params.To, line: plan.line.label, source: plan.line.source, media: mediaUrls(params),
           forwarded: sent.map((s) => ({ to_last4: s.to.slice(-4), sid: s.sid ?? null, error: s.error ?? null })),
         });
+        if (ai?.handled && ai.reply) messages.push({ role: 'assistant', content: ai.reply, timestamp: new Date().toISOString(), source: 'missed_call_text_ai' });
         await db.from('sms_conversations').upsert(
           { phone_number: params.From, messages, updated_at: new Date().toISOString() },
           { onConflict: 'phone_number' },
