@@ -1,4 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { parseTwilio } from '@/lib/phone-calls/auth';
+import { finalStatusPatch } from '@/lib/phone-calls/final-status';
+import { optionalServiceClient } from '@/lib/supabase/service';
+
+export const dynamic = 'force-dynamic';
 
 // Tracking number to source mapping
 const TRACKING_NUMBERS: Record<string, string> = {
@@ -17,13 +22,28 @@ const TRACKING_NUMBERS: Record<string, string> = {
 
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
-    
+    const { params, valid } = await parseTwilio(request);
+
     // Extract Twilio webhook data
-    const callSid = formData.get('CallSid') as string;
-    const calledNumber = formData.get('Called') as string;
-    const callerNumber = formData.get('From') as string;
-    const callStatus = formData.get('CallStatus') as string;
+    const callSid = params.CallSid;
+    const calledNumber = params.Called || params.To;
+    const callerNumber = params.From;
+    const callStatus = params.CallStatus;
+
+    // Final-status callback (every number's StatusCallback points here). Close out recorded-line rows that never
+    // reached the <Dial> (caller hung up during the recording notice); rows with a dial status are left alone.
+    const patch = valid ? finalStatusPatch(params) : null;
+    if (patch) {
+      const db: any = optionalServiceClient();
+      if (db) {
+        try {
+          const { error } = await db.from('inbound_call_recordings').update(patch)
+            .eq('call_sid', callSid).is('dial_status', null).eq('processing_status', 'pending');
+          if (error) console.error('[calls/webhook] final status update failed', error.message);
+        } catch (e) { console.error('[calls/webhook] final status update failed', e instanceof Error ? e.message : e); }
+      }
+      return new NextResponse('<?xml version="1.0" encoding="UTF-8"?><Response/>', { headers: { 'Content-Type': 'text/xml' } });
+    }
     
     // Determine source from tracking number
     const source = TRACKING_NUMBERS[calledNumber] || 'unknown';

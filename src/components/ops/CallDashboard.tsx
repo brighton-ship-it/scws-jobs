@@ -656,8 +656,8 @@ export function mergeCalls(feed: FeedRow[], recorded: RecordedCall[]): MergedCal
 const CALL_FILTERS = [['all', 'All'], ['missed', 'Missed'], ['mike', 'Mike'], ['follow', 'Follow up']] as const;
 type CallFilter = (typeof CALL_FILTERS)[number][0];
 function matchesFilter(c: MergedCall, f: CallFilter): boolean {
-  const o = c.feed?.outcome ?? (c.rec?.answered === false ? 'Missed' : 'Answered');
-  if (f === 'missed') return o === 'Missed' || o === 'Voicemail';
+  const o = c.feed?.outcome ?? (c.rec?.outcome === 'hung_up' ? 'Hung up' : c.rec?.answered === false ? 'Missed' : 'Answered');
+  if (f === 'missed') return o === 'Missed' || o === 'Voicemail' || o === 'Hung up';
   if (f === 'mike') return o.startsWith('Mike');
   if (f === 'follow') return !!c.rec?.needs_followup || !!c.feed?.goingCold || /^No callback/.test(c.feed?.callback ?? '');
   return true;
@@ -683,7 +683,7 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
           const name = f?.name || r?.caller_name || null;
           const phone = f?.phone || fmtPhone(r?.caller_number ?? null);
           const line = f?.line || (r?.source ? SOURCE_LABEL[r.source] ?? r.source : '');
-          const outcome0 = f?.outcome ?? (r?.answered === false ? 'Missed' : 'Answered');
+          const outcome0 = f?.outcome ?? (r?.outcome === 'hung_up' ? 'Hung up' : r?.answered === false ? 'Missed' : 'Answered');
           const stuck = !!(r && r.processing_status === 'pending' && !r.dial_status && Date.now() - Date.parse(r.started_at) > 30 * 60_000);
           const summary = sm?.text || f?.summary || (stuck ? 'No recording or summary: Twilio never sent this call\'s final status, so it was never processed.' : r && r.processing_status !== 'done' ? `(${r.processing_status})` : '');
           const outcome = stuck && outcome0 === 'Answered' ? 'Status unknown' : outcome0;
