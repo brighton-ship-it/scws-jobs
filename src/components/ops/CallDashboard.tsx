@@ -669,7 +669,7 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
   const all = mergeCalls(feed ?? [], recorded);
   const list = all.filter((c) => matchesFilter(c, filter));
   return (
-    <Card title="Calls · summaries & transcripts" subtitle="All incoming (Voice main/Ransom, tracking numbers, Mike) · last 60 + every recorded call (latest 25) · tap a call for its summary and transcript" delay={60}>
+    <Card title="Calls · summaries & transcripts" subtitle="All incoming (Voice main/Ransom, tracking numbers, Mike) · last ~14 days + every recorded call (latest 25) · tap a call for its summary and transcript" delay={60}>
       <div className="mb-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Call filter">
         {CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`inline-flex min-h-11 items-center rounded-full px-3 text-sm font-medium ${filter === v ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{l}</button>)}
       </div>

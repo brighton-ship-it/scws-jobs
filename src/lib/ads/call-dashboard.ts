@@ -238,7 +238,7 @@ export function buildCallLogView(rows: Array<Record<string, any>>, now: Date): C
   const today = sorted.filter((r) => Date.parse(r.started_at) >= todayStart);
   const n = (o: string) => today.filter((r) => r.outcome === o).length;
   return {
-    rows: sorted.slice(0, 40).map((r) => ({
+    rows: sorted.slice(0, 250).map((r) => ({
       at: r.started_at, phone: r.caller_phone ?? '', calledNumber: r.called_number ?? null, outcome: r.outcome,
       answeredBy: r.answered_by ? String(r.answered_by).split('@')[0] : null,
       durationSeconds: r.duration_seconds ?? null, client: r.client_name ?? (r.jobber_client_id || r.customer_id ? 'Existing client' : null),

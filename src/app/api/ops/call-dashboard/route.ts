@@ -27,6 +27,8 @@ import { loadRecentAttempts } from '@/lib/receptionist/mike-callback-run';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
+/** Calls kept in the feed: enough for ~14 days so older tracking-line calls show who answered. */
+const FEED_ROWS = 250;
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
@@ -227,7 +229,7 @@ export async function GET(request: NextRequest) {
           bookedMike: bookingIds,
         }), mikeCallbacks.attempts);
         const withMike = <T extends { phone: string; at: string }>(rows: T[]) => rows.map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
-        dash.callFeed = withMike(annotateFeed(merged.slice(0, 60), sources, nowDash, { attempts, fromMs, pastDuePhones, work }));
+        dash.callFeed = withMike(annotateFeed(merged.slice(0, FEED_ROWS), sources, nowDash, { attempts, fromMs, pastDuePhones, work }));
         let dismissed: LeadDismissal[] = [];
         try {
           const ds = await db.from('settings').select('value').eq('key', LEAD_DISMISSALS_KEY).maybeSingle();
@@ -259,7 +261,7 @@ export async function GET(request: NextRequest) {
         dash.needsCallback = { ...queues.leads, rows: withMike(queues.leads.rows) };
         dash.invoiceFollowUp = queues.invoices;
       } catch (error) {
-        dash.callFeed = annotateFeed(merged.slice(0, 60), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
+        dash.callFeed = annotateFeed(merged.slice(0, FEED_ROWS), sources, nowDash, { attempts, fromMs, pastDuePhones }).map((row) => ({ ...row, mike: mikeStatusLabel(row.phone, row.at, mikeCallbacks.attempts, nowDash) }));
         notes.push(`needs callback: ${error instanceof Error ? error.message : 'error'}`);
       }
       // Main page header and TV "today" tiles share this one count across every line.
