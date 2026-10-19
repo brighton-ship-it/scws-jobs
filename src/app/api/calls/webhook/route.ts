@@ -37,9 +37,14 @@ export async function POST(request: NextRequest) {
       const db: any = optionalServiceClient();
       if (db) {
         try {
-          const { error } = await db.from('inbound_call_recordings').update(patch)
-            .eq('call_sid', callSid).is('dial_status', null).eq('processing_status', 'pending');
+          const { data, error } = await db.from('inbound_call_recordings').update(patch)
+            .eq('call_sid', callSid).is('dial_status', null).eq('processing_status', 'pending').select('call_sid');
           if (error) console.error('[calls/webhook] final status update failed', error.message);
+          else if (data?.length) console.log(`[calls/webhook] final ${callStatus} ${callSid}: closed as hung up before dial`);
+          else {
+            const { data: row } = await db.from('inbound_call_recordings').select('dial_status, processing_status, outcome').eq('call_sid', callSid).maybeSingle();
+            console.log(`[calls/webhook] final ${callStatus} ${callSid}: ${row ? `left as is (dial=${row.dial_status} processing=${row.processing_status} outcome=${row.outcome})` : 'no recorded-line row'}`);
+          }
         } catch (e) { console.error('[calls/webhook] final status update failed', e instanceof Error ? e.message : e); }
       }
       return new NextResponse('<?xml version="1.0" encoding="UTF-8"?><Response/>', { headers: { 'Content-Type': 'text/xml' } });
