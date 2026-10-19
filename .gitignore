@@ -51,3 +51,4 @@ next-env.d.ts
 *.mjs
 .env.prod
 .env.vercel-*
+.env*

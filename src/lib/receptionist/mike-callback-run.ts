@@ -186,7 +186,7 @@ export async function loadCallbackSnapshot(db: any, env: NodeJS.ProcessEnv, now:
 
   const [log, recordings, attempts, requests, jobsNew, jobsUpdated, quotes, invoicesOpen, invoicesRecent, holds, dnc] = await Promise.all([
     read('call log', db.from('phone_call_log').select('voice_call_key, started_at, direction, caller_phone, called_number, ring_group, outcome, answered_by, duration_seconds, ring_seconds, client_name, receptionist_call_id').gte('started_at', since).limit(5000)),
-    read('recordings', db.from('inbound_call_recordings').select('call_sid, started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, ring_seconds, summary, outcome, caller_name').gte('started_at', since).neq('source', 'test').limit(2000)),
+    read('recordings', db.from('inbound_call_recordings').select('call_sid, started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name').gte('started_at', since).neq('source', 'test').limit(2000)),
     read('attempts', db.from('mike_callback_attempts').select('id, missed_call_key, caller_phone, from_number, missed_at, attempted_at, outcome, reason, twilio_call_sid, vapi_call_id').gte('missed_at', week).limit(2000)),
     read('requests', db.from('booking_requests').select('phone, created_at, vapi_call_id, source').gte('created_at', since).limit(2000)),
     read('jobs', db.from('jobber_jobs').select('id, client_id, created_at, data').gte('created_at', since).limit(2000)),
