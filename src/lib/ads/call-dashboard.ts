@@ -251,9 +251,9 @@ export function buildCallLogView(rows: Array<Record<string, any>>, now: Date): C
 
 export type AdCategory = 'pump' | 'drilling';
 export interface RoasSide { invoiced: number; paid: number; invoices: number; clients: number; /** clients whose attributed invoices are all paid in full */ paidClients?: number; multipleInvoiced: number | null; multiplePaid: number | null }
-/** Blended ROAS (formerly MER): ALL pre-tax Jobber invoiced in the window (any customer, any source) ÷ ALL Google Ads spend, same Pacific days. */
-export interface BlendedRoas { invoiced: number; invoices: number; spend: number | null; multiple: number | null; startKey: string; endKey: string }
-export interface RoasView { /** All revenue ÷ all ad spend (see BlendedRoas). */ blended?: BlendedRoas | null; spend: number | null; overall: RoasSide; newOnly: RoasSide; byCategory: Record<AdCategory, { spend: number | null; overall: RoasSide; newOnly: RoasSide }>; method: string[] }
+/** Blended ROAS: pre-tax Jobber invoiced in the window to every ad-sourced customer (new + returning) ÷ total ad spend, same Pacific days. */
+export interface BlendedRoas { invoiced: number; invoices: number; clients?: number; spend: number | null; multiple: number | null; startKey: string; endKey: string }
+export interface RoasView { /** Ad-sourced customer revenue (new + returning) ÷ total ad spend (see BlendedRoas). */ blended?: BlendedRoas | null; spend: number | null; overall: RoasSide; newOnly: RoasSide; byCategory: Record<AdCategory, { spend: number | null; overall: RoasSide; newOnly: RoasSide }>; method: string[] }
 export interface AdSplitRow {
   category: AdCategory; spend: number | null; clicks: number | null; calls: number; booked: number;
   /** Overall (all ad callers) pre-tax invoiced; same calculation as the ROAS card. */

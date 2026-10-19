@@ -152,7 +152,7 @@ function SectionHead({ id, title, hint }: { id: string; title: string; hint?: st
   );
 }
 
-const BLENDED_ROAS_HINT = 'All revenue ÷ all ad spend. New-customer ROAS counts only revenue from new customers who came in through ads.';
+const BLENDED_ROAS_HINT = 'Revenue from every customer who came in through an ad, new and returning, divided by total ad spend. Customers who never came from an ad are not counted. New-customer ROAS counts only the new ones.';
 
 function HeadlineKpis({ data, rangeLabel, moneyLabel }: { data: Dashboard; rangeLabel: string; moneyLabel: string }) {
   const w = data.weekly?.totals ?? null;
@@ -167,7 +167,7 @@ function HeadlineKpis({ data, rangeLabel, moneyLabel }: { data: Dashboard; range
     { label: 'Close rate', value: pct(quoteClose), sub: w ? `${w.quotesSentApproved ?? 0} of ${w.quotesSent ?? 0} quotes sent · calls ${pct(w.closingRate)}` : 'Quote close rate', period: rangeLabel, hint: 'Big number is the quote close rate: quotes sent in the range that are approved or converted. The calls figure is call to booking on real leads.' },
     { label: 'Ad calls', value: String(t.calls), sub: `${t.answered} answered · ${t.missedOrShort} missed or short · includes Mike`, period: rangeLabel, hint: 'Google Ads tracked calls plus calls answered by Mike. Staff lines answered on the main, Ransom, and GBP numbers are not in this count.' },
     { label: 'New-customer ROAS', value: ro ? mult(ro.newOnly.multipleInvoiced) : '—', sub: ro ? `${usd(ro.newOnly.invoiced)} invoiced ÷ ${usd(ro.spend)} spend` : 'Jobber invoices did not load', period: moneyLabel, hint: 'Jobber invoices to new customers who called an ad, divided by Google Ads spend.' },
-    { label: 'Blended ROAS', value: mult(ro?.blended?.multiple), sub: ro?.blended ? (ro.blended.spend ? `${usd(ro.blended.invoiced)} invoiced ÷ ${usd(ro.blended.spend)} spend` : `${usd(ro.blended.invoiced)} invoiced · no ad spend in this period`) : 'Jobber invoices did not load', period: moneyLabel, hint: BLENDED_ROAS_HINT },
+    { label: 'Blended ROAS', value: mult(ro?.blended?.multiple), sub: ro?.blended ? (ro.blended.spend ? `${usd(ro.blended.invoiced)} from ad customers ÷ ${usd(ro.blended.spend)} spend` : `${usd(ro.blended.invoiced)} from ad customers · no ad spend in this period`) : 'Jobber invoices did not load', period: moneyLabel, hint: BLENDED_ROAS_HINT },
     { label: 'Ad spend', value: usd(t.spend), sub: `${usd(t.costPerCall, 2)} per ad call · ${usd(t.costPerBooked)} per new booking`, period: moneyLabel },
   ];
   return (
