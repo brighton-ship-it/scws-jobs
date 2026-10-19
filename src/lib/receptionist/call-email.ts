@@ -242,6 +242,10 @@ export type CallEmailInput = {
   durationLabel?: string;
   appUrl?: string;
   customerId?: string | null;
+  /** Full "Lead source: ..." line (see lead-source.ts). Omitted when not given. */
+  leadSourceLine?: string | null;
+  /** "Client: Existing Jobber client (...)" / "Client: New caller ..." when Mike looked the caller up. */
+  clientLine?: string | null;
 };
 
 export function buildCallEmail(input: CallEmailInput): { subject: string; text: string } {
@@ -256,6 +260,8 @@ export function buildCallEmail(input: CallEmailInput): { subject: string; text: 
     '',
     `Caller: ${name || 'Unknown'}`,
     `Number: ${phone ? formatPhoneDisplay(phone) : 'Unknown'}`,
+    input.leadSourceLine || null,
+    input.clientLine || null,
     outcome.email ? `Email: ${outcome.email}` : null,
     `Address: ${address || 'Not given'}`,
     `Issue: ${issue || 'Not given'}`,

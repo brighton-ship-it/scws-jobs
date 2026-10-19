@@ -10,6 +10,7 @@ import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall } from '@/lib/receptionist/book-service-call';
 import { buildCallEmail, extractCallOutcome } from '@/lib/receptionist/call-email';
+import { diversionNumbers, jobberClientLine, leadSourceLine, resolveLeadSource, vapiAnsweredNumber, type RecordingHint } from '@/lib/receptionist/lead-source';
 import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/call-duration';
 import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
@@ -435,8 +436,35 @@ export async function POST(request: NextRequest) {
         console.log('[Receptionist] Tool-row outcome lookup skipped:', rowErr);
       }
     }
+    // Where the lead came from: the dialed number (SIP Diversion) plus any Twilio
+    // tracking-line recording for this caller just before Mike answered.
+    let leadLine: string | null = null;
+    try {
+      const vapiCall = message.call || body.call || call;
+      let recordings: RecordingHint[] = [];
+      if (!callbackAttempt && phone.length >= 10) {
+        const t = startTime.getTime();
+        const { data: recRows } = await (supabase as any)
+          .from('inbound_call_recordings')
+          .select('tracking_number, source, started_at')
+          .eq('caller_number', `+1${phone.slice(-10)}`)
+          .gte('started_at', new Date(t - 10 * 60_000).toISOString())
+          .lte('started_at', new Date(t + 2 * 60_000).toISOString())
+          .order('started_at', { ascending: false })
+          .limit(5);
+        recordings = (recRows || []) as RecordingHint[];
+      }
+      leadLine = callbackAttempt
+        ? 'Lead source: Mike callback (outbound call)'
+        : leadSourceLine(resolveLeadSource({ diversions: diversionNumbers(vapiCall), recordings, answered: vapiAnsweredNumber(vapiCall) }));
+    } catch (leadErr) {
+      console.log('[Receptionist] Lead source lookup skipped:', leadErr);
+      leadLine = 'Lead source: Unknown (lookup failed)';
+    }
     const built = buildCallEmail({
       outcome,
+      leadSourceLine: leadLine,
+      clientLine: jobberClientLine(rawMessages),
       fallbackName: customerName || formatPhone(phone),
       fallbackPhone: phone,
       fallbackAddress: address,
