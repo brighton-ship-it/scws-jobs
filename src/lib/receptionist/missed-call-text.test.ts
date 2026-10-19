@@ -116,3 +116,12 @@ describe('handleTextReply', () => {
     assert.equal(reads, 0);
   });
 });
+
+import { test as t2 } from 'node:test';
+import assertA from 'node:assert/strict';
+import { textConfig as tcA } from './missed-call-text.ts';
+t2('approved wording A is the default and the flag stays off by default', () => {
+  const c = tcA({} as any);
+  assertA.equal(c.option, 'A');
+  assertA.equal(c.mode, 'off');
+});

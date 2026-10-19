@@ -16,6 +16,7 @@ import { getBusinessHours } from '@/lib/receptionist/business-hours';
 import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
 import { callCustomerPhone, parseVapiServerTools, vapiCallId, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
 import { isOwnNumber } from '@/lib/ads/real-leads';
+import { isReceptionistTestCaller, testToolResult } from '@/lib/receptionist/test-call';
 import { businessCallerId, phoneForCallbackTool } from '@/lib/receptionist/mike-callback';
 import { linkAttemptVapi, overrideCallbackCaller, updateAttemptOutcome } from '@/lib/receptionist/mike-callback-run';
 import {
@@ -137,6 +138,11 @@ export async function POST(request: NextRequest) {
     }
     // Vapi sees the tracking number as the caller on a callback bridge. If that
     // number does not match exactly one in-flight callback, do not file a lead for it.
+    if (!callbackAttempt && isReceptionistTestCaller(phone)) {
+      // Our own test line: no lead, no task, no office email, no Discord, no dashboard row.
+      console.log(`[Receptionist] Test call ${call.id} from a test line; not filing a lead`);
+      return NextResponse.json({ ok: true, skipped: true, reason: 'test-call' });
+    }
     if (!callbackAttempt && businessCallerId(phone)) {
       console.error('[mike-callback] no unique in-flight callback for this business caller ID; not filing a lead');
       return NextResponse.json({ ok: true, skipped: true, reason: 'callback-unmatched' });
@@ -554,9 +560,10 @@ async function handleVapiTools(body: any) {
   const calls = parsed.mode === 'function-call' ? [parsed.call] : parsed.calls;
   let callPhone = callCustomerPhone(body);
   const callId = vapiCallId(body) || null;
+  let testCall = isReceptionistTestCaller(callPhone);
   try {
     const match = await overrideCallbackCaller(createServiceClient() as any, callPhone, callId || '');
-    if (match) callPhone = match.phone;
+    if (match) { callPhone = match.phone; testCall = false; }
     else if (isOwnNumber(callPhone)) callPhone = '';
   } catch (callbackErr) {
     console.error('[mike-callback] tool caller match failed', callbackErr instanceof Error ? callbackErr.message : callbackErr);
@@ -568,7 +575,10 @@ async function handleVapiTools(body: any) {
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
     const params = call.params || {};
-    console.log(`[Receptionist] Function call: ${call.name}`, JSON.stringify(redactToolLog(params)));
+    console.log(`[Receptionist] Function call: ${call.name}${testCall ? ' (test call)' : ''}`, JSON.stringify(redactToolLog(params)));
+    // Test line: side-effect tools are simulated (no Jobber, no booking row, no alert).
+    const simulated = testCall ? testToolResult(call.name, params) : null;
+    if (simulated) { executed[i] = { id: call.id, body: simulated }; continue; }
     if (isOfficeAlertTool(call.name)) officeIndexes.push(i);
   }
 

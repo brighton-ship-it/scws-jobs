@@ -112,7 +112,8 @@ export function textAllowedFor(phone: string | null | undefined, config: TextCon
 }
 
 /**
- * Draft wording for Brighton to pick (MISSED_CALL_TEXT_OPTION). Each names SCWS, says why
+ * Wording. Brighton approved Option A on Oct 18, 2026; it is the default (MISSED_CALL_TEXT_OPTION
+ * unset). B and C stay only as alternates. Each names SCWS, says why
  * we're texting, offers ONE next step, and carries opt-out language. No prices, no links,
  * no phone numbers, nothing about bills or payments.
  */
