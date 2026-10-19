@@ -28,7 +28,7 @@ import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 
 /** Calls kept in the feed: enough for ~14 days so older tracking-line calls show who answered. */
-const FEED_ROWS = 250;
+const FEED_ROWS = 500;
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
