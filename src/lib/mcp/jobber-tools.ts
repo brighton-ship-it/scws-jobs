@@ -59,6 +59,7 @@ import {
 } from '../jobber/mcp-job-writes.ts';
 import { cancelJob, cancelVisit, rescheduleVisit } from '../jobber/mcp-job-cancel.ts';
 import { createNote, listNotes, parseCreateNoteArgs, parseListNotesArgs } from '../jobber/mcp-notes.ts';
+import { parseRemoveClientPhoneArgs, removeClientPhone } from '../jobber/mcp-client-phones.ts';
 import { assertNoNotifyArgs } from '../jobber/mcp-notify.ts';
 import { createRequest } from '../jobber/mcp-request-writes.ts';
 import { getRequest, searchRequests } from '../jobber/mcp-requests.ts';
@@ -943,6 +944,21 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         requestId: { type: 'string' },
         jobId: { type: 'string' },
         quoteId: { type: 'string' },
+      },
+    },
+  },
+  {
+    name: 'remove_client_phone',
+    description:
+      'Remove ONE phone number from ONE Jobber client with clientEdit phonesToDelete. No other client field changes. dryRun defaults to TRUE: pass dryRun:false to write. Reads phones before and re-reads after. Refuses when it is the only phone; if the removed number was primary, the first remaining phone becomes primary. Re-add a number in the Jobber UI to revert. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['clientId', 'phone'],
+      properties: {
+        clientId: { type: 'string', description: 'Client encoded id.' },
+        phone: { type: 'string', description: 'Number to remove, any format; matched on the last 10 digits.' },
+        dryRun: { type: 'boolean', description: 'Default true. false writes.' },
       },
     },
   },
@@ -1846,6 +1862,19 @@ export async function callJobberMcpTool(
           noteId: note.noteId,
           message: note.message,
           note: 'Saved with the matching CreateNote mutation. Nothing was emailed or texted.',
+        });
+      }
+      case 'remove_client_phone': {
+        assertNoNotifyArgs(args);
+        const result = await removeClientPhone(parseRemoveClientPhoneArgs(args), deps);
+        return textResult({
+          ...result,
+          notified: false,
+          note: result.dryRun
+            ? 'dryRun: clientEdit was not called. after is the projected phone list.'
+            : result.mutated
+              ? 'Removed with clientEdit phonesToDelete. after is a fresh read. Nothing was emailed or texted.'
+              : 'Client did not have that number. clientEdit was not called.',
         });
       }
       case 'list_tax_rates': {
