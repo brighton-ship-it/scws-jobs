@@ -206,7 +206,7 @@ export function invoiceIsPastDue(status: string, daysLate: number | null): boole
 
 const SOURCE_LINE: Record<string, string> = {
   gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads',
-  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', main_line: 'Main', ransom_line: 'Ransom',
+  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', direct_mail: 'Direct mail', main_line: 'Main', ransom_line: 'Ransom',
 };
 
 const OUTCOME_LABEL: Record<CallbackCandidate['outcome'], string> = {

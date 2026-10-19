@@ -23,6 +23,7 @@ const FRIENDLY: Record<string, string> = {
   Direct: 'Direct line',
   Yelp: 'Yelp',
   'Apple Maps': 'Apple Maps',
+  'Direct mail': 'Direct mail',
   'Toll-free': 'Toll-free line',
   'Line 823-7963': 'Test line',
 };
