@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
+import { isTestCallerPhone } from '@/lib/ads/real-leads';
 
 export const dynamic = 'force-dynamic';
 
@@ -22,7 +23,7 @@ export async function GET(request: NextRequest) {
     // (test traffic filtered below unless ?tests=1)
     if (error) return finish(NextResponse.json({ calls: [], note: error.message }));
     const tests = new URL(request.url).searchParams.get("tests") === '1';
-    const isTest = (r: any) => r.source === 'test' || ['+17608237963', '+18773863995'].includes(r.caller_number);
+    const isTest = (r: any) => r.source === 'test' || r.caller_number === '+18773863995' || isTestCallerPhone(r.caller_number);
     return finish(NextResponse.json({ calls: (data ?? []).filter((r: any) => tests || !isTest(r)) }));
   } catch {
     return finish(NextResponse.json({ error: 'Failed to load' }, { status: 500 }));

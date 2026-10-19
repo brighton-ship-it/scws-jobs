@@ -29,6 +29,16 @@ export const OWN_NUMBERS = new Set<string>([...Array.from(STAFF_PHONES), '760823
   ...[process.env.TWILIO_FROM_NUMBER, process.env.PHONE_CALL_FORWARD_MAIN, process.env.PHONE_CALL_FORWARD_RANSOM, process.env.SCWS_OWN_NUMBERS]
     .flatMap((v) => (v ?? '').split(',')).map((v) => { const d = v.replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; }).filter((d) => d.length === 10)]);
 export const isOwnNumber = (phone: string | null | undefined) => { const d = (phone ?? '').replace(/\D/g, ''); return OWN_NUMBERS.has(d.length === 11 && d.startsWith('1') ? d.slice(1) : d); };
+/**
+ * Owner/test phones: Brighton's cell (408-318-1171) and the Twilio test line (760-823-7963).
+ * Their calls are test traffic on dashboards, call lists, metrics, callback tracking and the daily review.
+ * Dashboard-only on purpose: Mike, callbacks and missed-call texts keep treating Brighton's cell as a normal caller
+ * (isOwnNumber is unchanged) so his live tests still behave like a customer call.
+ */
+export const TEST_CALLER_PHONES = new Set<string>(['4083181171', '7608237963']);
+export const isTestCallerPhone = (phone: string | null | undefined) => { const d = (phone ?? '').replace(/\D/g, ''); return TEST_CALLER_PHONES.has(d.length === 11 && d.startsWith('1') ? d.slice(1) : d); };
+/** Excluded from every dashboard count/list: SCWS's own lines and staff, plus owner/test phones. */
+export const isExcludedCaller = (phone: string | null | undefined) => isOwnNumber(phone) || isTestCallerPhone(phone);
 const TOLL_FREE = new Set(['800', '833', '844', '855', '866', '877', '888']);
 const SPAM = /spam|robocall|wrong number|telemarket|solicit|marketing|\bSEO\b|google (listing|business)|sales department|extended warranty on (your|their) (car|vehicle)/i;
 const REAL_NEED = /no water|pressure|pump|well (is|has|stopped)|drill/i;
@@ -63,7 +73,7 @@ export function classifyRealLeads(input: {
     const text = list.map((c) => c.text || '').join(' ');
     const bookedCat = input.booked.has(p) ? input.booked.get(p) ?? null : undefined;
     let phoneReason: LeadReason | null = null;
-    if (OWN_NUMBERS.has(p)) phoneReason = 'internal';
+    if (OWN_NUMBERS.has(p) || TEST_CALLER_PHONES.has(p)) phoneReason = 'internal';
     else if (bookedCat === undefined) {
       const fj = input.firstJobAt.get(p);
       if (fj === undefined) unresolved += 1;

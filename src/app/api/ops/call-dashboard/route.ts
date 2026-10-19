@@ -11,7 +11,7 @@ import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { isInternalJob } from '@/lib/ads/internal-job';
 import { loadWeeklyInvoices, loadWindowQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
-import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from '@/lib/ads/real-leads';
+import { classifyRealLeads, LEAD_REASON_LABEL, isExcludedCaller, type LeadCall } from '@/lib/ads/real-leads';
 import { digits10 } from '@/lib/ads/call-dashboard';
 import { buildRoasView, buildSharedAdSplit, type RoasDetailRow } from '@/lib/ads/roas-view';
 import { mirrorState } from '@/lib/jobber-mirror/read';
@@ -74,23 +74,25 @@ export async function GET(request: NextRequest) {
     const conversions = convs.data ?? [];
     const jobMoney = await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
     if (live.error) notes.push(`live calls: ${live.error.message}`);
-    const mikeCallbacks = await loadRecentAttempts(db, new Date(Date.now() - 14 * 86400_000).toISOString());
-    if (mikeCallbacks.note) notes.push(mikeCallbacks.note);
-    const callbackVapi = callbackVapiIds(mikeCallbacks.attempts);
+    const mikeCallbacksRaw = await loadRecentAttempts(db, new Date(Date.now() - 14 * 86400_000).toISOString());
+    if (mikeCallbacksRaw.note) notes.push(mikeCallbacksRaw.note);
+    // Callback legs (incl. tests to owner/test phones) still drop out of inbound counts; attempt tracking ignores test phones.
+    const callbackVapi = callbackVapiIds(mikeCallbacksRaw.attempts);
+    const mikeCallbacks = { ...mikeCallbacksRaw, attempts: mikeCallbacksRaw.attempts.filter((a) => !isExcludedCaller(a.phone)) };
     // SCWS's own numbers (GV/Twilio lines, staff, Twilio test line 760-823-7963) never count as calls, leads or bookings.
     // Mike's outbound callbacks are not new inbound leads and do not credit Mike as a source.
-    const adsCalls: DashCall[] = (calls.data ?? []).filter((c: DashCall) => !isOwnNumber(c.caller_phone));
+    const adsCalls: DashCall[] = (calls.data ?? []).filter((c: DashCall) => !isExcludedCaller(c.caller_phone));
     // 'processing' is only the webhook's claim placeholder; ~220 Sep 18–Oct 7 calls finished (duration + summary)
     // but never left that status. Count every real call: drop only fresh in-flight claims and rows with no phone.
-    const liveRows = (live.data ?? []).filter((r: any) => !callbackVapi.has(r.vapi_call_id) && !isOwnNumber(r.phone) && /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
+    const liveRows = (live.data ?? []).filter((r: any) => !callbackVapi.has(r.vapi_call_id) && !isExcludedCaller(r.phone) && /\d{10}/.test(String(r.phone || '').replace(/\D/g, ''))
       && !(r.status === 'processing' && r.duration_sec == null && !r.summary && Date.now() - Date.parse(r.called_at) < 15 * 60_000));
     const log = await loadPhoneCallLog(db, since);
     let inboundLog: any[] = [];
     let outboundLog: any[] = [];
     if (log.error) notes.push(`call log: ${log.error.message}`);
     else {
-      inboundLog = (log.data ?? []).filter((r: any) => r.direction !== 'outbound' && !isOwnNumber(r.caller_phone));
-      outboundLog = (log.data ?? []).filter((r: any) => r.direction === 'outbound' && !isOwnNumber(r.caller_phone));
+      inboundLog = (log.data ?? []).filter((r: any) => r.direction !== 'outbound' && !isExcludedCaller(r.caller_phone));
+      outboundLog = (log.data ?? []).filter((r: any) => r.direction === 'outbound' && !isExcludedCaller(r.caller_phone));
     }
     const recordingHints = await loadRecordingHints(db, since);
     if (recordingHints.note) notes.push(recordingHints.note);
@@ -158,10 +160,10 @@ export async function GET(request: NextRequest) {
     if (!log.error) dash.callLog = buildCallLogView(inboundLog, nowDash);
     try {
       const recs = await db.from('inbound_call_recordings').select('started_at, caller_number, tracking_number, source, dial_status, answered, duration_seconds, summary, outcome, caller_name')
-        .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995)').order('started_at', { ascending: false }).limit(100);
+        .gte('started_at', new Date(Date.now() - 14 * 86400_000).toISOString()).neq('source', 'test').not('caller_number', 'in', '(+17608237963,+18773863995,+14083181171)').order('started_at', { ascending: false }).limit(100);
       const mk = await db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, duration_sec, called_at')
         .gte('called_at', new Date(Date.now() - 14 * 86400_000).toISOString()).order('called_at', { ascending: false }).limit(200);
-      const merged = mergeCallFeed({ log: inboundLog, recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && !callbackVapi.has(r.vapi_call_id)), bookedMike: bookingIds });
+      const merged = mergeCallFeed({ log: inboundLog, recordings: (recs.data ?? []).filter((r: any) => !isExcludedCaller(r.caller_number)), mike: (mk.data ?? []).filter((r: any) => !isExcludedCaller(r.phone) && !callbackVapi.has(r.vapi_call_id)), bookedMike: bookingIds });
       // Voice log card: a missed office leg that Mike then answered shows as Mike, not Missed.
       if (!log.error && !mk.error) dash.callLog = buildCallLogView(markMikeHandoffs(inboundLog, (mk.data ?? []).filter((r: any) => !callbackVapi.has(r.vapi_call_id))), nowDash);
       const liveOut = await liveOutP;
@@ -220,7 +222,7 @@ export async function GET(request: NextRequest) {
         const work = indexWorkTimes([...loaded.rows, ...jobber.work]);
         const candidates = dropBookedByMike(callbackCandidates({
           log: inboundLog,
-          recordings: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)),
+          recordings: (recs.data ?? []).filter((r: any) => !isExcludedCaller(r.caller_number)),
           mike: liveRows,
           bookedMike: bookingIds,
         }), mikeCallbacks.attempts);
@@ -236,8 +238,8 @@ export async function GET(request: NextRequest) {
           openInvoices: open,
           inbound: [
             ...inboundLog.map((r: any) => ({ at: r.started_at, phone: r.caller_phone ?? null })),
-            ...(recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number ?? null })),
-            ...(mk.data ?? []).filter((r: any) => !isOwnNumber(r.phone) && !callbackVapi.has(r.vapi_call_id)).map((r: any) => ({ at: r.called_at, phone: r.phone ?? null })),
+            ...(recs.data ?? []).filter((r: any) => !isExcludedCaller(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number ?? null })),
+            ...(mk.data ?? []).filter((r: any) => !isExcludedCaller(r.phone) && !callbackVapi.has(r.vapi_call_id)).map((r: any) => ({ at: r.called_at, phone: r.phone ?? null })),
           ],
           collections: [
             ...texts.events,
@@ -616,7 +618,7 @@ async function loadWorkRows(db: any, sinceIso: string): Promise<{ rows: Array<{ 
   }
   const reqs = await pageSince(db, 'booking_requests', 'phone, created_at, source', sinceIso);
   if (reqs.error) notes.push(`callback requests: ${reqs.error}`);
-  else for (const r of reqs.rows) if (r.created_at && requestResolvesCallback(r.source) && !isOwnNumber(r.phone)) out.push({ phone: r.phone, at: r.created_at });
+  else for (const r of reqs.rows) if (r.created_at && requestResolvesCallback(r.source) && !isExcludedCaller(r.phone)) out.push({ phone: r.phone, at: r.created_at });
   return { rows: out, note: notes.length ? notes.join('; ') : null };
 }
 
@@ -698,8 +700,8 @@ async function loadSourceCards(db: any, startMs: number) {
   }
   return buildSourceCards({
     startMs, nowMs: Date.now(),
-    calls: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number, source: r.source })),
-    forms: (forms.data ?? []).filter((f: any) => f.lead_source !== 'test' && !isOwnNumber(f.phone)).map((f: any) => ({ at: f.created_at, phone: f.phone, channel: f.lead_source, serviceType: f.service_type })),
+    calls: (recs.data ?? []).filter((r: any) => !isExcludedCaller(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number, source: r.source })),
+    forms: (forms.data ?? []).filter((f: any) => f.lead_source !== 'test' && !isExcludedCaller(f.phone)).map((f: any) => ({ at: f.created_at, phone: f.phone, channel: f.lead_source, serviceType: f.service_type })),
     jobs: (jobs.data ?? []).map((j: any) => ({ createdAt: j.created_at, title: j.title, phones: phones.get(j.client_id) ?? [], clientName: names.get(j.client_id)?.name ?? null, companyName: names.get(j.client_id)?.companyName ?? null })),
     numbers: SOURCE_NUMBERS, notes: SOURCE_NOTES,
   });

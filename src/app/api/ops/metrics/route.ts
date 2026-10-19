@@ -10,7 +10,7 @@ import { DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { loadDailySpend } from '@/lib/ads/call-dashboard-data';
 import { loadWeeklyInvoices, loadWeeklyQuotes } from '@/lib/ads/weekly-sales-data';
 import { buildRoasView } from '@/lib/ads/roas-view';
-import { isOwnNumber } from '@/lib/ads/real-leads';
+import { isExcludedCaller } from '@/lib/ads/real-leads';
 import { loadHistoryInvoices, loadCompletedJobCosts, loadTimesheets } from '@/lib/ads/metrics-data';
 import { buildMetrics } from '@/lib/ads/metrics';
 import { mirrorState } from '@/lib/jobber-mirror/read';
@@ -75,7 +75,7 @@ async function computeMetrics(debug: boolean) {
       db.from('quickbooks_connections').select('id').limit(1),
     ]);
     const history = await loadHistoryInvoices(histFrom.toISOString(), tomorrow);
-    const roasSince = calls.error ? null : buildRoasView({ invoices: sinceInv, adCalls: (calls.data ?? []).filter((c: { caller_phone: string | null }) => !isOwnNumber(c.caller_phone)), spend, start: new Date(DASH_FLOOR_ISO), now });
+    const roasSince = calls.error ? null : buildRoasView({ invoices: sinceInv, adCalls: (calls.data ?? []).filter((c: { caller_phone: string | null }) => !isExcludedCaller(c.caller_phone)), spend, start: new Date(DASH_FLOOR_ISO), now });
     const cards = buildMetrics({
       now, histFrom, history, roasSince, sinceLabel: 'Since Sep 18, 2026', quotes, quotesFrom, costs, costFrom, time, timeFrom,
       qboConnected: !qbo.error && (qbo.data ?? []).length > 0,
