@@ -187,7 +187,7 @@ export async function runMissedCallTextPass(db: any, env: NodeJS.ProcessEnv, now
   for (const call of snap.calls) {
     let decision: TextDecision = decideText(call, snap.ctx, config, now, null);
     if (decision.action === 'skip') {
-      if (!['flag_off', 'not_allowlisted', 'stale', 'already_handled', 'test_number', 'own_number'].includes(decision.reason)) {
+      if (!['flag_off', 'not_allowlisted', 'stale', 'already_handled', 'test_number', 'own_number', 'line_not_enabled'].includes(decision.reason)) {
         summary.skipped += 1;
         await saveRow(db, call, { outcome: 'skipped', reason: decision.reason });
       }

@@ -43,6 +43,8 @@ export interface TextConfig {
   testNumbers: Set<string>;
   /** Never texted, even in full mode (owner test lines, MISSED_CALL_TEXT_DNC). */
   blocked: Set<string>;
+  /** If non-empty, only calls to these SCWS numbers (10-digit) get a text. Calls with no known called number are skipped. */
+  lines: Set<string>;
   waitMs: number;
   lookbackMs: number;
   dedupeMs: number;
@@ -89,6 +91,7 @@ export function textConfig(env: NodeJS.ProcessEnv = process.env): TextConfig {
     mode,
     testNumbers,
     blocked,
+    lines: numberSet(env.MISSED_CALL_TEXT_LINES),
     waitMs: num(env.MISSED_CALL_TEXT_WAIT_SECONDS, 60) * 1000,
     lookbackMs: num(env.MISSED_CALL_TEXT_LOOKBACK_HOURS, 12, 1) * 3600_000,
     dedupeMs: DAY_MS,
@@ -209,6 +212,7 @@ export function decideText(
   if (isOwnNumber(call.phone) || ctx.staffPhones.has(phone)) return { action: 'skip', reason: 'own_number' };
   if (config.mode === 'test' && !config.testNumbers.has(phone)) return { action: 'skip', reason: 'not_allowlisted' };
   if (config.mode === 'full' && config.blocked.has(phone)) return { action: 'skip', reason: 'test_number' };
+  if (config.lines.size && !config.lines.has(digits10(call.calledNumber) || '')) return { action: 'skip', reason: 'line_not_enabled' };
   if (/^8(00|33|44|55|66|77|88)/.test(phone)) return { action: 'skip', reason: 'toll_free' };
   if (now.getTime() - at > config.lookbackMs) return { action: 'skip', reason: 'stale' };
   if (call.spam || NON_CUSTOMER.test(call.summary || '')) return { action: 'skip', reason: 'spam' };
