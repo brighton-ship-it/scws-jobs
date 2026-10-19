@@ -12,7 +12,7 @@ export const DEFAULT_FORWARD_MESSAGING_SERVICE_SID = 'MG66ff74e6d46a9e5439d0a2a7
 /** Our own Twilio numbers. Texts from these are never forwarded (prevents loops). */
 export const OWN_NUMBERS = new Set([
   '+17604408520', '+17607895955', '+17608237963', '+18773863995', '+17604630493', '+17608914264',
-  '+17604540365', '+17603312502', '+17602791262', '+19516510957', '+17604937719',
+  '+17604540365', '+17603312502', '+17602791262', '+19516510957', '+17604937719', '+17608238910',
 ]);
 const MAX_SMS_BODY = 1500; // Twilio max is 1600; leave room
 const MAX_MEDIA = 10;
@@ -39,6 +39,7 @@ export const TRACKING_SMS_LINES: Record<string, { number: string; source: string
   yelp: { number: '+17608914264', source: 'yelp', label: 'Yelp line (891-4264)' },
   apple_maps: { number: '+17604540365', source: 'apple_maps', label: 'Apple Maps line (454-0365)' },
   direct: { number: '+17604937719', source: 'direct', label: 'Direct line (493-7719)' },
+  direct_mail: { number: '+17608238910', source: 'direct_mail', label: 'Direct mail line (823-8910)' },
 };
 
 /** Which SCWS line was texted, or null if this number isn't one we forward (e.g. toll-free). */

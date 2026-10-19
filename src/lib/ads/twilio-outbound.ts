@@ -8,7 +8,7 @@ import { digits10 } from './call-dashboard.ts';
 import type { PhoneLogRow } from './phone-call-log.ts';
 
 const LINE_BY_SOURCE: Record<string, string> = {
-  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', google_ads: 'Ads',
+  seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct_mail: 'Direct mail', google_ads: 'Ads',
   gbp_ramona: 'GBP Ramona', gbp_anza: 'GBP Anza', direct: 'Direct',
 };
 

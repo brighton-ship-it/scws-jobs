@@ -65,3 +65,11 @@ describe('lead source for the Mike call email', () => {
     assert.ok(!/Lead source/.test(buildCallEmail({ outcome }).text));
   });
 });
+
+describe('direct mail tracking line', () => {
+  it('labels the mailer number Direct mail', () => {
+    const src = resolveLeadSource({ recordings: [{ tracking_number: '+17608238910', source: 'direct_mail' }] });
+    assert.equal(leadSourceLine(src), 'Lead source: Direct mail (760) 823-8910');
+    assert.equal(leadSourceLine(resolveLeadSource({ diversions: ['7608238910'] })), 'Lead source: Direct mail (760) 823-8910');
+  });
+});
