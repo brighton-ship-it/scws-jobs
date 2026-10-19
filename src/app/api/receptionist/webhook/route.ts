@@ -30,6 +30,7 @@ import {
   omitOfficeDedupeColumns,
   resolveOfficeToolBatch,
 } from '@/lib/receptionist/office-callback';
+import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
 
 const OFFICE_EMAILS = OFFICE_ALERT_EMAILS;
 
@@ -570,12 +571,22 @@ async function handleVapiTools(body: any) {
     if (isOwnNumber(callPhone)) callPhone = '';
   }
   const executed: Array<{ id: string | null; body: { result: unknown } } | undefined> = new Array(calls.length);
+  const consentTurns = consentTurnsFromVapiBody(body);
   const officeIndexes: number[] = [];
 
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
     const params = call.params || {};
     console.log(`[Receptionist] Function call: ${call.name}${testCall ? ' (test call)' : ''}`, JSON.stringify(redactToolLog(params)));
+    // Consent gate runs before test simulation so test calls exercise it too.
+    if (BOOK_TOOL_NAMES.has(call.name)) {
+      const consent = checkBookingConsent(params, consentTurns);
+      if (!consent.ok) {
+        console.warn(`[Receptionist] book refused (${consent.code})${testCall ? ' (test call)' : ''}`);
+        executed[i] = { id: call.id, body: { result: consent.result } };
+        continue;
+      }
+    }
     // Test line: side-effect tools are simulated (no Jobber, no booking row, no alert).
     const simulated = testCall ? testToolResult(call.name, params) : null;
     if (simulated) { executed[i] = { id: call.id, body: simulated }; continue; }
