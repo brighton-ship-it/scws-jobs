@@ -11,11 +11,11 @@
 import { workCategory, isSiteVisit } from './work-category.ts';
 import { isInternalJob } from './internal-job.ts';
 
-export type SourceKey = 'gbp' | 'seo' | 'yelp' | 'apple_maps';
-export const SOURCE_KEYS: SourceKey[] = ['gbp', 'seo', 'yelp', 'apple_maps'];
-export const SOURCE_LABEL: Record<SourceKey, string> = { gbp: 'Google Business Profile', seo: 'Website (SEO)', yelp: 'Yelp', apple_maps: 'Apple Maps' };
+export type SourceKey = 'gbp' | 'seo' | 'yelp' | 'apple_maps' | 'direct_mail';
+export const SOURCE_KEYS: SourceKey[] = ['gbp', 'seo', 'yelp', 'apple_maps', 'direct_mail'];
+export const SOURCE_LABEL: Record<SourceKey, string> = { gbp: 'Google Business Profile', seo: 'Website (SEO)', yelp: 'Yelp', apple_maps: 'Apple Maps', direct_mail: 'Direct mail' };
 /** Call-recording sources that roll into each card. */
-export const CALL_SOURCES: Record<SourceKey, string[]> = { gbp: ['gbp_anza', 'gbp_ramona', 'gmb', 'gbp'], seo: ['seo'], yelp: ['yelp'], apple_maps: ['apple_maps'] };
+export const CALL_SOURCES: Record<SourceKey, string[]> = { gbp: ['gbp_anza', 'gbp_ramona', 'gmb', 'gbp'], seo: ['seo'], yelp: ['yelp'], apple_maps: ['apple_maps'], direct_mail: ['direct_mail'] };
 
 export interface SrcCall { at: string; phone: string | null; source: string | null }
 export interface SrcForm { at: string; phone: string | null; channel: string | null; serviceType: string | null }
