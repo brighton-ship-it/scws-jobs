@@ -125,3 +125,16 @@ t2('approved wording A is the default and the flag stays off by default', () => 
   assertA.equal(c.option, 'A');
   assertA.equal(c.mode, 'off');
 });
+
+describe('missed-call text line allowlist', () => {
+  const env = { ...FULL, MISSED_CALL_TEXT_LINES: '7603312502,7602791262' } as NodeJS.ProcessEnv;
+  it('skips calls to lines not enabled (main Google Voice line) and unknown lines', () => {
+    const c = textConfig(env);
+    assert.equal(decideText(call({ calledNumber: '+17604408520', trigger: 'ring_hangup' }), ctx(), c, NOW, 'mobile').reason, 'line_not_enabled');
+    assert.equal(decideText(call({ calledNumber: null }), ctx(), c, NOW, 'mobile').reason, 'line_not_enabled');
+  });
+  it('allows calls to an enabled Twilio line', () => {
+    const d = decideText(call({ calledNumber: '+17603312502', trigger: 'ring_hangup' }), ctx(), textConfig(env), NOW, 'mobile');
+    assert.notEqual((d as any).reason, 'line_not_enabled');
+  });
+});
