@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isInternalClientName, isInternalJob, isInternalJobTitle } from './internal-job.ts';
 import { buildWeeklySales, categoryTotals } from './weekly-sales.ts';
-import { buildBlendedRoas, buildRoasView } from './roas-view.ts';
+import { buildRoasView } from './roas-view.ts';
 import { mergeFullHistory } from './ltv-full.ts';
 
 const TEST_CLIENT = { name: 'brighton scala', companyName: 'sc well service' };
@@ -168,9 +168,6 @@ test('ROAS and lifetime value skip the $5 test invoice and keep a pump test', ()
   ];
   const start = new Date('2026-09-18T07:00:00Z');
   const now = new Date('2026-10-19T20:00:00Z');
-  const blended = buildBlendedRoas({ invoices, spend: [{ date: '2026-10-10', costUsd: 100, campaign: 'pump', clicks: 1 }], start, now });
-  assert.equal(blended!.invoiced, 1000);
-  assert.equal(blended!.invoices, 1);
   const roas = buildRoasView({
     invoices,
     adCalls: [{ started_at: '2026-10-01T18:00:00Z', caller_phone: '7605550100', campaign_name: 'Pump Search' }],
@@ -178,6 +175,8 @@ test('ROAS and lifetime value skip the $5 test invoice and keep a pump test', ()
     start, now,
   });
   assert.equal(roas!.overall.invoiced, 1000);
+  assert.equal(roas!.blended!.invoiced, 1000);
+  assert.equal(roas!.blended!.invoices, 1);
   assert.ok(roas!.method.some((line) => /internal, training, and test jobs are excluded/i.test(line)));
   const ltv = mergeFullHistory({ source: 't', customers: [] }, invoices);
   assert.equal(ltv.customers.length, 1);

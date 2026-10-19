@@ -340,7 +340,7 @@ export async function GET(request: NextRequest) {
       });
       if (dash.roas && dash.weekly?.totals) {
         dash.weekly.sources.push(
-          'Blended ROAS = all pre-tax Jobber invoices issued in the range (any customer, any source) ÷ all Google Ads spend, same Pacific days (from Sep 18, when spend tracking began). Internal/training/test invoices are excluded.',
+          'Blended ROAS = pre-tax Jobber invoices issued in the range to every ad-sourced customer (new + returning) ÷ total ad spend (Google Ads), same Pacific days (from Sep 18, when spend tracking began). Customers who never came in through an ad are not counted. Internal/training/test invoices are excluded.',
           'ROAS (all ad callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days. Internal/training/test invoices are excluded.',
           'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call. Internal/training/test invoices are excluded.',
         );
