@@ -71,3 +71,40 @@ describe('handleLookupCustomer', () => {
     assert.equal(toAddressOnFile(null), null);
   });
 });
+
+describe('recentJobsForClient', () => {
+  it('returns real jobs newest first, skips practice/meeting jobs, no numbers or money', async () => {
+    const { recentJobsForClient } = await import('./lookup-customer.ts');
+    const client = {
+      jobs: {
+        nodes: [
+          { title: 'Pressure tank replacement', jobStatus: 'archived', createdAt: '2026-08-10T17:00:00Z', completedAt: '2026-08-12T20:00:00Z' },
+          { title: 'TRAINING - Close & Invoice ($5) - Colton', jobStatus: 'upcoming', createdAt: '2026-10-17T17:00:00Z', completedAt: null },
+          { title: 'Shop Meeting - Anza', jobStatus: 'upcoming', createdAt: '2026-10-16T17:00:00Z', completedAt: null },
+          { title: 'Service Call', jobStatus: 'upcoming', createdAt: '2026-10-15T17:00:00Z', completedAt: null },
+          { title: '', jobStatus: 'archived', createdAt: '2026-01-01T00:00:00Z' },
+          { title: 'Pump replacement', jobStatus: 'archived', createdAt: '2025-03-01T17:00:00Z', completedAt: '2025-03-02T17:00:00Z' },
+          { title: 'Old', jobStatus: 'archived', createdAt: '2024-03-01T17:00:00Z' },
+        ],
+      },
+    };
+    const jobs = recentJobsForClient(client, new Date('2026-10-18T20:00:00Z'));
+    assert.deepEqual(jobs.map((j) => j.title), ['Service Call', 'Pressure tank replacement', 'Pump replacement']);
+    assert.equal(jobs[0].status, 'open');
+    assert.equal(jobs[1].when, 'August 2026');
+    assert.equal(jobs[1].status, 'done');
+    assert.equal(jobs[0].daysAgo, 3);
+    for (const j of jobs) assert.equal(Object.keys(j).sort().join(','), 'daysAgo,status,title,when');
+  });
+
+  it('lookup result carries recentJobs only when there are any', async () => {
+    const withJobs = { ...brighton, jobs: { nodes: [{ title: 'Booster pump install', jobStatus: 'archived', createdAt: '2026-09-01T17:00:00Z' }] } };
+    const { fetchFn, seen } = mockClients([withJobs]);
+    let { result } = await handleLookupCustomer('4083181171', { accessToken: 't', fetchFn });
+    assert.equal(result.recentJobs?.[0].title, 'Booster pump install');
+    assert.match(result.pastWorkRule || '', /never read job numbers, prices, invoices or balances/i);
+    assert.match(seen[0], /jobs\(first: 10\)/);
+    ({ result } = await handleLookupCustomer('4083181171', { accessToken: 't', fetchFn: mockClients([brighton]).fetchFn }));
+    assert.equal(result.recentJobs, undefined);
+  });
+});
