@@ -4,14 +4,15 @@
  * > UTM source/medium > referrer host > direct. Values:
  *   google_ads | gbp (Google Business Profile / Maps) | seo (organic search) | yelp | apple_maps | referral | direct
  */
-export type LeadChannel = 'google_ads' | 'gbp' | 'seo' | 'yelp' | 'apple_maps' | 'referral' | 'direct';
-export const LEAD_CHANNELS: LeadChannel[] = ['google_ads', 'gbp', 'seo', 'yelp', 'apple_maps', 'referral', 'direct'];
+export type LeadChannel = 'google_ads' | 'gbp' | 'seo' | 'yelp' | 'apple_maps' | 'direct_mail' | 'referral' | 'direct';
+export const LEAD_CHANNELS: LeadChannel[] = ['google_ads', 'gbp', 'seo', 'yelp', 'apple_maps', 'direct_mail', 'referral', 'direct'];
 
 const s = (v: unknown) => (typeof v === 'string' ? v.trim().toLowerCase() : '');
 
 export function channelFromUtm(source: string, medium: string): LeadChannel | null {
   if (/^(cpc|ppc|paid|paidsearch|paid_search)$/.test(medium) && (!source || /google|adwords/.test(source))) return 'google_ads';
   if (/^(gbp|gmb|google_business|googlebusiness|google_my_business|googlemybusiness|business_profile|maps)$/.test(source) || /^(gbp|gmb|maps|local)$/.test(medium)) return 'gbp';
+  if (/^(directmail|direct_mail|direct-mail|postcard|mail)$/.test(source) || medium === 'postcard') return 'direct_mail';
   if (/yelp/.test(source)) return 'yelp';
   if (/^(apple|apple_maps|applemaps|apple_business|maps\.apple\.com)$/.test(source)) return 'apple_maps';
   if (medium === 'organic' || (/^(google|bing|yahoo|duckduckgo)$/.test(source) && !medium)) return 'seo';

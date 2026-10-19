@@ -36,3 +36,11 @@ test('helpers', () => {
   assert.ok(isTestLead({ scws_test: '1' }));
   assert.ok(!isTestLead({}));
 });
+
+import { leadChannel as lc2 } from './lead-channel.ts';
+import { test as t2 } from 'node:test';
+import assert2 from 'node:assert/strict';
+t2('postcard landing page is direct_mail', () => {
+  assert2.equal(lc2({ utm_source: 'directmail', utm_medium: 'postcard' }), 'direct_mail');
+  assert2.equal(lc2({ site_source: 'direct_mail' }), 'direct_mail');
+});

@@ -5,6 +5,7 @@ import { SOURCE_LABEL, Transcript, fmtPhone, splitSummary, useRecordedCalls, typ
 import { useSearchParams } from 'next/navigation';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
+import { DirectMailCard } from './DirectMailCard';
 const SECTIONS = ['today', 'sales', 'ads', 'collections'] as const;
 import {
   CallsSpendChart, Funnel, Gauge, Sparkline, WeeklyBars, WeeklyCashBars, compactUsd, mult, palette, usd,
@@ -1011,6 +1012,7 @@ export function CallDashboardPage() {
               </div>
             </Card>
             <LeadsBySourceTable data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
+            <DirectMailCard />
             <div className="grid gap-4 lg:grid-cols-2">
               <GroupTable title="By keyword / ad group" subtitle={`Google Ads keyword or ad group of each call · ${rangeLabel}`} rows={data.byKeyword ?? []} />
               <GroupTable title="By tracking number / source" subtitle={`Which number or Google Ads asset the call came in on · ${rangeLabel}`} rows={data.byTrackingNumber ?? []} label={(k) => TRACKING_LABEL[k] ?? k} />
