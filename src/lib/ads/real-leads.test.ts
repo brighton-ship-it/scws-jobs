@@ -26,3 +26,12 @@ test('one lead per caller; junk, existing and hang-ups excluded; booked always a
   assert.equal(n('spam'), 2); assert.equal(n('existing'), 1); assert.equal(n('hangup'), 1); assert.equal(n('internal'), 1);
   assert.equal(r.leads.find((l) => l.phone === '7605550004')!.cat, 'drilling');
 });
+
+test('owner/test caller exclusion: flags Brighton cell and the Twilio test line in any format, but not customers', async () => {
+  const { isExcludedCaller, isTestCallerPhone, isOwnNumber } = await import('./real-leads.ts');
+  for (const p of ['+14083181171', '4083181171', '(408) 318-1171', '+17608237963']) assert.equal(isExcludedCaller(p), true, p);
+  assert.equal(isTestCallerPhone('+19515513430'), false);
+  assert.equal(isExcludedCaller('+19515513430'), false);
+  // Mike/callback paths still see Brighton's cell as a normal caller.
+  assert.equal(isOwnNumber('+14083181171'), false);
+});
