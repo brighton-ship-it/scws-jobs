@@ -112,6 +112,8 @@ export function mergeCallFeed(input: {
     // Twilio only knows the Voice ring group picked up, not who, so the Voice log supplies the answerer (or Mike).
     const recRow = d ? rows.find((x) => x._src === 'rec' && x._d === d && Math.abs(x._t - t) < 3 * 60_000) : undefined;
     if (recRow) {
+      // A short call the summary called voicemail was really a staff pickup when Voice names the answerer.
+      if (recRow.outcome === 'Voicemail' && r.outcome === 'answered' && r.answered_by) recRow.outcome = 'Answered';
       if (!recRow.answeredBy && (recRow.outcome === 'Answered' || recRow.outcome === 'Booked')) {
         if (r.outcome === 'answered' && r.answered_by) recRow.answeredBy = String(r.answered_by).split('@')[0];
         else if (r.outcome === 'forwarded_ai' || r.receptionist_call_id) recRow.answeredBy = MIKE_ANSWERER;
