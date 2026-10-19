@@ -338,10 +338,9 @@ export async function GET(request: NextRequest) {
         windows: { main: { label: RN[range] ?? 'Selected range', start: new Date(dash.revenueStart) }, week: { label: 'This week so far (Mon–today)', start: wk < new Date(DASH_FLOOR_ISO) ? new Date(DASH_FLOOR_ISO) : wk } },
       });
       if (dash.roas && dash.weekly?.totals) {
-        const inv = dash.weekly.totals.invoiced, sp = dash.roas.spend;
-        dash.roas.mer = { invoiced: inv, spend: sp, multiple: inv != null && sp && sp > 0 ? Math.round((inv / sp) * 100) / 100 : null };
         dash.weekly.sources.push(
-          'Blended (all callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
+          'Blended ROAS = all pre-tax Jobber invoices issued in the range (any customer, any source) ÷ all Google Ads spend, same Pacific days (from Sep 18, when spend tracking began).',
+          'ROAS (all ad callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
           'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call.',
         );
       }
@@ -652,7 +651,7 @@ function dropStaleFields(dash: any) {
   const t = dash.totals;
   if (t) for (const k of ['invoicedValue', 'paidValue', 'multipleInvoiced', 'multiplePaid', 'bookedValue', 'quoteValue', 'perCall']) delete t[k];
   if (dash.tv) for (const k of ['callsToday', 'answeredToday', 'missedToday', 'revenueWeek', 'revenueMonth', 'multipleMonth']) delete dash.tv[k];
-  if (dash.roas) delete dash.roas.mer;
+  if (dash.roas) delete (dash.roas as any).mer; // legacy name; blended ROAS now lives in dash.roas.blended
 }
 
 /** Tracking numbers shown on each non-ad source card. Yelp / Apple Maps have no number yet (forms only). */
