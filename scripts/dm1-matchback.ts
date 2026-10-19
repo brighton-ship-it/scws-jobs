@@ -13,9 +13,9 @@ if (clientsFile) {
   const clients = JSON.parse(readFileSync(clientsFile, 'utf8'));
   const hits = matchByAddress(clients, cfg.mailMs);
   console.log(JSON.stringify({ scanned: clients.length, matchedByAddress: hits.length, matches: hits.map((h) => ({ id: h.id, name: h.name, createdAt: h.createdAt })) }, null, 2));
-} else {
+} else (async () => {
   const base = arg('--ops') || 'https://scws-jobs.vercel.app';
   const key = arg('--key') || process.env.OPS_DASH_KEY;
   const r = await fetch(`${base}/api/ops/direct-mail`, { headers: key ? { 'x-quotes-gp-key': key } : {} });
   console.log(r.status, JSON.stringify(await r.json(), null, 2));
-}
+})();

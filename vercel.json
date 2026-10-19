@@ -43,6 +43,10 @@
     {
       "path": "/api/cron/missed-call-texts",
       "schedule": "*/2 * * * *"
+    },
+    {
+      "path": "/api/cron/dm1-lead-source",
+      "schedule": "20 * * * *"
     }
   ]
 }
