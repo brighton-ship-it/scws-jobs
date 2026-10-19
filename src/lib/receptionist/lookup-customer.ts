@@ -20,6 +20,9 @@ export const SEARCH_CLIENTS_WITH_ADDRESS_QUERY = `
         properties {
           address { street1 street2 city province postalCode }
         }
+        jobs(first: 10) {
+          nodes { title jobStatus createdAt completedAt }
+        }
       }
     }
   }
@@ -34,6 +37,16 @@ export type AddressOnFile = {
   full: string;
 };
 
+/** One past or open job, newest first. No job numbers, prices or invoice data (Mike never reads those out). */
+export type RecentJob = {
+  title: string;
+  /** "August 2026" style, Pacific time. */
+  when: string;
+  /** open = not archived yet (upcoming, late, requires invoicing...). */
+  status: 'open' | 'done';
+  daysAgo: number;
+};
+
 export type LookupCustomerResult = {
   found: boolean;
   customerName?: string;
@@ -44,6 +57,9 @@ export type LookupCustomerResult = {
   /** Other properties on file (only when the client has more than one). */
   otherAddresses?: AddressOnFile[];
   addressRule?: string;
+  /** Up to 3 most recent jobs (real service work only), newest first. */
+  recentJobs?: RecentJob[];
+  pastWorkRule?: string;
   message: string;
   error?: string;
 };
@@ -100,6 +116,35 @@ function addressesForClient(client: any): AddressOnFile[] {
   if (!out.length) push(toAddressOnFile(client?.billingAddress));
   return out;
 }
+
+const INTERNAL_JOB_TITLE =
+  /\b(?:training|practice|test|shop meeting|meeting|internal|warranty admin)\b/i;
+const MONTH_FMT = new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', month: 'long', year: 'numeric' });
+
+/** Newest-first summary of a client's jobs for Mike. Skips internal/practice jobs and anything without a title. */
+export function recentJobsForClient(client: any, now: Date = new Date(), limit = 3): RecentJob[] {
+  const nodes = Array.isArray(client?.jobs?.nodes) ? client.jobs.nodes : Array.isArray(client?.jobs) ? client.jobs : [];
+  const rows: Array<RecentJob & { _t: number }> = [];
+  for (const node of nodes) {
+    const title = clean(node?.title).replace(/\s+/g, ' ').slice(0, 80);
+    if (!title || INTERNAL_JOB_TITLE.test(title)) continue;
+    const at = Date.parse(clean(node?.completedAt) || clean(node?.createdAt));
+    if (!Number.isFinite(at)) continue;
+    const status = clean(node?.jobStatus).toLowerCase() === 'archived' ? 'done' : 'open';
+    rows.push({
+      title,
+      when: MONTH_FMT.format(new Date(at)),
+      status,
+      daysAgo: Math.max(0, Math.floor((now.getTime() - at) / 86400_000)),
+      _t: at,
+    });
+  }
+  rows.sort((a, b) => b._t - a._t);
+  return rows.slice(0, limit).map(({ _t, ...job }) => job);
+}
+
+export const PAST_WORK_RULE =
+  'recentJobs are our latest jobs for this caller, newest first. You may mention the most recent one once in plain words if it helps. Never read job numbers, prices, invoices or balances. If the same problem was worked on in the last ~30 days, start book_job notes with "Repeat visit:".';
 
 export const ADDRESS_ON_FILE_RULE =
   'If the caller says "usual", "same" or "my" address, use addressOnFile (street and city) for checkServiceArea, checkSchedule and book_job. Confirm it once: "Is this about [street], [town]?" Never use the caller\'s name as the town.';
@@ -160,6 +205,11 @@ export async function handleLookupCustomer(
         result.addressOnFile = primary;
         if (addresses.length > 1) result.otherAddresses = addresses.slice(1, 4);
         result.addressRule = ADDRESS_ON_FILE_RULE;
+      }
+      const recentJobs = recentJobsForClient(client);
+      if (recentJobs.length) {
+        result.recentJobs = recentJobs;
+        result.pastWorkRule = PAST_WORK_RULE;
       }
       return { result };
     }
