@@ -14,6 +14,9 @@ export interface FeedRow {
   mike?: string | null;
 }
 
+/** answeredBy value for calls Mike (the AI receptionist) took. */
+export const MIKE_ANSWERER = 'Mike (AI)';
+
 export function formatPhone(p: string | null | undefined): string {
   const d = digits10(p);
   return d ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : (p || 'Unknown');
@@ -106,7 +109,15 @@ export function mergeCallFeed(input: {
     const t = Date.parse(r.started_at); if (!Number.isFinite(t)) continue;
     const d = digits10(r.caller_phone);
     // Same call already shown from the tracking-line recording (Twilio forwards into the Voice ring group).
-    if (d && rows.some((x) => x._src === 'rec' && x._d === d && Math.abs(x._t - t) < 3 * 60_000)) continue;
+    // Twilio only knows the Voice ring group picked up, not who, so the Voice log supplies the answerer (or Mike).
+    const recRow = d ? rows.find((x) => x._src === 'rec' && x._d === d && Math.abs(x._t - t) < 3 * 60_000) : undefined;
+    if (recRow) {
+      if (!recRow.answeredBy && (recRow.outcome === 'Answered' || recRow.outcome === 'Booked')) {
+        if (r.outcome === 'answered' && r.answered_by) recRow.answeredBy = String(r.answered_by).split('@')[0];
+        else if (r.outcome === 'forwarded_ai' || r.receptionist_call_id) recRow.answeredBy = MIKE_ANSWERER;
+      }
+      continue;
+    }
     // Same call logged twice by Voice (seconds apart, same outcome).
     if (d && rows.some((x) => x._src === 'log' && x._d === d && x._o === r.outcome && Math.abs(x._t - t) < LOG_DUP_MS)) continue;
     let m = r.receptionist_call_id ? mikeById.get(r.receptionist_call_id) ?? null : null;

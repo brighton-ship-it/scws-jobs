@@ -261,15 +261,15 @@ const ptDay = (d: Date) => d.toLocaleDateString('en-CA', { timeZone: 'America/Lo
 const feedTime = (iso: string) => { const d = new Date(iso); const t = d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' }); return ptDay(d) === ptDay(new Date()) ? t : `${d.toLocaleDateString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric' })}, ${t}`; };
 // Google Voice answerer (email local part) -> staff first name. Unknown answerers show their recorded id, never a guess.
 const STAFF_BY_ANSWERER: Record<string, string> = { lizbeth: 'Liz', liz: 'Liz', shanicey: 'Shanicey', brighton: 'Brighton' };
-const answererName = (a: string | null | undefined) => { if (!a) return null; const k = a.toLowerCase(); return STAFF_BY_ANSWERER[k] ?? a.charAt(0).toUpperCase() + a.slice(1); };
-function OutcomePill({ o, by, dark = false }: { o: string; by?: string | null; dark?: boolean }) {
-  const who = o === 'Answered' ? answererName(by) : null;
+const answererName = (a: string | null | undefined) => { if (!a) return null; if (a === 'Mike (AI)') return a; const k = a.toLowerCase(); return STAFF_BY_ANSWERER[k] ?? a.charAt(0).toUpperCase() + a.slice(1); };
+function OutcomePill({ o, by, dark = false, unknownWho = false }: { o: string; by?: string | null; dark?: boolean; unknownWho?: boolean }) {
+  const who = o === 'Answered' || o === 'Booked' ? answererName(by) : null;
   const c = o === 'Booked' ? (dark ? 'bg-emerald-500 text-emerald-950' : 'bg-emerald-600 text-white')
     : o === 'Missed' ? (dark ? 'bg-rose-500 text-white' : 'bg-rose-600 text-white')
     : o === 'Voicemail' ? (dark ? 'bg-amber-400 text-amber-950' : 'bg-amber-500 text-white')
     : o.startsWith('Mike') ? (dark ? 'bg-sky-400 text-sky-950' : 'bg-sky-600 text-white')
     : (dark ? 'bg-slate-200 text-slate-900' : 'bg-slate-700 text-white');
-  return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{who ? `${o} · ${who}` : o}</span>;
+  return <span className={`inline-block whitespace-nowrap rounded-full px-2.5 py-0.5 font-semibold ${c}`}>{who ? `${o} · ${who}` : o === 'Answered' && unknownWho ? 'Answered · who unknown' : o}</span>;
 }
 function MikeLine({ text, dark }: { text: string; dark: boolean }) {
   const booked = text.includes('booked') || text.includes('reached');
@@ -696,7 +696,7 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
                 <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                   <span className="text-sm tabular-nums text-slate-500">{feedTime(c.at)} · {fmtDur(f?.durationSeconds ?? r?.duration_seconds ?? null)}</span>
                   <span className="flex max-w-full flex-wrap items-center gap-1 text-xs">
-                    <OutcomePill o={outcome} by={f?.answeredBy} />
+                    <OutcomePill o={outcome} by={f?.answeredBy} unknownWho={!!r} />
                     {r?.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
                     {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
                     {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
