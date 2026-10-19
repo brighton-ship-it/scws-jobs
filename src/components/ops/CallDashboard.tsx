@@ -835,7 +835,7 @@ function LeadsBySourceTable({ data, rangeLabel, moneyLabel }: { data: Dashboard;
     ['$ / booking', r.spend != null && r.booked ? usd(r.spend / r.booked) : '—'],
   ] as const;
   return (
-    <Card title="Leads by source" subtitle={`Every lead source in one table · calls ${rangeLabel} · Google Ads spend ${moneyLabel}`} delay={80}>
+    <Card title="Leads by source" subtitle={`Every lead source in one table · calls ${rangeLabel} · Google Ads spend ${moneyLabel}. Booked excludes internal, training, and test jobs.`} delay={80}>
       {rows.length === 0 ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">No source data</div> : (
         <>
           <ul className="space-y-3 md:hidden">

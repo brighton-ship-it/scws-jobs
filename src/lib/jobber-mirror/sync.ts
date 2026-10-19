@@ -19,13 +19,13 @@ const DAY = 86400_000;
 const CLIENT_FIELDS = 'client { id name companyName createdAt phones { number } emails { address } }';
 export const Q = {
   invoices: `query MirInv($first: Int!, $after: String, $filter: InvoiceFilterAttributes) { invoices(first: $first, after: $after, filter: $filter) {
-    nodes { id invoiceNumber invoiceStatus issuedDate dueDate subject updatedAt amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 5) { nodes { id title } } ${CLIENT_FIELDS} }
+    nodes { id invoiceNumber invoiceStatus issuedDate dueDate subject updatedAt amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 5) { nodes { id title } } paymentRecords(first: 15) { nodes { id } } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   jobs: `query MirJobs($first: Int!, $after: String, $filter: JobFilterAttributes) { jobs(first: $first, after: $after, filter: $filter) {
     nodes { id jobNumber jobStatus title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
   quotes: `query MirQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) { quotes(first: $first, after: $after, filter: $filter) {
-    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name phones { number } emails { address } } }
+    nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name companyName phones { number } emails { address } } }
     pageInfo { hasNextPage endCursor } } }`,
   paymentRecords: `query MirPay($first: Int!, $after: String, $filter: PaymentRecordFilterAttributes) { paymentRecords(first: $first, after: $after, filter: $filter) {
     nodes { id amount entryDate adjustmentType }

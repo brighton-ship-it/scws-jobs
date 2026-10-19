@@ -2,6 +2,7 @@
 import { unstable_cache } from 'next/cache';
 import { assertNoJobberErrors, jobberGraphql } from '../jobber/client.ts';
 import { mirrorInvoices, mirrorJobs, mirrorTimesheets } from '../jobber-mirror/read.ts';
+import { isInternalJob } from './internal-job.ts';
 const fromMirror = async <T>(m: () => Promise<any[] | null>): Promise<Loaded<T> | null> => { try { const r = await m(); return r ? { rows: r as T[] } : null; } catch { return null; } };
 
 const TTL_MS = 30 * 60_000;
@@ -73,18 +74,23 @@ export async function loadHistoryInvoices(fromIso: string, toIso: string): Promi
   return { rows, truncated: parts.some((p) => p.truncated) };
 }
 
-export interface CostJob { id: string; jobNumber?: number | null; title?: string | null; completedAt?: string | null; jobCosting?: { totalRevenue?: number | null; totalCost?: number | null; lineItemCost?: number | null; labourCost?: number | null; expenseCost?: number | null; profitAmount?: number | null } | null }
+export interface CostJob { id: string; jobNumber?: number | null; title?: string | null; completedAt?: string | null; client?: { name?: string | null; companyName?: string | null } | null; jobCosting?: { totalRevenue?: number | null; totalCost?: number | null; lineItemCost?: number | null; labourCost?: number | null; expenseCost?: number | null; profitAmount?: number | null } | null }
 const COST_JOBS = `query MetricsJobCosts($first: Int!, $after: String, $filter: JobFilterAttributes) {
   jobs(first: $first, after: $after, filter: $filter) {
-    nodes { id jobNumber title completedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } }
+    nodes { id jobNumber title completedAt client { name companyName } jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } }
     pageInfo { hasNextPage endCursor } } }`;
 export const loadCompletedJobCosts = async (from: string, to: string) => (await fromMirror<CostJob>(() => mirrorJobs('completed_at', from, to))) ??
   paged<CostJob>(`cost|${from.slice(0, 10)}`, COST_JOBS, 'jobs', { filter: { completedAt: { after: from, before: to } } }, 20, 50);
 
-export interface TimeEntry { id: string; startAt?: string | null; endAt?: string | null; finalDuration?: number | null; job?: { id?: string | null } | null; user?: { id?: string | null } | null }
+export interface TimeEntry { id: string; startAt?: string | null; endAt?: string | null; finalDuration?: number | null; job?: { id?: string | null; title?: string | null; client?: { name?: string | null; companyName?: string | null } | null } | null; user?: { id?: string | null } | null }
 const TIMESHEETS = `query MetricsTime($first: Int!, $after: String, $filter: TimeSheetEntriesFilterAttributes) {
   timeSheetEntries(first: $first, after: $after, filter: $filter) {
-    nodes { id startAt endAt finalDuration job { id } user { id } }
+    nodes { id startAt endAt finalDuration job { id title client { name companyName } } user { id } }
     pageInfo { hasNextPage endCursor } } }`;
-export const loadTimesheets = async (from: string, to: string) => (await fromMirror<TimeEntry>(() => mirrorTimesheets(from, to))) ??
-  paged<TimeEntry>(`ts|${from.slice(0, 10)}`, TIMESHEETS, 'timeSheetEntries', { filter: { startAt: { after: from, before: to } } }, 20, 100);
+export const loadTimesheets = async (from: string, to: string) => {
+  const mirrored = await fromMirror<TimeEntry>(() => mirrorTimesheets(from, to));
+  if (mirrored) return mirrored;
+  const live = await paged<TimeEntry>(`ts|${from.slice(0, 10)}`, TIMESHEETS, 'timeSheetEntries', { filter: { startAt: { after: from, before: to } } }, 20, 100);
+  if (live.rows) live.rows = live.rows.filter((entry) => !isInternalJob({ title: entry.job?.title, client: entry.job?.client }));
+  return live;
+};

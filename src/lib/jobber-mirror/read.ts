@@ -4,6 +4,7 @@
  * mirror is not ready (backfill unfinished, or last good sync > 2 h old); callers then fall back to live Jobber.
  */
 import { createServiceClient } from '../supabase/service.ts';
+import { isInternalJob } from '../ads/internal-job.ts';
 import { BACKFILL_FIELDS } from './sync.ts';
 
 /** Mirror is used while its last good sync is < 2 h old. A stale mirror sends every dashboard load to live Jobber,
@@ -47,21 +48,26 @@ async function all(build: (c: any) => any): Promise<any[] | null> {
 
 /** Clients + every job time per client (memoized briefly; shared by all readers in one request). */
 let ctxMemo: { at: number; p: Promise<Ctx | null> } | null = null;
-interface Ctx { clients: Map<string, any>; jobsByClient: Map<string, Array<{ id: string; createdAt: string }>>; byPhone: Map<string, string[]> }
+interface Ctx { clients: Map<string, any>; jobsByClient: Map<string, Array<{ id: string; createdAt: string }>>; byPhone: Map<string, string[]>; internalJobIds: Set<string> }
 function ctx(): Promise<Ctx | null> {
   if (ctxMemo && Date.now() - ctxMemo.at < 30_000) return ctxMemo.p;
   const p = (async () => {
     const [cl, jb] = await Promise.all([
       all((c) => c.from('jobber_clients').select('id, phones_digits, data').order('id')),
-      all((c) => c.from('jobber_jobs').select('id, client_id, created_at').order('id')),
+      all((c) => c.from('jobber_jobs').select('id, client_id, title, created_at').order('id')),
     ]);
     if (!cl || !jb) return null;
     const clients = new Map<string, any>(); const byPhone = new Map<string, string[]>();
     for (const r of cl) { clients.set(r.id, r.data); for (const p of r.phones_digits ?? []) (byPhone.get(p) ?? byPhone.set(p, []).get(p)!).push(r.id); }
     const jobsByClient = new Map<string, Array<{ id: string; createdAt: string }>>();
-    for (const j of jb) if (j.client_id && j.created_at) (jobsByClient.get(j.client_id) ?? jobsByClient.set(j.client_id, []).get(j.client_id)!).push({ id: j.id, createdAt: j.created_at });
+    const internalJobIds = new Set<string>();
+    for (const j of jb) {
+      if (j.client_id && j.created_at) (jobsByClient.get(j.client_id) ?? jobsByClient.set(j.client_id, []).get(j.client_id)!).push({ id: j.id, createdAt: j.created_at });
+      const client = j.client_id ? clients.get(j.client_id) : null;
+      if (isInternalJob({ title: j.title, clientName: client?.name, companyName: client?.companyName })) internalJobIds.add(j.id);
+    }
     for (const v of Array.from(jobsByClient.values())) v.sort((a: { createdAt: string }, b: { createdAt: string }) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    return { clients, jobsByClient, byPhone };
+    return { clients, jobsByClient, byPhone, internalJobIds };
   })();
   ctxMemo = { at: Date.now(), p };
   p.then((v) => { if (!v) ctxMemo = null; });
@@ -72,6 +78,15 @@ const fullClient = (x: Ctx, id: string | null | undefined) => {
   const c = x.clients.get(id) ?? { id };
   return { ...c, jobs: { nodes: x.jobsByClient.get(id) ?? [] } };
 };
+/** Put the mirrored client's name and company on a job or quote so internal-client checks can see them. */
+function attachClient(x: Ctx, data: any) {
+  if (!data || typeof data !== 'object') return data;
+  const id = data.client?.id;
+  if (!id) return data;
+  const c = x.clients.get(id);
+  if (!c) return data;
+  return { ...data, client: { ...data.client, id, name: c.name ?? data.client.name ?? null, companyName: c.companyName ?? data.client.companyName ?? null } };
+}
 
 /** Invoices issued in [from, to): the union of the weekly + metrics invoice node shapes. */
 export async function mirrorInvoices(from: string, to: string): Promise<any[] | null> {
@@ -86,8 +101,12 @@ export async function mirrorInvoices(from: string, to: string): Promise<any[] | 
 
 export async function mirrorQuotes(createdFrom: string, createdTo: string): Promise<any[] | null> {
   if (!(await mirrorState()).ready) return null;
-  const rows = await all((c) => c.from('jobber_quotes').select('data').gte('created_at', createdFrom).lt('created_at', createdTo).order('created_at').order('id'));
-  return rows ? rows.map((r) => r.data) : null;
+  const [rows, x] = await Promise.all([
+    all((c) => c.from('jobber_quotes').select('data').gte('created_at', createdFrom).lt('created_at', createdTo).order('created_at').order('id')),
+    ctx(),
+  ]);
+  if (!rows || !x) return null;
+  return rows.map((r) => attachClient(x, r.data));
 }
 
 export async function mirrorPayments(from: string, to: string): Promise<any[] | null> {
@@ -98,14 +117,22 @@ export async function mirrorPayments(from: string, to: string): Promise<any[] | 
 
 export async function mirrorJobs(by: 'created_at' | 'completed_at', from: string, to: string): Promise<any[] | null> {
   if (!(await mirrorState()).ready) return null;
-  const rows = await all((c) => c.from('jobber_jobs').select('data').gte(by, from).lt(by, to).order(by).order('id'));
-  return rows ? rows.map((r) => r.data) : null;
+  const [rows, x] = await Promise.all([
+    all((c) => c.from('jobber_jobs').select('data').gte(by, from).lt(by, to).order(by).order('id')),
+    ctx(),
+  ]);
+  if (!rows || !x) return null;
+  return rows.map((r) => attachClient(x, r.data));
 }
 
 export async function mirrorTimesheets(from: string, to: string): Promise<any[] | null> {
   if (!(await mirrorState()).ready || tsBlocked) return null;
-  const rows = await all((c) => c.from('jobber_timesheets').select('data').gte('start_at', from).lt('start_at', to).order('start_at').order('id'));
-  return rows ? rows.map((r) => r.data) : null;
+  const [rows, x] = await Promise.all([
+    all((c) => c.from('jobber_timesheets').select('data').gte('start_at', from).lt('start_at', to).order('start_at').order('id')),
+    ctx(),
+  ]);
+  if (!rows || !x) return null;
+  return rows.map((r) => r.data).filter((n) => !n?.job?.id || !x.internalJobIds.has(n.job.id));
 }
 
 /** Per-job: { createdAt, client.jobs, invoices } — the DashJobPaid shape. */

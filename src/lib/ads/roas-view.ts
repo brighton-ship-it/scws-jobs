@@ -9,6 +9,7 @@
 import { adCategory, digits10, ptDateKey, type AdCategory, type AdSplit, type AdSplitRow, type AdSplitWindow, type BlendedRoas, type RoasSide, type RoasView, type SpendDay } from './call-dashboard.ts';
 import { invoicePretaxUsd } from './invoice-value.ts';
 import { jobberDateKey, type WeeklyInvoice } from './weekly-sales.ts';
+import { INTERNAL_EXCLUSION_NOTE, isInternalJob } from './internal-job.ts';
 
 const round = (n: number) => Math.round(n * 100) / 100;
 const DAY = 86400_000;
@@ -24,6 +25,7 @@ export function buildBlendedRoas(input: { invoices: WeeklyInvoice[] | null; spen
   const a = ptDateKey(input.start), b = ptDateKey(input.now);
   let invoiced = 0, invoices = 0;
   for (const inv of input.invoices) {
+    if (isInternalJob(inv)) continue;
     const key = jobberDateKey(inv.issuedDate);
     if (!key || key < a || key > b) continue;
     const pre = invoicePretaxUsd(inv);
@@ -63,6 +65,7 @@ export function buildRoasView(input: {
   const S = { all: side(), neu: side(), pump: { all: side(), neu: side() }, drilling: { all: side(), neu: side() } };
   const add = (s: ReturnType<typeof side>, pre: number, paid: number, cid: string, unpaid: boolean) => { s.invoiced += pre; s.paid += paid; s.invoices += 1; s._c.add(cid); if (unpaid) s._u.add(cid); };
   for (const inv of input.invoices) {
+    if (isInternalJob(inv)) continue;
     const pre = invoicePretaxUsd(inv);
     const issued = Date.parse(inv.issuedDate || '');
     if (!pre || !Number.isFinite(issued)) continue;
@@ -112,6 +115,7 @@ export function buildRoasView(input: {
       'ROAS overall = pre-tax Jobber invoices (not draft/void) issued in the range to any client whose phone called a Google Ads number before the invoice, ÷ Google Ads spend for the same Pacific days. Includes repeat customers.',
       'ROAS new customers = the same, limited to clients with no Jobber job created before their first Google Ads call (not already a customer when they called; repeat customers such as Cauzza are excluded).',
       'Paid = payments received to date on those invoices (pre-tax share). Credit goes to the campaign of the latest ad call before the invoice. Mike/AI receptionist calls are not ad calls and are excluded.',
+      INTERNAL_EXCLUSION_NOTE,
     ],
   };
 }

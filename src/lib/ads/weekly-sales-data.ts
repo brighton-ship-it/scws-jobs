@@ -50,14 +50,14 @@ async function paged<T>(key: string, query: string, field: string, variables: Re
 const INVOICES = `
   query WeeklyInvoices($first: Int!, $after: String, $filter: InvoiceFilterAttributes) {
     invoices(first: $first, after: $after, filter: $filter) {
-      nodes { id invoiceStatus issuedDate subject amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 1) { nodes { title } } client { id createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
+      nodes { id invoiceStatus issuedDate subject amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 1) { nodes { title } } paymentRecords(first: 15) { nodes { id } } client { id name companyName createdAt phones { number } jobs(first: 10) { nodes { createdAt } } } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
 const QUOTES = `
   query WeeklyQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) {
     quotes(first: $first, after: $after, filter: $filter) {
-      nodes { id title quoteStatus sentAt transitionedAt amounts { subtotal total discountAmount } }
+      nodes { id title quoteStatus sentAt transitionedAt amounts { subtotal total discountAmount } client { id name companyName } }
       pageInfo { hasNextPage endCursor }
     }
   }`;
@@ -71,7 +71,7 @@ const PAYMENTS = `
 const JOBS = `
   query WeeklyJobs($first: Int!, $after: String, $filter: JobFilterAttributes) {
     jobs(first: $first, after: $after, filter: $filter) {
-      nodes { id title createdAt completedAt }
+      nodes { id title createdAt completedAt client { id name companyName } }
       pageInfo { hasNextPage endCursor }
     }
   }`;

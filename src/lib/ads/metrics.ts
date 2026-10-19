@@ -5,6 +5,7 @@ import { ptDateKey, type RoasView } from './call-dashboard.ts';
 import type { HistInvoice, CostJob, TimeEntry } from './metrics-data.ts';
 import type { WeeklyQuote } from './weekly-sales.ts';
 import { mergeFullHistory, summarize, nrrWindow, type QboHistory } from './ltv-full.ts';
+import { INTERNAL_EXCLUSION_NOTE, isInternalJob } from './internal-job.ts';
 
 export interface MetricRow { label: string; value: string; note?: string; hover?: string }
 export interface MetricCard { id: string; title: string; value: string; sub?: string; rows?: MetricRow[]; measures: string; source: string; range: string; needs?: string; hover?: string; badge?: string }
@@ -23,6 +24,7 @@ export interface LtvResult { overall: number | null; pump: number | null; drilli
 export function lifetimeValue(invoices: HistInvoice[]): LtvResult {
   const by = { all: new Map<string, number>(), pump: new Map<string, number>(), drilling: new Map<string, number>() };
   for (const inv of invoices) {
+    if (isInternalJob(inv)) continue;
     const pre = invoicePretaxUsd(inv); const cid = inv.client?.id;
     if (!pre || !cid) continue;
     const c = cat2(inv.jobs?.nodes?.[0]?.title);
@@ -74,7 +76,7 @@ export function buildMetrics(input: {
       { label: 'Drilling', value: sD!.avg != null ? usd(sD!.avg) : NA, note: `${sD!.n} customers · median ${usd(sD!.median ?? 0)}` },
     ] : undefined,
     hover: both ? `Customers in both QuickBooks and Jobber: ${both.n}, avg ${usd(both.avg ?? 0)}` : undefined,
-    measures: 'Average pre-tax revenue per customer across the whole business history (actual, not a projection). A customer is drilling if any of their work was drilling, otherwise pump & service. QuickBooks and Jobber customers are matched by exact name, so a few spelling variants are counted twice (slightly understates LTV).' + trunc,
+    measures: 'Average pre-tax revenue per customer across the whole business history (actual, not a projection). A customer is drilling if any of their work was drilling, otherwise pump & service. QuickBooks and Jobber customers are matched by exact name, so a few spelling variants are counted twice (slightly understates LTV). ' + INTERNAL_EXCLUSION_NOTE + trunc,
     source: `${FULL}: QuickBooks Sales by Customer Detail (pre-tax, static snapshot) + live Jobber invoices (not draft/void, subtotal − discount). QuickBooks invoices dated Feb 25–28, 2025 that also appear in Jobber (same amount within 3 days) are dropped.${full ? ` ${full.matched} QuickBooks customers matched to Jobber; ${full.droppedDupes} duplicate invoices dropped.` : ''}`,
     range: fullRange, needs: histNeeds ?? (input.qbo ? undefined : 'needs the QuickBooks history file'),
   });
@@ -95,7 +97,7 @@ export function buildMetrics(input: {
       { label: 'Google Ads · Drilling', value: cacDrill != null ? usd(cacDrill) : NA, note: `${usd(r.byCategory.drilling.spend ?? 0)} spend, ${r.byCategory.drilling.newOnly.clients} new customers invoiced` },
       { label: 'Referral / repeat / GBP / Mike', value: NA, note: 'needs spend per channel (no cost tracked)' },
     ] : undefined,
-    measures: 'Ad spend ÷ new customers acquired. New customer = no Jobber job before their first Google Ads call, and invoiced in the window (credited to the campaign of their last ad call).',
+    measures: 'Ad spend ÷ new customers acquired. New customer = no Jobber job before their first Google Ads call, and invoiced in the window (credited to the campaign of their last ad call). ' + INTERNAL_EXCLUSION_NOTE,
     source: 'Google Ads API daily spend; Google Ads call log (ads_calls); Jobber invoices + client job history.', range: cacRange,
     needs: r ? undefined : 'needs Google Ads spend + Jobber invoices (load failed)',
   });
@@ -110,15 +112,15 @@ export function buildMetrics(input: {
       { label: 'Pump & service', value: ratio(ltv?.pump, cacPump), note: ltv?.pump != null && cacPump != null ? `${usd(ltv.pump)} ÷ ${usd(cacPump)}` : undefined },
       { label: 'Drilling', value: ratio(ltv?.drilling, cacDrill), note: cacDrill == null ? 'no new drilling customers invoiced yet, so CAC is undefined' : undefined },
     ],
-    measures: 'Customer lifetime value (card 1) ÷ Google Ads CAC (card 8). Above 3:1 is the usual rule of thumb. Mixes a full-history LTV with a short CAC window, so read it as directional.',
+    measures: 'Customer lifetime value (card 1) ÷ Google Ads CAC (card 8). Above 3:1 is the usual rule of thumb. Mixes a full-history LTV with a short CAC window, so read it as directional. ' + INTERNAL_EXCLUSION_NOTE,
     source: `Cards 1 (${FULL}) and 8.`, range: `LTV: Oct 2020 – ${md(today)}. CAC: ${input.sinceLabel}.`, badge: FULL,
     needs: ltv?.overall == null || cacAll == null ? 'needs both LTV and CAC' : undefined,
   });
 
   // 3) Gross margin per job
   const costRange = `${md(ptDateKey(input.costFrom))} – ${md(today)} (job completed date)`;
-  const cj = input.costs.rows;
-  let gm: MetricCard = { id: 'margin', title: 'Gross margin per job', value: NA, measures: 'Average (revenue − cost) per completed job, and margin %, using Jobber job costing (line-item cost + labour from timesheets + expenses).', source: `Jobber job costing.${input.qboConnected ? '' : ' QuickBooks API is not connected to this app, so QuickBooks costs are not used.'}`, range: costRange };
+  const cj = input.costs.rows?.filter((j) => !isInternalJob(j)) ?? null;
+  let gm: MetricCard = { id: 'margin', title: 'Gross margin per job', value: NA, measures: 'Average (revenue − cost) per completed job, and margin %, using Jobber job costing (line-item cost + labour from timesheets + expenses). ' + INTERNAL_EXCLUSION_NOTE, source: `Jobber job costing.${input.qboConnected ? '' : ' QuickBooks API is not connected to this app, so QuickBooks costs are not used.'}`, range: costRange };
   if (!cj) gm.needs = `needs Jobber job costing (query failed: ${input.costs.error ?? 'unknown'})`;
   else {
     const withRev = cj.filter((j) => (j.jobCosting?.totalRevenue ?? 0) > 0);
@@ -154,7 +156,7 @@ export function buildMetrics(input: {
   // 5) Technician utilization
   const timeRange = `${md(ptDateKey(input.timeFrom))} – ${md(today)} (timesheet start)`;
   const te = input.time.rows;
-  const ut: MetricCard = { id: 'util', title: 'Technician utilization', value: NA, measures: 'Clocked hours on a job ÷ all clocked hours (job + general/travel/shop time).', source: 'Jobber timesheets.', range: timeRange };
+  const ut: MetricCard = { id: 'util', title: 'Technician utilization', value: NA, measures: 'Clocked hours on a job ÷ all clocked hours (job + general/travel/shop time). Hours on internal/training/test jobs are excluded.', source: 'Jobber timesheets.', range: timeRange };
   if (!te) ut.needs = /permission/i.test(input.time.error ?? '') ? 'needs timesheet access: the SCWS Jobber app isn\'t allowed to read timesheets (Jobber says "hidden due to permissions"). Add the Timesheets read scope to the app and re-authorize, and crews need to clock in/out in Jobber. Paid hours per tech are also needed for true utilization.' : `needs Jobber timesheets (query failed: ${input.time.error ?? 'unknown'})`;
   else {
     const hrs = (e: TimeEntry) => { if (typeof e.finalDuration === 'number' && e.finalDuration > 0) return e.finalDuration / 3600; const a = Date.parse(e.startAt || ''), b = Date.parse(e.endAt || ''); return Number.isFinite(a) && Number.isFinite(b) && b > a ? (b - a) / 3600_000 : 0; };
@@ -166,9 +168,9 @@ export function buildMetrics(input: {
   cards.push(ut);
 
   // 6) Quote-to-close cycle time
-  const qs = input.quotes;
+  const qs = input.quotes?.filter((q) => !isInternalJob(q)) ?? null;
   const qRange = `Quotes created ${md(ptDateKey(input.quotesFrom))} – ${md(today)}`;
-  const cy: MetricCard = { id: 'cycle', title: 'Quote-to-close cycle time', value: NA, measures: 'Median days from quote sent to approved (or converted to a job). Jobber only exposes the latest status change, so converted quotes are measured to conversion, which can run a little long.', source: 'Jobber quotes: sentAt → transitionedAt, status approved/converted. Service-call quotes ($200, auto-created) and quotes never marked sent (approved on the spot) are excluded.', range: qRange };
+  const cy: MetricCard = { id: 'cycle', title: 'Quote-to-close cycle time', value: NA, measures: 'Median days from quote sent to approved (or converted to a job). Jobber only exposes the latest status change, so converted quotes are measured to conversion, which can run a little long. ' + INTERNAL_EXCLUSION_NOTE, source: 'Jobber quotes: sentAt → transitionedAt, status approved/converted. Service-call quotes ($200, auto-created) and quotes never marked sent (approved on the spot) are excluded.', range: qRange };
   if (!qs) cy.needs = 'needs Jobber quotes (load failed)';
   else {
     const days = (c: Cat | null) => qs.filter((q) => /approved|converted/i.test(q.quoteStatus || '') && workCategory(q.title) !== 'service_call' && (!c || cat2(q.title) === c))
@@ -183,7 +185,7 @@ export function buildMetrics(input: {
   cards.push(cy);
 
   // 7) Repeat purchase rate — full history
-  const rp: MetricCard = { id: 'repeat', title: 'Repeat purchase rate', value: NA, badge: FULL, measures: 'Share of all customers since Oct 2020 who came back: bought again at least 60 days after an earlier purchase. The 60-day gap keeps a $200 service call plus the repair it led to from counting as a repeat.' + trunc, source: `${FULL}, grouped by customer (same merge as card 1).`, range: fullRange, needs: card1Needs() };
+  const rp: MetricCard = { id: 'repeat', title: 'Repeat purchase rate', value: NA, badge: FULL, measures: 'Share of all customers since Oct 2020 who came back: bought again at least 60 days after an earlier purchase. The 60-day gap keeps a $200 service call plus the repair it led to from counting as a repeat. ' + INTERNAL_EXCLUSION_NOTE + trunc, source: `${FULL}, grouped by customer (same merge as card 1).`, range: fullRange, needs: card1Needs() };
   if (sA) {
     rp.value = pct(sA.repeatRate ?? 0); rp.sub = `${sA.repeat60.toLocaleString()} of ${sA.n.toLocaleString()} customers`;
     rp.rows = [{ label: 'Pump & service customers', value: pct(sP!.repeatRate ?? 0), note: `${sP!.repeat60} of ${sP!.n.toLocaleString()}` }, { label: 'Drilling customers', value: pct(sD!.repeatRate ?? 0), note: `${sD!.repeat60} of ${sD!.n}` }];
@@ -192,7 +194,7 @@ export function buildMetrics(input: {
 
   // 9) Net revenue retention — trailing 12 months vs the 12 before, full history
   const ymd = (k: string, dy: number) => `${Number(k.slice(0, 4)) - dy}${k.slice(4)}`;
-  const nr: MetricCard = { id: 'nrr', title: 'Net revenue retention', value: NA, badge: FULL, measures: 'What last year\'s customers spent this year ÷ what they spent last year (same customers). Over 100% = existing customers spend more. Emergency pump and one-off drilling work naturally runs low; watch the trend.', source: `${FULL}, pre-tax, grouped by customer (same merge as card 1).`, range: `Last year: ${md(ymd(today, 2))} – ${md(ymd(today, 1))}; this year: ${md(ymd(today, 1))} – ${md(today)}`, needs: card1Needs() };
+  const nr: MetricCard = { id: 'nrr', title: 'Net revenue retention', value: NA, badge: FULL, measures: 'What last year\'s customers spent this year ÷ what they spent last year (same customers). Over 100% = existing customers spend more. Emergency pump and one-off drilling work naturally runs low; watch the trend. ' + INTERNAL_EXCLUSION_NOTE, source: `${FULL}, pre-tax, grouped by customer (same merge as card 1).`, range: `Last year: ${md(ymd(today, 2))} – ${md(ymd(today, 1))}; this year: ${md(ymd(today, 1))} – ${md(today)}`, needs: card1Needs() };
   if (full) {
     const w = (k: number, d?: 'pump' | 'drilling') => nrrWindow(full, ymd(today, k + 1), ymd(today, k), ymd(today, k - 1), d);
     const a = w(1), p = w(1, 'pump'), d = w(1, 'drilling');

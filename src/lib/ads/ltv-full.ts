@@ -5,11 +5,12 @@
  */
 import { ptDateKey } from './call-dashboard.ts';
 import { workCategory } from './work-category.ts';
+import { isInternalJob } from './internal-job.ts';
 
 /** [normalizedName, drillingFlag 0|1, [[yyyy-mm-dd, pretaxUsd, invoiceNo (only for Feb 25+ 2025)], ...]] */
 export type QboCustomer = [string, number, Array<[string, number] | [string, number, string]>];
 export interface QboHistory { source: string; customers: QboCustomer[] }
-export interface LtvInvoice { id: string; invoiceStatus?: string | null; issuedDate?: string | null; subject?: string | null; amounts?: { subtotal?: number | null; discountAmount?: number | null } | null; client?: { id?: string | null; name?: string | null; companyName?: string | null } | null }
+export interface LtvInvoice { id: string; invoiceStatus?: string | null; issuedDate?: string | null; subject?: string | null; amounts?: { subtotal?: number | null; discountAmount?: number | null } | null; client?: { id?: string | null; name?: string | null; companyName?: string | null } | null; jobs?: { nodes?: Array<{ title?: string | null } | null> | null } | null }
 
 export function normName(n?: string | null): string {
   let s = (n || '').toLowerCase().replace(/&/g, ' and ');
@@ -33,7 +34,7 @@ export function mergeFullHistory(qbo: QboHistory, jobber: LtvInvoice[]): FullLtv
   for (const i of jobber) {
     const st = (i.invoiceStatus || '').toLowerCase();
     const cid = i.client?.id;
-    if (['draft', 'void', 'bad_debt'].includes(st) || !i.issuedDate || !cid || seen.has(i.id)) continue;
+    if (['draft', 'void', 'bad_debt'].includes(st) || !i.issuedDate || !cid || seen.has(i.id) || isInternalJob(i)) continue;
     seen.add(i.id);
     const a = (i.amounts?.subtotal ?? 0) - (i.amounts?.discountAmount ?? 0);
     const c = J.get(cid) ?? { tx: [], name: '' };

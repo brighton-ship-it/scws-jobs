@@ -5,6 +5,7 @@
  */
 import { jobberGraphql } from '../jobber/client.ts';
 import { digits10 } from './call-dashboard.ts';
+import { isInternalJob } from './internal-job.ts';
 import type { CollectionEvent } from './callbacks.ts';
 
 export interface JobberInvoiceExtra {
@@ -45,7 +46,7 @@ function pushWork(out: Array<{ phone: string | null; at: string }>, phones: stri
 
 const JOBS = `query ArchJobs($first: Int!, $after: String, $filter: JobFilterAttributes) {
   jobs(first: $first, after: $after, filter: $filter) {
-    nodes { id createdAt jobStatus client { id phones { number } } VISITS }
+    nodes { id title createdAt jobStatus client { id name companyName phones { number } } VISITS }
     pageInfo { hasNextPage endCursor }
   }
 }`;
@@ -54,8 +55,8 @@ const VISITS = `visits(first: 15) { nodes { id createdAt startAt } }`;
 const NEW_CLIENTS = `query NewClients($first: Int!, $after: String, $filter: ClientFilterAttributes) {
   clients(first: $first, after: $after, filter: $filter) {
     nodes {
-      id createdAt phones { number }
-      jobs(first: 10) { nodes { id createdAt } }
+      id name companyName createdAt phones { number }
+      jobs(first: 10) { nodes { id title createdAt } }
     }
     pageInfo { hasNextPage endCursor }
   }
@@ -230,6 +231,7 @@ export async function loadJobberFollowUp(sinceIso: string, gql: Gql = jobberGrap
       } else throw error;
     }
     for (const job of nodes) {
+      if (isInternalJob(job)) continue;
       const phones = phonesOf(job.client);
       pushWork(work, phones, job.createdAt);
       for (const visit of job.visits?.nodes ?? []) pushWork(work, phones, visit.createdAt || visit.startAt);
@@ -245,7 +247,10 @@ export async function loadJobberFollowUp(sinceIso: string, gql: Gql = jobberGrap
     }), 12);
     for (const client of nodes) {
       const phones = phonesOf(client);
-      for (const job of client.jobs?.nodes ?? []) pushWork(work, phones, job.createdAt || client.createdAt);
+      for (const job of client.jobs?.nodes ?? []) {
+        if (isInternalJob({ title: job.title, client })) continue;
+        pushWork(work, phones, job.createdAt || client.createdAt);
+      }
     }
   } catch (error) {
     notes.push(`new client jobs: ${error instanceof Error ? error.message : 'error'}`);
