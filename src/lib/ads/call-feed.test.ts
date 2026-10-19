@@ -51,3 +51,20 @@ test('markMikeHandoffs relabels a missed Voice leg Mike picked up', () => {
   assert.equal(adnan.receptionist_call_id, 'v-adnan');
   assert.equal(out.find((r) => r.caller_phone === '+19514914618')!.outcome, 'missed');
 });
+
+test('tracking-line answered call takes the answerer from the matching Voice log row; Mike hand-offs say Mike', () => {
+  const rows = mergeCallFeed({
+    recordings: [
+      { started_at: '2026-10-19T16:34:57.929Z', caller_number: '+16192004716', tracking_number: '+17603312502', source: 'google_ads', dial_status: 'completed', answered: true, duration_seconds: 203, outcome: 'quote_request' },
+      { started_at: '2026-10-19T16:05:00Z', caller_number: '+17605550111', tracking_number: '+17602791262', source: 'gbp_ramona', dial_status: 'completed', answered: true, duration_seconds: 90, outcome: 'quote_request' },
+    ],
+    log: [
+      { started_at: '2026-10-19T16:35:09.818Z', caller_phone: '+16192004716', called_number: '+17602763468', outcome: 'answered', answered_by: 'shanicey@scwellservice.com' },
+      { started_at: '2026-10-19T16:05:10Z', caller_phone: '+17605550111', called_number: '+17602763468', outcome: 'forwarded_ai' },
+    ],
+    mike: [],
+  });
+  assert.equal(rows.length, 2);
+  assert.equal(rows.find((r) => r.phone === '(619) 200-4716')!.answeredBy, 'shanicey');
+  assert.equal(rows.find((r) => r.phone === '(760) 555-0111')!.answeredBy, 'Mike (AI)');
+});
