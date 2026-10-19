@@ -8,6 +8,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeOps } from '@/lib/ops-auth';
 import { buildDashboard, buildCallLogView, mergeLiveCalls, attributeAiHandledCalls, type DashCall, type DialedSourceHint, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
+import { isInternalJob } from '@/lib/ads/internal-job';
 import { loadWeeklyInvoices, loadWindowQuotes, loadWeeklyJobsCreated, loadWeeklyJobsCompleted, loadWeeklyPayments } from '@/lib/ads/weekly-sales-data';
 import { loadDailySpend, loadJobMoney, loadFirstJobByPhone, loadJobsCreatedSince } from '@/lib/ads/call-dashboard-data';
 import { classifyRealLeads, LEAD_REASON_LABEL, isOwnNumber, type LeadCall } from '@/lib/ads/real-leads';
@@ -339,9 +340,9 @@ export async function GET(request: NextRequest) {
       });
       if (dash.roas && dash.weekly?.totals) {
         dash.weekly.sources.push(
-          'Blended ROAS = all pre-tax Jobber invoices issued in the range (any customer, any source) ÷ all Google Ads spend, same Pacific days (from Sep 18, when spend tracking began).',
-          'ROAS (all ad callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days.',
-          'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call.',
+          'Blended ROAS = all pre-tax Jobber invoices issued in the range (any customer, any source) ÷ all Google Ads spend, same Pacific days (from Sep 18, when spend tracking began). Internal/training/test invoices are excluded.',
+          'ROAS (all ad callers) = pre-tax Jobber invoices issued in the range to any client whose phone called a Google Ads number before the invoice (new + repeat), ÷ Google Ads spend, same Pacific days. Internal/training/test invoices are excluded.',
+          'ROAS (new customers) = the same, limited to clients with no Jobber job created before their first Google Ads call. Internal/training/test invoices are excluded.',
         );
       }
       if (shared) {
@@ -562,15 +563,19 @@ async function loadCollectionTexts(db: any): Promise<{ events: CollectionEvent[]
   return { events, sids, ok: true, note: null };
 }
 
-async function clientPhoneMap(db: any): Promise<{ phones: Map<string, string[]>; note: string | null }> {
+async function clientPhoneMap(db: any): Promise<{ phones: Map<string, string[]>; names: Map<string, { name: string | null; companyName: string | null }>; note: string | null }> {
   const phones = new Map<string, string[]>();
+  const names = new Map<string, { name: string | null; companyName: string | null }>();
   for (let from = 0; from < 8000; from += 1000) {
-    const c = await db.from('jobber_clients').select('id, phones_digits').order('id', { ascending: true }).range(from, from + 999);
-    if (c.error) return { phones, note: `callback clients: ${c.error.message}` };
-    for (const row of c.data ?? []) phones.set(row.id, row.phones_digits ?? []);
+    const c = await db.from('jobber_clients').select('id, phones_digits, name, company_name').order('id', { ascending: true }).range(from, from + 999);
+    if (c.error) return { phones, names, note: `callback clients: ${c.error.message}` };
+    for (const row of c.data ?? []) {
+      phones.set(row.id, row.phones_digits ?? []);
+      names.set(row.id, { name: row.name ?? null, companyName: row.company_name ?? null });
+    }
     if ((c.data ?? []).length < 1000) break;
   }
-  return { phones, note: null };
+  return { phones, names, note: null };
 }
 
 /** Jobs (any status in the mirror), quotes, invoices, visits, and website requests on or after the call. */
@@ -579,9 +584,12 @@ async function loadWorkRows(db: any, sinceIso: string): Promise<{ rows: Array<{ 
   const notes: string[] = [];
   const clients = await clientPhoneMap(db);
   if (clients.note) notes.push(clients.note);
+  const clientOf = (id: string | null | undefined) => (id ? clients.names.get(id) ?? null : null);
   const jobs = await pageSince(db, 'jobber_jobs', 'client_id, created_at, data', sinceIso);
   if (jobs.error) notes.push(`callback jobs: ${jobs.error}`);
   else for (const j of jobs.rows) {
+    const who = clientOf(j.client_id);
+    if (isInternalJob({ title: j.data?.title, clientName: who?.name, companyName: who?.companyName })) continue;
     const phones = clients.phones.get(j.client_id) ?? [];
     if (j.created_at) for (const p of phones) out.push({ phone: p, at: j.created_at });
     for (const visit of j.data?.visits?.nodes ?? []) {
@@ -592,12 +600,16 @@ async function loadWorkRows(db: any, sinceIso: string): Promise<{ rows: Array<{ 
   const quotes = await pageSince(db, 'jobber_quotes', 'created_at, data', sinceIso);
   if (quotes.error) notes.push(`callback quotes: ${quotes.error}`);
   else for (const q of quotes.rows) {
+    const who = clientOf(q.data?.client?.id) ?? { name: q.data?.client?.name ?? null, companyName: q.data?.client?.companyName ?? null };
+    if (isInternalJob({ title: q.data?.title, clientName: who.name, companyName: who.companyName })) continue;
     const phones = new Set<string>([...clientPhones(q.data?.client), ...(clients.phones.get(q.data?.client?.id) ?? [])]);
     if (q.created_at) for (const p of phones) out.push({ phone: p, at: q.created_at });
   }
   const invoices = await pageIssued(db, sinceIso);
   if (invoices.error) notes.push(`callback invoices: ${invoices.error}`);
   else for (const inv of invoices.rows) {
+    const who = clientOf(inv.client_id);
+    if (isInternalJob({ subject: inv.data?.subject, jobs: inv.data?.jobs, clientName: who?.name, companyName: who?.companyName })) continue;
     const at = inv.issued_date || inv.data?.createdAt;
     if (!at) continue;
     for (const p of clients.phones.get(inv.client_id) ?? []) out.push({ phone: p, at });
@@ -675,16 +687,20 @@ async function loadSourceCards(db: any, startMs: number) {
   for (const r of [recs, forms, jobs]) if (r.error) throw new Error(r.error.message);
   const ids = Array.from(new Set((jobs.data ?? []).map((j: any) => j.client_id).filter(Boolean))) as string[];
   const phones = new Map<string, string[]>();
+  const names = new Map<string, { name: string | null; companyName: string | null }>();
   for (let i = 0; i < ids.length; i += 150) {
-    const c = await db.from('jobber_clients').select('id, phones_digits').in('id', ids.slice(i, i + 150));
+    const c = await db.from('jobber_clients').select('id, phones_digits, name, company_name').in('id', ids.slice(i, i + 150));
     if (c.error) throw new Error(c.error.message);
-    for (const r of c.data ?? []) phones.set(r.id, r.phones_digits ?? []);
+    for (const r of c.data ?? []) {
+      phones.set(r.id, r.phones_digits ?? []);
+      names.set(r.id, { name: r.name ?? null, companyName: r.company_name ?? null });
+    }
   }
   return buildSourceCards({
     startMs, nowMs: Date.now(),
     calls: (recs.data ?? []).filter((r: any) => !isOwnNumber(r.caller_number)).map((r: any) => ({ at: r.started_at, phone: r.caller_number, source: r.source })),
     forms: (forms.data ?? []).filter((f: any) => f.lead_source !== 'test' && !isOwnNumber(f.phone)).map((f: any) => ({ at: f.created_at, phone: f.phone, channel: f.lead_source, serviceType: f.service_type })),
-    jobs: (jobs.data ?? []).map((j: any) => ({ createdAt: j.created_at, title: j.title, phones: phones.get(j.client_id) ?? [] })),
+    jobs: (jobs.data ?? []).map((j: any) => ({ createdAt: j.created_at, title: j.title, phones: phones.get(j.client_id) ?? [], clientName: names.get(j.client_id)?.name ?? null, companyName: names.get(j.client_id)?.companyName ?? null })),
     numbers: SOURCE_NUMBERS, notes: SOURCE_NOTES,
   });
 }

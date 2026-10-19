@@ -6,9 +6,10 @@
  * Forms  = website form requests (booking_requests, source=website) whose lead channel is that source (booking_requests.lead_source,
  *          set by /api/booking from the visitor's first-touch referrer / UTM). Type: service "new_well" = drilling, everything else = pump.
  * Booked = distinct callers / form phones with a Jobber job created from 1 h before to 30 days after their first contact in the range
- *          (site walks excluded). Type follows that job's title (work-category rule; service calls count as pump).
+ *          (site walks and internal/training/test jobs excluded). Type follows that job's title (work-category rule; service calls count as pump).
  */
 import { workCategory, isSiteVisit } from './work-category.ts';
+import { isInternalJob } from './internal-job.ts';
 
 export type SourceKey = 'gbp' | 'seo' | 'yelp' | 'apple_maps';
 export const SOURCE_KEYS: SourceKey[] = ['gbp', 'seo', 'yelp', 'apple_maps'];
@@ -18,7 +19,7 @@ export const CALL_SOURCES: Record<SourceKey, string[]> = { gbp: ['gbp_anza', 'gb
 
 export interface SrcCall { at: string; phone: string | null; source: string | null }
 export interface SrcForm { at: string; phone: string | null; channel: string | null; serviceType: string | null }
-export interface SrcJob { createdAt: string; phones: string[]; title: string | null }
+export interface SrcJob { createdAt: string; phones: string[]; title: string | null; clientName?: string | null; companyName?: string | null }
 export interface SplitCount { total: number; pump: number; drilling: number }
 export interface SourceCard {
   key: SourceKey; label: string; calls: number; callers: number; forms: SplitCount; booked: SplitCount; numbers: string[]; note: string | null;
@@ -34,7 +35,8 @@ export function buildSourceCards(input: {
 }): SourceCard[] {
   const jobsByPhone = new Map<string, Array<{ t: number; title: string | null }>>();
   for (const j of input.jobs) {
-    const t = Date.parse(j.createdAt); if (!Number.isFinite(t) || isSiteVisit(j.title)) continue;
+    const t = Date.parse(j.createdAt);
+    if (!Number.isFinite(t) || isSiteVisit(j.title) || isInternalJob({ title: j.title, clientName: j.clientName, companyName: j.companyName })) continue;
     for (const p of Array.from(new Set(j.phones.map(d10).filter(Boolean) as string[]))) (jobsByPhone.get(p) ?? jobsByPhone.set(p, []).get(p)!).push({ t, title: j.title });
   }
   const inWin = (iso: string) => { const t = Date.parse(iso); return Number.isFinite(t) && t >= input.startMs && t <= input.nowMs; };

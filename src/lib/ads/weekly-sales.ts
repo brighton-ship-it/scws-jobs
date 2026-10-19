@@ -2,6 +2,7 @@
 import { ptDateKey, ptStartOfDay, ptWeekStart, DASH_FLOOR_ISO } from './call-dashboard.ts';
 import { invoicePretaxUsd, isIssuedInvoice, type InvoiceAmountInput } from './invoice-value.ts';
 import { workCategory, isSiteVisit, WORK_CATEGORIES, WORK_CATEGORY_RULE, type WorkCategory } from './work-category.ts';
+import { INTERNAL_EXCLUSION_NOTE, isInternalJob } from './internal-job.ts';
 
 export const WEEKLY_WEEKS = 9; // current week-to-date + previous 8
 
@@ -9,11 +10,13 @@ export interface WeeklyInvoice extends InvoiceAmountInput {
   subject?: string | null;
   amounts?: { subtotal?: number | null; total?: number | null; taxAmount?: number | null; paymentsTotal?: number | null } | null;
   jobs?: { nodes?: Array<{ title?: string | null }> | null } | null;
-  client?: { id?: string | null; createdAt?: string | null; phones?: Array<{ number?: string | null }> | null; jobs?: { nodes?: Array<{ createdAt?: string | null }> | null } | null } | null;
+  client?: { id?: string | null; name?: string | null; companyName?: string | null; createdAt?: string | null; phones?: Array<{ number?: string | null }> | null; jobs?: { nodes?: Array<{ createdAt?: string | null }> | null } | null } | null;
+  /** Payment record ids applied to this invoice, so cash on an internal job can be left out. */
+  paymentRecords?: { nodes?: Array<{ id?: string | null } | null> | null } | null;
 }
-export interface WeeklyQuote { title?: string | null; quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null; discountAmount?: number | null } | null }
-export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null }
-export interface WeeklyJob { title?: string | null; createdAt?: string | null; completedAt?: string | null }
+export interface WeeklyQuote { title?: string | null; quoteStatus?: string | null; sentAt?: string | null; /** Jobber: when the quote entered its current status (= approval time for approved/converted quotes) */ transitionedAt?: string | null; amounts?: { subtotal?: number | null; total?: number | null; discountAmount?: number | null } | null; client?: { id?: string | null; name?: string | null; companyName?: string | null } | null }
+export interface WeeklyPayment { id?: string | null; amount?: number | null; entryDate?: string | null; adjustmentType?: string | null; title?: string | null; client?: { name?: string | null; companyName?: string | null } | null }
+export interface WeeklyJob { title?: string | null; createdAt?: string | null; completedAt?: string | null; client?: { id?: string | null; name?: string | null; companyName?: string | null } | null }
 
 export interface WeekRow {
   weekStart: string; // YYYY-MM-DD Monday PT
@@ -126,9 +129,20 @@ const emptyRow = (input: WeeklyInput): Row => ({
   calls: 0, bookedCalls: 0, closingRate: null,
 });
 
+function internalPaymentIds(invoices: WeeklyInvoice[] | null | undefined): Set<string> {
+  const ids = new Set<string>();
+  for (const inv of invoices ?? []) {
+    if (!isInternalJob(inv)) continue;
+    for (const payment of inv.paymentRecords?.nodes ?? []) if (payment?.id) ids.add(payment.id);
+  }
+  return ids;
+}
+
 /** Adds every record into the row returned by `at(dateKey)` (undefined = outside any bucket). */
 function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefined, floorKey: string) {
+  const skipPay = internalPaymentIds(input.invoices);
   for (const inv of input.invoices ?? []) {
+    if (isInternalJob(inv)) continue;
     const w = at(jobberDateKey(inv.issuedDate));
     const pre = invoicePretaxUsd(inv);
     if (!w || !isIssuedInvoice(inv)) continue;
@@ -141,6 +155,7 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
     }
   }
   for (const p of input.payments ?? []) {
+    if ((p.id && skipPay.has(p.id)) || isInternalJob(p)) continue;
     const w = at(jobberDateKey(p.entryDate));
     const amt = p.amount;
     if (!w || typeof amt !== 'number' || !Number.isFinite(amt)) continue;
@@ -151,6 +166,7 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
     w.cashCount = (w.cashCount ?? 0) + 1;
   }
   for (const q of input.quotes ?? []) {
+    if (isInternalJob(q)) continue;
     // Service-call quotes ($200 diagnostic, auto-created) are shown in their own card, never in headline quote counts/dollars.
     if (workCategory(q.title) === 'service_call') continue;
     const val = quoteValue(q);
@@ -170,8 +186,8 @@ function accumulate(input: WeeklyInput, at: (key: string | null) => Row | undefi
       }
     }
   }
-  for (const j of input.jobsCreated ?? []) { const w = at(jobberDateKey(j.createdAt)); if (w) w.jobsBooked = (w.jobsBooked ?? 0) + 1; }
-  for (const j of input.jobsCompleted ?? []) { const w = at(jobberDateKey(j.completedAt)); if (w) w.jobsCompleted = (w.jobsCompleted ?? 0) + 1; }
+  for (const j of input.jobsCreated ?? []) { if (isInternalJob(j)) continue; const w = at(jobberDateKey(j.createdAt)); if (w) w.jobsBooked = (w.jobsBooked ?? 0) + 1; }
+  for (const j of input.jobsCompleted ?? []) { if (isInternalJob(j)) continue; const w = at(jobberDateKey(j.completedAt)); if (w) w.jobsCompleted = (w.jobsCompleted ?? 0) + 1; }
   // Closing rate only counts calls/bookings since the tracking floor (booking attribution starts then).
   for (const t of input.callTimes) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.calls += 1; }
   for (const t of input.bookedAt) { const k = jobberDateKey(t); const w = at(k); if (w && k! >= floorKey) w.bookedCalls = (w.bookedCalls ?? 0) + 1; }
@@ -189,19 +205,21 @@ export function categoryTotals(input: WeeklyInput, startKey: string, endKey: str
   const out = Object.fromEntries(WORK_CATEGORIES.map((c) => [c, emptyCat()])) as Record<WorkCategory, CategoryRow>;
   const inR = (k: string | null) => k != null && k >= startKey && k <= endKey;
   for (const q of input.quotes ?? []) {
+    if (isInternalJob(q)) continue;
     const r = out[workCategory(q.title)];
     const val = quoteValue(q);
     if (inR(jobberDateKey(q.sentAt))) { r.quotesSent += 1; r.quotesSentValue = round(r.quotesSentValue + val); if (isApprovedStatus(q.quoteStatus)) r.quotesSentApproved = (r.quotesSentApproved ?? 0) + 1; }
     if (isApprovedStatus(q.quoteStatus) && q.sentAt && inR(jobberDateKey(q.transitionedAt))) { r.quotesApproved += 1; r.quotesApprovedValue = round(r.quotesApprovedValue + val); }
   }
   for (const inv of input.invoices ?? []) {
+    if (isInternalJob(inv)) continue;
     const pre = invoicePretaxUsd(inv);
     if (!pre || !inR(jobberDateKey(inv.issuedDate))) continue;
     const r = out[workCategory(invoiceTitle(inv))];
     r.invoiced = round(r.invoiced + pre); r.invoiceCount += 1;
   }
-  for (const j of input.jobsCreated ?? []) if (inR(jobberDateKey(j.createdAt))) { const r = out[workCategory(j.title)]; if (isSiteVisit(j.title)) r.siteVisits = (r.siteVisits ?? 0) + 1; else r.jobsBooked += 1; }
-  for (const j of input.jobsCompleted ?? []) if (inR(jobberDateKey(j.completedAt)) && !isSiteVisit(j.title)) { const r = out[workCategory(j.title)]; r.jobsCompleted = (r.jobsCompleted ?? 0) + 1; }
+  for (const j of input.jobsCreated ?? []) if (!isInternalJob(j) && inR(jobberDateKey(j.createdAt))) { const r = out[workCategory(j.title)]; if (isSiteVisit(j.title)) r.siteVisits = (r.siteVisits ?? 0) + 1; else r.jobsBooked += 1; }
+  for (const j of input.jobsCompleted ?? []) if (!isInternalJob(j) && inR(jobberDateKey(j.completedAt)) && !isSiteVisit(j.title)) { const r = out[workCategory(j.title)]; r.jobsCompleted = (r.jobsCompleted ?? 0) + 1; }
   return out;
 }
 
@@ -267,11 +285,12 @@ export function buildWeeklySales(input: WeeklyInput): WeeklySales {
     weeks, gaps, totals,
     lastWeekByCategory: lw ? categoryTotals(input, lw.weekStart, lw.weekEnd) : null,
     sources: [
-      'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share), so it follows the invoice week, not the day the money arrived.',
-      'Cash collected = Jobber payment records by the date the payment was received (payments and deposits, less refunds and failed ACH), whichever week the invoice was issued.',
-      'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week.',
-      'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals.',
+      'Invoiced = pre-tax Jobber invoices by issue date (drafts/void excluded). Paid = payments received to date on those invoices (pre-tax share), so it follows the invoice week, not the day the money arrived. Internal/training/test jobs and their invoices are excluded.',
+      'Cash collected = Jobber payment records by the date the payment was received (payments and deposits, less refunds and failed ACH), whichever week the invoice was issued. Payments on internal/training/test jobs are excluded.',
+      'Jobs booked = Jobber jobs created that week; completed = jobs with a completion date that week. Internal/training/test jobs are excluded.',
+      'Quotes sent = Jobber quotes by sent date. Quotes approved = quotes that were sent to the customer and are now approved/converted, counted in the week they were approved (Jobber status-change time). Quotes Jobber converted into a job without ever sending (auto-created service-call quotes) are not counted as approvals. Quotes for internal/training/test jobs are excluded.',
       WORK_CATEGORY_RULE,
+      INTERNAL_EXCLUSION_NOTE,
       'Quote close rate (cohort) = of the quotes sent in the range, the share approved or converted to date (so recent quotes can still close and the rate rises). Quotes approved (tile) = approvals in the range by approval date, including quotes sent earlier. Headline quote counts and dollars exclude service-call quotes. Call to booking (real leads) = new-customer bookings ÷ real new leads in the range: Google Ads + Mike calls since Sep 18, one lead per caller (dated by their first call), excluding spam/robocalls/solicitors/vendors, hang-ups and short calls never reached, repeat calls, missed calls later reached, existing customers (Jobber job before their first call) and staff numbers. Any caller with a new booking always counts as a lead. New customer = no Jobber job before their first call.',
       `Closing rate = new-customer bookings credited to a call (same bookings as the Conversion funnel "Booked") ÷ real new leads, since ${md(floorKey)} (tracking start). Drilling vs pump: a lead's type is its booking's campaign, else its first Google Ads call's campaign; Mike-only leads count in the total only. Weeks are Mon–Sun, Pacific. Headline tiles total the selected date range (Pacific days, today inclusive); bar charts stay weekly.`,
     ],
