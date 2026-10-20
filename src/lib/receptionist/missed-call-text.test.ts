@@ -138,3 +138,8 @@ describe('missed-call text line allowlist', () => {
     assert.notEqual((d as any).reason, 'line_not_enabled');
   });
 });
+
+it('MISSED_CALL_TEXT_LINES_EXTRA adds to the line list', () => {
+  const c = textConfig({ MISSED_CALL_TEXT_LINES: '7603312502', MISSED_CALL_TEXT_LINES_EXTRA: '+17608250520,7608256285' } as unknown as NodeJS.ProcessEnv);
+  assert.equal(c.lines.size, 3);
+});
