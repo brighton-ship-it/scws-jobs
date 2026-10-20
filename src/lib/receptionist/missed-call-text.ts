@@ -91,7 +91,8 @@ export function textConfig(env: NodeJS.ProcessEnv = process.env): TextConfig {
     mode,
     testNumbers,
     blocked,
-    lines: numberSet(env.MISSED_CALL_TEXT_LINES),
+    // MISSED_CALL_TEXT_LINES_EXTRA adds lines without rewriting the main (sensitive) list.
+    lines: new Set([...numberSet(env.MISSED_CALL_TEXT_LINES), ...numberSet(env.MISSED_CALL_TEXT_LINES_EXTRA)]),
     waitMs: num(env.MISSED_CALL_TEXT_WAIT_SECONDS, 60) * 1000,
     lookbackMs: num(env.MISSED_CALL_TEXT_LOOKBACK_HOURS, 12, 1) * 3600_000,
     dedupeMs: DAY_MS,
