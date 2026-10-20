@@ -285,6 +285,8 @@ const AI_LINE_SOURCE: Record<string, string> = {
   '9516510957': 'GBP Anza',
   '7602791262': 'GBP Ramona',
   '7603312502': 'Ads',
+  '7608250520': 'Ads · Drilling',
+  '7608256285': 'Ads · Weekend',
   '7604630493': 'Website',
   '7604937719': 'Direct',
   '7608914264': 'Yelp',
@@ -294,7 +296,7 @@ const AI_LINE_SOURCE: Record<string, string> = {
   '7608237963': 'Line 823-7963',
 };
 const AI_RECORDING_SOURCE: Record<string, string> = {
-  gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', ads: 'Ads',
+  gbp_anza: 'GBP Anza', gbp_ramona: 'GBP Ramona', gmb: 'GBP', google_ads: 'Ads', google_ads_drilling: 'Ads · Drilling', google_ads_weekend: 'Ads · Weekend', ads: 'Ads',
   seo: 'Website', yelp: 'Yelp', apple_maps: 'Apple Maps', direct: 'Direct', direct_mail: 'Direct mail', main_line: 'Main', ransom_line: 'Ransom', toll_free: 'Toll-free', line_7963: 'Line 823-7963',
 };
 
@@ -405,7 +407,7 @@ function isFromAds(c: DashCall): boolean {
   if (realCampaignName(c.campaign_name)) return true;
   if (trimmedField(c.keyword) || trimmedField(c.ad_group_name)) return true;
   const src = (c.call_source ?? '').trim().toLowerCase();
-  return src === 'ads' || src === 'ad' || src === 'google_ads';
+  return src === 'ads' || src === 'ad' || src.startsWith('google_ads') || src.startsWith('ads · ');
 }
 
 /** Keyword, else ad group. Calls that are not from Google Ads share one row instead of '(none)'. */

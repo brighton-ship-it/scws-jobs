@@ -13,6 +13,7 @@ export const DEFAULT_FORWARD_MESSAGING_SERVICE_SID = 'MG66ff74e6d46a9e5439d0a2a7
 export const OWN_NUMBERS = new Set([
   '+17604408520', '+17607895955', '+17608237963', '+18773863995', '+17604630493', '+17608914264',
   '+17604540365', '+17603312502', '+17602791262', '+19516510957', '+17604937719', '+17608238910',
+  '+17608250520', '+17608256285',
 ]);
 const MAX_SMS_BODY = 1500; // Twilio max is 1600; leave room
 const MAX_MEDIA = 10;
@@ -36,6 +37,8 @@ export const TRACKING_SMS_LINES: Record<string, { number: string; source: string
   gbp_ramona: { number: '+17602791262', source: 'gbp_ramona', label: 'Ramona GBP line (279-1262)' },
   gbp_anza: { number: '+19516510957', source: 'gbp_anza', label: 'Anza GBP line (651-0957)' },
   google_ads: { number: '+17603312502', source: 'google_ads', label: 'Google Ads line (331-2502)' },
+  google_ads_drilling: { number: '+17608250520', source: 'google_ads_drilling', label: 'Google Ads drilling line (825-0520)' },
+  google_ads_weekend: { number: '+17608256285', source: 'google_ads_weekend', label: 'Google Ads weekend line (825-6285)' },
   yelp: { number: '+17608914264', source: 'yelp', label: 'Yelp line (891-4264)' },
   apple_maps: { number: '+17604540365', source: 'apple_maps', label: 'Apple Maps line (454-0365)' },
   direct: { number: '+17604937719', source: 'direct', label: 'Direct line (493-7719)' },

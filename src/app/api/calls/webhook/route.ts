@@ -11,6 +11,8 @@ const TRACKING_NUMBERS: Record<string, string> = {
   '+17608914264': 'yelp',
   '+17604540365': 'apple_maps',
   '+17603312502': 'google_ads',
+  '+17608250520': 'google_ads_drilling',
+  '+17608256285': 'google_ads_weekend',
   '+17602791262': 'gbp_ramona',
   '+19516510957': 'gbp_anza',
   '+17604937719': 'direct',
