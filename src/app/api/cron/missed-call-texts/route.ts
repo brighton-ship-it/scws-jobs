@@ -19,9 +19,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   const config = textConfig();
-  if (config.mode === 'off') return NextResponse.json({ ok: true, mode: 'off', sent: 0 });
+  if (config.mode === 'off') {
+    console.info('[missed-call-text] run mode=off');
+    return NextResponse.json({ ok: true, mode: 'off', sent: 0 });
+  }
   try {
     const summary = await runMissedCallTextPass(createServiceClient() as any, process.env, new Date());
+    console.info(`[missed-call-text] run mode=${summary.mode} sent=${summary.sent} queued=${summary.queued} skipped=${summary.skipped} errors=${summary.errors.length} notes=${summary.notes.length}`);
     return NextResponse.json({ ok: true, ...summary });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Internal error';
