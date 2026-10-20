@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { notifyBooking } from '@/lib/notifications';
+import { isGibberish } from '@/lib/booking-spam';
 import { notifyNewBooking } from '@/lib/messaging/discord';
 import { requireUser } from '@/lib/require-auth';
 import {
@@ -59,20 +60,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Gibberish detection - reject random character strings
-    const isGibberish = (text: string): boolean => {
-      if (!text || text.length < 10) return false;
-      // Check for too many consonant clusters (no vowels)
-      const vowelRatio = (text.match(/[aeiouAEIOU]/g) || []).length / text.length;
-      // Normal text has ~40% vowels, gibberish has very few
-      if (vowelRatio < 0.15) return true;
-      // Check for suspiciously random capitalization
-      const capsPattern = text.match(/[a-z][A-Z][a-z]/g);
-      if (capsPattern && capsPattern.length > 2) return true;
-      return false;
-    };
-
-    if (isGibberish(body.customer_name) || isGibberish(body.address)) {
+    if (isGibberish(body.customer_name, 'name') || isGibberish(body.address, 'address')) {
       console.log('Spam detected - gibberish content:', { name: body.customer_name, address: body.address });
       return NextResponse.json(
         { success: true, message: 'Request received' },
@@ -189,7 +177,7 @@ export async function POST(request: NextRequest) {
       last_name: last_name?.trim() || null,
       phone: cleanPhone,
       email: email?.toLowerCase()?.trim() || null,
-      address: address.trim(),
+      address: withZip(address, body.zip),
       city: city.trim(),
       preferred_date: preferred_date || null,
       preferred_time: preferred_time || null,
@@ -476,4 +464,11 @@ function formatPhone(phone: string): string {
     return `(${phone.slice(1, 4)}) ${phone.slice(4, 7)}-${phone.slice(7)}`;
   }
   return phone;
+}
+
+/** booking_requests has no ZIP column: a separate form ZIP is appended to the address unless already there. */
+function withZip(address: string, zip: unknown): string {
+  const a = String(address ?? '').trim();
+  const z = typeof zip === 'string' ? zip.replace(/[^0-9-]/g, '').slice(0, 10) : '';
+  return z && !a.includes(z.slice(0, 5)) ? `${a} ${z}` : a;
 }
