@@ -6,6 +6,8 @@ export const TRACKING_SOURCES: Record<string, string> = {
   '+17608914264': 'yelp',
   '+17604540365': 'apple_maps',
   '+17603312502': 'google_ads',
+  '+17608250520': 'google_ads_drilling', // Leads-Search-Drilling call asset + site swap
+  '+17608256285': 'google_ads_weekend', // Weekend-Emergency-Search call asset + site swap
   '+17602791262': 'gbp_ramona',
   '+19516510957': 'gbp_anza',
   '+17604937719': 'direct',

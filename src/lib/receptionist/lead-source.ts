@@ -14,6 +14,8 @@ import { formatPhoneDisplay } from './office-callback.ts';
 /** Dashboard short name -> wording for the office email. */
 const FRIENDLY: Record<string, string> = {
   Ads: 'Google Ads',
+  'Ads · Drilling': 'Google Ads (Drilling campaign)',
+  'Ads · Weekend': 'Google Ads (Weekend emergency campaign)',
   Website: 'Website (SEO)',
   Main: 'Main line',
   Ransom: 'Ransom line',

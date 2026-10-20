@@ -73,3 +73,8 @@ describe('direct mail tracking line', () => {
     assert.equal(leadSourceLine(resolveLeadSource({ diversions: ['7608238910'] })), 'Lead source: Direct mail (760) 823-8910');
   });
 });
+
+it('per-campaign ads lines map to their own lead source', () => {
+  assert.equal(leadSourceLine(resolveLeadSource({ recordings: [{ tracking_number: '+17608250520', source: 'google_ads_drilling' }] })), 'Lead source: Google Ads (Drilling campaign) (760) 825-0520');
+  assert.equal(leadSourceLine(resolveLeadSource({ diversions: ['7608256285'] })), 'Lead source: Google Ads (Weekend emergency campaign) (760) 825-6285');
+});
