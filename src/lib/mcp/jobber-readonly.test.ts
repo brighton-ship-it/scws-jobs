@@ -23,15 +23,16 @@ describe('read-only MCP keys', () => {
     const calls: string[] = [];
     const base: McpDispatcher = {
       serverInfo: { name: 't', version: '1' },
-      tools: ['search_jobs', 'get_job', 'create_invoice_draft', 'qbo_query'].map((name) => ({ name, description: '', inputSchema: {} })),
+      tools: ['search_jobs', 'get_job', 'list_tasks', 'create_invoice_draft', 'qbo_query'].map((name) => ({ name, description: '', inputSchema: {} })),
       callTool: async (name) => { calls.push(name); return { content: [{ type: 'text', text: 'ok' }] }; },
     };
     const ro = restrictToReadOnly(base);
-    assert.deepEqual(ro.tools.map((t) => t.name), ['search_jobs', 'get_job']);
+    assert.deepEqual(ro.tools.map((t) => t.name), ['search_jobs', 'get_job', 'list_tasks']);
     const denied = await ro.callTool('create_invoice_draft', {});
     assert.equal(denied.isError, true);
     await ro.callTool('qbo_query', {});
     await ro.callTool('search_jobs', {});
-    assert.deepEqual(calls, ['search_jobs']);
+    await ro.callTool('list_tasks', {});
+    assert.deepEqual(calls, ['search_jobs', 'list_tasks']);
   });
 });
