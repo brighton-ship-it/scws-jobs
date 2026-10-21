@@ -141,7 +141,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'Customer-facing title/message must not include GP FLAG math.',
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
   'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
-  'list_tasks is read-only. It lists BASIC_TASK scheduled items. status is open (default) or completed. assigneeId is a user id from list_users. It does not create, edit, or delete a task.',
+  'list_tasks is read-only. It lists BASIC_TASK items. Open unscheduled tasks come from schedulingAspects UNSCHEDULED with no status. Dated tasks use REMAINING or COMPLETED across several windows under 1.5 years. The response queries array is the count of each scheduledItems call. It does not create, edit, or delete a task.',
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, visible, and description fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
@@ -328,7 +328,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'list_tasks',
     description:
-      'List Jobber tasks (scheduledItems where scheduleItemType is BASIC_TASK). Optional assigneeId is a user id from list_users and is sent as filter.assignedTo. status is open (default, Jobber REMAINING) or completed (Jobber COMPLETED). Returns id, title, description (Task.instructions; Task has no notes, color, or label field), client, property, startAt, endAt, isComplete, and assignees. occursWithin is today minus 1 year through today plus 6 months, clamped to less than 1.5 years. Unscheduled tasks (no start or end) are included with includeUnscheduled and schedulingAspects ALL. Read-only. Does not create, edit, or delete a task.',
+      'List Jobber tasks (scheduledItems where scheduleItemType is BASIC_TASK). Optional assigneeId is a user id from list_users. status is open (default) or completed. Returns id, title, description (Task.instructions; Task has no notes, color, or label field), client, property, startAt, endAt, isComplete, and assignees. Dated tasks use status REMAINING or COMPLETED, includeUnscheduled false, and several occursWithin windows under 1.5 years. Unscheduled tasks are a separate call with schedulingAspects UNSCHEDULED, includeUnscheduled true, and no status. queries lists each call with fetched and kept counts. covered is the date range actually requested. Read-only. Does not create, edit, or delete a task.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -1400,9 +1400,11 @@ export async function callJobberMcpTool(
           truncated: listed.truncated,
           tasks: listed.tasks,
           occursWithin: listed.occursWithin,
+          covered: listed.covered,
+          queries: listed.queries,
           note: listed.truncated
-            ? 'Read-only. More tasks exist than this response includes. Task has no color or label field. Nothing was created, edited, or deleted.'
-            : 'Read-only. Task has no color or label field. Nothing was created, edited, or deleted.',
+            ? 'Read-only. More tasks exist than this response includes. queries lists each scheduledItems call (fetched, kept, error). covered is the date range those calls requested. Task has no color or label field. Nothing was created, edited, or deleted.'
+            : 'Read-only. queries lists each scheduledItems call (fetched, kept, error). covered is the date range those calls requested. Task has no color or label field. Nothing was created, edited, or deleted.',
         });
       }
       case 'search_quotes': {

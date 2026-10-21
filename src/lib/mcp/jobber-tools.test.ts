@@ -1813,10 +1813,25 @@ describe('list_notes and draft line edits through the tool handler', () => {
     assert.equal(payload.tasks[0].description, 'Ask about the pump seal.');
     assert.equal(payload.tasks[0].color, null);
     assert.equal(payload.tasks[0].label, null);
+    const parsedPayload = JSON.parse(result.content[0].text) as {
+      queries: Array<{ name: string; fetched: number; kept: number; schedulingAspects: string[] | null; status: string | null }>;
+      covered: { startAt: string; endAt: string };
+    };
+    assert.equal(parsedPayload.queries[0]?.name, 'unscheduled');
+    assert.equal(parsedPayload.queries[0]?.status, null);
+    assert.deepEqual(parsedPayload.queries[0]?.schedulingAspects, ['UNSCHEDULED']);
+    assert.equal(parsedPayload.queries[0]?.fetched, 2);
+    assert.equal(parsedPayload.queries[0]?.kept, 1);
+    assert.ok(parsedPayload.covered.startAt);
+    assert.ok(parsedPayload.covered.endAt);
     const body = bodies.find((entry) => entry.includes('McpListTasks')) || '';
     assert.equal(/\bmutation\b|taskCreate|taskEdit|taskDelete/.test(body), false);
-    const parsed = JSON.parse(body) as { variables: { filter: { assignedTo: string[]; status: string } } };
+    const parsed = JSON.parse(body) as {
+      variables: { filter: { assignedTo?: string[]; status?: string; schedulingAspects?: string[]; includeUnscheduled?: boolean } };
+    };
     assert.deepEqual(parsed.variables.filter.assignedTo, ['user-1']);
-    assert.equal(parsed.variables.filter.status, 'REMAINING');
+    assert.equal(parsed.variables.filter.status, undefined);
+    assert.equal(parsed.variables.filter.includeUnscheduled, true);
+    assert.deepEqual(parsed.variables.filter.schedulingAspects, ['UNSCHEDULED']);
   });
 });
