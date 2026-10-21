@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIngestRequest, conversionActionId, ingestEvents, ingestErrorMessage, rfc3339, toDataManagerEvent } from './data-manager.ts';
+import { buildIngestRequest, conversionActionId, dmStatusLogLine, ingestEvents, ingestErrorMessage, rfc3339, summarizeRequestStatus, toDataManagerEvent } from './data-manager.ts';
 import { buildClickConversion } from './offline-conversion.ts';
 
 const config = { customerId: '1234567890', loginCustomerId: null, conversionAction: 'customers/1234567890/conversionActions/7833699992' };
@@ -22,6 +22,8 @@ describe('Data Manager ingest', () => {
     assert.equal(e.eventTimestamp, '2026-10-02T19:04:00+00:00');
     assert.ok(!Number.isNaN(Date.parse(e.eventTimestamp)));
     assert.equal(e.conversionValue, 1250);
+    assert.equal(e.conversionCount, 1);
+    assert.equal(e.eventSource, 'WEB');
     assert.equal(e.currency, 'USD');
     assert.deepEqual(e.adIdentifiers, { gclid: 'G1' });
     assert.equal(e.userData!.userIdentifiers.length, 2);
@@ -37,11 +39,14 @@ describe('Data Manager ingest', () => {
   });
 
   it('builds the destination and hex encoding; login account only when different', () => {
-    const c = buildClickConversion('7833699992', { jobberJobId: 'J', conversionAt: '2026-09-18T22:03:00Z', valueUsd: 200, phone: '7605550101' })!;
+    const c = buildClickConversion('7833699992', { jobberJobId: 'J', conversionAt: '2026-09-18T22:03:00Z', valueUsd: 200, phone: '7605550101', eventSource: 'PHONE' })!;
     const req = buildIngestRequest(config, [c]) as any;
     assert.deepEqual(req.destinations, [{ operatingAccount: { accountType: 'GOOGLE_ADS', accountId: '1234567890' }, productDestinationId: '7833699992' }]);
     assert.equal(req.encoding, 'HEX');
     assert.equal(req.validateOnly, false);
+    assert.deepEqual(req.consent, { adUserData: 'CONSENT_GRANTED', adPersonalization: 'CONSENT_GRANTED' });
+    assert.equal(req.events[0].conversionCount, 1);
+    assert.equal(req.events[0].eventSource, 'PHONE');
     const mcc = buildIngestRequest({ ...config, loginCustomerId: '999' }, [c], { validateOnly: true }) as any;
     assert.deepEqual(mcc.destinations[0].loginAccount, { accountType: 'GOOGLE_ADS', accountId: '999' });
     assert.equal(mcc.validateOnly, true);
@@ -70,5 +75,30 @@ describe('Data Manager ingest', () => {
       'Data Manager ingest HTTP 403 PERMISSION_DENIED: Request had insufficient authentication scopes.'
     );
     assert.equal(rfc3339('2026-09-18 22:03:00+00:00'), '2026-09-18T22:03:00+00:00');
+  });
+
+  it('reads per-destination processing status, which is not the ingest HTTP status', () => {
+    const partial = summarizeRequestStatus(
+      {
+        requestStatusPerDestination: [
+          {
+            requestStatus: 'PARTIAL_SUCCESS',
+            errorInfo: { errorCounts: [{ recordCount: '1', reason: 'PROCESSING_ERROR_REASON_INVALID_GCLID' }] },
+            eventsIngestionStatus: { recordCount: '7' },
+          },
+        ],
+      },
+      '232123f3-91f2-4eb9-9417-477717a1f018'
+    );
+    assert.equal(partial.status, 'PARTIAL_SUCCESS');
+    assert.equal(partial.recordCount, 7);
+    assert.deepEqual(partial.errors, [{ reason: 'PROCESSING_ERROR_REASON_INVALID_GCLID', recordCount: 1 }]);
+    const ok = summarizeRequestStatus(
+      { requestStatusPerDestination: [{ requestStatus: 'SUCCESS', eventsIngestionStatus: { recordCount: '11' } }] },
+      'a6fc9385-36e4-4636-9e6c-0d92d227a755'
+    );
+    assert.equal(ok.status, 'SUCCESS');
+    assert.equal(ok.errors.length, 0);
+    assert.match(dmStatusLogLine(ok), /requestId=a6fc9385-36e4-4636-9e6c-0d92d227a755 status=SUCCESS records=11 errors=none/);
   });
 });
