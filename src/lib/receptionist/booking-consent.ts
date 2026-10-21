@@ -5,6 +5,7 @@
  *  - callerYes is missing,
  *  - it is a question, a maybe/hedge, a "sooner?" ask, a "check with my wife", or a no,
  *  - it is a bare filler ("yeah", "okay", "sure") that Mike didn't confirm with a hold/lock-in question,
+ *  - it picks a slot ("the ten o'clock", "Monday morning", "the second one") that is not the startAt being booked,
  *  - it doesn't match what the caller actually said in the live transcript (when Vapi sends one),
  *  - the caller's latest words in the transcript are a hedge, a "sooner?" ask or a no.
  * On refusal Mike is told to ask "Want me to hold [slot] for you?" and wait.
@@ -104,6 +105,129 @@ function latestExchange(turns: ConsentTurn[]): { lastBot: string; latestUser: st
   return { lastBot: bot.join(' '), latestUser: user.join(' ') };
 }
 
+const HOUR_WORD: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
+};
+
+const WEEKDAY_RE = /\b(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/;
+
+type PtSlot = { weekday: string; hour24: number };
+
+function ptSlot(startAt: unknown): PtSlot | null {
+  const d = new Date(String(startAt || ''));
+  if (Number.isNaN(d.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    weekday: 'long',
+    hour: 'numeric',
+    hourCycle: 'h23',
+  }).formatToParts(d);
+  const weekday = (parts.find((p) => p.type === 'weekday')?.value || '').toLowerCase();
+  const hour24 = Number(parts.find((p) => p.type === 'hour')?.value);
+  if (!weekday || !Number.isFinite(hour24)) return null;
+  return { weekday, hour24 };
+}
+
+function hourWord(value: string): number | null {
+  const word = HOUR_WORD[value.toLowerCase()];
+  if (word) return word;
+  if (/^\d{1,2}$/.test(value)) {
+    const hour = Number(value);
+    if (hour >= 1 && hour <= 12) return hour;
+  }
+  return null;
+}
+
+/** Shop windows: 7–11 stay morning, 12 is noon, 1–6 are afternoon. */
+function shopHour24(hour12: number): number {
+  if (hour12 >= 1 && hour12 <= 6) return hour12 + 12;
+  return hour12;
+}
+
+function daypartOf(hour24: number): 'morning' | 'afternoon' | 'evening' {
+  if (hour24 < 12) return 'morning';
+  if (hour24 < 17) return 'afternoon';
+  return 'evening';
+}
+
+function clockHours(text: string): number[] {
+  const hours: number[] = [];
+  const re = /\b(?:at\s+|the\s+)?(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)(?:\s*:\s*00|\s+o'clock|\s+am|\s+pm)\b/gi;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    const hour = hourWord(match[1]);
+    if (hour == null) continue;
+    const marker = match[0].toLowerCase();
+    if (/\bpm\b/.test(marker)) hours.push(hour === 12 ? 12 : hour + 12);
+    else if (/\bam\b/.test(marker)) hours.push(hour === 12 ? 0 : hour);
+    else hours.push(shopHour24(hour));
+  }
+  return hours;
+}
+
+type OfferedSlot = { hour24: number; weekday: string | null };
+
+function offeredSlots(bot: string): OfferedSlot[] {
+  const text = norm(bot);
+  const re = /\b(?:(sunday|monday|tuesday|wednesday|thursday|friday|saturday)\s+)?between\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\s+(?:and|to)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b/g;
+  const out: OfferedSlot[] = [];
+  let carry: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text))) {
+    if (match[1]) carry = match[1];
+    const hour = hourWord(match[2]);
+    if (hour == null) continue;
+    out.push({ hour24: shopHour24(hour), weekday: match[1] || carry });
+  }
+  return out;
+}
+
+function ordinalIndex(text: string): number | null {
+  if (/\b(?:the\s+)?(?:second|2nd)(?:\s+one)?\b/.test(text)) return 1;
+  if (/\b(?:the\s+)?(?:first|1st)(?:\s+one)?\b/.test(text)) return 0;
+  return null;
+}
+
+function offeredMatches(offer: OfferedSlot, start: PtSlot): boolean {
+  if (offer.hour24 !== start.hour24) return false;
+  if (offer.weekday && offer.weekday !== start.weekday) return false;
+  return true;
+}
+
+/**
+ * A slot pick is a yes when it names the startAt being booked:
+ * "the ten o'clock", "Monday morning", or "the second one" after two offered slots.
+ */
+export function isSlotPick(text: string, startAt: unknown, lastBot = ''): boolean {
+  const n = norm(text);
+  if (!n || n.includes('?') || isHedgeOrNo(n)) return false;
+  const start = ptSlot(startAt);
+  if (!start) return false;
+
+  const hours = clockHours(n);
+  const weekday = n.match(WEEKDAY_RE)?.[1] || '';
+  const part = n.match(/\b(morning|afternoon|evening)\b/)?.[1] as 'morning' | 'afternoon' | 'evening' | undefined;
+  const ordinal = ordinalIndex(n);
+  let matched = false;
+
+  if (hours.length) {
+    if (!hours.includes(start.hour24)) return false;
+    matched = true;
+  }
+  if (weekday && part) {
+    if (weekday !== start.weekday || part !== daypartOf(start.hour24)) return false;
+    matched = true;
+  }
+  if (ordinal != null) {
+    const offered = offeredSlots(lastBot);
+    const picked = offered.length >= 2 ? offered[ordinal] : undefined;
+    if (!picked || !offeredMatches(picked, start)) return matched;
+    matched = true;
+  }
+  return matched;
+}
+
 export function slotLabel(startAt: unknown): string {
   const d = new Date(String(startAt || ''));
   if (Number.isNaN(d.getTime())) return 'that time';
@@ -141,10 +265,23 @@ export function checkBookingConsent(params: Record<string, unknown>, turns: Cons
   const n = norm(callerYes);
   if (n.includes('?')) return reject('question', startAt, 'the caller asked a question');
   if (isHedgeOrNo(n)) return reject('hedge_or_no', startAt, 'the caller hedged, asked for sooner, or said no');
-  if (!EXPLICIT_YES.test(n)) return reject('not_a_yes', startAt, 'those words are not a yes');
 
   const haveTranscript = turns.some((t) => t.role === 'user');
   const { lastBot, latestUser } = haveTranscript ? latestExchange(turns) : { lastBot: '', latestUser: '' };
+
+  if (isSlotPick(callerYes, startAt, lastBot)) {
+    if (haveTranscript) {
+      if (isHedgeOrNo(latestUser) || norm(latestUser).includes('?')) {
+        return reject('latest_words_not_yes', startAt, "the caller's latest words were not a yes");
+      }
+      if (!isSlotPick(latestUser, startAt, lastBot)) {
+        return reject('not_in_transcript', startAt, "callerYes doesn't match what the caller said");
+      }
+    }
+    return { ok: true, callerYes };
+  }
+
+  if (!EXPLICIT_YES.test(n)) return reject('not_a_yes', startAt, 'those words are not a yes');
 
   if (isBareFiller(callerYes) && !(haveTranscript && RECHECK_PHRASE.test(lastBot))) {
     return reject('unconfirmed_filler', startAt, 'a bare "yeah"/"okay" is not confirmed yet');

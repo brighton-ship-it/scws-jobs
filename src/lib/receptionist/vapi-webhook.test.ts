@@ -1,5 +1,13 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { buildCallEmail } from './call-email.ts';
+import {
+  AUTO_FLAG_BOOKING_PREFIX,
+  AUTO_FLAG_NOTE,
+  buildMissedServiceFlag,
+  missedServiceFlagOperations,
+} from './missed-service-flag.ts';
 import { formatDurationLabel, resolveCallDurationSec } from './call-duration.ts';
 import { isCallerUrgent } from './caller-urgency.ts';
 import { BUSINESS_HOURS_SPOKEN, getBusinessHours } from './business-hours.ts';
@@ -278,6 +286,71 @@ describe('caller urgency', () => {
         { role: 'user', message: 'Yes, we have no water and it is flooding.' },
       ],
     }), true);
+  });
+});
+
+describe('missed service hang-up flag', () => {
+  it('writes the note and Needs callback label and does not text, dial, or alert', () => {
+    const sms: unknown[] = [];
+    const dials: unknown[] = [];
+    const alerts: unknown[] = [];
+    const flag = buildMissedServiceFlag({
+      messages: [
+        { role: 'bot', message: "What's going on with your well?" },
+        { role: 'user', message: 'I need a new pump.' },
+      ],
+      serviceNeeded: 'New pump',
+      summary: 'Caller needs a new pump and hung up after 26 seconds.',
+      transcript: 'User: I need a new pump.',
+      isTestCall: false,
+      callbackAttempt: false,
+      vapiCallId: 'call-520-388-0897',
+      phone: '5203880897',
+    });
+    const callUpdates: Array<Record<string, unknown>> = [];
+    const bookingInserts: Array<Record<string, unknown>> = [];
+    if (flag.flag) {
+      callUpdates.push({ notes: flag.notes, needs_callback: true, status: 'pending' });
+      bookingInserts.push({
+        service_type: flag.serviceType,
+        notes: `${flag.bookingNotesPrefix}\n📞 Mike: ${'Caller needs a new pump and hung up after 26 seconds.'}`,
+        source: 'phone',
+        status: 'pending',
+      });
+    }
+    assert.equal(flag.flag, true);
+    assert.equal(callUpdates[0].notes, AUTO_FLAG_NOTE);
+    assert.equal(callUpdates[0].status, 'pending');
+    assert.equal(bookingInserts[0].service_type, 'Needs callback: New pump');
+    assert.match(String(bookingInserts[0].notes), new RegExp(`^${AUTO_FLAG_BOOKING_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+    assert.equal(sms.length, 0);
+    assert.equal(dials.length, 0);
+    assert.equal(alerts.length, 0);
+    assert.deepEqual(missedServiceFlagOperations(true).filter((op) => /sms|dial|alert|twilio/i.test(op)), []);
+
+    const mail = buildCallEmail({
+      outcome: {
+        kind: 'none', emergency: false, callback: false, booked: false,
+        name: '', phone: '5203880897', email: '', address: '', city: '', issue: 'New pump',
+        window: '', windowShort: '', technician: '', jobberUrl: '', jobId: '',
+      },
+      fallbackName: '(520) 388-0897',
+      autoFlagged: true,
+    });
+    assert.match(mail.text, /Auto-flagged: needs callback/);
+    assert.doesNotMatch(mail.text, /MIKE_CALLBACKS_ENABLED/);
+
+    const route = readFileSync(new URL('../../app/api/receptionist/webhook/route.ts', import.meta.url), 'utf8');
+    const flagFile = readFileSync(new URL('./missed-service-flag.ts', import.meta.url), 'utf8');
+    const flagBlock = route.slice(route.indexOf('buildMissedServiceFlag'), route.indexOf('const updateReceptionistCall'));
+    assert.match(route, /auto-flag needs-callback/);
+    assert.match(flagBlock, /buildMissedServiceFlag/);
+    assert.doesNotMatch(flagBlock, /placeTwilio|sendSms|missed-call-text|alert-fallback|MIKE_CALLBACKS_ENABLED/);
+    assert.equal(route.includes('placeTwilioCallback'), false);
+    assert.equal(route.includes('missed-call-text'), false);
+    assert.equal(route.includes('MIKE_CALLBACKS_ENABLED'), false);
+    assert.equal(flagFile.includes('MIKE_CALLBACKS_ENABLED'), false);
+    assert.equal(/placeTwilio|sendSms|missed-call-text|alert-fallback|office-callback/.test(flagFile), false);
   });
 });
 

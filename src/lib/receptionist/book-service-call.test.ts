@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  REPEAT_VISIT_INSTRUCTIONS,
+  REPEAT_VISIT_LINE_DESCRIPTION,
+  REPEAT_VISIT_TITLE_PREFIX,
   SERVICE_CALL_PRICE_USD,
   SERVICE_CALL_TITLE,
   handleBookServiceCall,
@@ -651,6 +654,118 @@ describe('handleBookServiceCall', () => {
     assert.equal(isSarahServiceCallTitle('Pump replacement'), false);
     assert.equal(isSarahServiceCallTitle('Quote'), false);
     assert.equal(isSarahServiceCallTitle('Service Call'), true);
+    assert.equal(isSarahServiceCallTitle(`${REPEAT_VISIT_TITLE_PREFIX}: Service Call`), true);
+  });
+
+  it('repeat or warranty bookings prefix the title and zero the service-call line', async () => {
+    const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
+    const title = `${REPEAT_VISIT_TITLE_PREFIX}: ${SERVICE_CALL_TITLE}`;
+    const book = async (input: { repeatVisit?: boolean; notes?: string }) => {
+      const bodies: string[] = [];
+      const inner = mockJobber({
+        createdJob: {
+          id: 'job-repeat',
+          title,
+          visits: {
+            nodes: [{
+              id: 'visit-repeat',
+              startAt: slot.startAt,
+              endAt: slot.endAt,
+              assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+            }],
+          },
+        },
+      });
+      const { result } = await handleBookServiceCall(
+        {
+          phone: '6194459250',
+          name: 'Edward Wortley',
+          address: '100 Well Rd',
+          city: 'Ramona',
+          startAt: slot.startAt,
+          ...input,
+        },
+        {
+          now: THU_530PM,
+          accessToken: 'test-token',
+          fetchFn: async (url, init) => {
+            bodies.push(String(init?.body || ''));
+            return inner(url, init);
+          },
+        },
+      );
+      return { result, bodies };
+    };
+
+    const repeat = await book({ repeatVisit: true, notes: 'squeaking pump after the April motor job' });
+    assert.equal(repeat.result.booked, true);
+    assert.equal(repeat.result.visit?.title, title);
+    const jobBody = JSON.parse(repeat.bodies.find((body) => body.includes('JobCreate')) || '{}') as {
+      query?: string;
+      variables?: { input?: { title?: string; instructions?: string; lineItems?: Array<{ description?: string; unitPrice?: number; name?: string }> } };
+    };
+    assert.equal(jobBody.variables?.input?.title, title);
+    assert.equal(jobBody.variables?.input?.instructions, REPEAT_VISIT_INSTRUCTIONS);
+    assert.equal(jobBody.variables?.input?.lineItems?.[0].name, SERVICE_CALL_TITLE);
+    assert.equal(jobBody.variables?.input?.lineItems?.[0].description, REPEAT_VISIT_LINE_DESCRIPTION);
+    assert.equal(jobBody.variables?.input?.lineItems?.[0].unitPrice, 0);
+    assert.equal(/invoiceCreate/i.test(repeat.bodies.join('\n')), false);
+    const visitBody = JSON.parse(repeat.bodies.find((body) => body.includes('VisitCreate')) || '{}') as {
+      variables?: { input?: { visits?: Array<{ title?: string; instructions?: string }> } };
+    };
+    assert.equal(visitBody.variables?.input?.visits?.[0].title, title);
+    assert.equal(visitBody.variables?.input?.visits?.[0].instructions, REPEAT_VISIT_INSTRUCTIONS);
+
+    const inferred = await book({ notes: 'Repeat visit, possible warranty, no charge until office reviews: April motor, squeak' });
+    const inferredJob = JSON.parse(inferred.bodies.find((body) => body.includes('JobCreate')) || '{}') as {
+      variables?: { input?: { title?: string; lineItems?: Array<{ unitPrice?: number }> } };
+    };
+    assert.equal(inferred.result.booked, true);
+    assert.equal(inferredJob.variables?.input?.title, title);
+    assert.equal(inferredJob.variables?.input?.lineItems?.[0].unitPrice, 0);
+
+    const normalBodies: string[] = [];
+    const normalInner = mockJobber({
+      createdJob: {
+        id: 'job-normal',
+        title: SERVICE_CALL_TITLE,
+        visits: {
+          nodes: [{
+            id: 'visit-normal',
+            startAt: slot.startAt,
+            endAt: slot.endAt,
+            assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+          }],
+        },
+      },
+    });
+    const normal = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: slot.startAt,
+        notes: 'no water',
+      },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: async (url, init) => {
+          normalBodies.push(String(init?.body || ''));
+          return normalInner(url, init);
+        },
+      },
+    );
+    assert.equal(normal.result.booked, true);
+    assert.equal(normal.result.visit?.title, SERVICE_CALL_TITLE);
+    const normalJob = JSON.parse(normalBodies.find((body) => body.includes('JobCreate')) || '{}') as {
+      variables?: { input?: { title?: string; instructions?: string; lineItems?: Array<{ description?: string; unitPrice?: number }> } };
+    };
+    assert.equal(normalJob.variables?.input?.title, SERVICE_CALL_TITLE);
+    assert.equal(normalJob.variables?.input?.instructions, undefined);
+    assert.equal(normalJob.variables?.input?.lineItems?.[0].description, 'Service call');
+    assert.equal(normalJob.variables?.input?.lineItems?.[0].unitPrice, SERVICE_CALL_PRICE_USD);
   });
 
   it('refuses to confirm when Jobber assigns the visit to Travis', async () => {

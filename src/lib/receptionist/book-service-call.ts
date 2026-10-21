@@ -56,11 +56,27 @@ export const WEEKEND_SLOT_NOT_OPEN_SPOKEN =
 export function isSarahServiceCallTitle(title: string | null | undefined): boolean {
   const value = String(title || '').trim();
   if (!value || FORBIDDEN_SARAH_JOB.test(value)) return false;
-  return /^service call\b/i.test(value);
+  const core = value.replace(/^repeat visit \(possible warranty\)\s*:?\s*/i, '');
+  return /^service call\b/i.test(core);
 }
 
 export const SERVICE_CALL_TITLE = 'Service Call';
 export const SERVICE_CALL_PRICE_USD = 200;
+export const REPEAT_VISIT_TITLE_PREFIX = 'Repeat visit (possible warranty)';
+export const REPEAT_VISIT_LINE_DESCRIPTION = 'Pending office warranty review';
+export const REPEAT_VISIT_INSTRUCTIONS = 'Do not collect service-call fee until office confirms';
+
+/** repeatVisit flag, or notes that already start with "Repeat visit". */
+export function isRepeatVisitRequest(input: { repeatVisit?: unknown; notes?: string | null }): boolean {
+  if (/^repeat visit\b/i.test(String(input.notes || '').trim())) return true;
+  const flag = input.repeatVisit;
+  if (flag === true) return true;
+  return typeof flag === 'string' && /^(true|yes|1)$/i.test(flag.trim());
+}
+
+export function serviceCallJobTitle(repeat: boolean): string {
+  return repeat ? `${REPEAT_VISIT_TITLE_PREFIX}: ${SERVICE_CALL_TITLE}` : SERVICE_CALL_TITLE;
+}
 export const OFFICE_FLAG_EMAILS = ['brighton@scwellservice.com', 'lizbeth@scwellservice.com', 'shanicey@scwellservice.com'];
 
 export type BookServiceCallInput = WeekendNeedInput & {
@@ -80,6 +96,8 @@ export type BookServiceCallInput = WeekendNeedInput & {
   serviceType?: string | null;
   /** Caller explicitly wants a second job for a different problem. */
   differentProblem?: boolean | string | null;
+  /** Recent work. Prefixes the title and zeros the service-call line. No invoice. */
+  repeatVisit?: boolean | string | null;
 };
 
 export type BookedVisit = {
@@ -758,20 +776,23 @@ export async function bookServiceCall(
     const propertyId = await findOrCreateProperty(client, input, token, fetchFn, version);
     const tech = assignShopTech(location);
 
+    const repeatVisit = isRepeatVisitRequest(input);
+    const jobTitle = serviceCallJobTitle(repeatVisit);
     const jobData = await jobberGraphql(
       token,
       JOB_CREATE,
       {
         input: {
           propertyId,
-          title: SERVICE_CALL_TITLE,
+          title: jobTitle,
+          ...(repeatVisit ? { instructions: REPEAT_VISIT_INSTRUCTIONS } : {}),
           allowReviewRequest: false,
           lineItems: [
             {
               name: SERVICE_CALL_TITLE,
-              description: 'Service call',
+              description: repeatVisit ? REPEAT_VISIT_LINE_DESCRIPTION : 'Service call',
               quantity: 1,
-              unitPrice: SERVICE_CALL_PRICE_USD,
+              unitPrice: repeatVisit ? 0 : SERVICE_CALL_PRICE_USD,
               saveToProductsAndServices: false,
             },
           ],
@@ -809,7 +830,8 @@ export async function bookServiceCall(
           input: {
             visits: [
               {
-                title: SERVICE_CALL_TITLE,
+                title: jobTitle,
+                ...(repeatVisit ? { instructions: REPEAT_VISIT_INSTRUCTIONS } : {}),
                 schedule: buildScheduledItemAttributes({
                   startAt: chosen.startAt,
                   endAt: chosen.endAt,

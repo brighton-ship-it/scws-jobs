@@ -149,6 +149,7 @@ const UPCOMING_VISITS_QUERY = `
               startAt
               endAt
               allDay
+              title
               assignedUsers(first: ${ASSIGNED_USERS_PAGE}) {
                 nodes {
                   name {
@@ -395,6 +396,8 @@ function collectVisits(jobs: any[], now: Date): ScheduleVisit[] {
   for (const job of jobs) {
     if (isInternalVisitTitle(job?.title)) continue;
     for (const visit of job.visits?.nodes || []) {
+      // A customer job can still carry an internal visit title. Hide that visit too.
+      if (isInternalVisitTitle(visit?.title)) continue;
       if (!visit?.startAt || !isOnOrAfterTodayPt(visit.startAt, now)) continue;
 
       const allDay = Boolean(visit.allDay ?? visit.anytime);

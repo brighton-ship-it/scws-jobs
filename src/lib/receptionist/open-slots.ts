@@ -476,6 +476,8 @@ export function computeOpenSlots(options: {
   const allowWeekend = options.allowWeekend ?? techWorksWeekends(options.technicianName, options.env ?? process.env);
   const dayOk = (date: Date) => allowWeekend || isWeekdayVisitStart(date);
   const slots: OpenSlot[] = [];
+  // Shop meetings, PTO, and training are hidden from "your appointment" in checkSchedule.
+  // They still occupy the tech. Do not drop internal titles here or the slot looks open.
   const techOccupied = options.occupied.filter((visit) =>
     visitBelongsToTech(visit, options.technicianId, options.technicianName)
   );

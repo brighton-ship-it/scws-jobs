@@ -246,6 +246,8 @@ export type CallEmailInput = {
   leadSourceLine?: string | null;
   /** "Client: Existing Jobber client (...)" / "Client: New caller ..." when Mike looked the caller up. */
   clientLine?: string | null;
+  /** Service caller hung up with no booking and no callback. One extra line only. */
+  autoFlagged?: boolean;
 };
 
 export function buildCallEmail(input: CallEmailInput): { subject: string; text: string } {
@@ -257,6 +259,7 @@ export function buildCallEmail(input: CallEmailInput): { subject: string; text: 
   const app = input.appUrl || 'https://scws-jobs.vercel.app';
   const text = [
     `Outcome: ${whatMikeDid(outcome)}`,
+    input.autoFlagged ? 'Auto-flagged: needs callback' : null,
     '',
     `Caller: ${name || 'Unknown'}`,
     `Number: ${phone ? formatPhoneDisplay(phone) : 'Unknown'}`,

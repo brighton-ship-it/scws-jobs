@@ -148,13 +148,17 @@ export type ServiceAreaResult = {
   message: string;
 };
 
-function normalizePlace(value: string): string {
+export function normalizeServicePlace(value: string): string {
   return value
     .toLowerCase()
     .replace(/&/g, ' and ')
     .replace(/[^a-z0-9]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function normalizePlace(value: string): string {
+  return normalizeServicePlace(value);
 }
 
 function escapeRegExp(value: string): string {
@@ -171,6 +175,29 @@ const NORMALIZED_TOWNS = SERVICE_TOWNS.map((town) => ({
   town,
   key: normalizePlace(town),
 })).filter((entry) => entry.key);
+
+/** Exact town name, such as "Alpine" or "Ramona". Not a county phrase or ZIP. */
+export function isKnownTown(value: string | null | undefined): boolean {
+  const key = normalizePlace(value || '');
+  return Boolean(key) && NORMALIZED_TOWNS.some((entry) => entry.key === key);
+}
+
+export function isCountyPhrase(value: string | null | undefined): boolean {
+  const key = normalizePlace(value || '');
+  return Boolean(key) && COUNTY_PHRASES.some((phrase) => phrase === key || placeContains(key, phrase));
+}
+
+/** Longest known town contained in the text, or null. "Ramona, CA" → "Ramona". */
+export function matchedTownName(value: string | null | undefined): string | null {
+  const loc = normalizePlace(value || '');
+  if (!loc) return null;
+  const exact = NORMALIZED_TOWNS.find((entry) => entry.key === loc);
+  if (exact) return exact.town;
+  const contained = NORMALIZED_TOWNS
+    .filter((entry) => placeContains(loc, entry.key))
+    .sort((a, b) => b.key.length - a.key.length)[0];
+  return contained?.town ?? null;
+}
 
 export function serviceAreaLocationFromParams(params: Record<string, unknown> | null | undefined): string {
   if (!params) return '';

@@ -78,6 +78,48 @@ test('transcript wins: model cannot invent a yes the caller did not say', () => 
   assert.equal(spouse.ok, false);
 });
 
+test('a slot pick is a yes when it matches the startAt being booked', () => {
+  const ten = '2026-10-21T17:00:00.000Z'; // Wednesday 10:00 AM Pacific
+  const eight = '2026-10-21T15:00:00.000Z';
+  assert.equal(checkBookingConsent({ startAt: ten, callerYes: "the ten o'clock" }, []).ok, true);
+  assert.equal(checkBookingConsent({ startAt: ten, callerYes: 'the 10 o\'clock' }, []).ok, true);
+  assert.equal(checkBookingConsent({ startAt: eight, callerYes: "the ten o'clock" }, []).ok, false);
+  const mondayMorning = '2026-10-19T15:00:00.000Z'; // Monday 8:00 AM Pacific
+  const mondayAfternoon = '2026-10-19T20:00:00.000Z'; // Monday 1:00 PM Pacific
+  assert.equal(checkBookingConsent({ startAt: mondayMorning, callerYes: 'Monday morning' }, []).ok, true);
+  assert.equal(checkBookingConsent({ startAt: mondayAfternoon, callerYes: 'Monday morning' }, []).ok, false);
+
+  const twoSlots: ConsentTurn = {
+    role: 'bot',
+    text: 'I can get someone out Monday between eight and ten, or Monday between ten and twelve. Which works better?',
+  };
+  const second = '2026-10-19T17:00:00.000Z'; // Monday 10:00 AM Pacific
+  const picked = checkBookingConsent({ startAt: second, callerYes: 'the second one' }, [twoSlots, u('the second one')]);
+  assert.equal(picked.ok, true);
+  const wrongSlot = checkBookingConsent({ startAt: mondayMorning, callerYes: 'the second one' }, [twoSlots, u('the second one')]);
+  assert.equal(wrongSlot.ok, false);
+  const oneSlot: ConsentTurn = { role: 'bot', text: 'I can get someone out Monday between eight and ten. Does that work?' };
+  const onlyOne = checkBookingConsent({ startAt: second, callerYes: 'the second one' }, [oneSlot, u('the second one')]);
+  assert.equal(onlyOne.ok, false);
+  const noOffer = checkBookingConsent({ startAt: second, callerYes: 'the second one' }, []);
+  assert.equal(noOffer.ok, false);
+});
+
+test('yeah is still asked to confirm, and sooner is still not a yes', () => {
+  const ten = '2026-10-21T17:00:00.000Z';
+  const yeah = checkBookingConsent({ startAt: ten, callerYes: 'yeah' }, []);
+  assert.equal(yeah.ok, false);
+  if (!yeah.ok) assert.equal(yeah.code, 'unconfirmed_filler');
+  const afterOffer = checkBookingConsent(
+    { startAt: ten, callerYes: 'yeah' },
+    [{ role: 'bot', text: 'I can do Wednesday at ten, or Wednesday at one. Which works better?' }, u('yeah')],
+  );
+  assert.equal(afterOffer.ok, false);
+  if (!afterOffer.ok) assert.equal(afterOffer.code, 'unconfirmed_filler');
+  const sooner = checkBookingConsent({ startAt: ten, callerYes: 'sooner?' }, []);
+  assert.equal(sooner.ok, false);
+});
+
 test('reads Vapi artifact messages', () => {
   const turns = consentTurnsFromVapiBody({
     message: {
