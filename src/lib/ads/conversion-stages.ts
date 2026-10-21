@@ -95,6 +95,15 @@ export interface StageStep {
   value: number;
 }
 
+/**
+ * Ads `uploadConversionAdjustments` cannot see Data Manager events (every call
+ * returned CONVERSION_NOT_FOUND). A restatement is allowed only after something
+ * outside this cron has marked the conversion reported in Ads.
+ */
+export function restatementAllowed(payload: unknown): boolean {
+  return Boolean(payload && typeof payload === 'object' && (payload as { dm_reported?: unknown }).dm_reported === true);
+}
+
 /** The single next restatement to send (the highest stage that beats what was sent), or null. */
 export function nextRestatement(stages: StageValues, sent: SentState): StageStep | null {
   if (stages.invoiced != null && stages.invoiced > sent.value + 0.004 && sent.stage < 3) {

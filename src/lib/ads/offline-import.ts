@@ -9,8 +9,98 @@
 import { buildClickConversion, type ClickConversion } from './offline-conversion.ts';
 import { hasStoredClickId, normalizeEmail, normalizePhone, type WebsiteLead } from './book-job.ts';
 import { invoicePretaxUsd, type InvoiceAmountInput } from './invoice-value.ts';
+import { conversionActionId, conversionLanded, ingestRequestId, type DmStatusSummary } from './data-manager.ts';
 
 export type OfflineUploadMode = 'dry_run' | 'live';
+
+/** GA4 `book_job` import. Must stay a different action from the won-job upload. */
+export const GA4_BOOK_JOB_CONVERSION_ACTION_ID = '7735430525';
+
+/** Fake click id from the PR 30 smoke test. Google rejected it as INVALID_GCLID. */
+export const TEST_GCLID = 'smoke_test_pr30_do_not_call';
+
+/** Midnight Pacific on this day. Sep 1–Oct 2026 is PDT (UTC-7). */
+export const BACKFILL_EARLIEST_DAY = '2026-09-01';
+
+export function isTestGclid(gclid: string | null | undefined): boolean {
+  return (gclid ?? '').trim() === TEST_GCLID;
+}
+
+export function isGa4BookJobAction(resource: string | null | undefined): boolean {
+  if (!resource?.trim()) return false;
+  try {
+    return conversionActionId(resource) === GA4_BOOK_JOB_CONVERSION_ACTION_ID;
+  } catch {
+    return false;
+  }
+}
+
+export function backfillFloorIso(day: string): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('backfillSince must be YYYY-MM-DD');
+  if (day < BACKFILL_EARLIEST_DAY) throw new Error('backfillSince cannot be before 2026-09-01');
+  return `${day}T07:00:00.000Z`;
+}
+
+export function requestIdFromRow(row: { payload?: unknown; google_response?: unknown }): string | null {
+  const payload = row.payload && typeof row.payload === 'object' ? (row.payload as { dm_request_id?: unknown }) : null;
+  if (typeof payload?.dm_request_id === 'string' && payload.dm_request_id.trim()) return payload.dm_request_id.trim();
+  return ingestRequestId(row.google_response);
+}
+
+/** What to write after Data Manager finishes a request. Does not call Google. */
+export function statusUpdate(input: {
+  payload: unknown;
+  gclid: string | null;
+  summary: DmStatusSummary;
+}): { payload: Record<string, unknown>; status?: 'error'; error: string | null | undefined } {
+  const base =
+    input.payload && typeof input.payload === 'object' ? { ...(input.payload as Record<string, unknown>) } : {};
+  const payload: Record<string, unknown> = {
+    ...base,
+    dm_request_id: input.summary.requestId ?? base.dm_request_id ?? null,
+    dm_status: input.summary.status,
+    dm_errors: input.summary.errors,
+    dm_warnings: input.summary.warnings,
+  };
+  const invalidGclid = input.summary.errors.some((row) => row.reason === 'PROCESSING_ERROR_REASON_INVALID_GCLID');
+  if (isTestGclid(input.gclid) && (invalidGclid || input.summary.status === 'FAILED')) {
+    return { payload, status: 'error', error: 'PROCESSING_ERROR_REASON_INVALID_GCLID' };
+  }
+  if (input.summary.status === 'FAILED') {
+    const why = input.summary.errors.map((row) => row.reason).join(',') || 'FAILED';
+    return { payload, status: 'error', error: why.slice(0, 500) };
+  }
+  if (input.summary.status === 'SUCCESS') return { payload, error: null };
+  return { payload, error: undefined };
+}
+
+export function needsStatusPoll(row: { payload?: unknown; google_response?: unknown }): boolean {
+  if (!requestIdFromRow(row)) return false;
+  const payload = row.payload && typeof row.payload === 'object' ? (row.payload as { dm_status?: unknown }) : null;
+  const status = payload?.dm_status;
+  return status == null || status === 'PROCESSING' || status === 'UNKNOWN';
+}
+
+/**
+ * Uploaded rows a backfill may send again. Same Jobber job id, so Google dedupes
+ * inside the won-job action. The GA4 book_job action is a different conversion
+ * and is not a reason to skip: it is secondary, and this upload is the primary count.
+ */
+export function uploadedIdsToResend(
+  existing: Array<{ jobber_job_id: string; status: string; gclid?: string | null; payload?: unknown }>,
+  candidateIds: Iterable<string>
+): Set<string> {
+  const byId = new Map(existing.map((row) => [row.jobber_job_id, row]));
+  const out = new Set<string>();
+  for (const id of candidateIds) {
+    const row = byId.get(id);
+    if (!row || row.status !== 'uploaded') continue;
+    if (isTestGclid(row.gclid)) continue;
+    if (conversionLanded(row.payload)) continue;
+    out.add(id);
+  }
+  return out;
+}
 
 export function offlineUploadMode(env: Record<string, string | undefined> = process.env): OfflineUploadMode {
   return env.ADS_OFFLINE_UPLOAD?.trim().toLowerCase() === 'live' ? 'live' : 'dry_run';
@@ -178,17 +268,45 @@ export function planOfflineRows(input: {
   existing: OfflineExistingRow[];
   mode: OfflineUploadMode;
   conversionAction: string | null;
+  /** Uploaded job ids a one-shot backfill is allowed to send again. */
+  resendUploadedIds?: ReadonlySet<string>;
 }): { rows: OfflinePlanRow[]; toUpload: ClickConversion[] } {
   const existing = new Map(input.existing.map((row) => [row.jobber_job_id, row.status]));
   const rows: OfflinePlanRow[] = [];
   const toUpload: ClickConversion[] = [];
+  const seen = new Set<string>();
+  const blockedAction = isGa4BookJobAction(input.conversionAction);
 
   for (const candidate of input.candidates) {
+    if (seen.has(candidate.jobberJobId)) continue;
+    seen.add(candidate.jobberJobId);
     const status = existing.get(candidate.jobberJobId);
-    if (status === 'uploaded') continue;
+    const resend = input.resendUploadedIds?.has(candidate.jobberJobId) === true;
+    if (status === 'uploaded' && !resend) continue;
+
+    if (isTestGclid(candidate.gclid)) {
+      rows.push({
+        jobber_job_id: candidate.jobberJobId,
+        invoice_ids: candidate.invoiceIds.join(','),
+        conversion_at: candidate.conversionAt,
+        value_usd: candidate.valueUsd,
+        gclid: candidate.gclid,
+        gbraid: candidate.gbraid,
+        wbraid: candidate.wbraid,
+        signal: candidate.signal,
+        status: 'skipped',
+        mode: input.mode,
+        payload: null,
+        error: 'test_row',
+      });
+      continue;
+    }
 
     const action = input.conversionAction || 'customers/0/conversionActions/0';
-    const payload = buildClickConversion(action, candidate);
+    const payload = buildClickConversion(action, {
+      ...candidate,
+      eventSource: candidate.signal === 'ads_call' ? 'PHONE' : 'WEB',
+    });
     if (!payload) {
       rows.push({
         jobber_job_id: candidate.jobberJobId,
@@ -214,6 +332,19 @@ export function planOfflineRows(input: {
 
     if (!input.conversionAction) {
       rows.push(rowFrom(candidate, 'error', input.mode, payload, 'GOOGLE_ADS_OFFLINE_CONVERSION_ACTION is not set'));
+      continue;
+    }
+
+    if (blockedAction) {
+      rows.push(
+        rowFrom(
+          candidate,
+          'error',
+          input.mode,
+          payload,
+          `won-job upload must not use the GA4 book_job action ${GA4_BOOK_JOB_CONVERSION_ACTION_ID}`
+        )
+      );
       continue;
     }
 

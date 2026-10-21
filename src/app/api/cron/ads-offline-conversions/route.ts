@@ -1,26 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
+import { googleAdsConfig, refreshGoogleAccessToken } from '@/lib/ads/google-ads-api';
 import {
-  googleAdsConfig,
-  refreshGoogleAccessToken,
-  uploadConversionAdjustments,
-} from '@/lib/ads/google-ads-api';
-import { ingestEvents } from '@/lib/ads/data-manager';
+  dmStatusLogLine,
+  ingestEvents,
+  ingestRequestId,
+  retrieveRequestStatus,
+  summarizeRequestStatus,
+  type DmStatusSummary,
+} from '@/lib/ads/data-manager';
 import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
+  backfillFloorIso,
+  needsStatusPoll,
   offlineUploadMode,
+  requestIdFromRow,
   runOfflineImport,
+  statusUpdate,
+  uploadedIdsToResend,
   type AttributedLead,
 } from '@/lib/ads/offline-import';
 import { fetchBookedJobs } from '@/lib/jobber/attribution-reads';
-import { hashEmail, hashPhoneE164 } from '@/lib/ads/offline-conversion';
-import {
-  buildRestatement,
-  nextRestatement,
-  sentStateOf,
-  type SentState,
-} from '@/lib/ads/conversion-stages';
+import { nextRestatement, restatementAllowed, sentStateOf, type SentState } from '@/lib/ads/conversion-stages';
 import { selectLeadRows } from '@/lib/ads/lead-query';
 
 export const dynamic = 'force-dynamic';
@@ -39,6 +41,16 @@ export async function POST(request: NextRequest) {
 
   const started = Date.now();
   const mode = offlineUploadMode();
+  const backfillDay = request.nextUrl.searchParams.get('backfillSince');
+  let backfillFloor: string | null = null;
+  if (backfillDay) {
+    try {
+      backfillFloor = backfillFloorIso(backfillDay);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'bad backfillSince';
+      return NextResponse.json({ error: message }, { status: 400 });
+    }
+  }
   try {
     const supabase = createServiceClient();
     const db = supabase as any;
@@ -63,7 +75,7 @@ export async function POST(request: NextRequest) {
       selectLeadRows(db.from('customers'), leadColumns, since),
       db.from('ads_calls').select('caller_phone, campaign_name, started_at').not('caller_phone', 'is', null).limit(5000),
       fetchBookedJobs(),
-      db.from('ads_offline_conversions').select('jobber_job_id, status, value_usd, payload').limit(5000),
+      db.from('ads_offline_conversions').select('jobber_job_id, status, value_usd, payload, gclid, google_response').limit(5000),
     ]);
 
     const leads: AttributedLead[] = [
@@ -83,30 +95,99 @@ export async function POST(request: NextRequest) {
           startedAt: row.started_at,
         })
       ),
+      floorIso: backfillFloor ?? undefined,
     });
 
     const config = googleAdsConfig();
+    async function refreshDataManagerToken(): Promise<string> {
+      if (!config) throw new Error('Google Ads config missing');
+      return refreshGoogleAccessToken({
+        ...config,
+        refreshToken: config.dataManagerRefreshToken,
+        clientId: config.dataManagerClientId,
+        clientSecret: config.dataManagerClientSecret,
+      });
+    }
+    async function storeStatus(jobIds: string[], summary: DmStatusSummary): Promise<string[]> {
+      const problems: string[] = [];
+      for (const jobId of jobIds) {
+        const prior = existingRows.find((row) => row.jobber_job_id === jobId);
+        const patch = statusUpdate({
+          payload: writtenPayload.get(jobId) ?? prior?.payload,
+          gclid: prior?.gclid ?? null,
+          summary,
+        });
+        const update: Record<string, unknown> = { payload: patch.payload, updated_at: new Date().toISOString() };
+        if (patch.status) update.status = patch.status;
+        if (patch.error !== undefined) update.error = patch.error;
+        const { error } = await db.from('ads_offline_conversions').update(update).eq('jobber_job_id', jobId);
+        if (error) problems.push(`${jobId}: ${error.message}`);
+      }
+      return problems;
+    }
+    async function pollRequestId(requestId: string, jobIds: string[]): Promise<string[]> {
+      if (mode !== 'live' || !config || !requestId || jobIds.length === 0) return [];
+      try {
+        const token = await refreshDataManagerToken();
+        const res = await retrieveRequestStatus(requestId, fetch, token);
+        if (!res.ok) {
+          console.log(`[ads_offline] datamanager requestId=${requestId} status=retrieve_http_${res.status}`);
+          return [];
+        }
+        const summary = summarizeRequestStatus(res.body, requestId);
+        console.log(dmStatusLogLine(summary));
+        return storeStatus(jobIds, summary);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'status retrieve failed';
+        console.log(`[ads_offline] datamanager requestId=${requestId} status=retrieve_failed`);
+        return [`${requestId}: ${message}`];
+      }
+    }
     const stagesByJob = new Map(candidates.map((c) => [c.jobberJobId, c.stages]));
-    const existingRows: Array<{ jobber_job_id: string; status: string; value_usd: number | null; payload: unknown }> =
-      existing.data ?? [];
-    // First upload carries the best value already known (invoice > approved quote > booking),
-    // so a late original doesn't wait a day for its restatement. Upward-only state is recorded.
+    const existingRows: Array<{
+      jobber_job_id: string;
+      status: string;
+      value_usd: number | null;
+      payload: unknown;
+      gclid?: string | null;
+      google_response?: unknown;
+    }> = existing.data ?? [];
+    const resendIds = backfillFloor ? uploadedIdsToResend(existingRows, candidates.map((c) => c.jobberJobId)) : undefined;
+    if (resendIds) console.log(`[ads_offline] backfill since=${backfillDay} resend=${resendIds.size}`);
+    // The original event carries the best value already known (invoice > approved quote > booking).
     const uploadedIds = new Set(existingRows.filter((r) => r.status === 'uploaded').map((r) => r.jobber_job_id));
     const firstStage = new Map<string, 1 | 2 | 3>();
     for (const c of candidates) {
-      if (uploadedIds.has(c.jobberJobId)) continue;
+      if (uploadedIds.has(c.jobberJobId) && !resendIds?.has(c.jobberJobId)) continue;
       const best = nextRestatement(c.stages, { stage: 1, value: c.stages.booking });
       if (best) {
         c.valueUsd = best.value;
         firstStage.set(c.jobberJobId, best.stage);
       }
     }
+    const touched = new Set<string>();
+    const writtenPayload = new Map<string, Record<string, unknown>>();
     const result = await runOfflineImport({
       candidates,
       existing: existingRows,
       mode,
       conversionAction: config?.conversionAction ?? null,
+      resendUploadedIds: resendIds,
       save: async (row) => {
+        touched.add(row.jobber_job_id);
+        const prior = existingRows.find((r) => r.jobber_job_id === row.jobber_job_id);
+        const payload: Record<string, unknown> = {
+          ...(prior && !row.google_response && prior.payload && typeof prior.payload === 'object'
+            ? (prior.payload as Record<string, unknown>)
+            : {}),
+          conversion: row.payload,
+          stages: stagesByJob.get(row.jobber_job_id) ?? null,
+          sent_stage: row.status === 'uploaded' ? (firstStage.get(row.jobber_job_id) ?? 1) : null,
+          sent_value: row.status === 'uploaded' ? row.value_usd : null,
+          dm_request_id: ingestRequestId(row.google_response) ?? requestIdFromRow(prior ?? {}),
+          dm_status: row.google_response ? null : (prior?.payload as { dm_status?: unknown } | null)?.dm_status ?? null,
+        };
+        writtenPayload.set(row.jobber_job_id, payload);
         const { error } = await db.from('ads_offline_conversions').upsert(
           {
             jobber_job_id: row.jobber_job_id,
@@ -119,15 +200,8 @@ export async function POST(request: NextRequest) {
             signal: row.signal,
             status: row.status,
             mode: row.mode,
-            // payload = { conversion, stages, sent_stage, sent_value }. Stage state lives
-            // here so no schema change is needed. Nothing is "sent" in dry run.
-            payload: {
-              conversion: row.payload,
-              stages: stagesByJob.get(row.jobber_job_id) ?? null,
-              sent_stage: row.status === 'uploaded' ? (firstStage.get(row.jobber_job_id) ?? 1) : null,
-              sent_value: row.status === 'uploaded' ? row.value_usd : null,
-            },
-            google_response: row.google_response ?? null,
+            payload,
+            google_response: row.google_response ?? prior?.google_response ?? null,
             error: row.error,
             updated_at: new Date().toISOString(),
           },
@@ -139,72 +213,63 @@ export async function POST(request: NextRequest) {
         mode === 'live' && config
           ? async (conversions) => {
               // Data Manager API (Google Ads uploadClickConversions is closed to new integrations).
-              const token = await refreshGoogleAccessToken({ ...config, refreshToken: config.dataManagerRefreshToken, clientId: config.dataManagerClientId, clientSecret: config.dataManagerClientSecret });
+              // Does not send GA4 book_job. That import is conversion action 7735430525 and stays separate.
+              const token = await refreshDataManagerToken();
               return ingestEvents(config, conversions, fetch, token);
             }
           : undefined,
     });
 
-    // Stages 2 and 3: restate upward only. Dry run assumes the booking value was sent.
+    const statusErrors: string[] = [];
+    const pending = new Map<string, string[]>();
+    for (const row of existingRows) {
+      if (touched.has(row.jobber_job_id) || !needsStatusPoll(row)) continue;
+      const requestId = requestIdFromRow(row);
+      if (!requestId) continue;
+      const list = pending.get(requestId) ?? [];
+      list.push(row.jobber_job_id);
+      pending.set(requestId, list);
+    }
+    for (const [jobId, payload] of writtenPayload) {
+      const requestId = typeof payload.dm_request_id === 'string' ? payload.dm_request_id : null;
+      if (!requestId) continue;
+      const list = pending.get(requestId) ?? [];
+      if (!list.includes(jobId)) list.push(jobId);
+      pending.set(requestId, list);
+    }
+    for (const [requestId, jobIds] of pending) {
+      statusErrors.push(...(await pollRequestId(requestId, jobIds)));
+    }
+
+    // Value changes are not sent through Ads uploadConversionAdjustments. That API
+    // returned CONVERSION_NOT_FOUND for every Data Manager event, including the ones
+    // Google processed successfully, and it overwrote the request id.
     const existingById = new Map(existingRows.map((r) => [r.jobber_job_id, r]));
     const stageRows: Array<Record<string, unknown>> = [];
-    const toAdjust: Array<{ jobId: string; step: NonNullable<ReturnType<typeof nextRestatement>>; adjustment: unknown; payload: Record<string, unknown> }> = [];
+    let restatementsSkipped = 0;
     for (const c of candidates) {
       const row = existingById.get(c.jobberJobId);
-      const uploaded = row?.status === 'uploaded';
+      const uploaded = row?.status === 'uploaded' || touched.has(c.jobberJobId);
       const sent: SentState | null =
         mode === 'live' ? (uploaded ? sentStateOf(row) : null) : { stage: 1, value: c.stages.booking };
       const step = sent ? nextRestatement(c.stages, sent) : null;
+      const allowed = restatementAllowed(row?.payload);
+      if (mode === 'live' && step && row?.status === 'uploaded' && !resendIds?.has(c.jobberJobId) && !allowed) restatementsSkipped += 1;
       stageRows.push({
         job_id: c.jobberJobId,
         client: c.clientName,
         booking_value_usd: c.stages.booking,
         approved_value_usd: c.stages.approved,
         invoiced_value_usd: c.stages.invoiced,
-        next_restatement: step ? { stage: step.stage, value_usd: step.value, from_usd: sent?.value } : null,
+        next_restatement: step && allowed ? { stage: step.stage, value_usd: step.value, from_usd: sent?.value } : null,
+        restatement_skipped: Boolean(
+          mode === 'live' && step && row?.status === 'uploaded' && !resendIds?.has(c.jobberJobId) && !allowed
+        ),
         restatable: Boolean(c.gclid || c.gbraid || c.wbraid || c.email || c.phone),
       });
-      if (mode === 'live' && config?.conversionAction && step && uploaded) {
-        const adjustment = buildRestatement(config.conversionAction, {
-          jobberJobId: c.jobberJobId,
-          value: step.value,
-          nowIso: new Date().toISOString(),
-          hashedEmail: hashEmail(c.email),
-          hashedPhone: hashPhoneE164(c.phone),
-        });
-        toAdjust.push({ jobId: c.jobberJobId, step, adjustment, payload: (row?.payload as Record<string, unknown>) ?? {} });
-      }
     }
-    const adjustErrors: string[] = [];
-    let restated = 0;
-    if (toAdjust.length && config) {
-      const token = await refreshGoogleAccessToken(config);
-      const res = await uploadConversionAdjustments(
-        config,
-        toAdjust.map((a) => a.adjustment),
-        fetch,
-        token
-      );
-      const partial =
-        res.body && typeof res.body === 'object' && 'partialFailureError' in (res.body as Record<string, unknown>);
-      const ok = res.ok && !partial;
-      for (const a of toAdjust) {
-        const patch = ok
-          ? {
-              value_usd: a.step.value,
-              payload: { ...a.payload, stages: stagesByJob.get(a.jobId) ?? null, sent_stage: a.step.stage, sent_value: a.step.value },
-              google_response: res.body,
-              error: null,
-            }
-          : { error: `Restatement HTTP ${res.status}`, google_response: res.body };
-        const { error } = await db
-          .from('ads_offline_conversions')
-          .update({ ...patch, updated_at: new Date().toISOString() })
-          .eq('jobber_job_id', a.jobId);
-        if (error) adjustErrors.push(`${a.jobId}: ${error.message}`);
-        if (ok) restated += 1;
-        else adjustErrors.push(`${a.jobId}: restatement failed (${res.status})`);
-      }
+    if (restatementsSkipped) {
+      console.log(`[ads_offline] restatements skipped=${restatementsSkipped} reason=conversion_not_landed`);
     }
     const sum = (key: string) =>
       Math.round(stageRows.reduce((t, r) => t + (Number(r[key]) || 0), 0) * 100) / 100;
@@ -222,11 +287,13 @@ export async function POST(request: NextRequest) {
               candidates.reduce((t, c) => t + (c.stages.invoiced ?? c.stages.approved ?? c.stages.booking), 0) * 100
             ) / 100,
         },
-        restated,
-        errors: adjustErrors,
+        restated: 0,
+        restatements_skipped: restatementsSkipped,
+        errors: statusErrors,
       },
-      success: result.errors.length === 0 && adjustErrors.length === 0,
+      success: result.errors.length === 0 && statusErrors.length === 0,
       mode,
+      backfill_since: backfillDay,
       trigger: 'booked_job',
       jobs_seen: invoices.length,
       candidates: candidates.length,

@@ -28,8 +28,10 @@ export function rfc3339(adsDateTime: string): string {
 export interface DataManagerEvent {
   transactionId: string;
   eventTimestamp: string;
-  eventSource: 'WEB';
+  eventSource: 'WEB' | 'PHONE';
   conversionValue: number;
+  /** One won job. Omitted, this quantity is easy to store as zero and then never show up. */
+  conversionCount: 1;
   currency: string;
   adIdentifiers?: { gclid?: string; gbraid?: string; wbraid?: string };
   userData?: { userIdentifiers: Array<{ emailAddress?: string; phoneNumber?: string }> };
@@ -39,8 +41,9 @@ export function toDataManagerEvent(c: ClickConversion): DataManagerEvent {
   const event: DataManagerEvent = {
     transactionId: c.order_id, // dedupe key: Jobber job id
     eventTimestamp: rfc3339(c.conversion_date_time),
-    eventSource: 'WEB',
+    eventSource: c.event_source === 'PHONE' ? 'PHONE' : 'WEB',
     conversionValue: c.conversion_value,
+    conversionCount: 1,
     currency: c.currency_code,
   };
   if (c.gclid) event.adIdentifiers = { gclid: c.gclid };
@@ -72,6 +75,9 @@ export function buildIngestRequest(
     destinations: [destination],
     events: conversions.map(toDataManagerEvent),
     encoding: 'HEX', // offline-conversion.ts hashes as lowercase SHA-256 hex
+    // Google's send-events sample. Processing of the historical uploads did not
+    // fail for missing consent; this is what new events send.
+    consent: { adUserData: 'CONSENT_GRANTED', adPersonalization: 'CONSENT_GRANTED' },
     validateOnly: Boolean(options.validateOnly),
   };
 }
@@ -115,4 +121,72 @@ export async function retrieveRequestStatus(
 export function ingestErrorMessage(status: number, body: unknown): string {
   const err = (body as { error?: { status?: string; message?: string } } | null)?.error;
   return `Data Manager ingest HTTP ${status}${err?.status ? ` ${err.status}` : ''}${err?.message ? `: ${err.message}` : ''}`.slice(0, 500);
+}
+
+export function ingestRequestId(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null;
+  const id = (body as { requestId?: unknown }).requestId;
+  return typeof id === 'string' && id.trim() ? id.trim() : null;
+}
+
+export interface DmReasonCount {
+  reason: string;
+  recordCount: number;
+}
+
+export type DmProcessingStatus = 'SUCCESS' | 'PARTIAL_SUCCESS' | 'FAILED' | 'PROCESSING' | 'UNKNOWN';
+
+export interface DmStatusSummary {
+  requestId: string | null;
+  status: DmProcessingStatus;
+  recordCount: number | null;
+  errors: DmReasonCount[];
+  warnings: DmReasonCount[];
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
+}
+
+function reasonCounts(info: unknown, key: 'errorCounts' | 'warningCounts'): DmReasonCount[] {
+  const list = asRecord(info)?.[key];
+  if (!Array.isArray(list)) return [];
+  const out: DmReasonCount[] = [];
+  for (const item of list) {
+    const row = asRecord(item);
+    const reason = row?.reason;
+    if (typeof reason !== 'string' || !reason) continue;
+    const raw = row?.recordCount;
+    const recordCount = typeof raw === 'string' || typeof raw === 'number' ? Number(raw) : 0;
+    out.push({ reason, recordCount: Number.isFinite(recordCount) ? recordCount : 0 });
+  }
+  return out;
+}
+
+/** One destination's processing result. HTTP 200 on ingest is not this status. */
+export function summarizeRequestStatus(body: unknown, requestId?: string | null): DmStatusSummary {
+  const list = asRecord(body)?.requestStatusPerDestination;
+  const dest = Array.isArray(list) ? asRecord(list[0]) : null;
+  const raw = typeof dest?.requestStatus === 'string' ? dest.requestStatus : 'UNKNOWN';
+  const status: DmProcessingStatus =
+    raw === 'FAILURE' ? 'FAILED' : raw === 'SUCCESS' || raw === 'PARTIAL_SUCCESS' || raw === 'FAILED' || raw === 'PROCESSING' ? raw : 'UNKNOWN';
+  const records = asRecord(dest?.eventsIngestionStatus)?.recordCount;
+  const recordCount = typeof records === 'string' || typeof records === 'number' ? Number(records) : null;
+  return {
+    requestId: requestId ?? null,
+    status,
+    recordCount: recordCount != null && Number.isFinite(recordCount) ? recordCount : null,
+    errors: reasonCounts(dest?.errorInfo, 'errorCounts'),
+    warnings: reasonCounts(dest?.warningInfo, 'warningCounts'),
+  };
+}
+
+export function dmStatusLogLine(summary: DmStatusSummary): string {
+  const fmt = (rows: DmReasonCount[]) => (rows.length ? rows.map((row) => `${row.reason}:${row.recordCount}`).join(',') : 'none');
+  return `[ads_offline] datamanager requestId=${summary.requestId ?? 'none'} status=${summary.status} records=${summary.recordCount ?? 'none'} errors=${fmt(summary.errors)} warnings=${fmt(summary.warnings)}`;
+}
+
+/** A Data Manager SUCCESS was not enough for this account: those events are absent from Ads totals. */
+export function conversionLanded(payload: unknown): boolean {
+  return asRecord(payload)?.dm_reported === true;
 }

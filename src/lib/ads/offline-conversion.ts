@@ -17,6 +17,8 @@ export interface WonJobInput {
   wbraid?: string | null;
   email?: string | null;
   phone?: string | null;
+  /** Ads call conversions are phone events. Everything else is a web event. */
+  eventSource?: 'WEB' | 'PHONE';
 }
 
 export interface ClickConversion {
@@ -29,6 +31,7 @@ export interface ClickConversion {
   gbraid?: string;
   wbraid?: string;
   user_identifiers?: Array<{ hashed_email?: string; hashed_phone_number?: string }>;
+  event_source?: 'WEB' | 'PHONE';
 }
 
 const sha = (s: string) => createHash('sha256').update(s).digest('hex');
@@ -81,5 +84,6 @@ export function buildClickConversion(
   else if (gbraid) c.gbraid = gbraid;
   else if (wbraid) c.wbraid = wbraid;
   if (ids.length) c.user_identifiers = ids;
+  c.event_source = job.eventSource === 'PHONE' ? 'PHONE' : 'WEB';
   return c;
 }

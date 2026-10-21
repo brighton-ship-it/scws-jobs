@@ -1,11 +1,17 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  backfillFloorIso,
   candidatesFromInvoices,
+  isGa4BookJobAction,
   offlineUploadMode,
+  planOfflineRows,
   runOfflineImport,
   parsePartialFailure,
+  statusUpdate,
+  uploadedIdsToResend,
   type AttributedLead,
+  type OfflineCandidate,
 } from './offline-import.ts';
 
 const NOW = new Date('2026-10-09T18:00:00.000Z');
@@ -240,6 +246,116 @@ describe('partial failure handling', () => {
 });
 
 import { uploadErrorMessage } from './offline-import.ts';
+function candidate(partial: Partial<OfflineCandidate> & Pick<OfflineCandidate, 'jobberJobId'>): OfflineCandidate {
+  return {
+    invoiceIds: ['inv'],
+    conversionAt: '2026-10-08T12:00:00.000Z',
+    valueUsd: 1250,
+    gclid: 'CjwKCAjw',
+    gbraid: null,
+    wbraid: null,
+    email: 'pat@example.com',
+    phone: '7605550100',
+    signal: 'click_id',
+    campaign: null,
+    keyword: null,
+    ...partial,
+  };
+}
+
+describe('won-job upload guards', () => {
+  it('does not upload the smoke-test gclid or the GA4 book_job action', () => {
+    assert.equal(isGa4BookJobAction('customers/9314944293/conversionActions/7735430525'), true);
+    assert.equal(isGa4BookJobAction('customers/9314944293/conversionActions/7833699992'), false);
+    const plan = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/9314944293/conversionActions/7833699992',
+      existing: [],
+      candidates: [
+        candidate({ jobberJobId: 'real' }),
+        candidate({ jobberJobId: 'smoke', gclid: 'smoke_test_pr30_do_not_call', signal: 'click_id' }),
+      ],
+    });
+    assert.deepEqual(plan.toUpload.map((row) => row.order_id), ['real']);
+    assert.equal(plan.rows.find((row) => row.jobber_job_id === 'smoke')?.error, 'test_row');
+    assert.equal(plan.toUpload[0].event_source, 'WEB');
+    assert.equal(plan.toUpload[0].conversion_value, 1250);
+
+    const calls = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/9314944293/conversionActions/7833699992',
+      existing: [],
+      candidates: [candidate({ jobberJobId: 'call', gclid: null, signal: 'ads_call' })],
+    });
+    assert.equal(calls.toUpload[0].event_source, 'PHONE');
+
+    const wrongAction = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/9314944293/conversionActions/7735430525',
+      existing: [],
+      candidates: [candidate({ jobberJobId: 'real' })],
+    });
+    assert.equal(wrongAction.toUpload.length, 0);
+    assert.match(wrongAction.rows[0].error ?? '', /7735430525/);
+  });
+
+  it('backfill resends uploaded jobs except the smoke test and a reported conversion, one id each', () => {
+    assert.equal(backfillFloorIso('2026-09-01'), '2026-09-01T07:00:00.000Z');
+    assert.throws(() => backfillFloorIso('2026-08-01'), /2026-09-01/);
+    const ids = uploadedIdsToResend(
+      [
+        { jobber_job_id: 'landed-missing', status: 'uploaded', gclid: 'abc' },
+        { jobber_job_id: 'smoke', status: 'uploaded', gclid: 'smoke_test_pr30_do_not_call' },
+        { jobber_job_id: 'reported', status: 'uploaded', gclid: 'abc', payload: { dm_reported: true } },
+        { jobber_job_id: 'dry', status: 'dry_run', gclid: 'abc' },
+      ],
+      ['landed-missing', 'landed-missing', 'smoke', 'reported', 'dry']
+    );
+    assert.deepEqual([...ids], ['landed-missing']);
+    const plan = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/2',
+      existing: [
+        { jobber_job_id: 'landed-missing', status: 'uploaded' },
+        { jobber_job_id: 'smoke', status: 'uploaded' },
+      ],
+      resendUploadedIds: ids,
+      candidates: [candidate({ jobberJobId: 'landed-missing' }), candidate({ jobberJobId: 'smoke', gclid: 'smoke_test_pr30_do_not_call' })],
+    });
+    assert.deepEqual(plan.toUpload.map((row) => row.order_id), ['landed-missing']);
+  });
+
+  it('records processing failure and does not treat Data Manager SUCCESS as landed', () => {
+    const failed = statusUpdate({
+      payload: { sent_stage: 1, sent_value: 200 },
+      gclid: null,
+      summary: { requestId: 'r', status: 'FAILED', recordCount: 1, errors: [{ reason: 'PROCESSING_ERROR_REASON_NO_CONSENT', recordCount: 1 }], warnings: [] },
+    });
+    assert.equal(failed.status, 'error');
+    assert.match(failed.error ?? '', /NO_CONSENT/);
+    const smoke = statusUpdate({
+      payload: {},
+      gclid: 'smoke_test_pr30_do_not_call',
+      summary: {
+        requestId: 'r',
+        status: 'PARTIAL_SUCCESS',
+        recordCount: 7,
+        errors: [{ reason: 'PROCESSING_ERROR_REASON_INVALID_GCLID', recordCount: 1 }],
+        warnings: [],
+      },
+    });
+    assert.equal(smoke.status, 'error');
+    const accepted = statusUpdate({
+      payload: { dm_reported: false },
+      gclid: 'abc',
+      summary: { requestId: 'r', status: 'SUCCESS', recordCount: 11, errors: [], warnings: [] },
+    });
+    assert.equal(accepted.status, undefined);
+    assert.equal(accepted.payload.dm_status, 'SUCCESS');
+    assert.notEqual(accepted.payload.dm_reported, true);
+  });
+});
+
 describe('uploadErrorMessage', () => {
   it('includes the Google error status and message', () => {
     assert.equal(

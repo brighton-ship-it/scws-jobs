@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRestatement, nextRestatement, sentStateOf, stageValues } from './conversion-stages.ts';
+import { buildRestatement, nextRestatement, restatementAllowed, sentStateOf, stageValues } from './conversion-stages.ts';
 import { candidatesFromBookedJobs, type BookedJobInput } from './booked-jobs.ts';
 
 const anchor = Date.parse('2026-10-01T17:00:00.000Z');
@@ -82,6 +82,11 @@ describe('sentStateOf / buildRestatement', () => {
     assert.equal(a.restatement_value.adjusted_value, 4722.5);
     assert.equal(a.adjustment_date_time, '2026-10-20 20:00:00+00:00');
     assert.equal(a.user_identifiers, undefined); // Google rejects identifiers on RESTATEMENT
+  });
+  it('does not restate a Data Manager upload that is not marked reported in Ads', () => {
+    assert.equal(restatementAllowed(undefined), false);
+    assert.equal(restatementAllowed({ dm_status: 'SUCCESS', sent_value: 1250 }), false);
+    assert.equal(restatementAllowed({ dm_reported: true }), true);
   });
 });
 
