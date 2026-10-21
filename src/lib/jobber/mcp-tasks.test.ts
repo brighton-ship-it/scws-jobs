@@ -4,13 +4,18 @@ import {
   LIST_TASKS_DEFAULT_LIMIT,
   LIST_TASKS_MAX_LIMIT,
   LIST_TASKS_QUERY,
-  TASK_LIST_OCCURS_WITHIN,
   assertReadOnlyTaskQuery,
   buildTaskListFilter,
   listTasks,
   normalizeTaskStatus,
   taskLimit,
+  taskOccursWithin,
+  taskWindowRangeMs,
 } from './mcp-tasks.ts';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Jobber's error is "less than 1.5 years". 365.25 days covers a leap-year definition. */
+const JOBBER_MAX_RANGE_MS = 1.5 * 365.25 * DAY_MS;
 
 function jsonResponse(data: unknown): Response {
   return new Response(JSON.stringify(data), {
@@ -64,27 +69,41 @@ describe('task list query', () => {
 
 describe('task list filters', () => {
   it('defaults to open and maps status onto Jobber enums', () => {
+    const occursWithin = taskOccursWithin(new Date('2026-10-21T17:00:00.000Z'));
     assert.equal(normalizeTaskStatus(undefined), 'open');
     assert.equal(normalizeTaskStatus('  '), 'open');
     assert.equal(normalizeTaskStatus('Completed'), 'completed');
     assert.throws(() => normalizeTaskStatus('overdue'), /open or completed/);
     assert.equal(taskLimit(undefined), LIST_TASKS_DEFAULT_LIMIT);
     assert.equal(taskLimit(500), LIST_TASKS_MAX_LIMIT);
-    assert.deepEqual(buildTaskListFilter({ status: 'open' }), {
+    assert.deepEqual(buildTaskListFilter({ status: 'open', occursWithin }), {
       scheduleItemType: 'BASIC_TASK',
       status: 'REMAINING',
-      occursWithin: TASK_LIST_OCCURS_WITHIN,
+      occursWithin,
       includeUnscheduled: true,
+      schedulingAspects: ['ALL'],
       includeUnassigned: true,
     });
-    assert.deepEqual(buildTaskListFilter({ status: 'completed', assigneeId: ' user-1 ' }), {
+    assert.deepEqual(buildTaskListFilter({ status: 'completed', assigneeId: ' user-1 ', occursWithin }), {
       scheduleItemType: 'BASIC_TASK',
       status: 'COMPLETED',
-      occursWithin: TASK_LIST_OCCURS_WITHIN,
+      occursWithin,
       includeUnscheduled: true,
+      schedulingAspects: ['ALL'],
       includeUnassigned: false,
       assignedTo: ['user-1'],
     });
+  });
+
+  it('keeps occursWithin under 1.5 years, including across a leap day', () => {
+    for (const iso of ['2026-10-21T17:00:00.000Z', '2024-03-01T00:00:00.000Z', '2024-02-29T12:00:00.000Z']) {
+      const window = taskOccursWithin(new Date(iso));
+      const span = taskWindowRangeMs(window);
+      assert.ok(span > 0, iso);
+      assert.ok(span < JOBBER_MAX_RANGE_MS, `${iso} span ${span} is not under 1.5 years`);
+      assert.equal(window.startAt.startsWith('2000-'), false);
+      assert.equal(window.endAt.startsWith('2100-'), false);
+    }
   });
 });
 
@@ -170,12 +189,18 @@ describe('listTasks', () => {
     assert.deepEqual(listed.tasks[0].assignees, [{ id: 'user-1', name: 'Brighton Scala' }]);
     assert.equal(listed.tasks[1].description, null);
     assert.equal(listed.tasks[1].client, null);
-    const first = JSON.parse(bodies[0]) as { variables: { filter: Record<string, unknown>; first: number } };
+    const first = JSON.parse(bodies[0]) as {
+      variables: { filter: Record<string, unknown> & { occursWithin: { startAt: string; endAt: string } }; first: number };
+    };
     assert.equal(first.variables.first, 25);
     assert.equal(first.variables.filter.scheduleItemType, 'BASIC_TASK');
     assert.equal(first.variables.filter.status, 'REMAINING');
     assert.deepEqual(first.variables.filter.assignedTo, ['user-1']);
-    assert.deepEqual(first.variables.filter.occursWithin, TASK_LIST_OCCURS_WITHIN);
+    assert.equal(first.variables.filter.includeUnscheduled, true);
+    assert.deepEqual(first.variables.filter.schedulingAspects, ['ALL']);
+    assert.ok(taskWindowRangeMs(first.variables.filter.occursWithin) < JOBBER_MAX_RANGE_MS);
+    assert.equal(listed.tasks[1].startAt, null);
+    assert.equal(listed.tasks[1].endAt, null);
     const second = JSON.parse(bodies[1]) as { variables: { after: string } };
     assert.equal(second.variables.after, 'cursor-1');
   });

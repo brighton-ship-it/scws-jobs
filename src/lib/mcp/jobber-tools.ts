@@ -328,7 +328,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'list_tasks',
     description:
-      'List Jobber tasks (scheduledItems where scheduleItemType is BASIC_TASK). Optional assigneeId is a user id from list_users and is sent as filter.assignedTo. status is open (default, Jobber REMAINING) or completed (Jobber COMPLETED). Returns id, title, description (Task.instructions; Task has no notes, color, or label field), client, property, startAt, endAt, isComplete, and assignees. occursWithin is required by Jobber and is sent as 2000-01-01 through 2100-01-01, with unscheduled tasks included. Read-only. Does not create, edit, or delete a task.',
+      'List Jobber tasks (scheduledItems where scheduleItemType is BASIC_TASK). Optional assigneeId is a user id from list_users and is sent as filter.assignedTo. status is open (default, Jobber REMAINING) or completed (Jobber COMPLETED). Returns id, title, description (Task.instructions; Task has no notes, color, or label field), client, property, startAt, endAt, isComplete, and assignees. occursWithin is today minus 1 year through today plus 6 months, clamped to less than 1.5 years. Unscheduled tasks (no start or end) are included with includeUnscheduled and schedulingAspects ALL. Read-only. Does not create, edit, or delete a task.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
