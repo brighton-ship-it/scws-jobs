@@ -40,6 +40,70 @@ if (process.env.VERCEL) {
       }
     }
   }
+
+  // Read-only Ads diagnostics. No mutate. Logs counts and error codes only.
+  const adsClientId = process.env.GOOGLE_ADS_CLIENT_ID;
+  const adsSecret = process.env.GOOGLE_ADS_CLIENT_SECRET;
+  const adsRefresh = process.env.GOOGLE_ADS_REFRESH_TOKEN;
+  const devToken = process.env.GOOGLE_ADS_DEVELOPER_TOKEN;
+  const customerId = (process.env.GOOGLE_ADS_CUSTOMER_ID || '').replace(/-/g, '');
+  const loginId = (process.env.GOOGLE_ADS_LOGIN_CUSTOMER_ID || '').replace(/-/g, '');
+  if (!adsClientId || !adsSecret || !adsRefresh || !devToken || !customerId) {
+    console.log('ADS_DIAG missing env', JSON.stringify({
+      hasClientId: Boolean(adsClientId),
+      hasSecret: Boolean(adsSecret),
+      hasRefresh: Boolean(adsRefresh),
+      hasDev: Boolean(devToken),
+      hasCustomer: Boolean(customerId),
+    }));
+  } else {
+    const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: adsClientId,
+        client_secret: adsSecret,
+        refresh_token: adsRefresh,
+        grant_type: 'refresh_token',
+      }),
+    });
+    const tokenBody = await tokenRes.json().catch(() => ({}));
+    if (!tokenRes.ok || !tokenBody.access_token) {
+      console.log('ADS_DIAG token_refresh_failed', tokenRes.status, redact(tokenBody.error || tokenBody.error_description || ''));
+    } else {
+      const headers = {
+        Authorization: `Bearer ${tokenBody.access_token}`,
+        'developer-token': devToken,
+        'Content-Type': 'application/json',
+      };
+      if (loginId) headers['login-customer-id'] = loginId;
+      const queries = [
+        `SELECT customer.id, customer.conversion_tracking_setting.accepted_customer_data_terms, customer.conversion_tracking_setting.enhanced_conversions_for_leads_enabled, customer.conversion_tracking_setting.google_ads_conversion_customer FROM customer`,
+        `SELECT conversion_action.id, conversion_action.name, conversion_action.status, conversion_action.type, conversion_action.category, conversion_action.origin, conversion_action.primary_for_goal, conversion_action.include_in_conversions_metric, conversion_action.click_through_lookback_window_days, conversion_action.counting_type, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM conversion_action WHERE conversion_action.id = 7833699992 AND segments.date BETWEEN '2026-09-01' AND '2026-10-20'`,
+        `SELECT conversion_action.id, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM conversion_action WHERE conversion_action.id = 7833699992 AND segments.date BETWEEN '2025-01-01' AND '2026-10-20'`,
+        `SELECT offline_conversion_upload_conversion_action_summary.conversion_action_id, offline_conversion_upload_conversion_action_summary.client, offline_conversion_upload_conversion_action_summary.status, offline_conversion_upload_conversion_action_summary.alerts, offline_conversion_upload_conversion_action_summary.total_event_count, offline_conversion_upload_conversion_action_summary.successful_event_count, offline_conversion_upload_conversion_action_summary.pending_event_count, offline_conversion_upload_conversion_action_summary.last_upload_date_time, offline_conversion_upload_conversion_action_summary.daily_summaries FROM offline_conversion_upload_conversion_action_summary WHERE offline_conversion_upload_conversion_action_summary.conversion_action_id = 7833699992`,
+        `SELECT offline_conversion_upload_client_summary.client, offline_conversion_upload_client_summary.status, offline_conversion_upload_client_summary.alerts, offline_conversion_upload_client_summary.total_event_count, offline_conversion_upload_client_summary.successful_event_count, offline_conversion_upload_client_summary.pending_event_count, offline_conversion_upload_client_summary.last_upload_date_time FROM offline_conversion_upload_client_summary`,
+      ];
+      for (const query of queries) {
+        const res = await fetch(`https://googleads.googleapis.com/v25/customers/${customerId}/googleAds:search`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ query }),
+        });
+        const body = await res.json().catch(() => null);
+        const label = query.includes('offline_conversion_upload_conversion_action')
+          ? 'action_summary'
+          : query.includes('offline_conversion_upload_client')
+            ? 'client_summary'
+            : query.includes('conversion_tracking_setting')
+              ? 'customer'
+              : query.includes('2025-01-01')
+                ? 'metrics_wide'
+                : 'metrics_window';
+        console.log('ADS_DIAG', label, res.status, redact(JSON.stringify(body)));
+      }
+    }
+  }
   throw new Error('DM_STATUS_PROBE complete; failing the build so this diagnostic is not promoted');
 }
 
