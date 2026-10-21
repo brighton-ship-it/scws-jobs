@@ -10,26 +10,30 @@
  *
  * Listing:
  * - Query.tasks does not exist. Query.task(id) loads one task and cannot page.
+ * - Client, Property, User, Request, and Account have no tasks connection.
+ *   ClientCounts.tasks is an Int count only. There is no unscheduledItems
+ *   field and no Query.node.
  * - Query.scheduledItems(filter: ScheduledItemsFilterAttributes!, first, after)
- *   returns ScheduledItemInterfaceConnection. Task implements that interface.
- *   scheduleItemType BASIC_TASK is the task type (VISIT, EVENT, ASSESSMENT
- *   are the others).
- * - occursWithin: DateRange! { startAt, endAt } is required, and Jobber
- *   rejects a span of 1.5 years or more ("Requested time range must be less
- *   than 1.5 years"). The window is today minus 1 year through today plus
- *   6 months, shortened so the span stays under that limit.
- * - Unscheduled tasks have null startAt and endAt, so the date window alone
- *   does not include them. There is no other Task connection. The filter
- *   fields that do are includeUnscheduled (default false) and
- *   schedulingAspects. ALL is the aspect that returns items with no start
- *   and no end as well as items inside the window; includeUnscheduled: false
- *   is what turns the undated half off. This list sends both
- *   includeUnscheduled: true and schedulingAspects: [ALL].
- * - assignedTo: [EncodedId!] filters by user on Jobber's side. Results are
- *   checked again after the fetch.
- * - status: ScheduledItemStatus is ACTIVE, COMPLETED, OVERDUE, or REMAINING.
- *   open (default) sends REMAINING. completed sends COMPLETED. isComplete is
- *   checked again after the fetch.
+ *   is the only list. Task implements ScheduledItemInterface.
+ *   scheduleItemType BASIC_TASK is the task type.
+ * - occursWithin: DateRange! is required on every call, including a call
+ *   whose schedulingAspects is UNSCHEDULED. Jobber rejects a span of 1.5
+ *   years or more. Each call uses a window under that limit.
+ * - Live calls showed includeUnscheduled: true plus schedulingAspects: [ALL]
+ *   with status REMAINING does not return unscheduled tasks. Dated open
+ *   tasks still come back from status REMAINING with includeUnscheduled
+ *   false. Unscheduled tasks are therefore a separate call: schedulingAspects
+ *   [UNSCHEDULED], includeUnscheduled true, and no status. isComplete is
+ *   checked locally. If that call with assignedTo keeps nothing, a second
+ *   call omits assignedTo and filters assignees locally. If both keep
+ *   nothing, one more call sends schedulingAspects [ALL] with no status.
+ * - Dated tasks are read with status REMAINING or COMPLETED and no
+ *   schedulingAspects value. Several non-overlapping windows step backward
+ *   from the primary window. The response covered range is the span those
+ *   calls actually requested.
+ * - assignedTo filters by user on Jobber's side. When assignedTo was sent
+ *   and assignedUsers comes back empty, the row is kept. When assignedTo
+ *   was not sent, assignees are checked locally.
  *
  * Task fields used: id, title, instructions (the description; Task has no
  * notes connection), isComplete, startAt, endAt, client { id name },
@@ -51,7 +55,9 @@ import type { JobberDeps } from './quotes.ts';
 export const LIST_TASKS_DEFAULT_LIMIT = 25;
 export const LIST_TASKS_MAX_LIMIT = 50;
 export const LIST_TASKS_PAGE_SIZE = 25;
+export const LIST_TASKS_UNSCHEDULED_PAGE_SIZE = 50;
 export const LIST_TASKS_MAX_PAGES = 4;
+export const LIST_TASKS_WINDOW_COUNT = 4;
 export const TASK_ASSIGNEE_PAGE_SIZE = 10;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -75,6 +81,31 @@ export function taskOccursWithin(now: Date = new Date()): TaskListOccursWithin {
   const maxEnd = start.getTime() + TASK_LIST_MAX_RANGE_MS;
   if (end.getTime() > maxEnd) end.setTime(maxEnd);
   return { startAt: start.toISOString(), endAt: end.toISOString() };
+}
+
+/**
+ * Primary window first, then older windows of the same length stepping
+ * backward. Each window stays under 1.5 years. Adjacent windows share a
+ * boundary instant; listTasks dedupes by task id.
+ */
+export function taskOccursWindows(
+  now: Date = new Date(),
+  count = LIST_TASKS_WINDOW_COUNT
+): TaskListOccursWithin[] {
+  const primary = taskOccursWithin(now);
+  const span = taskWindowRangeMs(primary);
+  const windows: TaskListOccursWithin[] = [primary];
+  const total = Math.max(1, Math.floor(count));
+  let endMs = Date.parse(primary.startAt);
+  for (let i = 1; i < total; i += 1) {
+    const startMs = endMs - span;
+    windows.push({
+      startAt: new Date(startMs).toISOString(),
+      endAt: new Date(endMs).toISOString(),
+    });
+    endMs = startMs;
+  }
+  return windows;
 }
 
 const READ_ONLY_TASK_QUERY = /\bmutation\b|taskCreate|taskEdit|taskDelete/i;
@@ -117,6 +148,8 @@ export const LIST_TASKS_QUERY = `
 
 export type TaskListStatus = 'open' | 'completed';
 
+export type TaskListQueryName = 'unscheduled' | 'unscheduled-any-assignee' | 'unscheduled-all' | 'dated';
+
 export type TaskListOccursWithin = {
   startAt: string;
   endAt: string;
@@ -124,12 +157,33 @@ export type TaskListOccursWithin = {
 
 export type TaskListFilter = {
   scheduleItemType: 'BASIC_TASK';
-  status: 'REMAINING' | 'COMPLETED';
   occursWithin: TaskListOccursWithin;
-  includeUnscheduled: true;
-  schedulingAspects: ['ALL'];
+  includeUnscheduled: boolean;
   includeUnassigned: boolean;
+  schedulingAspects?: ['UNSCHEDULED'] | ['ALL'];
+  status?: 'REMAINING' | 'COMPLETED';
   assignedTo?: [string];
+};
+
+export type TaskListQueryReport = {
+  name: TaskListQueryName;
+  windowIndex: number | null;
+  occursWithin: TaskListOccursWithin;
+  includeUnscheduled: boolean;
+  includeUnassigned: boolean;
+  schedulingAspects: Array<'UNSCHEDULED' | 'ALL'> | null;
+  status: 'REMAINING' | 'COMPLETED' | null;
+  assignedTo: string[] | null;
+  fetched: number;
+  kept: number;
+  error: string | null;
+};
+
+export type TaskListCoverage = {
+  startAt: string;
+  endAt: string;
+  datedWindows: number;
+  datedWindowsRun: number;
 };
 
 export type JobberTaskAddress = {
@@ -174,6 +228,8 @@ export type ListTasksResult = {
   status: TaskListStatus;
   assigneeId: string | null;
   occursWithin: TaskListOccursWithin;
+  covered: TaskListCoverage;
+  queries: TaskListQueryReport[];
 };
 
 type PersonName = {
@@ -219,6 +275,8 @@ type TaskConnection = {
   pageInfo?: { hasNextPage?: boolean | null; endCursor?: string | null } | null;
 };
 
+type AssigneeMode = 'server' | 'local' | 'none';
+
 function graphql(
   query: string,
   variables: Record<string, unknown>,
@@ -250,22 +308,53 @@ export function taskLimit(limit?: number | null): number {
   return Math.min(Math.floor(limit), LIST_TASKS_MAX_LIMIT);
 }
 
-export function buildTaskListFilter(input: {
+export function buildDatedTaskFilter(input: {
   status: TaskListStatus;
   assigneeId?: string | null;
-  occursWithin?: TaskListOccursWithin;
+  occursWithin: TaskListOccursWithin;
 }): TaskListFilter {
   const assigneeId = input.assigneeId?.trim() || '';
   const filter: TaskListFilter = {
     scheduleItemType: 'BASIC_TASK',
     status: input.status === 'completed' ? 'COMPLETED' : 'REMAINING',
-    occursWithin: input.occursWithin ?? taskOccursWithin(),
-    includeUnscheduled: true,
-    schedulingAspects: ['ALL'],
+    occursWithin: input.occursWithin,
+    includeUnscheduled: false,
     includeUnassigned: !assigneeId,
   };
   if (assigneeId) filter.assignedTo = [assigneeId];
   return filter;
+}
+
+/** Unscheduled tasks. No status: REMAINING dropped them on live data. */
+export function buildUnscheduledTaskFilter(input: {
+  assigneeId?: string | null;
+  occursWithin: TaskListOccursWithin;
+  ignoreAssignee?: boolean;
+}): TaskListFilter {
+  const assigneeId = input.ignoreAssignee ? '' : input.assigneeId?.trim() || '';
+  const filter: TaskListFilter = {
+    scheduleItemType: 'BASIC_TASK',
+    occursWithin: input.occursWithin,
+    includeUnscheduled: true,
+    schedulingAspects: ['UNSCHEDULED'],
+    includeUnassigned: !assigneeId,
+  };
+  if (assigneeId) filter.assignedTo = [assigneeId];
+  return filter;
+}
+
+/**
+ * Last probe when UNSCHEDULED kept nothing. ALL previously failed live when
+ * status was REMAINING, so this call omits status and omits assignedTo.
+ */
+export function buildUnscheduledAllFilter(input: { occursWithin: TaskListOccursWithin }): TaskListFilter {
+  return {
+    scheduleItemType: 'BASIC_TASK',
+    occursWithin: input.occursWithin,
+    includeUnscheduled: true,
+    schedulingAspects: ['ALL'],
+    includeUnassigned: true,
+  };
 }
 
 function nullableString(value: unknown): string | null {
@@ -329,56 +418,177 @@ function summarizeTask(node: RawTaskNode | null | undefined): JobberTaskSummary 
   };
 }
 
-function matchesAssignee(node: RawTaskNode, assigneeId: string | null): boolean {
-  if (!assigneeId) return true;
+function acceptAssignee(node: RawTaskNode, assigneeId: string | null, mode: AssigneeMode): boolean {
+  if (mode === 'none' || !assigneeId) return true;
   const assignees = summarizeAssignees(node);
-  if (assignees.some((assignee) => assignee.id === assigneeId)) return true;
-  return node.assignedUsers?.pageInfo?.hasNextPage === true;
+  const maybeBeyondPage = node.assignedUsers?.pageInfo?.hasNextPage === true;
+  if (mode === 'server') {
+    if (assignees.length === 0) return true;
+    return assignees.some((assignee) => assignee.id === assigneeId) || maybeBeyondPage;
+  }
+  return assignees.some((assignee) => assignee.id === assigneeId) || maybeBeyondPage;
 }
 
 function matchesStatus(task: JobberTaskSummary, status: TaskListStatus): boolean {
   return status === 'completed' ? task.isComplete : !task.isComplete;
 }
 
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isHardStopError(message: string): boolean {
+  return /unauthorized|unauthenticated|invalid token|HTTP 401|throttl/i.test(message);
+}
+
+function reportFor(name: TaskListQueryName, filter: TaskListFilter, windowIndex: number | null): TaskListQueryReport {
+  return {
+    name,
+    windowIndex,
+    occursWithin: filter.occursWithin,
+    includeUnscheduled: filter.includeUnscheduled,
+    includeUnassigned: filter.includeUnassigned,
+    schedulingAspects: filter.schedulingAspects ? [...filter.schedulingAspects] : null,
+    status: filter.status ?? null,
+    assignedTo: filter.assignedTo ? [...filter.assignedTo] : null,
+    fetched: 0,
+    kept: 0,
+    error: null,
+  };
+}
+
+function coverageFrom(primary: TaskListOccursWithin, queries: TaskListQueryReport[], datedWindows: number): TaskListCoverage {
+  const dated = queries.filter((query) => query.name === 'dated');
+  const oldest = dated.length > 0 ? dated[dated.length - 1].occursWithin.startAt : primary.startAt;
+  return {
+    startAt: oldest,
+    endAt: primary.endAt,
+    datedWindows,
+    datedWindowsRun: dated.length,
+  };
+}
+
 export async function listTasks(input: ListTasksInput = {}, deps?: JobberDeps): Promise<ListTasksResult> {
   const status = normalizeTaskStatus(input.status);
   const limit = taskLimit(input.limit);
   const assigneeId = input.assigneeId?.trim() || null;
-  const filter = buildTaskListFilter({ status, assigneeId });
+  const windows = taskOccursWindows();
+  const primary = windows[0];
   const tasks: JobberTaskSummary[] = [];
-  let after: string | null = null;
+  const seen = new Set<string>();
+  const queries: TaskListQueryReport[] = [];
   let truncated = false;
+  let anySuccess = false;
+  let firstError: string | null = null;
+  let hardStop = false;
 
-  for (let page = 0; page < LIST_TASKS_MAX_PAGES; page += 1) {
-    const result = await graphql(
-      LIST_TASKS_QUERY,
-      { first: LIST_TASKS_PAGE_SIZE, after, filter },
-      deps
+  const runFilter = async (
+    name: TaskListQueryName,
+    filter: TaskListFilter,
+    windowIndex: number | null,
+    assigneeMode: AssigneeMode,
+    pageSize: number
+  ): Promise<void> => {
+    const report = reportFor(name, filter, windowIndex);
+    queries.push(report);
+    if (hardStop || tasks.length >= limit) return;
+    let after: string | null = null;
+    try {
+      for (let page = 0; page < LIST_TASKS_MAX_PAGES; page += 1) {
+        const result = await graphql(LIST_TASKS_QUERY, { first: pageSize, after, filter }, deps);
+        assertNoJobberErrors(result, 'scheduledItems');
+        anySuccess = true;
+        const connection = result.data?.scheduledItems as TaskConnection | undefined;
+        const nodes = connection?.nodes ?? [];
+        report.fetched += nodes.length;
+        for (const node of nodes) {
+          if (!node) continue;
+          if (!acceptAssignee(node, assigneeId, assigneeMode)) continue;
+          const summary = summarizeTask(node);
+          if (!summary || !matchesStatus(summary, status)) continue;
+          if (seen.has(summary.id)) continue;
+          if (tasks.length >= limit) {
+            truncated = true;
+            return;
+          }
+          seen.add(summary.id);
+          tasks.push(summary);
+          report.kept += 1;
+        }
+        const pageInfo = connection?.pageInfo;
+        const hasNext = Boolean(pageInfo?.hasNextPage && pageInfo.endCursor);
+        if (tasks.length >= limit) {
+          if (hasNext) truncated = true;
+          return;
+        }
+        if (!hasNext) return;
+        if (page === LIST_TASKS_MAX_PAGES - 1) {
+          truncated = true;
+          return;
+        }
+        after = pageInfo?.endCursor ?? null;
+      }
+    } catch (error) {
+      report.error = errorMessage(error);
+      if (!firstError) firstError = report.error;
+      if (isHardStopError(report.error)) hardStop = true;
+      truncated = true;
+    }
+  };
+
+  await runFilter(
+    'unscheduled',
+    buildUnscheduledTaskFilter({ assigneeId, occursWithin: primary }),
+    null,
+    assigneeId ? 'server' : 'none',
+    LIST_TASKS_UNSCHEDULED_PAGE_SIZE
+  );
+
+  const firstUnscheduled = queries[0];
+  if (
+    assigneeId &&
+    !hardStop &&
+    tasks.length < limit &&
+    firstUnscheduled &&
+    (firstUnscheduled.error || firstUnscheduled.kept === 0)
+  ) {
+    await runFilter(
+      'unscheduled-any-assignee',
+      buildUnscheduledTaskFilter({ assigneeId, occursWithin: primary, ignoreAssignee: true }),
+      null,
+      'local',
+      LIST_TASKS_UNSCHEDULED_PAGE_SIZE
     );
-    assertNoJobberErrors(result, 'scheduledItems');
-    const connection = result.data?.scheduledItems as TaskConnection | undefined;
-    const nodes = connection?.nodes ?? [];
-    let consumed = 0;
-    for (const node of nodes) {
-      consumed += 1;
-      if (!node || !matchesAssignee(node, assigneeId)) continue;
-      const summary = summarizeTask(node);
-      if (!summary || !matchesStatus(summary, status)) continue;
-      tasks.push(summary);
-      if (tasks.length >= limit) break;
-    }
-    const pageInfo = connection?.pageInfo;
-    const hasNext = Boolean(pageInfo?.hasNextPage && pageInfo.endCursor);
-    if (tasks.length >= limit) {
-      truncated = consumed < nodes.length || hasNext;
-      break;
-    }
-    if (!hasNext) {
-      truncated = false;
-      break;
-    }
-    after = pageInfo?.endCursor ?? null;
-    if (page === LIST_TASKS_MAX_PAGES - 1) truncated = true;
+  }
+
+  const unscheduledKept = queries
+    .filter((query) => query.name === 'unscheduled' || query.name === 'unscheduled-any-assignee')
+    .reduce((sum, query) => sum + query.kept, 0);
+  if (unscheduledKept === 0 && !hardStop && tasks.length < limit) {
+    await runFilter(
+      'unscheduled-all',
+      buildUnscheduledAllFilter({ occursWithin: primary }),
+      null,
+      assigneeId ? 'local' : 'none',
+      LIST_TASKS_UNSCHEDULED_PAGE_SIZE
+    );
+  }
+
+  let datedWindowsRun = 0;
+  for (let index = 0; index < windows.length && tasks.length < limit && !hardStop; index += 1) {
+    datedWindowsRun += 1;
+    await runFilter(
+      'dated',
+      buildDatedTaskFilter({ status, assigneeId, occursWithin: windows[index] }),
+      index,
+      assigneeId ? 'server' : 'none',
+      LIST_TASKS_PAGE_SIZE
+    );
+  }
+  if (datedWindowsRun < windows.length) truncated = true;
+
+  if (!anySuccess) {
+    throw new Error(firstError || 'scheduledItems failed');
   }
 
   return {
@@ -386,6 +596,8 @@ export async function listTasks(input: ListTasksInput = {}, deps?: JobberDeps): 
     truncated,
     status,
     assigneeId,
-    occursWithin: filter.occursWithin,
+    occursWithin: primary,
+    covered: coverageFrom(primary, queries, windows.length),
+    queries,
   };
 }
