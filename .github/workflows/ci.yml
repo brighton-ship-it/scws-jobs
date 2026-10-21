@@ -1,0 +1,21 @@
+name: CI
+
+# a483d96 had no check runs. This repo had no Actions workflow; Vercel only
+# posts a commit status, which is not a check run. pull_request creates one.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test

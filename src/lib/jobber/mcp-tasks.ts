@@ -14,9 +14,17 @@
  *   returns ScheduledItemInterfaceConnection. Task implements that interface.
  *   scheduleItemType BASIC_TASK is the task type (VISIT, EVENT, ASSESSMENT
  *   are the others).
- * - occursWithin: DateRange! { startAt, endAt } is required. The window below
- *   is that required argument, not a business filter. includeUnscheduled is
- *   sent true so tasks with no start/end are not dropped.
+ * - occursWithin: DateRange! { startAt, endAt } is required, and Jobber
+ *   rejects a span of 1.5 years or more ("Requested time range must be less
+ *   than 1.5 years"). The window is today minus 1 year through today plus
+ *   6 months, shortened so the span stays under that limit.
+ * - Unscheduled tasks have null startAt and endAt, so the date window alone
+ *   does not include them. There is no other Task connection. The filter
+ *   fields that do are includeUnscheduled (default false) and
+ *   schedulingAspects. ALL is the aspect that returns items with no start
+ *   and no end as well as items inside the window; includeUnscheduled: false
+ *   is what turns the undated half off. This list sends both
+ *   includeUnscheduled: true and schedulingAspects: [ALL].
  * - assignedTo: [EncodedId!] filters by user on Jobber's side. Results are
  *   checked again after the fetch.
  * - status: ScheduledItemStatus is ACTIVE, COMPLETED, OVERDUE, or REMAINING.
@@ -46,14 +54,28 @@ export const LIST_TASKS_PAGE_SIZE = 25;
 export const LIST_TASKS_MAX_PAGES = 4;
 export const TASK_ASSIGNEE_PAGE_SIZE = 10;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 /**
- * ScheduledItemsFilterAttributes.occursWithin is non-null. This span is only
- * there to satisfy that argument. includeUnscheduled covers undated tasks.
+ * Jobber rejects occursWithin when end - start is 1.5 years or more.
+ * 1.5 * 365 days, minus one day, stays under both a 365-day year and a
+ * 365.25-day year, including when the past year contains Feb 29.
  */
-export const TASK_LIST_OCCURS_WITHIN = {
-  startAt: '2000-01-01T00:00:00Z',
-  endAt: '2100-01-01T00:00:00Z',
-} as const;
+export const TASK_LIST_MAX_RANGE_MS = Math.floor(1.5 * 365 * DAY_MS) - DAY_MS;
+
+export function taskWindowRangeMs(window: TaskListOccursWithin): number {
+  return Date.parse(window.endAt) - Date.parse(window.startAt);
+}
+
+/** Today minus 1 year through today plus 6 months, clamped under 1.5 years. */
+export function taskOccursWithin(now: Date = new Date()): TaskListOccursWithin {
+  const start = new Date(now.getTime());
+  start.setUTCFullYear(start.getUTCFullYear() - 1);
+  const end = new Date(now.getTime());
+  end.setUTCMonth(end.getUTCMonth() + 6);
+  const maxEnd = start.getTime() + TASK_LIST_MAX_RANGE_MS;
+  if (end.getTime() > maxEnd) end.setTime(maxEnd);
+  return { startAt: start.toISOString(), endAt: end.toISOString() };
+}
 
 const READ_ONLY_TASK_QUERY = /\bmutation\b|taskCreate|taskEdit|taskDelete/i;
 
@@ -105,6 +127,7 @@ export type TaskListFilter = {
   status: 'REMAINING' | 'COMPLETED';
   occursWithin: TaskListOccursWithin;
   includeUnscheduled: true;
+  schedulingAspects: ['ALL'];
   includeUnassigned: boolean;
   assignedTo?: [string];
 };
@@ -236,8 +259,9 @@ export function buildTaskListFilter(input: {
   const filter: TaskListFilter = {
     scheduleItemType: 'BASIC_TASK',
     status: input.status === 'completed' ? 'COMPLETED' : 'REMAINING',
-    occursWithin: input.occursWithin ?? TASK_LIST_OCCURS_WITHIN,
+    occursWithin: input.occursWithin ?? taskOccursWithin(),
     includeUnscheduled: true,
+    schedulingAspects: ['ALL'],
     includeUnassigned: !assigneeId,
   };
   if (assigneeId) filter.assignedTo = [assigneeId];
