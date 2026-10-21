@@ -78,9 +78,9 @@ if (process.env.VERCEL) {
       };
       if (loginId) headers['login-customer-id'] = loginId;
       const queries = [
-        ['action', `SELECT conversion_action.id, conversion_action.name, conversion_action.status, conversion_action.type, conversion_action.category, conversion_action.origin, conversion_action.primary_for_goal, conversion_action.include_in_conversions_metric, conversion_action.click_through_lookback_window_days, conversion_action.counting_type, conversion_action.value_settings.always_use_default_value FROM conversion_action WHERE conversion_action.id = 7833699992`],
-        ['by_click', `SELECT segments.date, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM customer WHERE segments.date BETWEEN '2026-01-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7833699992'`],
-        ['by_conv_time', `SELECT segments.date, metrics.all_conversions_by_conversion_date, metrics.all_conversions_value_by_conversion_date, metrics.conversions_by_conversion_date, metrics.conversions_value_by_conversion_date FROM customer WHERE segments.date BETWEEN '2026-09-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7833699992'`],
+        ['won_by_click', `SELECT segments.conversion_action, segments.date, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM customer WHERE segments.date BETWEEN '2026-01-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7833699992'`],
+        ['won_by_conv_time', `SELECT segments.conversion_action, segments.date, metrics.all_conversions_by_conversion_date, metrics.all_conversions_value_by_conversion_date FROM customer WHERE segments.date BETWEEN '2026-09-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7833699992'`],
+        ['form_by_click', `SELECT segments.conversion_action_name, metrics.all_conversions, metrics.all_conversions_value FROM customer WHERE segments.date BETWEEN '2026-09-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7735504479'`],
       ];
       for (const [label, query] of queries) {
         const res = await fetch(`https://googleads.googleapis.com/v25/customers/${customerId}/googleAds:search`, {
