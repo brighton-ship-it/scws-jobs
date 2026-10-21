@@ -16,6 +16,7 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | Search / get / create clients (deduped by email or full name) | Send quote to customer |
 | Add a property to a client | Approve / convert quote |
 | List users (ids for assignment) | Delete a sent, approved, converted, or archived quote |
+| List tasks (`list_tasks`: open or completed, optional assignee) | Create, edit, or delete a task (`taskCreate`, `taskEdit`, `taskDelete`) |
 | Search / get quotes | Payroll |
 | Create unsent quote draft | Invoice send, mark-sent, or record payment |
 | Update unsent draft (title, message, add/edit/delete lines, taxRateId, salesperson) | Editing or deleting lines on a sent, approved, or converted quote |
@@ -94,6 +95,7 @@ MCP server version **1.11.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version sta
 - `create_client` — `clientCreate`. firstName, lastName, optional companyName, emails, phones, billingAddress, and an initial property. Same email or full name returns the matches and does not create unless `force=true`. `receivesReminders`, follow-up flags, and `smsAllowed` are false
 - `create_property` — `propertyCreate`. `PropertyCreateInput.properties[].address` (street1, city, province, postalCode, country default `US`)
 - `list_users` — team members (`id`, name, email, status) so assignee ids can be chosen by name, for example Brighton Scala
+- `list_tasks` — read-only. `scheduledItems` filtered to `BASIC_TASK`. Optional `assigneeId` (`assignedTo`) and `status` `open` (default, Jobber `REMAINING`) or `completed` (`COMPLETED`). Returns id, title, description (`instructions`; Task has no notes, color, or label), client, property address, start and end, completed status, and assignees. `occursWithin` is required by Jobber and is sent as 2000-01-01 through 2100-01-01, with unscheduled tasks included
 - `search_quotes` — number / title / client / address, optional status. Each quote includes `salesperson` (`id`, `name`)
 - `get_quote` — one quote + line items + salesperson (`id`, `name`). Each line includes `optional` and `recommended`
 - `create_quote_draft` — unsent draft only. Each line may set `optional`, `recommended`, and `productOrServiceId`. `taxRateId` comes from `list_tax_rates`. `salespersonId` defaults to Brighton Scala. `findBrightonSalespersonId` queries `users(first: 50) { nodes { id name { full first last } email { raw } } }`, which matches `User.name` (`Name`) and `User.email` (`UserEmail.raw`) on the 2025-01-20 schema. It returns a string (env override, matched user, or Brighton's known id) and does not return null

@@ -48,6 +48,7 @@ import {
   parseRemoveLineItemIds,
 } from '../jobber/mcp-invoice-writes.ts';
 import { createClient, createProperty, listUsers, parseCreateClientArgs, parsePropertyAddressArgs } from '../jobber/mcp-client-writes.ts';
+import { listTasks } from '../jobber/mcp-tasks.ts';
 import {
   closeJob,
   createJob,
@@ -140,6 +141,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'Customer-facing title/message must not include GP FLAG math.',
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
   'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
+  'list_tasks is read-only. It lists BASIC_TASK scheduled items. status is open (default) or completed. assigneeId is a user id from list_users. It does not create, edit, or delete a task.',
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, visible, and description fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
@@ -320,6 +322,23 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
       additionalProperties: false,
       properties: {
         query: { type: 'string', description: 'Optional name or email fragment' },
+      },
+    },
+  },
+  {
+    name: 'list_tasks',
+    description:
+      'List Jobber tasks (scheduledItems where scheduleItemType is BASIC_TASK). Optional assigneeId is a user id from list_users and is sent as filter.assignedTo. status is open (default, Jobber REMAINING) or completed (Jobber COMPLETED). Returns id, title, description (Task.instructions; Task has no notes, color, or label field), client, property, startAt, endAt, isComplete, and assignees. occursWithin is required by Jobber and is sent as 2000-01-01 through 2100-01-01, with unscheduled tasks included. Read-only. Does not create, edit, or delete a task.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        assigneeId: {
+          type: 'string',
+          description: 'Optional user id from list_users. Filtered with scheduledItems filter.assignedTo.',
+        },
+        status: { type: 'string', description: 'open (default) or completed.' },
+        limit: { type: 'number', description: 'Max tasks to return. Default 25, max 50.' },
       },
     },
   },
@@ -1363,6 +1382,27 @@ export async function callJobberMcpTool(
           truncated: listed.truncated,
           users: listed.users,
           note: 'Read-only. Pass users[].id as assigneeIds. Prefer status ACTIVATED. This does not invite or email anyone.',
+        });
+      }
+      case 'list_tasks': {
+        const listed = await listTasks(
+          {
+            assigneeId: optionalString(args, 'assigneeId'),
+            status: optionalString(args, 'status'),
+            limit: optionalNumber(args, 'limit'),
+          },
+          deps
+        );
+        return textResult({
+          assigneeId: listed.assigneeId,
+          status: listed.status,
+          count: listed.tasks.length,
+          truncated: listed.truncated,
+          tasks: listed.tasks,
+          occursWithin: listed.occursWithin,
+          note: listed.truncated
+            ? 'Read-only. More tasks exist than this response includes. Task has no color or label field. Nothing was created, edited, or deleted.'
+            : 'Read-only. Task has no color or label field. Nothing was created, edited, or deleted.',
         });
       }
       case 'search_quotes': {

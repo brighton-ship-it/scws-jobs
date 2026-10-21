@@ -8,6 +8,7 @@ import {
   callJobberMcpTool,
 } from './jobber-tools.ts';
 import { handleJobberMcpRequest } from './jobber-http.ts';
+import { JOBBER_MCP_READONLY_TOOLS } from './jobber-auth.ts';
 
 const CLIENT = {
   id: 'client-1',
@@ -100,6 +101,19 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.match(deleteDraftTool?.description || '', /quoteDelete/);
     assert.match(deleteDraftTool?.description || '', /quoteArchive/);
     assert.ok(names.includes('list_notes'));
+    assert.ok(names.includes('list_tasks'));
+    assert.ok(JOBBER_MCP_READONLY_TOOLS.includes('list_tasks'));
+    const tasksTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'list_tasks');
+    const tasksSchema = tasksTool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, { type?: string }>;
+    };
+    assert.equal(tasksSchema?.required, undefined);
+    assert.equal(tasksSchema?.properties?.assigneeId?.type, 'string');
+    assert.equal(tasksSchema?.properties?.status?.type, 'string');
+    assert.equal(tasksSchema?.properties?.limit?.type, 'number');
+    assert.match(tasksTool?.description || '', /Read-only/);
+    assert.match(tasksTool?.description || '', /BASIC_TASK/);
     const notesTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'list_notes');
     const notesSchema = notesTool?.inputSchema as { properties?: Record<string, { type?: string }> };
     assert.equal(notesSchema?.properties?.jobNumber?.type, 'string');
@@ -1732,5 +1746,77 @@ describe('list_notes and draft line edits through the tool handler', () => {
     assert.equal(payload.notified, false);
     assert.equal(bodies.some((body) => /transitionQuoteTo/.test(body)), false);
     assert.equal(bodies.some((body) => body.includes('quoteArchive')), false);
+  });
+
+  it('lists tasks read-only with count, truncated, and a Read-only note', async () => {
+    const { fetchImpl, bodies } = mockJobberFetch([
+      (query) =>
+        query.includes('McpListTasks')
+          ? jsonResponse({
+              data: {
+                scheduledItems: {
+                  nodes: [
+                    {
+                      __typename: 'Task',
+                      id: 'task-1',
+                      title: 'Call suppliers',
+                      instructions: 'Ask about the pump seal.',
+                      isComplete: false,
+                      startAt: '2026-10-22T16:00:00Z',
+                      endAt: '2026-10-22T17:00:00Z',
+                      client: { id: 'client-1', name: 'Pat Example' },
+                      property: {
+                        id: 'prop-1',
+                        address: { street1: '100 Oak Rd', city: 'Ramona', province: 'CA', postalCode: '92065' },
+                      },
+                      assignedUsers: {
+                        nodes: [{ id: 'user-1', name: { full: 'Brighton Scala' } }],
+                        pageInfo: { hasNextPage: false },
+                      },
+                    },
+                    {
+                      __typename: 'Task',
+                      id: 'task-2',
+                      title: 'Second',
+                      instructions: 'Later',
+                      isComplete: false,
+                      assignedUsers: {
+                        nodes: [{ id: 'user-1', name: { full: 'Brighton Scala' } }],
+                        pageInfo: { hasNextPage: false },
+                      },
+                    },
+                  ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            })
+          : null,
+    ]);
+    const result = await callJobberMcpTool(
+      'list_tasks',
+      { assigneeId: 'user-1', status: 'open', limit: 1 },
+      { fetchImpl, token: 'test' }
+    );
+    assert.equal(result.isError, undefined);
+    const payload = JSON.parse(result.content[0].text) as {
+      count: number;
+      truncated: boolean;
+      status: string;
+      note: string;
+      tasks: Array<{ id: string; description: string | null; color: null; label: null }>;
+    };
+    assert.equal(payload.count, 1);
+    assert.equal(payload.truncated, true);
+    assert.equal(payload.status, 'open');
+    assert.match(payload.note, /Read-only/);
+    assert.equal(payload.tasks[0].id, 'task-1');
+    assert.equal(payload.tasks[0].description, 'Ask about the pump seal.');
+    assert.equal(payload.tasks[0].color, null);
+    assert.equal(payload.tasks[0].label, null);
+    const body = bodies.find((entry) => entry.includes('McpListTasks')) || '';
+    assert.equal(/\bmutation\b|taskCreate|taskEdit|taskDelete/.test(body), false);
+    const parsed = JSON.parse(body) as { variables: { filter: { assignedTo: string[]; status: string } } };
+    assert.deepEqual(parsed.variables.filter.assignedTo, ['user-1']);
+    assert.equal(parsed.variables.filter.status, 'REMAINING');
   });
 });

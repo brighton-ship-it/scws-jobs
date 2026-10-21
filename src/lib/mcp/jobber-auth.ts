@@ -22,7 +22,7 @@ export const JOBBER_MCP_API_KEYS_ENV = 'JOBBER_MCP_API_KEYS';
  * Meant for CI (e.g. scws-website Recent Work) so no Jobber OAuth leaves this app.
  */
 export const JOBBER_MCP_READONLY_KEYS_ENV = 'JOBBER_MCP_READONLY_KEYS';
-export const JOBBER_MCP_READONLY_TOOLS: readonly string[] = ['search_jobs', 'get_job'];
+export const JOBBER_MCP_READONLY_TOOLS: readonly string[] = ['search_jobs', 'get_job', 'list_tasks'];
 
 export type JobberMcpNamedKey = {
   name: string;
