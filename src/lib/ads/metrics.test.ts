@@ -5,7 +5,7 @@ import type { CostJob, TimeEntry } from './metrics-data.ts';
 
 const NOW = new Date('2026-10-21T19:00:00Z'); // Oct 21, 2026 afternoon Pacific
 
-function base(costs: CostJob[], extra: { marginSince?: string | null; time?: { rows: TimeEntry[] | null; error?: string }; customFieldsError?: string } = {}) {
+function base(costs: CostJob[], extra: { marginSince?: string | null; callbackSince?: string | null; time?: { rows: TimeEntry[] | null; error?: string }; customFieldsError?: string } = {}) {
   return {
     now: NOW,
     histFrom: new Date('2024-10-21T00:00:00Z'),
@@ -17,6 +17,7 @@ function base(costs: CostJob[], extra: { marginSince?: string | null; time?: { r
     costs: { rows: costs, customFieldsError: extra.customFieldsError },
     costFrom: new Date('2026-07-23T07:00:00Z'),
     marginSince: extra.marginSince,
+    callbackSince: extra.callbackSince,
     time: extra.time ?? { rows: [] as TimeEntry[] },
     timeFrom: new Date('2026-09-21T07:00:00Z'),
     qboConnected: false,
@@ -72,10 +73,14 @@ test('gross margin drops implausible Jobber unit costs and still reports a margi
   // 80 pump jobs at $2,400 profit (60%) and 40 drilling jobs at $6,000 (30%).
   assert.equal(margin.value, '$3,600 · 38.6%');
   assert.match(margin.sub ?? '', /120 jobs in the average/);
-  assert.match(margin.sub ?? '', /110 excluded/);
+  assert.match(margin.sub ?? '', /101 excluded/);
+  assert.match(margin.sub ?? '', /9 warranty \/ \$0 revenue \(\$450,000 cost/);
   assert.equal(margin.rows?.find((row) => row.label === 'Pump & service')?.value, '$2,400 · 60%');
   assert.equal(margin.rows?.find((row) => row.label === 'Drilling')?.value, '$6,000 · 30%');
-  assert.equal(margin.rows?.find((row) => row.label === 'Excluded')?.value, '110');
+  assert.equal(margin.rows?.find((row) => row.label === 'Excluded')?.value, '101');
+  const warranty = margin.rows?.find((row) => row.label === 'Warranty / $0 revenue');
+  assert.equal(warranty?.value, '9');
+  assert.match(warranty?.note ?? '', /\$450,000/);
   assert.match(margin.hover ?? '', /#2923/);
   assert.match(margin.hover ?? '', /\$139,251/);
   assert.match(margin.hover ?? '', /\$8,001/);
@@ -92,7 +97,10 @@ test('cost equal to 2× revenue stays in; a dollar over, a $0-revenue cost, and 
   ];
   const margin = card(buildMetrics(base(rows)), 'margin');
   assert.equal(margin.value, '$385 · 38.5%');
-  assert.equal(margin.rows?.find((row) => row.label === 'Excluded')?.value, '2');
+  assert.equal(margin.rows?.find((row) => row.label === 'Excluded')?.value, '1');
+  const warranty = margin.rows?.find((row) => row.label === 'Warranty / $0 revenue');
+  assert.equal(warranty?.value, '1');
+  assert.match(warranty?.note ?? '', /\$9,000/);
   assert.match(margin.sub ?? '', /13 jobs in the average/);
 });
 
@@ -146,14 +154,16 @@ test('timesheet permission is a visible card state, not a blank value', () => {
   assert.equal(util.value, '50%');
 });
 
+const AFTER_CALLBACK = '2026-10-21T04:00:00Z'; // Oct 20, 2026 21:00 Pacific, after the field existed
+
 test('first-time fix uses the Callback true/false custom field when jobs include it', () => {
   const fields = (value: boolean | null): CostJob['customFields'] => [{ label: ' Callback ', valueTrueFalse: value }];
   const rows = [
-    ...repeat(8, (i) => job({ rev: 200, cost: 80, title: 'Service Call - no water', jobNumber: 10 + i, customFields: fields(false) })),
-    ...repeat(2, (i) => job({ rev: 200, cost: 80, title: 'Service Call - return', jobNumber: 20 + i, customFields: fields(true) })),
-    job({ rev: 4000, cost: 1600, title: 'Replace pump', jobNumber: 30, customFields: fields(false) }),
-    job({ rev: 20000, cost: 14000, title: 'New Well Drilling', jobNumber: 31, customFields: [{ label: 'Callback', valueTrueFalse: true }] }),
-    job({ rev: 100, cost: 50, title: 'Service Call - training', jobNumber: 32, customFields: fields(true) }),
+    ...repeat(8, (i) => job({ rev: 200, cost: 80, title: 'Service Call - no water', jobNumber: 10 + i, completedAt: AFTER_CALLBACK, customFields: fields(false) })),
+    ...repeat(2, (i) => job({ rev: 200, cost: 80, title: 'Service Call - return', jobNumber: 20 + i, completedAt: AFTER_CALLBACK, customFields: fields(true) })),
+    job({ rev: 4000, cost: 1600, title: 'Replace pump', jobNumber: 30, completedAt: AFTER_CALLBACK, customFields: fields(false) }),
+    job({ rev: 20000, cost: 14000, title: 'New Well Drilling', jobNumber: 31, completedAt: AFTER_CALLBACK, customFields: [{ label: 'Callback', valueTrueFalse: true }] }),
+    job({ rev: 100, cost: 50, title: 'Service Call - training', jobNumber: 32, completedAt: AFTER_CALLBACK, customFields: fields(true) }),
   ];
   // 8 fixes + 2 service callbacks + 1 drilling callback. The training service call is internal. The pump job is not a callback.
   const ftf = card(buildMetrics(base(rows)), 'ftf');
@@ -177,4 +187,46 @@ test('first-time fix stays blank until custom fields are actually on the jobs', 
   assert.equal(failed.value, '—');
   assert.match(failed.needs ?? '', /CustomFieldTrueFalse/);
   assert.equal(card(buildMetrics(base(rows, { customFieldsError: failed.needs })), 'margin').needs, undefined);
+});
+
+test('first-time fix ignores jobs completed before the Callback field existed', () => {
+  const fields = (value: boolean): CostJob['customFields'] => [{ label: 'Callback', valueTrueFalse: value }];
+  const before = repeat(6, (i) => job({ rev: 200, cost: 80, title: 'Service Call - no water', jobNumber: i + 1, completedAt: '2026-10-15T18:00:00Z', customFields: fields(false) }));
+  const after = repeat(4, (i) => job({ rev: 200, cost: 80, title: 'Service Call - no water', jobNumber: 10 + i, completedAt: AFTER_CALLBACK, customFields: fields(false) }));
+  const pending = card(buildMetrics(base([...before, ...after])), 'ftf');
+  assert.equal(pending.value, 'n/a');
+  assert.doesNotMatch(pending.value, /%/);
+  assert.match(pending.sub ?? '', /4 service jobs since Oct 20, 2026/);
+  assert.match(pending.sub ?? '', /0 callbacks/);
+  assert.match(pending.sub ?? '', /6 earlier jobs not counted/);
+  assert.match(pending.needs ?? '', /100%/);
+
+  const tagged = job({ rev: 200, cost: 80, title: 'Service Call - return', jobNumber: 99, completedAt: '2026-10-21T05:00:00Z', customFields: fields(true) });
+  const rated = card(buildMetrics(base([...before, ...after, tagged])), 'ftf');
+  assert.equal(rated.value, '80%');
+  assert.match(rated.sub ?? '', /4 of 5 not marked Callback/);
+  assert.match(rated.sub ?? '', /6 earlier jobs not counted/);
+
+  const oldTrue = job({ rev: 200, cost: 80, title: 'Service Call - return', jobNumber: 50, completedAt: '2026-10-15T18:00:00Z', customFields: fields(true) });
+  const stillPending = card(buildMetrics(base([...after, oldTrue])), 'ftf');
+  assert.equal(stillPending.value, 'n/a');
+  assert.match(stillPending.sub ?? '', /0 callbacks/);
+  assert.match(stillPending.sub ?? '', /1 earlier job not counted/);
+});
+
+test('OPS_CALLBACK_SINCE includes earlier jobs, and a bad value keeps the default cutoff', () => {
+  const fields = (value: boolean): CostJob['customFields'] => [{ label: 'Callback', valueTrueFalse: value }];
+  const rows = [
+    job({ rev: 200, cost: 80, title: 'Service Call - no water', jobNumber: 1, completedAt: '2026-10-15T18:00:00Z', customFields: fields(false) }),
+    job({ rev: 200, cost: 80, title: 'Service Call - return', jobNumber: 2, completedAt: '2026-10-15T20:00:00Z', customFields: fields(true) }),
+  ];
+  const opened = card(buildMetrics(base(rows, { callbackSince: '2026-10-01' })), 'ftf');
+  assert.equal(opened.value, '50%');
+  const closed = card(buildMetrics(base(rows)), 'ftf');
+  assert.equal(closed.value, '—');
+  assert.match(closed.needs ?? '', /Oct 20, 2026|Callback field was added/);
+  const bad = card(buildMetrics(base(rows, { callbackSince: 'yesterday' })), 'ftf');
+  assert.equal(bad.value, '—');
+  assert.match(bad.needs ?? '', /yesterday/);
+  assert.match(bad.needs ?? '', /Oct 20, 2026/);
 });
