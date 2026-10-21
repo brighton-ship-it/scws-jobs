@@ -78,28 +78,17 @@ if (process.env.VERCEL) {
       };
       if (loginId) headers['login-customer-id'] = loginId;
       const queries = [
-        `SELECT customer.id, customer.conversion_tracking_setting.accepted_customer_data_terms, customer.conversion_tracking_setting.enhanced_conversions_for_leads_enabled, customer.conversion_tracking_setting.google_ads_conversion_customer FROM customer`,
-        `SELECT conversion_action.id, conversion_action.name, conversion_action.status, conversion_action.type, conversion_action.category, conversion_action.origin, conversion_action.primary_for_goal, conversion_action.include_in_conversions_metric, conversion_action.click_through_lookback_window_days, conversion_action.counting_type, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM conversion_action WHERE conversion_action.id = 7833699992 AND segments.date BETWEEN '2026-09-01' AND '2026-10-20'`,
-        `SELECT conversion_action.id, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM conversion_action WHERE conversion_action.id = 7833699992 AND segments.date BETWEEN '2025-01-01' AND '2026-10-20'`,
-        `SELECT offline_conversion_upload_conversion_action_summary.conversion_action_id, offline_conversion_upload_conversion_action_summary.client, offline_conversion_upload_conversion_action_summary.status, offline_conversion_upload_conversion_action_summary.alerts, offline_conversion_upload_conversion_action_summary.total_event_count, offline_conversion_upload_conversion_action_summary.successful_event_count, offline_conversion_upload_conversion_action_summary.pending_event_count, offline_conversion_upload_conversion_action_summary.last_upload_date_time, offline_conversion_upload_conversion_action_summary.daily_summaries FROM offline_conversion_upload_conversion_action_summary WHERE offline_conversion_upload_conversion_action_summary.conversion_action_id = 7833699992`,
-        `SELECT offline_conversion_upload_client_summary.client, offline_conversion_upload_client_summary.status, offline_conversion_upload_client_summary.alerts, offline_conversion_upload_client_summary.total_event_count, offline_conversion_upload_client_summary.successful_event_count, offline_conversion_upload_client_summary.pending_event_count, offline_conversion_upload_client_summary.last_upload_date_time FROM offline_conversion_upload_client_summary`,
+        ['action', `SELECT conversion_action.id, conversion_action.name, conversion_action.status, conversion_action.type, conversion_action.category, conversion_action.origin, conversion_action.primary_for_goal, conversion_action.include_in_conversions_metric, conversion_action.click_through_lookback_window_days, conversion_action.counting_type, conversion_action.value_settings.always_use_default_value FROM conversion_action WHERE conversion_action.id = 7833699992`],
+        ['by_click', `SELECT segments.date, metrics.conversions, metrics.conversions_value, metrics.all_conversions, metrics.all_conversions_value FROM customer WHERE segments.date BETWEEN '2026-01-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7833699992'`],
+        ['by_conv_time', `SELECT segments.date, metrics.all_conversions_by_conversion_date, metrics.all_conversions_value_by_conversion_date, metrics.conversions_by_conversion_date, metrics.conversions_value_by_conversion_date FROM customer WHERE segments.date BETWEEN '2026-09-01' AND '2026-10-20' AND segments.conversion_action = 'customers/9314944293/conversionActions/7833699992'`],
       ];
-      for (const query of queries) {
+      for (const [label, query] of queries) {
         const res = await fetch(`https://googleads.googleapis.com/v25/customers/${customerId}/googleAds:search`, {
           method: 'POST',
           headers,
           body: JSON.stringify({ query }),
         });
         const body = await res.json().catch(() => null);
-        const label = query.includes('offline_conversion_upload_conversion_action')
-          ? 'action_summary'
-          : query.includes('offline_conversion_upload_client')
-            ? 'client_summary'
-            : query.includes('conversion_tracking_setting')
-              ? 'customer'
-              : query.includes('2025-01-01')
-                ? 'metrics_wide'
-                : 'metrics_window';
         console.log('ADS_DIAG', label, res.status, redact(JSON.stringify(body)));
       }
     }
