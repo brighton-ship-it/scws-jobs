@@ -1,7 +1,8 @@
 /** Jobber loaders for /ops/metrics. Each loader fails independently ({ rows: null, error }) and is cached 30 min. */
 import { unstable_cache } from 'next/cache';
 import { assertNoJobberErrors, jobberGraphql } from '../jobber/client.ts';
-import { mirrorInvoices, mirrorJobs, mirrorTimesheets } from '../jobber-mirror/read.ts';
+import { JOB_TRUE_FALSE_FIELDS, customFieldSelectionRejected, type JobTrueFalseField } from '../jobber/job-custom-fields.ts';
+import { jobCustomFieldsMirrorError, mirrorInvoices, mirrorJobs, mirrorTimesheets, timesheetMirrorBlock } from '../jobber-mirror/read.ts';
 import { isInternalJob } from './internal-job.ts';
 const fromMirror = async <T>(m: () => Promise<any[] | null>): Promise<Loaded<T> | null> => { try { const r = await m(); return r ? { rows: r as T[] } : null; } catch { return null; } };
 
@@ -74,13 +75,32 @@ export async function loadHistoryInvoices(fromIso: string, toIso: string): Promi
   return { rows, truncated: parts.some((p) => p.truncated) };
 }
 
-export interface CostJob { id: string; jobNumber?: number | null; title?: string | null; completedAt?: string | null; client?: { name?: string | null; companyName?: string | null } | null; jobCosting?: { totalRevenue?: number | null; totalCost?: number | null; lineItemCost?: number | null; labourCost?: number | null; expenseCost?: number | null; profitAmount?: number | null } | null }
-const COST_JOBS = `query MetricsJobCosts($first: Int!, $after: String, $filter: JobFilterAttributes) {
+export interface CostJob { id: string; jobNumber?: number | null; title?: string | null; completedAt?: string | null; client?: { name?: string | null; companyName?: string | null } | null; jobCosting?: { totalRevenue?: number | null; totalCost?: number | null; lineItemCost?: number | null; labourCost?: number | null; expenseCost?: number | null; profitAmount?: number | null } | null; customFields?: Array<JobTrueFalseField | null> | null }
+function costJobsQuery(includeCustomFields: boolean): string {
+  const custom = includeCustomFields ? ` ${JOB_TRUE_FALSE_FIELDS}` : '';
+  return `query MetricsJobCosts($first: Int!, $after: String, $filter: JobFilterAttributes) {
   jobs(first: $first, after: $after, filter: $filter) {
-    nodes { id jobNumber title completedAt client { name companyName } jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } }
+    nodes { id jobNumber title completedAt client { name companyName } jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount }${custom} }
     pageInfo { hasNextPage endCursor } } }`;
-export const loadCompletedJobCosts = async (from: string, to: string) => (await fromMirror<CostJob>(() => mirrorJobs('completed_at', from, to))) ??
-  paged<CostJob>(`cost|${from.slice(0, 10)}`, COST_JOBS, 'jobs', { filter: { completedAt: { after: from, before: to } } }, 20, 50);
+}
+/** Completed jobs with Jobber job costing. customFieldsError is set when Callback could not be read and costing was loaded without it. */
+export async function loadCompletedJobCosts(from: string, to: string): Promise<Loaded<CostJob> & { customFieldsError?: string }> {
+  const mirrored = await fromMirror<CostJob>(() => mirrorJobs('completed_at', from, to));
+  if (mirrored) {
+    const hasFields = mirrored.rows?.some((job) => Array.isArray(job.customFields));
+    if (!hasFields) {
+      const customFieldsError = await jobCustomFieldsMirrorError();
+      if (customFieldsError) return { ...mirrored, customFieldsError };
+    }
+    return mirrored;
+  }
+  const filter = { filter: { completedAt: { after: from, before: to } } };
+  const rich = await paged<CostJob>(`costcf|${from.slice(0, 10)}`, costJobsQuery(true), 'jobs', filter, 20, 50);
+  if (rich.rows || !customFieldSelectionRejected(rich.error)) return rich;
+  const plain = await paged<CostJob>(`costplain|${from.slice(0, 10)}`, costJobsQuery(false), 'jobs', filter, 20, 50);
+  if (!plain.rows) return plain;
+  return { ...plain, customFieldsError: rich.error };
+}
 
 export interface TimeEntry { id: string; startAt?: string | null; endAt?: string | null; finalDuration?: number | null; job?: { id?: string | null; title?: string | null; client?: { name?: string | null; companyName?: string | null } | null } | null; user?: { id?: string | null } | null }
 const TIMESHEETS = `query MetricsTime($first: Int!, $after: String, $filter: TimeSheetEntriesFilterAttributes) {
@@ -88,6 +108,8 @@ const TIMESHEETS = `query MetricsTime($first: Int!, $after: String, $filter: Tim
     nodes { id startAt endAt finalDuration job { id title client { name companyName } } user { id } }
     pageInfo { hasNextPage endCursor } } }`;
 export const loadTimesheets = async (from: string, to: string) => {
+  const blocked = await timesheetMirrorBlock();
+  if (blocked) return { rows: null, error: blocked };
   const mirrored = await fromMirror<TimeEntry>(() => mirrorTimesheets(from, to));
   if (mirrored) return mirrored;
   const live = await paged<TimeEntry>(`ts|${from.slice(0, 10)}`, TIMESHEETS, 'timeSheetEntries', { filter: { startAt: { after: from, before: to } } }, 20, 100);

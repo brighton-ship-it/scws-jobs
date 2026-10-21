@@ -1,11 +1,12 @@
 /** Pure builders for the /ops/metrics page. Never estimates: a metric without honest data returns value null + needs. */
 import { invoicePretaxUsd } from './invoice-value.ts';
 import { workCategory } from './work-category.ts';
-import { ptDateKey, type RoasView } from './call-dashboard.ts';
+import { ptDateKey, ptStartOfDay, type RoasView } from './call-dashboard.ts';
 import type { HistInvoice, CostJob, TimeEntry } from './metrics-data.ts';
 import type { WeeklyQuote } from './weekly-sales.ts';
 import { mergeFullHistory, summarize, nrrWindow, type QboHistory } from './ltv-full.ts';
 import { INTERNAL_EXCLUSION_NOTE, isInternalJob } from './internal-job.ts';
+import { callbackMarked } from '../jobber/job-custom-fields.ts';
 
 export interface MetricRow { label: string; value: string; note?: string; hover?: string }
 export interface MetricCard { id: string; title: string; value: string; sub?: string; rows?: MetricRow[]; measures: string; source: string; range: string; needs?: string; hover?: string; badge?: string }
@@ -13,6 +14,88 @@ export interface MetricCard { id: string; title: string; value: string; sub?: st
 const usd = (n: number) => `$${Math.round(n).toLocaleString('en-US')}`;
 const pct = (n: number) => `${Math.round(n * 1000) / 10}%`;
 const NA = '—';
+/** Whole-line costs typed into the per-unit field land above this multiple of revenue. Equal to 2× stays in. */
+export const MARGIN_IMPLAUSIBLE_COST_RATIO = 2;
+/** Shown on the card (not "—") so /ops/metrics keeps the utilization card on the page. */
+export const TIMESHEET_PERMISSION_STATE = 'Needs Jobber timesheet permission';
+export const TIMESHEET_PERMISSION_NEEDS = 'needs the Timesheets read scope on the SCWS Jobber app, then a re-authorization. Jobber hid TimeSheetEntry ("An object of type TimeSheetEntry was hidden due to permissions"). In the Jobber Developer Center, enable Timesheets read and have a Jobber admin re-authorize the app. The stored token does not pick up a new scope until that re-authorization. Do not refresh tokens from a laptop. Crews also need to clock in and out in Jobber.';
+
+export function timesheetPermissionDenied(error: string | null | undefined): boolean {
+  return /permission|TimeSheetEntry was hidden/i.test(error ?? '');
+}
+
+/** OPS_MARGIN_SINCE: YYYY-MM-DD is Pacific midnight. A full timestamp is used as an instant. */
+export function parseMarginSince(raw: string | null | undefined): { since: Date | null; invalid: string | null } {
+  const text = raw?.trim() ?? '';
+  if (!text) return { since: null, invalid: null };
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return { since: ptStartOfDay(new Date(`${text}T12:00:00Z`)), invalid: null };
+  const t = Date.parse(text);
+  if (!Number.isFinite(t)) return { since: null, invalid: text };
+  return { since: new Date(t), invalid: null };
+}
+
+export interface MarginSelection { included: CostJob[]; implausible: CostJob[]; noCost: number; beforeStart: number }
+
+/** Drop internal jobs, completions before `since`, and costs that cannot be real (over 2× revenue, or a cost with $0 revenue). */
+export function selectMarginJobs(jobs: CostJob[], since: Date | null): MarginSelection {
+  const included: CostJob[] = [];
+  const implausible: CostJob[] = [];
+  let noCost = 0;
+  let beforeStart = 0;
+  for (const job of jobs) {
+    if (isInternalJob(job)) continue;
+    if (since) {
+      const at = Date.parse(job.completedAt || '');
+      if (!Number.isFinite(at) || at < since.getTime()) { beforeStart++; continue; }
+    }
+    const rev = job.jobCosting?.totalRevenue ?? 0;
+    const cost = job.jobCosting?.totalCost ?? 0;
+    if (rev > 0 && cost > 0 && cost <= MARGIN_IMPLAUSIBLE_COST_RATIO * rev) included.push(job);
+    else if (cost > 0 && (rev <= 0 || cost > MARGIN_IMPLAUSIBLE_COST_RATIO * rev)) implausible.push(job);
+    else if (rev > 0) noCost++;
+  }
+  return { included, implausible, noCost, beforeStart };
+}
+
+export interface FirstTimeFix { rate: number | null; total: number; callbacks: number; fixed: number; unread: number; needs: string }
+
+/** Service-call jobs, plus any other job explicitly marked Callback. Unread custom fields block a rate. */
+export function summarizeFirstTimeFix(jobs: CostJob[]): FirstTimeFix {
+  let total = 0;
+  let callbacks = 0;
+  let unread = 0;
+  let sawFields = false;
+  let sawCallback = false;
+  for (const job of jobs) {
+    if (isInternalJob(job)) continue;
+    const flag = callbackMarked(job.customFields);
+    if (flag !== null) sawFields = true;
+    if (Array.isArray(job.customFields) && job.customFields.some((field) => String(field?.label ?? '').trim().toLowerCase() === 'callback')) sawCallback = true;
+    const service = workCategory(job.title) === 'service_call';
+    if (flag === null) {
+      if (service) unread++;
+      continue;
+    }
+    if (service || flag) {
+      total++;
+      if (flag) callbacks++;
+    }
+  }
+  const fixed = total - callbacks;
+  if (sawFields && !sawCallback) {
+    return { rate: null, total, callbacks, fixed, unread, needs: 'needs the Jobber job custom field named Callback (true/false). Custom fields were read, and none of the completed jobs in this window has that label.' };
+  }
+  if (!sawFields) {
+    return { rate: null, total, callbacks, fixed, unread, needs: 'needs the Jobber job custom field Callback (true/false). Job.customFields is readable with the Jobs scope this app already has (CustomFieldTrueFalse, label Callback, valueTrueFalse). This pull has no custom fields yet; the job mirror stores them the next time it syncs completed jobs. Nothing is written to Jobber.' };
+  }
+  if (unread > 0) {
+    return { rate: null, total, callbacks, fixed, unread, needs: `needs custom fields on every service job in this window (${unread} still missing), so a first-time fix rate is not shown yet.` };
+  }
+  if (total === 0) {
+    return { rate: null, total, callbacks, fixed, unread, needs: 'needs completed service-call jobs in this window (title starts with Service call), or a completed job marked Callback.' };
+  }
+  return { rate: fixed / total, total, callbacks, fixed, unread, needs: '' };
+}
 const DAY = 86400_000;
 type Cat = 'drilling' | 'pump';
 /** Service calls ($200 diagnostic) roll into pump & service for customer-level metrics. */
@@ -43,7 +126,9 @@ export function buildMetrics(input: {
   roasSince: RoasView | null; // buildRoasView since Sep 18 (strict new-customer rule)
   sinceLabel: string;
   quotes: WeeklyQuote[] | null; quotesFrom: Date;
-  costs: { rows: CostJob[] | null; error?: string }; costFrom: Date;
+  costs: { rows: CostJob[] | null; error?: string; customFieldsError?: string }; costFrom: Date;
+  /** OPS_MARGIN_SINCE. YYYY-MM-DD is Pacific midnight. Completions before this are left out of margin. */
+  marginSince?: string | null;
   time: { rows: TimeEntry[] | null; error?: string }; timeFrom: Date;
   qboConnected: boolean;
   qbo?: QboHistory | null; // static pre-Jobber QuickBooks sales (Oct 2020 – Feb 2025)
@@ -117,47 +202,75 @@ export function buildMetrics(input: {
     needs: ltv?.overall == null || cacAll == null ? 'needs both LTV and CAC' : undefined,
   });
 
-  // 3) Gross margin per job
-  const costRange = `${md(ptDateKey(input.costFrom))} – ${md(today)} (job completed date)`;
-  const cj = input.costs.rows?.filter((j) => !isInternalJob(j)) ?? null;
-  let gm: MetricCard = { id: 'margin', title: 'Gross margin per job', value: NA, measures: 'Average (revenue − cost) per completed job, and margin %, using Jobber job costing (line-item cost + labour from timesheets + expenses). ' + INTERNAL_EXCLUSION_NOTE, source: `Jobber job costing.${input.qboConnected ? '' : ' QuickBooks API is not connected to this app, so QuickBooks costs are not used.'}`, range: costRange };
-  if (!cj) gm.needs = `needs Jobber job costing (query failed: ${input.costs.error ?? 'unknown'})`;
+  // 3) Gross margin per job. Implausible Jobber unit costs are excluded and counted, not allowed to blank the card.
+  const parsedSince = parseMarginSince(input.marginSince);
+  const since = parsedSince.since;
+  const windowStart = since && since > input.costFrom ? since : input.costFrom;
+  const costRange = `${md(ptDateKey(windowStart))} – ${md(today)} (job completed date)`;
+  const marginSource = `Jobber job costing. Set OPS_MARGIN_SINCE (YYYY-MM-DD, Pacific midnight) to ignore completions before cost tracking was reliable.${input.qboConnected ? '' : ' QuickBooks API is not connected to this app, so QuickBooks costs are not used.'}`;
+  const marginMeasures = 'Average (revenue − cost) per completed job with a plausible Jobber cost, and that profit as a percent of revenue. Cost is Jobber job costing (line-item cost, labour, and expenses). Jobs whose cost is over 2× revenue, or that have a cost and $0 revenue, are left out of the average and counted as excluded. Those records stay in Jobber. ' + INTERNAL_EXCLUSION_NOTE + (since ? ` Completions before ${md(ptDateKey(since))} are not counted.` : '');
+  let gm: MetricCard = { id: 'margin', title: 'Gross margin per job', value: NA, measures: marginMeasures, source: marginSource, range: costRange };
+  if (!input.costs.rows) gm.needs = `needs Jobber job costing (query failed: ${input.costs.error ?? 'unknown'})`;
   else {
-    const withRev = cj.filter((j) => (j.jobCosting?.totalRevenue ?? 0) > 0);
-    const costed = withRev.filter((j) => (j.jobCosting?.totalCost ?? 0) > 0);
-    const share = withRev.length ? costed.length / withRev.length : 0;
-    gm.sub = `${costed.length} of ${withRev.length} completed jobs with revenue have any cost entered`;
-    // Line-item costs entered per foot / per unit at the wrong scale show up as cost far above revenue.
-    const bad = costed.filter((j) => (j.jobCosting?.totalCost ?? 0) > 2 * (j.jobCosting?.totalRevenue ?? 0));
-    const worst = bad.slice().sort((a, b) => (b.jobCosting!.totalCost! - b.jobCosting!.totalRevenue!) - (a.jobCosting!.totalCost! - a.jobCosting!.totalRevenue!))[0];
-    if (bad.length >= 3) gm.needs = `needs correct Jobber line-item costs: ${bad.length} of ${costed.length} costed jobs show cost over 2× revenue (worst: #${worst.jobNumber ?? '?'} ${worst.title?.trim() ?? ''}, cost ${usd(worst.jobCosting!.totalCost!)} on ${usd(worst.jobCosting!.totalRevenue!)} revenue), which points to unit costs entered at the wrong scale. Those few jobs swing the average negative, so no margin is shown until they're fixed.`;
-    else if (costed.length < 10 || share < 0.5) gm.needs = `needs job costs: only ${costed.length} of ${withRev.length} completed jobs have a cost in Jobber (line-item costs, timesheets or expenses), so a margin would be overstated`;
-    else {
+    const sel = selectMarginJobs(input.costs.rows, since);
+    const pool = sel.included.length + sel.noCost;
+    const share = pool ? sel.included.length / pool : 0;
+    const bits = [`${sel.included.length} jobs in the average`];
+    if (sel.implausible.length) bits.push(`${sel.implausible.length} excluded (cost over ${MARGIN_IMPLAUSIBLE_COST_RATIO}× revenue, or a cost with $0 revenue)`);
+    if (sel.beforeStart) bits.push(`${sel.beforeStart} completed before ${md(ptDateKey(since!))} not counted`);
+    if (parsedSince.invalid) bits.push(`OPS_MARGIN_SINCE ("${parsedSince.invalid}") is not a date, so no start-date cutoff was applied`);
+    gm.sub = bits.join(' · ');
+    const worst = sel.implausible.slice().sort((a, b) => ((b.jobCosting?.totalCost ?? 0) - (b.jobCosting?.totalRevenue ?? 0)) - ((a.jobCosting?.totalCost ?? 0) - (a.jobCosting?.totalRevenue ?? 0)))[0];
+    if (worst) gm.hover = `Largest excluded job: #${worst.jobNumber ?? '?'} ${worst.title?.trim() ?? ''} — cost ${usd(worst.jobCosting?.totalCost ?? 0)} on ${usd(worst.jobCosting?.totalRevenue ?? 0)} revenue. Not changed in Jobber.`;
+    const thin = sel.included.length < 10 || share < 0.5;
+    if (thin) {
+      if (sel.included.length === 0 && sel.implausible.length > 0 && sel.noCost === 0) gm.needs = `needs job costs: all ${sel.implausible.length} costed jobs in this window were excluded (cost over 2× revenue, or a cost with $0 revenue), so no margin is shown.`;
+      else {
+        gm.needs = `needs job costs: only ${sel.included.length} of ${pool} completed jobs have a plausible cost in Jobber (line-item costs, timesheets or expenses), so a margin would be overstated`;
+        if (sel.implausible.length) gm.needs += `. ${sel.implausible.length} additional jobs were excluded because cost was over 2× revenue or the job had a cost and $0 revenue`;
+        if (sel.beforeStart) gm.needs += `. ${sel.beforeStart} completions before ${md(ptDateKey(since!))} were not counted`;
+      }
+    } else {
       const agg = (js: CostJob[]) => { const rev = js.reduce((s, j) => s + (j.jobCosting?.totalRevenue ?? 0), 0); const cost = js.reduce((s, j) => s + (j.jobCosting?.totalCost ?? 0), 0); return { n: js.length, per: js.length ? (rev - cost) / js.length : 0, m: rev > 0 ? (rev - cost) / rev : 0 }; };
-      const a = agg(costed); const p = agg(costed.filter((j) => cat2(j.title) === 'pump')); const d = agg(costed.filter((j) => cat2(j.title) === 'drilling'));
+      const a = agg(sel.included); const p = agg(sel.included.filter((j) => cat2(j.title) === 'pump')); const d = agg(sel.included.filter((j) => cat2(j.title) === 'drilling'));
       gm.value = `${usd(a.per)} · ${pct(a.m)}`;
       gm.rows = [
         { label: 'Pump & service', value: p.n ? `${usd(p.per)} · ${pct(p.m)}` : NA, note: `${p.n} jobs` },
         { label: 'Drilling', value: d.n ? `${usd(d.per)} · ${pct(d.m)}` : NA, note: `${d.n} jobs` },
       ];
-      gm.measures += ' Only jobs with a cost entered are included.';
+      if (sel.implausible.length) gm.rows.push({ label: 'Excluded', value: String(sel.implausible.length), note: 'cost over 2× revenue, or a cost with $0 revenue' });
+      if (sel.beforeStart) gm.rows.push({ label: 'Before cost tracking', value: String(sel.beforeStart), note: `completed before ${md(ptDateKey(since!))}` });
     }
   }
   cards.push(gm);
 
-  // 4) First-time fix rate
-  cards.push({
-    id: 'ftf', title: 'First-time fix rate', value: NA,
-    measures: 'Share of service jobs fixed on the first visit with no callback for the same problem.',
-    source: 'Would come from Jobber jobs/visits.', range: '—',
-    needs: 'needs callbacks tagged in Jobber (e.g. a "Callback" / "Warranty" job type or tag). A return job for the same client is usually planned follow-on work (service call → booster install), so it can\'t be counted as a failed fix without that tag.',
-  });
+  // 4) First-time fix rate — Jobber job custom field Callback (true/false), when the pull includes it.
+  const ftf: MetricCard = {
+    id: 'ftf', title: 'First-time fix rate', value: NA, range: costRange,
+    measures: 'Share of completed service jobs that were not marked Callback. Service jobs are titles that start with Service call, plus any other completed job whose Jobber true/false custom field Callback is true. Callback means a return for the same problem, so it counts against the rate. ' + INTERNAL_EXCLUSION_NOTE,
+    source: 'Jobber job custom field Callback (true/false) on completed jobs. Read only.',
+  };
+  if (!input.costs.rows) ftf.needs = `needs Jobber jobs (query failed: ${input.costs.error ?? 'unknown'})`;
+  else if (input.costs.customFieldsError) ftf.needs = `needs Jobber job custom fields (${input.costs.customFieldsError}). Callback is a true/false job custom field (Job.customFields, label Callback, valueTrueFalse). The Jobs read scope is enough to read values. Margin does not use this field.`;
+  else {
+    const fix = summarizeFirstTimeFix(input.costs.rows);
+    if (fix.rate == null) ftf.needs = fix.needs;
+    else {
+      ftf.value = pct(fix.rate);
+      ftf.sub = `${fix.fixed} of ${fix.total} not marked Callback · ${fix.callbacks} callback${fix.callbacks === 1 ? '' : 's'}`;
+    }
+  }
+  cards.push(ftf);
 
   // 5) Technician utilization
   const timeRange = `${md(ptDateKey(input.timeFrom))} – ${md(today)} (timesheet start)`;
   const te = input.time.rows;
   const ut: MetricCard = { id: 'util', title: 'Technician utilization', value: NA, measures: 'Clocked hours on a job ÷ all clocked hours (job + general/travel/shop time). Hours on internal/training/test jobs are excluded.', source: 'Jobber timesheets.', range: timeRange };
-  if (!te) ut.needs = /permission/i.test(input.time.error ?? '') ? 'needs timesheet access: the SCWS Jobber app isn\'t allowed to read timesheets (Jobber says "hidden due to permissions"). Add the Timesheets read scope to the app and re-authorize, and crews need to clock in/out in Jobber. Paid hours per tech are also needed for true utilization.' : `needs Jobber timesheets (query failed: ${input.time.error ?? 'unknown'})`;
+  const timesheetBlocked = timesheetPermissionDenied(input.time.error);
+  if (timesheetBlocked && (!te || te.length === 0)) {
+    ut.value = TIMESHEET_PERMISSION_STATE;
+    ut.needs = TIMESHEET_PERMISSION_NEEDS;
+  } else if (!te) ut.needs = `needs Jobber timesheets (query failed: ${input.time.error ?? 'unknown'})`;
   else {
     const hrs = (e: TimeEntry) => { if (typeof e.finalDuration === 'number' && e.finalDuration > 0) return e.finalDuration / 3600; const a = Date.parse(e.startAt || ''), b = Date.parse(e.endAt || ''); return Number.isFinite(a) && Number.isFinite(b) && b > a ? (b - a) / 3600_000 : 0; };
     const total = te.reduce((s, e) => s + hrs(e), 0); const onJob = te.filter((e) => e.job?.id).reduce((s, e) => s + hrs(e), 0);

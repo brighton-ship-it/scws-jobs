@@ -54,6 +54,7 @@ export default function MetricsPage() {
   }, []);
   useEffect(() => { load(); }, [load]);
   // A card with no value yet ("—") is hidden until its data exists; what it needs is listed below the grid.
+  // A known block (timesheet permission) sets a real value so that card stays in the grid.
   const shown = (cards ?? []).filter((c) => c.value !== '—');
   const hidden = (cards ?? []).filter((c) => c.value === '—');
 
@@ -65,7 +66,7 @@ export default function MetricsPage() {
       <h3 className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{c.title}</h3>
       {c.badge ? <p className="mt-0.5 text-[10px] font-medium text-emerald-700">{c.badge}</p> : null}
       <p className="mt-0.5 text-[11px] text-slate-400">{c.range}</p>
-      <div title={c.hover} className={`mt-1 break-words text-3xl font-semibold tabular-nums ${c.value === '—' ? 'text-slate-300' : 'text-slate-900'} ${c.hover ? 'cursor-help' : ''}`}><span className={c.hover ? 'underline decoration-slate-300 decoration-dotted underline-offset-4' : ''}>{c.value}</span></div>
+      <div title={c.hover} className={`mt-1 break-words font-semibold ${c.value === '—' || /^[$\d]/.test(c.value) || c.value.includes(':1') || c.value === 'Same day' ? 'text-3xl tabular-nums' : 'text-xl leading-snug'} ${c.value === '—' ? 'text-slate-300' : 'text-slate-900'} ${c.hover ? 'cursor-help' : ''}`}><span className={c.hover ? 'underline decoration-slate-300 decoration-dotted underline-offset-4' : ''}>{c.value}</span></div>
       {c.sub ? <p className="mt-1 text-xs text-slate-500">{c.sub}</p> : null}
       {c.needs ? <p className="mt-2 rounded-lg bg-amber-50 px-2 py-1.5 text-xs text-amber-900"><b>Needs:</b> {c.needs.replace(/^needs\s*/i, '')}</p> : null}
       {c.rows?.length ? (

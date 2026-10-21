@@ -53,7 +53,7 @@ const cachedMetrics = unstable_cache(async () => {
   const d = p.diag;
   if (d.historyError || d.sinceInvoices == null || d.quotes == null || d.costError) { lastPartial = p; throw new Error('partial metrics: not cached'); }
   return p;
-}, ['ops-metrics-v2'], { revalidate: 1800 });
+}, ['ops-metrics-v3'], { revalidate: 1800 });
 
 async function computeMetrics(debug: boolean) {
     const db = createServiceClient() as any;
@@ -77,7 +77,7 @@ async function computeMetrics(debug: boolean) {
     const history = await loadHistoryInvoices(histFrom.toISOString(), tomorrow);
     const roasSince = calls.error ? null : buildRoasView({ invoices: sinceInv, adCalls: (calls.data ?? []).filter((c: { caller_phone: string | null }) => !isExcludedCaller(c.caller_phone)), spend, start: new Date(DASH_FLOOR_ISO), now });
     const cards = buildMetrics({
-      now, histFrom, history, roasSince, sinceLabel: 'Since Sep 18, 2026', quotes, quotesFrom, costs, costFrom, time, timeFrom,
+      now, histFrom, history, roasSince, sinceLabel: 'Since Sep 18, 2026', quotes, quotesFrom, costs, costFrom, marginSince: process.env.OPS_MARGIN_SINCE ?? null, time, timeFrom,
       qboConnected: !qbo.error && (qbo.data ?? []).length > 0,
       qbo: qboHistory as unknown as QboHistory,
     });
