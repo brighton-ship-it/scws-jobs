@@ -1,5 +1,9 @@
 # Supabase migrations
 
+## `20261021_receptionist_calls_needs_callback.sql`
+
+Adds `receptionist_calls.needs_callback` (default false). The receptionist webhook sets it, with a notes line, when a service caller hangs up with no booking and no callback. It is a label for the office. The Mike callback cron does not read it, and it does not text or dial. Until this is applied, the webhook saves the note and retries the update without the column.
+
 ## `20261018_missed_call_texts.sql`
 
 Adds `missed_call_texts`: one row per call the missed-call text follow-up looked at (sent, skipped and why), plus the AI text thread for replies. Written by `/api/cron/missed-call-texts` and `/api/sms/forward`. Until this is applied, the cron finds a missing-table note and texts nobody, and replies are only forwarded to the office as today. Apply it in the SQL Editor. Undo with `20261018_missed_call_texts_rollback.sql`.

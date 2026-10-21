@@ -91,7 +91,7 @@ export const ASSIGNED_USERS_PAGE = 3;
  * `first` times the fields inside one node.
  *
  * assignedUsers { name { full } } is 2 fields.
- * A visit is startAt + endAt + allDay + that connection.
+ * A visit is startAt + endAt + allDay + title + that connection.
  * A job is title + property { address { street1 city } } (4) + visits.
  * The client field is 1.
  */
@@ -103,7 +103,7 @@ export function upcomingVisitsQueryCost(
   }
 ): number {
   const assignedUsers = connectionQueryCost(pages.assignedUsers, 2);
-  const visitFields = 3 + assignedUsers;
+  const visitFields = 4 + assignedUsers;
   const visits = connectionQueryCost(pages.visits, visitFields);
   const jobFields = 1 + 4 + visits;
   const jobs = connectionQueryCost(pages.jobs, jobFields);

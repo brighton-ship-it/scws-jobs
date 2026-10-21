@@ -32,6 +32,8 @@ import {
   resolveOfficeToolBatch,
 } from '@/lib/receptionist/office-callback';
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
+import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
+import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
 
 const OFFICE_EMAILS = OFFICE_ALERT_EMAILS;
 
@@ -284,26 +286,57 @@ export async function POST(request: NextRequest) {
       messages: rawMessages,
     });
 
+    // Log only. Does not text, dial, read the callback flag, or call the callback cron.
+    const missedService = buildMissedServiceFlag({
+      messages: rawMessages,
+      serviceNeeded,
+      summary,
+      transcript,
+      isTestCall: isReceptionistTestCaller(phone),
+      callbackAttempt: Boolean(callbackAttempt),
+      vapiCallId: call.id,
+      phone,
+    });
+    if (missedService.flag) {
+      console.log('[Receptionist] auto-flag needs-callback', missedService.log);
+    }
+
+    const updateReceptionistCall = async (patch: Record<string, unknown>, selectRow: boolean) => {
+      const run = (body: Record<string, unknown>) => {
+        const query = supabase.from('receptionist_calls').update(body as any).eq('id', callRecordId);
+        return selectRow ? query.select().single() : query;
+      };
+      let result = await run(patch);
+      if (
+        result.error &&
+        Object.prototype.hasOwnProperty.call(patch, 'needs_callback') &&
+        isMissingNeedsCallbackColumn(result.error)
+      ) {
+        console.warn(
+          '[Receptionist] receptionist_calls.needs_callback is missing. Apply supabase/migrations/20261021_receptionist_calls_needs_callback.sql',
+        );
+        const { needs_callback: _drop, ...rest } = patch;
+        result = await run(rest);
+      }
+      return result;
+    };
+
     // Update the receptionist call record with full details (we created a placeholder above)
-    const { data: callRecord, error: callError } = await supabase
-      .from('receptionist_calls')
-      .update({
-        phone: phone,
-        customer_name: customerName || null,
-        customer_id: customerId,
-        address: address || null,
-        city: city || null,
-        service_needed: serviceNeeded || null,
-        transcript: transcript,
-        summary: summary || null,
-        duration_sec: durationSec,
-        status: 'pending',
-        priority: isUrgent ? 'urgent' : 'normal',
-        called_at: startedAt || new Date().toISOString(),
-      } as any)
-      .eq('id', callRecordId)
-      .select()
-      .single();
+    const { error: callError } = await updateReceptionistCall({
+      phone: phone,
+      customer_name: customerName || null,
+      customer_id: customerId,
+      address: address || null,
+      city: city || null,
+      service_needed: serviceNeeded || null,
+      transcript: transcript,
+      summary: summary || null,
+      duration_sec: durationSec,
+      status: 'pending',
+      priority: isUrgent ? 'urgent' : 'normal',
+      called_at: startedAt || new Date().toISOString(),
+      ...(missedService.flag ? { notes: missedService.notes, needs_callback: true } : {}),
+    }, true);
 
     if (callError) {
       console.error('Error updating call record:', callError);
@@ -318,14 +351,17 @@ export async function POST(request: NextRequest) {
       const notesText = summary 
         ? `📞 Mike: ${summary}` 
         : `📞 Call from ${customerName || formatPhone(phone)} - ${serviceNeeded || 'Phone inquiry'}`;
+      const bookingNotes = missedService.flag
+        ? `${missedService.bookingNotesPrefix}\n${notesText}`
+        : notesText;
       
       await supabase.from('booking_requests').insert({
-        service_type: serviceNeeded || 'Phone Inquiry',
+        service_type: missedService.flag ? missedService.serviceType : (serviceNeeded || 'Phone Inquiry'),
         customer_name: customerName || `Caller: ${formatPhone(phone)}`,
         phone: phone,
         address: address || '',
         city: city || '',
-        notes: notesText,
+        notes: bookingNotes,
         status: 'pending',
         customer_id: customerId,
         source: 'phone' as any,
@@ -470,6 +506,7 @@ export async function POST(request: NextRequest) {
       fallbackAddress: address,
       fallbackIssue: serviceNeeded,
       urgent: isUrgent,
+      autoFlagged: missedService.flag,
       summary,
       transcript,
       timeLabel: pstTime,
@@ -512,11 +549,14 @@ export async function POST(request: NextRequest) {
       customerId,
     });
 
-    // Mark as completed to prevent any future duplicate processing
-    await supabase
-      .from('receptionist_calls')
-      .update({ status: 'completed', email_sent: emailResult?.success || false })
-      .eq('id', callRecordId);
+    // A flagged service hang-up stays pending so the office still sees it. The note is the only action.
+    await updateReceptionistCall(
+      {
+        status: missedService.flag ? 'pending' : 'completed',
+        email_sent: emailResult?.success || false,
+      },
+      false,
+    );
 
     console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Task: ${taskCreated}`);
 
@@ -663,7 +703,7 @@ async function handleVapiTools(body: any) {
     const params = call.params || {};
     const phone = phoneForCallbackTool(params.phone, callPhone);
     try {
-      executed[i] = { id: call.id, body: await executeTool(call.name, params, phone) };
+      executed[i] = { id: call.id, body: await executeTool(call.name, params, phone, callId) };
     } catch (error: any) {
       console.error(`Function call error (${call.name}):`, error);
       executed[i] = {
@@ -681,16 +721,19 @@ async function handleVapiTools(body: any) {
   ));
 }
 
-async function executeTool(name: string, params: any, phone: string) {
+async function executeTool(name: string, params: any, phone: string, callId: string | null = null) {
   switch (name) {
-    case 'lookupCustomer':
-      return handleLookupCustomer(phone || params.phone);
+    case 'lookupCustomer': {
+      const looked = await handleLookupCustomer(phone || params.phone);
+      rememberLookupCaller(callId, looked?.result);
+      return looked;
+    }
 
     case 'checkSchedule':
       // Confirmation lock: canConfirm only when Jobber returned a visit.
       // With city/intent=book, also returns real Jobber openSlots (never invented).
       params = normalizeCheckScheduleParams(params);
-      return handleCheckSchedule({
+      return withTownGuard('checkSchedule', params, callerTownContext(callId, params), () => handleCheckSchedule({
         phone: phone || params.phone,
         city: params.city,
         address: params.address,
@@ -701,13 +744,13 @@ async function executeTool(name: string, params: any, phone: string) {
         needNow: params.needNow,
         thisWeekend: params.thisWeekend,
         notes: params.notes,
-      });
+      }));
 
     case 'bookJob':
     case 'book_job':
     case 'bookServiceCall':
       params = normalizeBookJobParams(params, phone);
-      return handleBookServiceCall(
+      return withTownGuard(name, params, callerTownContext(callId, params), () => handleBookServiceCall(
         {
           phone: phone || params.phone,
           name: params.name || params.callerName || params.customerName,
@@ -725,6 +768,7 @@ async function executeTool(name: string, params: any, phone: string) {
           needNow: params.needNow,
           thisWeekend: params.thisWeekend,
           notes: params.notes || params.reason,
+          repeatVisit: params.repeatVisit,
           differentProblem: params.differentProblem ?? params.secondJob,
         },
         {
@@ -734,13 +778,15 @@ async function executeTool(name: string, params: any, phone: string) {
             console.log(`[Receptionist] Office flag deferred to end-of-call email: ${flag.kind}`);
           },
         }
-      );
+      ));
 
     case 'getServiceInfo':
       return handleGetServiceInfo(params.serviceType || '');
 
     case 'checkServiceArea':
-      return checkServiceArea(serviceAreaLocationFromParams(params));
+      return withTownGuard('checkServiceArea', params, callerTownContext(callId, params), () =>
+        checkServiceArea(serviceAreaLocationFromParams(params)),
+      );
 
     case 'getBusinessHours':
       return getBusinessHours();

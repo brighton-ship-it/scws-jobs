@@ -56,6 +56,36 @@ describe('computeOpenSlots', () => {
     assert.ok(blocked.length >= 1);
   });
 
+  it('keeps an internal visit on the calendar so that time stays blocked', () => {
+    const open = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 1,
+    });
+    const slot = open[0];
+    for (const title of ['Shop Meeting - Anza', 'Safety meeting', 'PTO - Cowin', 'Training: new hire']) {
+      const blocked = computeOpenSlots({
+        occupied: [
+          {
+            startAt: slot.startAt,
+            endAt: slot.endAt,
+            title,
+            jobTitle: title,
+            technicianIds: ['user-brian'],
+            technicianNames: ['Brian Eads'],
+          },
+        ],
+        now: THU_530PM,
+        technicianId: 'user-brian',
+        technicianName: 'Brian Eads',
+        maxSlots: 3,
+      });
+      assert.equal(blocked.some((row) => row.startAt === slot.startAt), false, title);
+    }
+  });
+
   it('no weekend roster: never returns Saturday or Sunday visit windows', () => {
     const slots = computeOpenSlots({
       occupied: [],

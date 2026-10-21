@@ -66,6 +66,37 @@ describe('handleLookupCustomer', () => {
     assert.equal(result.found, false);
   });
 
+  it('returns the property town when the billing city is different (David Garcia, 10/14)', async () => {
+    const david = {
+      id: 'dg',
+      name: 'David Garcia',
+      phones: [{ number: '7605550140' }],
+      billingAddress: { street1: '1 Billing Rd', city: 'Ramona', province: 'CA', postalCode: '92065' },
+      properties: [
+        { address: { street1: '400 Well Rd', city: 'Temecula', province: 'CA', postalCode: '92592' } },
+      ],
+    };
+    const { result } = await handleLookupCustomer('7605550140', { accessToken: 't', fetchFn: mockClients([david]).fetchFn });
+    assert.equal(result.city, 'Temecula');
+    assert.equal(result.addressOnFile?.city, 'Temecula');
+    assert.equal(result.addressOnFile?.street, '400 Well Rd');
+  });
+
+  it('falls back to the billing address when the client has no properties', async () => {
+    const billingOnly = {
+      id: 'bill',
+      name: 'Billing Only',
+      phones: [{ number: '7605550141' }],
+      billingAddress: { street1: '9 Oak', city: 'Ramona', province: 'CA', postalCode: '92065' },
+      properties: [],
+    };
+    const { result } = await handleLookupCustomer('7605550141', { accessToken: 't', fetchFn: mockClients([billingOnly]).fetchFn });
+    assert.equal(result.found, true);
+    assert.equal(result.city, 'Ramona');
+    assert.equal(result.addressOnFile?.city, 'Ramona');
+    assert.equal(result.address, '9 Oak');
+  });
+
   it('toAddressOnFile ignores empty addresses', () => {
     assert.equal(toAddressOnFile({ street1: '', city: 'Anza' }), null);
     assert.equal(toAddressOnFile(null), null);

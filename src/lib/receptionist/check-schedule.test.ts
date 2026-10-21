@@ -395,12 +395,51 @@ describe('internal visits (Oct 17 "Shop Meeting - Anza" incident)', () => {
   });
 
   it('flags shop meetings and other internal titles, but not customer work', () => {
-    for (const t of ['Shop Meeting - Anza', 'shop meeting', 'Staff Meeting', 'Safety meeting Ramona', 'Meeting - Anza', 'Internal: yard cleanup', 'Tech training', 'PTO - Cowin', 'Shop day']) {
+    for (const t of ['Shop Meeting - Anza', 'shop meeting', 'Staff Meeting', 'Safety meeting', 'Safety meeting Ramona', 'Meeting - Anza', 'Internal: yard cleanup', 'Tech training', 'Training: new hire', 'PTO - Cowin', 'Shop day']) {
       assert.equal(isInternalVisitTitle(t), true, t);
     }
-    for (const t of ['Service Call', 'No water - pump', 'Pump replacement', 'Pressure tank swap', 'Well inspection', null, '']) {
+    for (const t of ['Service Call', 'No water - pump', 'Pump replacement', 'Pressure tank swap', 'Well inspection', 'Meeting with client re: tank', null, '']) {
       assert.equal(isInternalVisitTitle(t), false, String(t));
     }
+  });
+
+  it('drops shop meetings, safety meetings, PTO and training, and keeps a client meeting', async () => {
+    const dropped = ['Shop Meeting - Anza', 'Safety meeting', 'PTO - Cowin', 'Training: new hire'];
+    const { result } = await handleCheckSchedule(GUY_PHONE, {
+      accessToken: 'test-token',
+      now: INCIDENT_NOW,
+      fetchFn: mockJobber({
+        client: guyClient,
+        jobs: [
+          ...dropped.map((title) => ({
+            title,
+            property: { address: { street1: '57174 Highway 371', city: 'Anza' } },
+            visits: visit('2026-09-01T14:00:00.000Z', '2026-09-01T15:00:00.000Z', 'Cowin'),
+          })),
+          {
+            title: 'Meeting with client re: tank',
+            property: { address: { street1: '123 Well Rd', city: 'Ramona' } },
+            visits: visit('2026-09-02T16:00:00.000Z', '2026-09-02T17:00:00.000Z', 'Brian Eads'),
+          },
+          {
+            title: 'Service Call',
+            property: { address: { street1: '9 Oak', city: 'Ramona' } },
+            visits: {
+              nodes: [{
+                title: 'Shop Meeting - Anza',
+                startAt: '2026-09-03T16:00:00.000Z',
+                endAt: '2026-09-03T17:00:00.000Z',
+                allDay: false,
+                assignedUsers: { nodes: [{ name: { full: 'Cowin' } }] },
+              }],
+            },
+          },
+        ],
+      }),
+    });
+    assert.equal(result.visits.length, 1);
+    assert.equal(result.nextAppointment?.service, 'Meeting with client re: tank');
+    assert.equal(/shop meeting|safety meeting|pto|training/i.test(JSON.stringify(result.visits)), false);
   });
 
   it('never returns a shop meeting as the caller\'s appointment', async () => {
