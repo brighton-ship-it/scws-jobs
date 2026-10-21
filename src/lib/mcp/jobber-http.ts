@@ -7,7 +7,26 @@ import {
   jobberMcpUnauthorizedLog,
 } from './jobber-auth.ts';
 import { createJobberMcpDispatcher, jobberMcpHealthBody } from './jobber-tools.ts';
-import { handleMcpMessages } from './protocol.ts';
+import { handleMcpMessages, type McpDispatcher } from './protocol.ts';
+import { JOBBER_MCP_READONLY_TOOLS } from './jobber-auth.ts';
+
+/** Restrict a dispatcher to read-only tools. Refusal happens before any tool runs. */
+export function restrictToReadOnly(dispatcher: McpDispatcher): McpDispatcher {
+  const allowed = new Set(JOBBER_MCP_READONLY_TOOLS);
+  return {
+    ...dispatcher,
+    tools: dispatcher.tools.filter((tool) => allowed.has(tool.name)),
+    callTool: async (name, args) => {
+      if (!allowed.has(name)) {
+        return {
+          content: [{ type: 'text', text: `Tool "${name}" is not allowed for this read-only key.` }],
+          isError: true,
+        };
+      }
+      return dispatcher.callTool(name, args);
+    },
+  };
+}
 import type { JobberDeps } from '../jobber/quotes.ts';
 
 export const JOBBER_MCP_WWW_AUTHENTICATE =
@@ -100,6 +119,9 @@ export async function handleJobberMcpRequest(
         },
       });
     }
+    if (auth.readOnly) {
+      return jsonResponse({ ok: true, key: auth.name, readOnly: true, tools: [...JOBBER_MCP_READONLY_TOOLS] }, 200, cors);
+    }
     return jsonResponse(await jobberMcpHealthBody(auth.name, env), 200, cors);
   }
 
@@ -122,7 +144,8 @@ export async function handleJobberMcpRequest(
     );
   }
 
-  const dispatcher = createJobberMcpDispatcher(options.deps);
+  const baseDispatcher = createJobberMcpDispatcher(options.deps);
+  const dispatcher = auth.readOnly ? restrictToReadOnly(baseDispatcher) : baseDispatcher;
   const result = await handleMcpMessages(payload, dispatcher);
   if (result === null) {
     return new Response(null, { status: 202, headers: { 'Cache-Control': 'no-store', ...cors } });
