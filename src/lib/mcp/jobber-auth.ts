@@ -16,6 +16,13 @@ import { timingSafeEqual } from 'node:crypto';
 import { readAuthorizationHeader } from '../cron-auth.ts';
 
 export const JOBBER_MCP_API_KEYS_ENV = 'JOBBER_MCP_API_KEYS';
+/**
+ * Read-only keys (same formats as JOBBER_MCP_API_KEYS). A matching key may only
+ * call JOBBER_MCP_READONLY_TOOLS; every other tool is refused before execution.
+ * Meant for CI (e.g. scws-website Recent Work) so no Jobber OAuth leaves this app.
+ */
+export const JOBBER_MCP_READONLY_KEYS_ENV = 'JOBBER_MCP_READONLY_KEYS';
+export const JOBBER_MCP_READONLY_TOOLS: readonly string[] = ['search_jobs', 'get_job'];
 
 export type JobberMcpNamedKey = {
   name: string;
@@ -23,7 +30,7 @@ export type JobberMcpNamedKey = {
 };
 
 export type JobberMcpAuthResult =
-  | { ok: true; name: string }
+  | { ok: true; name: string; readOnly?: true }
   | { ok: false; reason: 'missing_secret' | 'missing_key' | 'unauthorized' };
 
 function trimEnv(env: NodeJS.ProcessEnv, key: string): string | null {
@@ -76,9 +83,10 @@ function parseJsonKeys(raw: string): JobberMcpNamedKey[] | null {
 }
 
 export function parseJobberMcpApiKeys(
-  env: NodeJS.ProcessEnv = process.env
+  env: NodeJS.ProcessEnv = process.env,
+  envName: string = JOBBER_MCP_API_KEYS_ENV
 ): JobberMcpNamedKey[] {
-  const raw = trimEnv(env, JOBBER_MCP_API_KEYS_ENV);
+  const raw = trimEnv(env, envName);
   if (!raw) return [];
 
   if (raw.startsWith('{') || raw.startsWith('[')) {
@@ -138,7 +146,8 @@ export function authorizeJobberMcpRequest(
   env: NodeJS.ProcessEnv = process.env
 ): JobberMcpAuthResult {
   const configured = parseJobberMcpApiKeys(env);
-  if (!configured.length) {
+  const readOnlyKeys = parseJobberMcpApiKeys(env, JOBBER_MCP_READONLY_KEYS_ENV);
+  if (!configured.length && !readOnlyKeys.length) {
     return { ok: false, reason: 'missing_secret' };
   }
 
@@ -148,10 +157,13 @@ export function authorizeJobberMcpRequest(
   }
 
   const match = matchJobberMcpApiKey(provided, env);
-  if (!match) {
-    return { ok: false, reason: 'unauthorized' };
+  if (match) return { ok: true, name: match.name };
+  for (const entry of readOnlyKeys) {
+    if (timingSafeEqualString(provided, entry.key)) {
+      return { ok: true, name: `readonly:${entry.name}`, readOnly: true };
+    }
   }
-  return { ok: true, name: match.name };
+  return { ok: false, reason: 'unauthorized' };
 }
 
 export function jobberMcpUnauthorizedLog(
