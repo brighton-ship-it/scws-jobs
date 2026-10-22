@@ -2,9 +2,11 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import twilio from 'twilio';
 import { parseTwilio } from './auth.ts';
-import { buildInboundTwiml } from './twiml.ts';
+import { aiFallbackNumber, forwardTargets, lineFor } from './config.ts';
 import { handleRecording, normalizePhone } from './handle-recording.ts';
+import { buildNoteMessage } from './jobber-note.ts';
 import { parseSummary, transcribe } from './process.ts';
+import { buildAiHandoffTwiml, buildInboundTwiml, buildVoicemailTwiml } from './twiml.ts';
 
 const TOKEN = 'tok';
 const URL_ = 'https://scws-jobs.vercel.app/api/calls/inbound';
@@ -75,30 +77,38 @@ describe('phone-calls', () => {
     assert.equal(r.ok, false);
     assert.equal(db.rows.get('CA3').processing_status, 'failed');
   });
+  it('does not drop an alert claim already stored on the call', async () => {
+    const db = fakeDb();
+    db.rows.set('CA9', { call_sid: 'CA9', processing_error: 'call-alert-sent|leg:mike', caller_number: '+17602712106' });
+    const f = (async (u: any) => {
+      u = String(u);
+      if (u.includes('twilio.com')) return new Response(new ArrayBuffer(8));
+      if (u.includes('transcriptions')) return new Response('Hi this is Ryan, my well pump is down and I have cattle, please send someone.');
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"summary":"Ryan needs pump service","outcome":"emergency","caller_name":"Ryan","needs_followup":true}' } }] }));
+    }) as any;
+    const r = await handleRecording({ CallSid: 'CA9', From: '+17602712106', RecordingUrl: 'https://api.twilio.com/2010-04-01/Accounts/AC/Recordings/RE1', RecordingSid: 'RE1', RecordingDuration: '45' }, db, { TWILIO_ACCOUNT_SID: 'AC', TWILIO_AUTH_TOKEN: 't', OPENAI_API_KEY: 'k' } as any, { fetch: f, jobber: null });
+    assert.equal(r.reason, 'done');
+    assert.equal(db.rows.get('CA9').processing_error, 'call-alert-sent|leg:mike');
+  });
 });
 
-import { buildNoteMessage } from './jobber-note.ts';
-import { buildInboundTwiml as bit } from './twiml.ts';
-it('note message + callerId + jobber hook', async () => {
-  const m = buildNoteMessage({ startedAt: '2026-10-12T16:00:00Z', source: 'google_ads', summary: 'S', outcome: 'quote_request', needsFollowup: true, transcript: 'hi', durationSeconds: 40 });
-  assert.match(m, /Oct 12, 9:00 AM PT \(40s\) · google_ads/); assert.match(m, /NEEDS FOLLOW-UP/);
-  assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', callerId: '+18773863995' }), /callerId="\+18773863995"/);
-  assert.doesNotMatch(bit({ shopNumbers: ['+1'], baseUrl: 'https://x' }), /callerId/);
+describe('note, caller id, and ported lines', () => {
+  it('note message + callerId + jobber hook', async () => {
+    const m = buildNoteMessage({ startedAt: '2026-10-12T16:00:00Z', source: 'google_ads', summary: 'S', outcome: 'quote_request', needsFollowup: true, transcript: 'hi', durationSeconds: 40 });
+    assert.match(m, /Oct 12, 9:00 AM PT \(40s\) · google_ads/); assert.match(m, /NEEDS FOLLOW-UP/);
+    assert.match(buildInboundTwiml({ shopNumbers: ['+1'], baseUrl: 'https://x', callerId: '+18773863995' }), /callerId="\+18773863995"/);
+    assert.doesNotMatch(buildInboundTwiml({ shopNumbers: ['+1'], baseUrl: 'https://x' }), /callerId/);
+  });
+  it('ported main/ransom lines', () => {
+    assert.equal(lineFor('+17604408520')?.key, 'main');
+    assert.equal(lineFor('+18773863995', 'ransom')?.source, 'ransom_line');
+    assert.equal(lineFor('+18773863995', 'x'), null);
+    assert.deepEqual(forwardTargets(lineFor('+17607895955')!, { PHONE_CALL_FORWARD_RANSOM: '+17605550100, bad' } as any), ['+17605550100']);
+    assert.match(buildInboundTwiml({ shopNumbers: ['+1'], baseUrl: 'https://x', actionQuery: '?line=main' }), /status\?line=main"/);
+    assert.match(buildVoicemailTwiml('https://x'), /<Record [^>]*inbound\/recording/);
+  });
 });
 
-import { lineFor, forwardTargets } from './config.ts';
-import { buildVoicemailTwiml } from './twiml.ts';
-it('ported main/ransom lines', () => {
-  assert.equal(lineFor('+17604408520')?.key, 'main');
-  assert.equal(lineFor('+18773863995', 'ransom')?.source, 'ransom_line');
-  assert.equal(lineFor('+18773863995', 'x'), null);
-  assert.deepEqual(forwardTargets(lineFor('+17607895955')!, { PHONE_CALL_FORWARD_RANSOM: '+17605550100, bad' } as any), ['+17605550100']);
-  assert.match(bit({ shopNumbers: ['+1'], baseUrl: 'https://x', actionQuery: '?line=main' }), /status\?line=main"/);
-  assert.match(buildVoicemailTwiml('https://x'), /<Record [^>]*inbound\/recording/);
-});
-
-import { buildAiHandoffTwiml } from './twiml.ts';
-import { aiFallbackNumber } from './config.ts';
 describe('AI receptionist no-answer handoff', () => {
   it('is off unless ?ai=1 or env', () => {
     assert.equal(aiFallbackNumber(new URLSearchParams(''), {} as any), null);

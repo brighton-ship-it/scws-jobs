@@ -94,7 +94,8 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Inbound calls whose immediate email failed, and Mike calls whose end-of-call report never arrived.
+  // Inbound calls whose immediate email failed. Mike calls wait (see SWEEP_MIKE_WAIT_MS)
+  // so this sweep does not claim the row before his end-of-call report.
   const sweepSince = new Date(now - 3 * 60 * 60 * 1000).toISOString();
   const { data: inboundRows, error: inboundError } = await (supabase as any)
     .from('inbound_call_recordings')

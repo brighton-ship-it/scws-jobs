@@ -24,6 +24,8 @@ import {
   ringSecondsForAlert,
   statusCallbackPlan,
   sweepInboundEmail,
+  SWEEP_MIKE_WAIT_MS,
+  commitProcessingNote,
   MISSED_ALERT_MARKER,
 } from './missed-alert.ts';
 
@@ -67,6 +69,21 @@ describe('inbound TwiML rolls to Mike in the same dial', () => {
     assert.equal(x.split(SHOP).length - 1, 1);
     assert.match(x, /status\?ai=1&amp;rolled=1&amp;notice=1"/);
     assert.doesNotMatch(x, /<Number>\+17604915348<\/Number>\s*<Number>/);
+  });
+  it('still reaches Mike about 15s after the first ring when several shop numbers are configured', () => {
+    const extra = '+17605550111';
+    const xml = buildInboundTwiml({
+      shopNumbers: [SHOP, extra, '+17605550222'],
+      nextNumber: MIKE,
+      baseUrl: 'https://scws-jobs.vercel.app/',
+      timeout: dialTimeoutAttribute(15),
+    });
+    const numbers = [...xml.matchAll(/<Number[^>]*>([^<]+)<\/Number>/g)].map((m) => m[1]);
+    assert.deepEqual(numbers, [SHOP, MIKE]);
+    assert.equal(xml.includes(extra), false);
+    assert.match(xml, /sequential="true"/);
+    assert.match(xml, /timeout="10"/);
+    assert.ok(xml.indexOf('party=shop') < xml.indexOf('party=mike'));
   });
   it('does not add Mike or sequential when the AI fallback is off', () => {
     const plain = buildInboundTwiml({ shopNumbers: [SHOP], baseUrl: 'https://x.test', timeout: 10 });
@@ -326,6 +343,45 @@ describe('one email when Mike also reports the call', () => {
     assert.equal(second.reason, 'already');
     assert.equal(sent.filter((text) => text !== 'again').length, OFFICE_ALERT_EMAILS.length);
   });
+  it('still sends Mike\'s summary when the recording callback wins the claim race', async () => {
+    const row = { ...mikeRow };
+    let raced = false;
+    const db = {
+      from() {
+        return {
+          select() {
+            return { eq() { return { maybeSingle: async () => ({ data: { ...row }, error: null }) }; } };
+          },
+          update(patch: Record<string, unknown>) {
+            const filters: Array<(current: typeof row) => boolean> = [];
+            const api: any = {
+              eq(col: string, val: string) { filters.push((current) => (current as any)[col] === val); return api; },
+              is(col: string, val: null) { filters.push((current) => (current as any)[col] == null); return api; },
+              select: async () => {
+                if (!raced && filters.every((f) => f(row))) {
+                  raced = true;
+                  row.processing_error = 'leg:mike|note posted';
+                  return { data: [], error: null };
+                }
+                if (filters.some((f) => !f(row))) return { data: [], error: null };
+                Object.assign(row, patch);
+                return { data: [{ call_sid: row.call_sid }], error: null };
+              },
+            };
+            return api;
+          },
+        };
+      },
+    };
+    const sent: string[] = [];
+    const result = await deliverMikeCallEmail(db, {
+      phone: '+17603159054', startedAtMs: Date.parse(mikeRow.started_at), built,
+    }, { rows: [mikeRow], send: async (message) => { sent.push(message.text); return { success: true }; } });
+    assert.equal(result.reason, 'merged');
+    assert.equal(row.processing_error, `${CALL_ALERT_MARKER}|leg:mike|note posted`);
+    assert.match(sent[0], /SUMMARY:\nPump is short-cycling/);
+    assert.match(sent[0], /Answered by: Mike/);
+  });
   it('still sends Mike\'s own email when the call did not come through an inbound line', async () => {
     const sent: string[] = [];
     const result = await deliverMikeCallEmail(null, { phone: '+17605550100', startedAtMs: Date.now(), built }, {
@@ -362,13 +418,22 @@ describe('who answered, and the backup send', () => {
   });
   it('sweeps a finished Mike call only after his report had time to arrive', () => {
     const now = Date.parse('2026-10-22T15:00:00.000Z');
+    assert.equal(SWEEP_MIKE_WAIT_MS, 45 * 60 * 1000);
     const row = { processing_error: 'leg:mike', dial_status: 'completed', answered: true, updated_at: new Date(now - 11 * 60_000).toISOString() };
-    assert.equal(sweepInboundEmail(row, now), 'mike');
-    assert.equal(sweepInboundEmail({ ...row, updated_at: new Date(now - 60_000).toISOString() }, now), null);
-    assert.equal(sweepInboundEmail({ ...row, processing_error: `${CALL_ALERT_MARKER}|leg:mike` }, now), null);
+    assert.equal(sweepInboundEmail(row, now), null);
+    assert.equal(sweepInboundEmail({ ...row, updated_at: new Date(now - SWEEP_MIKE_WAIT_MS - 60_000).toISOString() }, now), 'mike');
+    assert.equal(sweepInboundEmail({ ...row, processing_error: `${CALL_ALERT_MARKER}|leg:mike`, updated_at: new Date(now - SWEEP_MIKE_WAIT_MS - 60_000).toISOString() }, now), null);
+    const unknown = { processing_error: null, dial_status: 'completed', answered: true, updated_at: new Date(now - 11 * 60_000).toISOString() };
+    assert.equal(sweepInboundEmail(unknown, now), null);
+    assert.equal(sweepInboundEmail({ ...unknown, updated_at: new Date(now - SWEEP_MIKE_WAIT_MS - 60_000).toISOString() }, now), 'shop');
     assert.equal(sweepInboundEmail({ processing_error: 'leg:shop', dial_status: 'completed', answered: true, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), 'shop');
     assert.equal(sweepInboundEmail({ processing_error: null, dial_status: 'canceled', answered: false, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), 'missed');
     assert.equal(sweepInboundEmail({ processing_error: null, dial_status: null, answered: null, updated_at: new Date(now - 30 * 60_000).toISOString() }, now), null);
+  });
+  it('keeps the alert claim when the recording note is saved after it', async () => {
+    const { db, state } = memoryDb({ call_sid: 'CA1', processing_error: `${CALL_ALERT_MARKER}|leg:mike` });
+    await commitProcessingNote(db, 'CA1', 'note posted', '2026-10-22T15:00:00.000Z');
+    assert.equal(state.row?.processing_error, `${CALL_ALERT_MARKER}|leg:mike|note posted`);
   });
 });
 
