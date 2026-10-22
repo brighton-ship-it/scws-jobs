@@ -233,34 +233,41 @@ export async function POST(request: NextRequest) {
       const ready = callCands.filter((c) => !tooRecent.has(c.jobberJobId));
       // Call rows: only THIS job's issued invoice or approved quote is sent, never the booking
       // placeholder (UPLOAD_CALLS cannot be restated). Otherwise hold; expire past the lookback.
-      const held: typeof ready = [];
+      const held: Array<{ c: (typeof ready)[number]; reason: string }> = [];
       const expired: typeof ready = [];
       const sendNow: typeof ready = [];
+      let heldWaitingInvoice = 0;
+      let sentAfter5dQuote = 0;
       for (const c of ready) {
         const d = callValueDecision(c);
         if (d.kind === 'send') {
           c.valueUsd = d.value;
           c.valueSource = d.source;
+          if (d.after5d) sentAfter5dQuote += 1;
           sendNow.push(c);
-        } else (d.kind === 'hold' ? held : expired).push(c);
+        } else if (d.kind === 'hold') {
+          if (d.reason === 'waiting_invoice') heldWaitingInvoice += 1;
+          held.push({ c, reason: d.reason === 'waiting_invoice' ? 'HELD_WAITING_INVOICE' : 'NO_INVOICE_OR_APPROVED_QUOTE' });
+        } else expired.push(c);
       }
-      for (const c of [...held, ...expired]) {
-        const kind = held.includes(c) ? 'held' : 'expired';
+      const logHeld = (c: (typeof ready)[number], status: string, error: string) =>
         console.log(
           callRowLogLine({
             jobberJobId: c.jobberJobId,
             callerPhone: c.callerPhone,
             callStartedAt: c.callStartedAt,
-            status: kind,
-            error: kind === 'held' ? 'NO_INVOICE_OR_APPROVED_QUOTE' : 'PAST_90D_LOOKBACK',
+            status,
+            error,
             valueUsd: null,
             valueSource: null,
           })
         );
-      }
-      if (held.length || expired.length)
-        console.log(`[ads_offline] call conversions held=${held.length} expired=${expired.length}`);
-      for (const c of [...held, ...expired]) callJobIds.add(c.jobberJobId); // keep off the Data Manager path
+      for (const h of held) logHeld(h.c, 'held', h.reason);
+      for (const c of expired) logHeld(c, 'expired', 'PAST_90D_LOOKBACK');
+      console.log(
+        `[ads_offline] call conversions held=${held.length} held_waiting_invoice=${heldWaitingInvoice} sent_after_5d_quote=${sentAfter5dQuote} expired=${expired.length}`
+      );
+      for (const c of [...held.map((h) => h.c), ...expired]) callJobIds.add(c.jobberJobId); // keep off the Data Manager path
       ready.splice(0, ready.length, ...sendNow);
       for (const c of ready) {
         callJobIds.add(c.jobberJobId);
