@@ -17,6 +17,7 @@ import {
   needsStatusPoll,
   offlineUploadMode,
   requestIdFromRow,
+  resendOrderId,
   runOfflineImport,
   statusUpdate,
   uploadedIdsToResend,
@@ -263,7 +264,13 @@ export async function POST(request: NextRequest) {
               // Data Manager API (Google Ads uploadClickConversions is closed to new integrations).
               // Does not send GA4 book_job. That import is conversion action 7735430525 and stays separate.
               const token = await refreshDataManagerToken();
-              return ingestEvents(config, conversions, fetch, token);
+              // Backfill re-sends never landed in Ads (sent without consent). Google may
+              // dedupe the same transactionId, so a re-send uses a distinct id. The DB row
+              // stays keyed on the Jobber job id, so a job is still one conversion.
+              const sendable = conversions.map((c) =>
+                resendIds?.has(c.order_id) ? { ...c, order_id: resendOrderId(c.order_id) } : c
+              );
+              return ingestEvents(config, sendable, fetch, token);
             }
           : undefined,
     });
