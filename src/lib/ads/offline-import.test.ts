@@ -10,6 +10,7 @@ import {
   parsePartialFailure,
   statusUpdate,
   uploadedIdsToResend,
+  resendOrderId,
   type AttributedLead,
   type OfflineCandidate,
 } from './offline-import.ts';
@@ -364,4 +365,9 @@ describe('uploadErrorMessage', () => {
     );
     assert.equal(uploadErrorMessage(500, null), 'Google upload HTTP 500');
   });
+});
+
+it('resendOrderId gives a distinct, stable transaction id', () => {
+  assert.equal(resendOrderId('abc'), 'abc-r2');
+  assert.notEqual(resendOrderId('abc'), 'abc');
 });

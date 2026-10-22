@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
-import { googleAdsConfig, refreshGoogleAccessToken } from '@/lib/ads/google-ads-api';
+import { googleAdsConfig, refreshGoogleAccessToken, uploadCallConversions } from '@/lib/ads/google-ads-api';
+import { callTooRecent, e164, needsCallResend, toCallConversion, type CallInfo } from '@/lib/ads/call-conversions';
 import {
   dmStatusLogLine,
   ingestEvents,
@@ -16,10 +17,12 @@ import {
   needsStatusPoll,
   offlineUploadMode,
   requestIdFromRow,
+  resendOrderId,
   runOfflineImport,
   statusUpdate,
   uploadedIdsToResend,
   type AttributedLead,
+  type OfflinePlanRow,
 } from '@/lib/ads/offline-import';
 import { fetchBookedJobs } from '@/lib/jobber/attribution-reads';
 import { nextRestatement, restatementAllowed, sentStateOf, type SentState } from '@/lib/ads/conversion-stages';
@@ -167,13 +170,8 @@ export async function POST(request: NextRequest) {
     }
     const touched = new Set<string>();
     const writtenPayload = new Map<string, Record<string, unknown>>();
-    const result = await runOfflineImport({
-      candidates,
-      existing: existingRows,
-      mode,
-      conversionAction: config?.conversionAction ?? null,
-      resendUploadedIds: resendIds,
-      save: async (row) => {
+    const callJobIds = new Set<string>();
+    const saveRow = async (row: OfflinePlanRow) => {
         touched.add(row.jobber_job_id);
         const prior = existingRows.find((r) => r.jobber_job_id === row.jobber_job_id);
         const payload: Record<string, unknown> = {
@@ -184,7 +182,10 @@ export async function POST(request: NextRequest) {
           stages: stagesByJob.get(row.jobber_job_id) ?? null,
           sent_stage: row.status === 'uploaded' ? (firstStage.get(row.jobber_job_id) ?? 1) : null,
           sent_value: row.status === 'uploaded' ? row.value_usd : null,
-          dm_request_id: ingestRequestId(row.google_response) ?? requestIdFromRow(prior ?? {}),
+          call_upload: callJobIds.has(row.jobber_job_id) && row.status === 'uploaded' ? true : undefined,
+          dm_request_id: callJobIds.has(row.jobber_job_id)
+            ? null
+            : ingestRequestId(row.google_response) ?? requestIdFromRow(prior ?? {}),
           dm_status: row.google_response ? null : (prior?.payload as { dm_status?: unknown } | null)?.dm_status ?? null,
         };
         writtenPayload.set(row.jobber_job_id, payload);
@@ -208,14 +209,68 @@ export async function POST(request: NextRequest) {
           { onConflict: 'jobber_job_id' }
         );
         if (error) throw new Error(error.message);
-      },
+      };
+
+    // Won jobs from an Ads call go through UploadCallConversions (caller id + call start).
+    // Unset GOOGLE_ADS_CALL_CONVERSION_ACTION keeps the previous Data Manager path.
+    const callAction = mode === 'live' ? config?.callConversionAction ?? null : null;
+    const callInfo = new Map<string, CallInfo>();
+    let callResult: Awaited<ReturnType<typeof runOfflineImport>> | null = null;
+    let mainCandidates = candidates;
+    if (callAction && config) {
+      const callCands = candidates.filter(
+        (c) => c.signal === 'ads_call' && !c.gclid && !c.gbraid && !c.wbraid && e164(c.callerPhone) && c.callStartedAt
+      );
+      const tooRecent = new Set(callCands.filter((c) => callTooRecent({ callerPhone: c.callerPhone, callStartedAt: c.callStartedAt })).map((c) => c.jobberJobId));
+      const ready = callCands.filter((c) => !tooRecent.has(c.jobberJobId));
+      for (const c of ready) {
+        callJobIds.add(c.jobberJobId);
+        callInfo.set(c.jobberJobId, { callerPhone: c.callerPhone, callStartedAt: c.callStartedAt });
+      }
+      mainCandidates = candidates.filter((c) => !callJobIds.has(c.jobberJobId) && !tooRecent.has(c.jobberJobId));
+      if (tooRecent.size) console.log(`[ads_offline] call conversions waiting 6h=${tooRecent.size}`);
+      const callResend = new Set(
+        existingRows.filter((r) => callJobIds.has(r.jobber_job_id) && needsCallResend(r)).map((r) => r.jobber_job_id)
+      );
+      callResult = await runOfflineImport({
+        candidates: ready,
+        existing: existingRows,
+        mode,
+        conversionAction: config.conversionAction ?? callAction,
+        resendUploadedIds: callResend,
+        save: saveRow,
+        upload: async (conversions) => {
+          const calls = conversions.map((c) => toCallConversion(callAction, c, callInfo.get(c.order_id)));
+          const sendable = calls.filter((c): c is NonNullable<typeof c> => c != null);
+          if (sendable.length !== calls.length) throw new Error('call conversion missing caller or start time');
+          const token = await refreshGoogleAccessToken(config);
+          const res = await uploadCallConversions(config, sendable, fetch, token);
+          console.log(`[ads_offline] call conversions sent=${sendable.length} http=${res.status}`);
+          return res;
+        },
+      });
+    }
+
+    const result = await runOfflineImport({
+      candidates: mainCandidates,
+      existing: existingRows,
+      mode,
+      conversionAction: config?.conversionAction ?? null,
+      resendUploadedIds: resendIds,
+      save: saveRow,
       upload:
         mode === 'live' && config
           ? async (conversions) => {
               // Data Manager API (Google Ads uploadClickConversions is closed to new integrations).
               // Does not send GA4 book_job. That import is conversion action 7735430525 and stays separate.
               const token = await refreshDataManagerToken();
-              return ingestEvents(config, conversions, fetch, token);
+              // Backfill re-sends never landed in Ads (sent without consent). Google may
+              // dedupe the same transactionId, so a re-send uses a distinct id. The DB row
+              // stays keyed on the Jobber job id, so a job is still one conversion.
+              const sendable = conversions.map((c) =>
+                resendIds?.has(c.order_id) ? { ...c, order_id: resendOrderId(c.order_id) } : c
+              );
+              return ingestEvents(config, sendable, fetch, token);
             }
           : undefined,
     });
@@ -291,7 +346,10 @@ export async function POST(request: NextRequest) {
         restatements_skipped: restatementsSkipped,
         errors: statusErrors,
       },
-      success: result.errors.length === 0 && statusErrors.length === 0,
+      success: result.errors.length === 0 && statusErrors.length === 0 && (callResult?.errors.length ?? 0) === 0,
+      call_conversions: callResult
+        ? { action: callAction, uploaded: callResult.uploaded, skipped: callResult.skipped, errors: callResult.errors }
+        : null,
       mode,
       backfill_since: backfillDay,
       trigger: 'booked_job',

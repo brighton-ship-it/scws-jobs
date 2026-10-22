@@ -20,6 +20,8 @@ curl -sS -X POST -H "Authorization: Bearer $CRON_SECRET" \
   "https://jobs.scwellservice.com/api/cron/ads-offline-conversions?backfillSince=2026-09-01"
 ```
 
+   **Won jobs from an Ads call (2026-10-21).** Data Manager accepted these as SUCCESS, but a hashed phone alone never matches: the caller dialed from a call asset or forwarding number and never clicked through, so there is no click to join to. When `GOOGLE_ADS_CALL_CONVERSION_ACTION` (an "Import from calls" / `UPLOAD_CALLS` action) is set and the mode is live, `ads_call` jobs with a known caller (`ads_calls.caller_phone`) and call start are sent with Google Ads `uploadCallConversions` (caller id E.164 + call start time, conversion time = booking time, never before the call, value = the same best-known pre-tax value). Calls under 6 hours old wait for the next run. Rows already marked `uploaded` through Data Manager are re-sent once on this path (`payload.call_upload` marks them done). Unset, nothing changes.
+
 4. **Ad calls.** `/api/cron/ads-calls` runs a read-only `call_view` query and stores campaign, duration, and start time in `ads_calls`. Google does not return the caller number or the keyword on `call_view`. The caller number is joined from the Google Workspace Voice audit log (start time within 30 seconds, duration within 15 seconds) and then matched to a CRM customer or a Jobber client by phone. A matched customer whose lead source is empty, `phone`, or `website_form` is tagged `google_ads`.
 
 5. **Weekly report.** `/api/cron/ads-closed-loop` emails (and, when configured, appends a Google Sheet tab `Closed loop`) grouped by source, campaign, and keyword: leads, calls, booked jobs, quotes, invoiced revenue, cost, and ROAS. Revenue with no lead and no ads call is `source = unattributed`.
@@ -67,6 +69,7 @@ New:
 | `GOOGLE_ADS_API_VERSION` | No | Defaults to `v18` |
 | `GOOGLE_DATAMANAGER_REFRESH_TOKEN` | Live upload only | Refresh token for the same OAuth client with the `datamanager` scope (Data Manager API enabled on the Cloud project). Falls back to `GOOGLE_ADS_REFRESH_TOKEN` |
 | `GOOGLE_ADS_OFFLINE_CONVERSION_ACTION` | Live upload only | Resource name `customers/123/conversionActions/456` for the existing "Jobber Won (offline)" upload-clicks action. Create that action in the Ads UI. This repo will not create it |
+| `GOOGLE_ADS_CALL_CONVERSION_ACTION` | No | `customers/123/conversionActions/456` for an Import-from-calls (`UPLOAD_CALLS`) action. Enables won-job call conversions |
 | `ADS_OFFLINE_UPLOAD` | No | `dry_run` (default) or `live` |
 | `GOOGLE_VOICE_REFRESH_TOKEN` | To attach caller phones | Workspace admin who can read Voice audit reports. Client id/secret fall back to the Ads OAuth client |
 | `GOOGLE_VOICE_CLIENT_ID`, `GOOGLE_VOICE_CLIENT_SECRET` | No | Override the Ads OAuth client for Voice |

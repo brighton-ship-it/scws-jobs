@@ -86,6 +86,11 @@ export function needsStatusPoll(row: { payload?: unknown; google_response?: unkn
  * inside the won-job action. The GA4 book_job action is a different conversion
  * and is not a reason to skip: it is secondary, and this upload is the primary count.
  */
+/** Distinct Data Manager transactionId for a backfill re-send of a job that never landed. */
+export function resendOrderId(jobberJobId: string): string {
+  return `${jobberJobId}-r2`;
+}
+
 export function uploadedIdsToResend(
   existing: Array<{ jobber_job_id: string; status: string; gclid?: string | null; payload?: unknown }>,
   candidateIds: Iterable<string>
@@ -140,6 +145,9 @@ export interface OfflineCandidate {
   signal: OfflineSignal;
   campaign: string | null;
   keyword: string | null;
+  /** Ads call that brought the job in (E.164 caller + UTC start), for call-conversion import. */
+  callerPhone?: string | null;
+  callStartedAt?: string | null;
 }
 
 function stampOf(invoice: WonInvoiceInput): number {
@@ -383,6 +391,7 @@ export async function runOfflineImport(input: {
   existing: OfflineExistingRow[];
   mode: OfflineUploadMode;
   conversionAction: string | null;
+  resendUploadedIds?: ReadonlySet<string>;
   save: (row: OfflinePlanRow) => Promise<void>;
   upload?: (conversions: ClickConversion[]) => Promise<{ ok: boolean; status: number; body: unknown }>;
 }): Promise<{ dryRun: number; uploaded: number; skipped: number; errors: string[] }> {

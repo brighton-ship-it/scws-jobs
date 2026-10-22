@@ -111,6 +111,7 @@ interface Signal {
   at: number;
   kind: OfflineSignal;
   lead: AttributedLead | null;
+  call?: AdsCallHit;
 }
 
 function signalsFor(
@@ -132,7 +133,7 @@ function signalsFor(
     const p = normalizePhone(call.phone);
     if (!p || !keys.has(`p:${p}`)) continue;
     const at = ms(call.startedAt);
-    if (Number.isFinite(at)) out.push({ at, kind: 'ads_call', lead: null });
+    if (Number.isFinite(at)) out.push({ at, kind: 'ads_call', lead: null, call });
   }
   return out.sort((a, b) => a.at - b.at);
 }
@@ -226,6 +227,8 @@ export function candidatesFromBookedJobs(input: {
       signal: pick.kind,
       campaign: lead?.utm_campaign ?? null,
       keyword: lead?.utm_term ?? null,
+      callerPhone: pick.kind === 'ads_call' ? normalizePhone(pick.call?.phone) ?? null : null,
+      callStartedAt: pick.kind === 'ads_call' && pick.call?.startedAt ? new Date(pick.at).toISOString() : null,
     });
   }
   return { candidates, excluded };
