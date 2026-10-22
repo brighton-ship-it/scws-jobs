@@ -141,8 +141,8 @@ export async function POST(request: NextRequest) {
     // Vapi sees the tracking number as the caller on a callback bridge. If that
     // number does not match exactly one in-flight callback, do not file a lead for it.
     if (!callbackAttempt && isReceptionistTestCaller(phone)) {
-      // No lead, task, Discord, or dashboard row. If this test call came in on a
-      // tracking line, the office still gets the one inbound email.
+      // No lead, task, Discord, or dashboard row. An inbound test call does not
+      // email unless it was missed; that email is sent from the Twilio status path.
       try {
         const rawMessages = message.artifact?.messages || message.messages || [];
         const outcome = extractCallOutcome(rawMessages, { phone });
@@ -465,7 +465,7 @@ export async function POST(request: NextRequest) {
           hour12: true,
         });
 
-    // Exactly one email per call. Outcome comes from Mike's tool calls on this call.
+    // Outcome comes from Mike's tool calls on this call. Inbound tracking-line calls are not emailed below.
     const outcome = extractCallOutcome(rawMessages, {
       name: customerName,
       phone,
@@ -536,8 +536,8 @@ export async function POST(request: NextRequest) {
     const emailSubject = built.subject;
     const emailContent = built.text;
 
-    // One email. If this Vapi call is an inbound leg, that row is claimed here so the
-    // Twilio path does not send a second copy. Direct and outbound Mike calls still email.
+    // Inbound tracking-line calls are not emailed here. Missed calls email from the
+    // Twilio status path. Direct and outbound Mike calls still get this report.
     let emailResult: { success?: boolean; error?: string } = {};
     const delivery = await deliverMikeCallEmail(supabase, {
       phone,
@@ -704,9 +704,9 @@ async function handleVapiTools(body: any) {
           insertBooking: insertOfficeBooking,
           updateBooking: updateOfficeBooking,
           loadCandidates: () => loadOfficeAlertCandidates(identity),
-          // One email per call: the end-of-call report sends it, with the final
-          // outcome. The booking_requests row saved here is the fallback source
-          // (see /api/cron/receptionist-alert-fallback).
+          // Do not email from the tool. Direct and outbound calls email from the
+          // end-of-call report. Inbound tracking-line calls email only when missed.
+          // The booking_requests row is the fallback if a direct or outbound report never arrives.
           sendAlert: async () => ({ success: true }),
         },
       });

@@ -1,8 +1,8 @@
 /**
- * Office email for a missed inbound call, and for a call Mike answers.
- * A call the shop answers does not email. Mike's email waits until his call
- * has ended, then uses his end-of-call report (summary and outcome).
- * Mike's voice, greeting, and callback flag are not involved.
+ * Office email for a missed inbound call: nobody answered, neither shop nor Mike.
+ * A call the shop answers does not email. A call Mike answers does not email,
+ * including his end-of-call report. Mike's voice, greeting, and callback flag
+ * are not involved.
  */
 import { formatPhoneDisplay, OFFICE_ALERT_EMAILS } from '../receptionist/office-callback.ts';
 import { AI_RECEPTIONIST, PORTED_LINES, TRACKING_SOURCES, directToAi } from './config.ts';
@@ -217,8 +217,7 @@ const ANSWERED = new Set(['completed', 'answered']);
  * handoff: caller is still here and Mike has not been dialed yet.
  * send now: nobody answered. A canceled dial means the caller is already gone,
  * so TwiML returned from this request will not run.
- * defer: Mike answered. His end-of-call report sends the one email, with the summary.
- * no email: the shop answered.
+ * no email: the shop or Mike answered.
  */
 export function inboundCallEmailPlan(input: {
   dialStatus: string | null | undefined;
@@ -228,14 +227,9 @@ export function inboundCallEmailPlan(input: {
   mikeOnly: boolean;
   /** Mike was one of the numbers in this dial. */
   mikeInDial: boolean;
-}): { handoff: boolean; send: 'now' | 'defer' | 'no'; who: AnsweredBy | null } {
+}): { handoff: boolean; send: 'now' | 'no'; who: AnsweredBy | null } {
   const status = (input.dialStatus || '').trim().toLowerCase();
   if (ANSWERED.has(status)) {
-    if (input.party === 'shop') return { handoff: false, send: 'no', who: null };
-    if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
-    // Both numbers were dialed and the leg callback has not arrived. Wait for Mike's
-    // report if it was him. If Mike was not in the dial, the shop answered: no email.
-    if (input.mikeInDial) return { handoff: false, send: 'defer', who: 'mike' };
     return { handoff: false, send: 'no', who: null };
   }
   if (status === 'canceled' || status === 'cancelled') return { handoff: false, send: 'now', who: 'missed' };
@@ -363,6 +357,7 @@ export async function notifyMissedInboundCall(
 ): Promise<{ sent: boolean; reason: string }> {
   if (!input.callSid) return { sent: false, reason: 'no-sid' };
   if (input.who === 'shop') return { sent: false, reason: 'shop-answered' };
+  if (input.who === 'mike') return { sent: false, reason: 'mike-answered' };
   const env = deps?.env ?? process.env;
   const now = input.now ?? deps?.now ?? new Date();
   const send = deps?.send ?? (async (message) => {
@@ -527,15 +522,15 @@ export function mergeMikeCallEmail(built: MikeEmail, facts: string): MikeEmail {
 }
 
 /**
- * Send Mike's office email. When this Vapi call is an inbound leg, claim that row and
- * send the report once. A second delivery (Mike's email and this one) does not both go out.
+ * Mike's end-of-call report. An inbound tracking-line call does not email here:
+ * the office is emailed only when that call was missed. A direct or outbound
+ * Mike call, with no inbound row, still gets his report.
  */
 export async function deliverMikeCallEmail(
   db: any | null,
   input: { phone: string; startedAtMs: number; built: MikeEmail; talkSeconds?: number | null; inboundOnly?: boolean },
   deps?: { send?: SendFn; env?: NodeJS.ProcessEnv; rows?: InboundMatchRow[] },
-): Promise<{ sent: boolean; reason: 'merged' | 'own' | 'already' | 'email-failed' | 'claim-failed' }> {
-  const env = deps?.env ?? process.env;
+): Promise<{ sent: boolean; reason: 'own' | 'already' | 'mike-answered' | 'email-failed' }> {
   const send = deps?.send ?? (async (message) => {
     const { sendEmail, textToHtml } = await import('../messaging/email.ts');
     return sendEmail({ ...message, html: message.html ?? textToHtml(message.text || '') });
@@ -555,82 +550,26 @@ export async function deliverMikeCallEmail(
     }
   }
   const picked = pickInboundForMike(rows || [], { phone: input.phone, startedAtMs: input.startedAtMs });
-  if (picked.action === 'skip') return { sent: false, reason: 'already' };
-  if (picked.action === 'own' && input.inboundOnly) return { sent: false, reason: 'own' };
-
-  let email = input.built;
-  let claimed: string | null = null;
-  let previous: string | null = null;
-  if (picked.action === 'merge') {
-    let row = picked.row;
-    if (db) {
-      // The recording callback and the answer callback write the same column. If they
-      // land between the read and the claim, try again with their value instead of
-      // treating the report as already emailed.
-      let settled: 'ok' | 'already' | 'error' | 'lost' = 'lost';
-      for (let attempt = 0; attempt < 4; attempt++) {
-        const loaded = await db.from('inbound_call_recordings')
-          .select('call_sid, caller_number, tracking_number, source, started_at, processing_error, duration_seconds')
-          .eq('call_sid', row.call_sid).maybeSingle();
-        if (loaded?.data) row = { ...row, ...loaded.data };
-        if (hasAlertMarker(row.processing_error)) { settled = 'already'; break; }
-        previous = row.processing_error ?? null;
-        claimed = withAlert(previous);
-        const result = await claimProcessingError(db, row.call_sid, previous, claimed, new Date());
-        if (result === 'ok') { settled = 'ok'; break; }
-        if (result === 'error') { settled = 'error'; break; }
-      }
-      if (settled === 'error') return { sent: false, reason: 'claim-failed' };
-      if (settled !== 'ok') return { sent: false, reason: 'already' };
-    }
-    const started = Date.parse(row.started_at || '');
-    const talk = row.duration_seconds != null && row.duration_seconds > 0
-      ? row.duration_seconds
-      : (input.talkSeconds ?? 0);
-    email = mergeMikeCallEmail(input.built, inboundFactBlock({
-      callSid: row.call_sid,
-      caller: row.caller_number,
-      called: row.tracking_number,
-      source: row.source,
-      when: Number.isFinite(started) ? new Date(started) : new Date(input.startedAtMs),
-      who: 'mike',
-      durationSeconds: talk,
-    }, env));
-  }
+  if (picked.action === 'skip' || picked.action === 'merge') return { sent: false, reason: picked.action === 'skip' ? 'already' : 'mike-answered' };
+  if (input.inboundOnly) return { sent: false, reason: 'own' };
 
   let any = false;
   for (const to of missedAlertRecipients()) {
     try {
-      const result = await send({ to, subject: email.subject, text: email.text });
+      const result = await send({ to, subject: input.built.subject, text: input.built.text });
       if (result?.success) any = true;
       else console.error(`[call-alert] email to ${to} failed`, result?.error || 'not sent');
     } catch (error) {
       console.error(`[call-alert] email to ${to} failed`, error instanceof Error ? error.message : error);
     }
   }
-  if (!any && db && picked.action === 'merge' && claimed) {
-    try {
-      await db.from('inbound_call_recordings').update({ processing_error: previous, updated_at: new Date().toISOString() })
-        .eq('call_sid', picked.row.call_sid).eq('processing_error', claimed);
-    } catch (error) {
-      console.error('[call-alert] could not release claim', error instanceof Error ? error.message : error);
-    }
-    return { sent: false, reason: 'email-failed' };
-  }
-  return { sent: any, reason: any ? (picked.action === 'merge' ? 'merged' : 'own') : 'email-failed' };
+  return { sent: any, reason: any ? 'own' : 'email-failed' };
 }
 
 const SWEEP_MAX_MS = 3 * 60 * 60 * 1000;
-/**
- * Mike's report is the email that has his summary. The recording callback and the
- * answer callback write the same row at the end of the call. A 10-minute sweep
- * claimed that row first and sent a copy with no summary. Wait long enough for
- * the report to win, including a retry after that race.
- */
-export const SWEEP_MIKE_WAIT_MS = 45 * 60 * 1000;
 const SWEEP_RETRY_MS = 2 * 60 * 1000;
 
-/** Backup send for a call whose immediate email failed, or whose Mike report never arrived. */
+/** Backup send for a missed call whose immediate email failed. Answered calls are not emailed. */
 export function sweepInboundEmail(row: {
   processing_error: string | null;
   dial_status: string | null;
@@ -645,10 +584,7 @@ export function sweepInboundEmail(row: {
   if (age < 0 || age > SWEEP_MAX_MS) return null;
   const dial = (row.dial_status || '').toLowerCase();
   if (!dial) return null;
-  const party = partyFromProcessing(row.processing_error);
   const answered = row.answered === true || ANSWERED.has(dial);
-  if (answered && party === 'mike') return age >= SWEEP_MIKE_WAIT_MS ? 'mike' : null;
-  // The shop answered, or the leg token never said Mike. No talk-time email.
   if (answered) return null;
   return age >= SWEEP_RETRY_MS ? 'missed' : null;
 }

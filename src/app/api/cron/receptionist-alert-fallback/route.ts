@@ -12,10 +12,10 @@ import {
 } from '@/lib/receptionist/alert-fallback';
 
 /**
- * Mike's mid-call emergency/callback tools no longer email; the end-of-call
- * report sends the single office email. If that report never arrives (no
- * receptionist_calls row for the call), page the office once from the saved
- * booking_requests row so an emergency is never silent.
+ * Mike's mid-call emergency/callback tools do not email. A direct or outbound
+ * Mike call emails from the end-of-call report. If that report never arrives,
+ * page once from the saved booking_requests row. An inbound tracking-line call
+ * emails only when nobody answered; that backup is the sweep below.
  */
 export async function POST(request: NextRequest) {
   const cronAuth = authorizeCronRequest(request);
@@ -94,8 +94,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Inbound calls whose immediate email failed. Mike calls wait (see SWEEP_MIKE_WAIT_MS)
-  // so this sweep does not claim the row before his end-of-call report.
+  // Missed inbound calls whose immediate email failed. Shop and Mike answers are not emailed.
   const sweepSince = new Date(now - 3 * 60 * 60 * 1000).toISOString();
   const { data: inboundRows, error: inboundError } = await (supabase as any)
     .from('inbound_call_recordings')
