@@ -25,7 +25,10 @@ import {
 import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
   backfillFloorIso,
+  ENV_BACKFILL_MAX_ATTEMPTS,
   envBackfillDay,
+  nextEnvBackfillMarker,
+  r2OrderIds,
   needsStatusPoll,
   offlineUploadMode,
   requestIdFromRow,
@@ -60,9 +63,12 @@ export async function POST(request: NextRequest) {
   // One-time backfill from env (no secret handed around): BACKFILL_SINCE=YYYY-MM-DD makes the
   // next scheduled live run act as ?backfillSince=..., then records it as consumed in settings.
   let envBackfill: string | null = null;
+  let envMarker: unknown = null;
   if (!backfillDay && mode === 'live') {
     try {
-      envBackfill = await pendingEnvBackfill(createServiceClient() as any, process.env.BACKFILL_SINCE);
+      const pending = await pendingEnvBackfill(createServiceClient() as any, process.env.BACKFILL_SINCE);
+      envBackfill = pending.day;
+      envMarker = pending.marker;
     } catch (error) {
       console.warn('[ads_offline] BACKFILL_SINCE check failed:', error instanceof Error ? error.message : error);
     }
@@ -177,6 +183,7 @@ export async function POST(request: NextRequest) {
     }> = existing.data ?? [];
     const resendIds = backfillFloor ? uploadedIdsToResend(existingRows, candidates.map((c) => c.jobberJobId)) : undefined;
     if (resendIds) console.log(`[ads_offline] backfill since=${backfillDay} resend=${resendIds.size}`);
+    const r2Ids = r2OrderIds(existingRows, resendIds);
     // The original event carries the best value already known (invoice > approved quote > booking).
     const uploadedIds = new Set(existingRows.filter((r) => r.status === 'uploaded').map((r) => r.jobber_job_id));
     const firstStage = new Map<string, 1 | 2 | 3>();
@@ -204,12 +211,14 @@ export async function POST(request: NextRequest) {
           sent_value: row.status === 'uploaded' ? row.value_usd : null,
           call_upload: callJobIds.has(row.jobber_job_id) && row.status === 'uploaded' ? true : undefined,
           // Order id Google holds for this row; restatements must target it (QA #239).
-          sent_order_id:
-            row.status === 'uploaded' && row.google_response && !callJobIds.has(row.jobber_job_id)
-              ? resendIds?.has(row.jobber_job_id)
-                ? resendOrderId(row.jobber_job_id)
-                : row.jobber_job_id
-              : (prior?.payload as { sent_order_id?: unknown } | null)?.sent_order_id ?? undefined,
+          // A -r2 attempt keeps -r2 even when it failed, so the retry goes out under the same id.
+          sent_order_id: callJobIds.has(row.jobber_job_id)
+            ? (prior?.payload as { sent_order_id?: unknown } | null)?.sent_order_id ?? undefined
+            : r2Ids.has(row.jobber_job_id) && (row.status === 'uploaded' || row.status === 'error')
+              ? resendOrderId(row.jobber_job_id)
+              : row.status === 'uploaded' && row.google_response
+                ? row.jobber_job_id
+                : (prior?.payload as { sent_order_id?: unknown } | null)?.sent_order_id ?? undefined,
           dm_request_id: callJobIds.has(row.jobber_job_id)
             ? null
             : ingestRequestId(row.google_response) ?? requestIdFromRow(prior ?? {}),
@@ -350,7 +359,7 @@ export async function POST(request: NextRequest) {
               // dedupe the same transactionId, so a re-send uses a distinct id. The DB row
               // stays keyed on the Jobber job id, so a job is still one conversion.
               const sendable = conversions.map((c) =>
-                resendIds?.has(c.order_id) ? { ...c, order_id: resendOrderId(c.order_id) } : c
+                r2Ids.has(c.order_id) ? { ...c, order_id: resendOrderId(c.order_id) } : c
               );
               return ingestEvents(config, sendable, fetch, token);
             }
@@ -419,22 +428,21 @@ export async function POST(request: NextRequest) {
     const sum = (key: string) =>
       Math.round(stageRows.reduce((t, r) => t + (Number(r[key]) || 0), 0) * 100) / 100;
 
-    const clickErrors = result.errors.length;
-    if (envBackfill && clickErrors > 0) {
-      console.error(
-        `[ads_offline] BACKFILL_SINCE=${envBackfill} NOT consumed: click upload errors=${clickErrors} resend=${resendIds?.size ?? 0}; will retry next run`
-      );
-    } else if (envBackfill) {
+    if (envBackfill) {
+      // Only errors among the re-sent (-r2) rows decide whether the backfill is done.
+      const resendErrors = result.errors.filter((e) => r2Ids.has(e.split(':')[0].trim())).length;
+      const marker = nextEnvBackfillMarker(envMarker, envBackfill, resendErrors, resendIds?.size ?? 0, new Date().toISOString());
       const marked = await db.from('settings').upsert(
-        {
-          key: ENV_BACKFILL_KEY,
-          value: { since: envBackfill, at: new Date().toISOString(), resend: resendIds?.size ?? 0 },
-          updated_at: new Date().toISOString(),
-        },
+        { key: ENV_BACKFILL_KEY, value: marker, updated_at: new Date().toISOString() },
         { onConflict: 'key' }
       );
-      if (marked.error) console.warn('[ads_offline] could not mark BACKFILL_SINCE consumed:', marked.error.message);
-      else console.log(`[ads_offline] BACKFILL_SINCE=${envBackfill} consumed resend=${resendIds?.size ?? 0} click_errors=0; remove the env var`);
+      if (marked.error) console.warn('[ads_offline] could not write BACKFILL_SINCE marker:', marked.error.message);
+      else if (marker.done)
+        console.log(`[ads_offline] BACKFILL_SINCE=${envBackfill} consumed resend=${marker.resend} resend_errors=0 attempt=${marker.attempts}; remove the env var`);
+      else if (marker.attempts >= ENV_BACKFILL_MAX_ATTEMPTS)
+        console.error(`[ads_offline] BACKFILL_SINCE=${envBackfill} GIVING UP after ${marker.attempts} nights resend_errors=${resendErrors}; remove the env var and check errors`);
+      else
+        console.error(`[ads_offline] BACKFILL_SINCE=${envBackfill} NOT consumed resend_errors=${resendErrors} attempt=${marker.attempts}/${ENV_BACKFILL_MAX_ATTEMPTS}; will retry next run`);
     }
     return NextResponse.json({
       env_backfill: envBackfill,
@@ -512,12 +520,12 @@ async function loadAdsCalls(db: any) {
 
 const ENV_BACKFILL_KEY = 'ads_offline_env_backfill_v1';
 
-async function pendingEnvBackfill(db: any, raw: string | undefined): Promise<string | null> {
+async function pendingEnvBackfill(db: any, raw: string | undefined): Promise<{ day: string | null; marker: unknown }> {
   const { data, error } = await db.from('settings').select('value').eq('key', ENV_BACKFILL_KEY).maybeSingle();
   if (error) throw new Error(error.message);
   const day = envBackfillDay(raw, data?.value ?? null);
-  if (raw?.trim() && !day) console.log(`[ads_offline] BACKFILL_SINCE=${raw.trim()} already consumed or invalid; skipping`);
-  return day;
+  if (raw?.trim() && !day) console.log(`[ads_offline] BACKFILL_SINCE=${raw.trim()} already consumed, capped, or invalid; skipping`);
+  return { day, marker: data?.value ?? null };
 }
 
 function mapLead(row: Record<string, unknown>, source: AttributedLead['source']): AttributedLead {
