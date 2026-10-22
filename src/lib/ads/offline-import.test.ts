@@ -11,6 +11,7 @@ import {
   statusUpdate,
   uploadedIdsToResend,
   resendOrderId,
+  envBackfillDay,
   type AttributedLead,
   type OfflineCandidate,
 } from './offline-import.ts';
@@ -370,4 +371,13 @@ describe('uploadErrorMessage', () => {
 it('resendOrderId gives a distinct, stable transaction id', () => {
   assert.equal(resendOrderId('abc'), 'abc-r2');
   assert.notEqual(resendOrderId('abc'), 'abc');
+});
+
+it('BACKFILL_SINCE runs once per day value', () => {
+  assert.equal(envBackfillDay('2026-09-22', null), '2026-09-22');
+  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-22' }), null);
+  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-01' }), '2026-09-22');
+  assert.equal(envBackfillDay('', null), null);
+  assert.equal(envBackfillDay('2026-08-01', null), null);
+  assert.equal(envBackfillDay('bad', null), null);
 });
