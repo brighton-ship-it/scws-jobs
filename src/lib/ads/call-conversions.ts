@@ -98,37 +98,66 @@ export interface AdsCallRow {
  */
 export function usableAdsCalls(
   rows: AdsCallRow[],
-  input: { hasUtcColumn: boolean; repairedLedger: ReadonlySet<string>; repair: (s: string) => string | null }
-): { calls: Array<{ phone: string | null; campaign: string | null; startedAt: string | null }>; droppedLandingPage: number; shifted: number } {
+  input: {
+    hasUtcColumn: boolean;
+    repairedLedger: ReadonlySet<string>;
+    repair: (s: string) => string | null;
+    /** False when the started_at_utc select failed: never shift (risk of double shift). */
+    allowShift?: boolean;
+  }
+): {
+  calls: Array<{ phone: string | null; campaign: string | null; startedAt: string | null }>;
+  droppedLandingPage: number;
+  unknownSource: number;
+  shifted: number;
+} {
   let droppedLandingPage = 0;
+  let unknownSource = 0;
   let shifted = 0;
   const calls: Array<{ phone: string | null; campaign: string | null; startedAt: string | null }> = [];
   for (const r of rows) {
     const src = (r.call_source ?? '').trim().toUpperCase();
-    if (src && src !== 'AD') {
+    if (src === 'LANDING_PAGE') {
       droppedLandingPage += 1;
       continue;
     }
+    // UNKNOWN / UNSPECIFIED / legacy null: counted separately and still sent as ad calls.
+    if (src !== 'AD') unknownSource += 1;
     let startedAt = r.started_at;
     const correct =
       (input.hasUtcColumn && r.started_at_utc === true) ||
       (r.call_view_resource ? input.repairedLedger.has(r.call_view_resource) : false);
-    if (startedAt && !correct) {
+    if (startedAt && !correct && input.allowShift !== false) {
       const fixed = input.repair(startedAt);
       if (fixed && fixed !== new Date(startedAt).toISOString()) shifted += 1;
       startedAt = fixed ?? startedAt;
     }
     calls.push({ phone: r.caller_phone, campaign: r.campaign_name, startedAt });
   }
-  return { calls, droppedLandingPage, shifted };
+  return { calls, droppedLandingPage, unknownSource, shifted };
 }
 
-/** Best real value for a won job: invoiced > approved quote > booking. */
-export function bestWonValue(stages: { booking: number; approved: number | null; invoiced: number | null }): {
-  value: number;
-  source: 'invoiced' | 'approved' | 'booking';
-} {
-  if (stages.invoiced && stages.invoiced > 0) return { value: stages.invoiced, source: 'invoiced' };
-  if (stages.approved && stages.approved > 0) return { value: stages.approved, source: 'approved' };
-  return { value: stages.booking, source: 'booking' };
+/**
+ * Value for a won job from an Ads call, from THIS job only (never client-wide totals):
+ * issued invoice pre-tax, else the job's own approved quote subtotal. With neither,
+ * the row is HELD (no booking placeholder is ever uploaded: UPLOAD_CALLS cannot be restated).
+ * After the 90-day lookback from the call start the row expires.
+ */
+export type CallValueDecision =
+  | { kind: 'send'; value: number; source: 'invoice_pretax' | 'approved_quote' }
+  | { kind: 'hold' }
+  | { kind: 'expired' };
+
+export const CALL_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
+
+export function callValueDecision(
+  input: { ownInvoiceUsd?: number | null; ownQuoteUsd?: number | null; callStartedAt?: string | null },
+  now = Date.now()
+): CallValueDecision {
+  const start = Date.parse(input.callStartedAt ?? '');
+  // Keep a day of margin inside Google's 90-day window.
+  if (Number.isFinite(start) && now - start > CALL_LOOKBACK_MS - 24 * 60 * 60 * 1000) return { kind: 'expired' };
+  if (input.ownInvoiceUsd && input.ownInvoiceUsd > 0) return { kind: 'send', value: input.ownInvoiceUsd, source: 'invoice_pretax' };
+  if (input.ownQuoteUsd && input.ownQuoteUsd > 0) return { kind: 'send', value: input.ownQuoteUsd, source: 'approved_quote' };
+  return { kind: 'hold' };
 }

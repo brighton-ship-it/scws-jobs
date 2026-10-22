@@ -167,5 +167,8 @@ The suites cover the cookie, form-encoded bodies, lead tagging, book_job send ga
 - Tracking only: primary_for_goal=false, not in Conversions. Its goal row QUALIFIED_LEAD~CALL_FROM_ADS is biddable=true, so promoting this action WOULD change bidding. Do not promote without Brighton's OK.
 - Only ads_calls with call_source AD (call asset / call ad Google forwarding numbers) are sent. LANDING_PAGE calls are skipped (website calls are counted by the site's click conversion; the Twilio 331-2502 site number is never in ads_calls).
 - ads_calls.started_at rows not flagged started_at_utc and not in the ads_calls_started_at_utc_v1 ledger are shifted Pacific->UTC in memory before matching.
-- Value: issued invoice pre-tax > Jobber job total > quote subtotal; call rows send the best stage (invoiced > approved > booking).
+- Click/gclid path (primary 7833699992): value order is unchanged (quote subtotal > invoice pre-tax > job total).
+- Call rows only: value is THIS job's own issued invoice pre-tax, else THIS job's own approved quote subtotal (logged `source=approved_quote`). Never client-wide totals, never the booking placeholder. With neither, the row is HELD (`status=held error=NO_INVOICE_OR_APPROVED_QUOTE`) and re-checked nightly; it is sent once when a value exists, and expires 89 days after the call (`PAST_90D_LOOKBACK`). UPLOAD_CALLS cannot be restated, so one send is final.
+- Call sources: LANDING_PAGE skipped; UNKNOWN/UNSPECIFIED/null are still sent and counted as `unknown_source_sent`.
+- If the started_at_utc select fails, the cron logs a WARNING and does not shift any call times that run.
 - Logs: one `[ads_offline] call row job=... caller=*1234 start=... status=... error=CODE` line per row, plus `call conversions uploaded=X errors=Y`.

@@ -3,7 +3,7 @@ import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 import { googleAdsConfig, refreshGoogleAccessToken, uploadCallConversions } from '@/lib/ads/google-ads-api';
 import {
-  bestWonValue,
+  callValueDecision,
   callRowLogLine,
   callTooRecent,
   e164,
@@ -97,7 +97,7 @@ export async function POST(request: NextRequest) {
       ...(customers.data ?? []).map((row) => mapLead(row, 'customers')),
     ];
     console.log(
-      `[ads_offline] ads_calls rows=${calls.rows} utc_column=${calls.hasUtcColumn} shifted=${calls.shifted} dropped_landing_page=${calls.droppedLandingPage}`
+      `[ads_offline] ads_calls rows=${calls.rows} utc_column=${calls.hasUtcColumn} shifted=${calls.shifted} dropped_landing_page=${calls.droppedLandingPage} unknown_source_sent=${calls.unknownSource}`
     );
     if (bookings.error) console.warn('[ads_offline] booking_requests:', bookings.error.message);
     if (customers.error) console.warn('[ads_offline] customers:', customers.error.message);
@@ -231,13 +231,38 @@ export async function POST(request: NextRequest) {
       );
       const tooRecent = new Set(callCands.filter((c) => callTooRecent({ callerPhone: c.callerPhone, callStartedAt: c.callStartedAt })).map((c) => c.jobberJobId));
       const ready = callCands.filter((c) => !tooRecent.has(c.jobberJobId));
+      // Call rows: only THIS job's issued invoice or approved quote is sent, never the booking
+      // placeholder (UPLOAD_CALLS cannot be restated). Otherwise hold; expire past the lookback.
+      const held: typeof ready = [];
+      const expired: typeof ready = [];
+      const sendNow: typeof ready = [];
       for (const c of ready) {
-        // Credit the real won value (invoice > approved quote > booking), not the $200 booking placeholder.
-        const best = bestWonValue(c.stages);
-        if (best.value > c.valueUsd) {
-          c.valueUsd = best.value;
-          c.valueSource = best.source === 'invoiced' ? 'invoice_pretax' : c.valueSource;
-        }
+        const d = callValueDecision(c);
+        if (d.kind === 'send') {
+          c.valueUsd = d.value;
+          c.valueSource = d.source;
+          sendNow.push(c);
+        } else (d.kind === 'hold' ? held : expired).push(c);
+      }
+      for (const c of [...held, ...expired]) {
+        const kind = held.includes(c) ? 'held' : 'expired';
+        console.log(
+          callRowLogLine({
+            jobberJobId: c.jobberJobId,
+            callerPhone: c.callerPhone,
+            callStartedAt: c.callStartedAt,
+            status: kind,
+            error: kind === 'held' ? 'NO_INVOICE_OR_APPROVED_QUOTE' : 'PAST_90D_LOOKBACK',
+            valueUsd: null,
+            valueSource: null,
+          })
+        );
+      }
+      if (held.length || expired.length)
+        console.log(`[ads_offline] call conversions held=${held.length} expired=${expired.length}`);
+      for (const c of [...held, ...expired]) callJobIds.add(c.jobberJobId); // keep off the Data Manager path
+      ready.splice(0, ready.length, ...sendNow);
+      for (const c of ready) {
         callJobIds.add(c.jobberJobId);
         callInfo.set(c.jobberJobId, { callerPhone: c.callerPhone, callStartedAt: c.callStartedAt });
       }
@@ -409,9 +434,14 @@ export async function POST(request: NextRequest) {
 async function loadAdsCalls(db: any) {
   const base = 'caller_phone, campaign_name, started_at, call_source, call_view_resource';
   let hasUtcColumn = true;
+  let allowShift = true;
   let res = await db.from('ads_calls').select(`${base}, started_at_utc`).not('caller_phone', 'is', null).limit(5000);
   if (res.error) {
     hasUtcColumn = false;
+    allowShift = false;
+    console.error(
+      `[ads_offline] WARNING ads_calls started_at_utc select failed (${res.error.message}); call times NOT shifted this run`
+    );
     res = await db.from('ads_calls').select(base).not('caller_phone', 'is', null).limit(5000);
   }
   if (res.error) console.warn('[ads_offline] ads_calls:', res.error.message);
@@ -422,6 +452,7 @@ async function loadAdsCalls(db: any) {
   const usable = usableAdsCalls(rows, {
     hasUtcColumn,
     repairedLedger,
+    allowShift,
     repair: (v) => repairAdsStartedAtStoredAsUtc(v),
   });
   return { ...usable, rows: rows.length, hasUtcColumn };

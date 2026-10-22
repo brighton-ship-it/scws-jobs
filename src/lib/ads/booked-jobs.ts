@@ -42,10 +42,14 @@ export interface BookedJobInput {
   clientQuotes?: ClientQuoteInput[] | null;
 }
 
-export type ValueSource = 'quote_subtotal' | 'invoice_pretax' | 'job_total';
+export type ValueSource = 'quote_subtotal' | 'invoice_pretax' | 'job_total' | 'approved_quote';
 
 export interface BookedCandidate extends OfflineCandidate {
   clientName: string | null;
+  /** THIS job's own issued-invoice pre-tax total (not the client's other jobs). Call rows only. */
+  ownInvoiceUsd?: number | null;
+  /** THIS job's own quote subtotal (the quote that became this job, i.e. approved). Call rows only. */
+  ownQuoteUsd?: number | null;
   stages: StageValues;
   valueSource: ValueSource;
 }
@@ -79,14 +83,12 @@ function positive(n: number | null | undefined): number | null {
 }
 
 export function bookedValue(job: BookedJobInput): { valueUsd: number; valueSource: ValueSource } | null {
-  // Real won-job money first: issued invoice pre-tax, then the Jobber job total.
-  // The quote subtotal is often the $200 service-call booking, so it is the last resort.
+  const quote = positive(job.quoteSubtotal);
+  if (quote) return { valueUsd: quote, valueSource: 'quote_subtotal' };
   const invoice = sumIssuedInvoicePretax(job.invoices);
   if (invoice) return { valueUsd: invoice, valueSource: 'invoice_pretax' };
   const total = positive(job.jobTotal);
   if (total) return { valueUsd: total, valueSource: 'job_total' };
-  const quote = positive(job.quoteSubtotal);
-  if (quote) return { valueUsd: quote, valueSource: 'quote_subtotal' };
   return null;
 }
 
@@ -220,6 +222,8 @@ export function candidatesFromBookedJobs(input: {
       valueUsd: priced.valueUsd,
       valueSource: priced.valueSource,
       stages,
+      ownInvoiceUsd: sumIssuedInvoicePretax(job.invoices) ?? null,
+      ownQuoteUsd: positive(job.quoteSubtotal),
       clientName: job.clientName ?? null,
       gclid: lead?.gclid ?? null,
       gbraid: lead?.gbraid ?? null,
