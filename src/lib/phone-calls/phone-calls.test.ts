@@ -27,7 +27,7 @@ describe('phone-calls', () => {
     const x = buildInboundTwiml({ shopNumbers: ['+17604408520'], baseUrl: 'https://x.test' });
     assert.doesNotMatch(x, /<Say/);
     assert.match(x, /record="record-from-answer-dual"/);
-    assert.match(x, /<Number>\+17604408520<\/Number>/);
+    assert.match(x, /<Number[^>]*>\+17604408520<\/Number>/);
     assert.match(x, /recording"/);
   });
   it('normalizes phones and parses summaries defensively', () => {
@@ -107,8 +107,8 @@ describe('AI receptionist no-answer handoff', () => {
   });
   it('dials the AI number with no action (no loop)', () => {
     const x = buildAiHandoffTwiml('+17604915348', 'https://x.test/');
-    assert.match(x, /<Number>\+17604915348<\/Number>/);
-    assert.doesNotMatch(x, /action=/);
+    assert.match(x, /<Number[^>]*>\+17604915348<\/Number>/);
+    assert.doesNotMatch(x, /<Dial[^>]* action=/);
   });
 });
 

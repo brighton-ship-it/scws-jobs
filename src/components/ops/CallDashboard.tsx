@@ -704,7 +704,7 @@ function CallsCard({ feed, recorded, focusSid }: { feed: FeedRow[] | null | unde
                   <span className="text-sm tabular-nums text-slate-500">{feedTime(c.at)} · {fmtDur(f?.durationSeconds ?? r?.duration_seconds ?? null)}</span>
                   <span className="flex max-w-full flex-wrap items-center gap-1 text-xs">
                     <OutcomePill o={outcome} by={f?.answeredBy} unknownWho={!!r} />
-                    {r?.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
+                    {String(r?.processing_error || '').includes('note posted') ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
                     {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
                     {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
                   </span>
