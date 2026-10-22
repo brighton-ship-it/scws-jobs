@@ -233,7 +233,8 @@ export function inboundCallEmailPlan(input: {
     if (input.party === 'shop') return { handoff: false, send: 'now', who: 'shop' };
     if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
     // Both numbers were dialed and the leg callback has not arrived. Wait for Mike's
-    // report if it was him; the sweep sends one email later if it was the shop.
+    // report if it was him. The sweep does not send a shop backup until that report
+    // has had time to claim the row.
     if (input.mikeInDial) return { handoff: false, send: 'defer', who: 'mike' };
     return { handoff: false, send: 'now', who: 'shop' };
   }
@@ -560,22 +561,36 @@ export async function deliverMikeCallEmail(
   let claimed: string | null = null;
   let previous: string | null = null;
   if (picked.action === 'merge') {
-    previous = picked.row.processing_error;
-    claimed = withAlert(previous);
+    let row = picked.row;
     if (db) {
-      const result = await claimProcessingError(db, picked.row.call_sid, previous, claimed, new Date());
-      if (result === 'error') return { sent: false, reason: 'claim-failed' };
-      if (result === 'lost') return { sent: false, reason: 'already' };
+      // The recording callback and the answer callback write the same column. If they
+      // land between the read and the claim, try again with their value instead of
+      // treating the report as already emailed.
+      let settled: 'ok' | 'already' | 'error' | 'lost' = 'lost';
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const loaded = await db.from('inbound_call_recordings')
+          .select('call_sid, caller_number, tracking_number, source, started_at, processing_error, duration_seconds')
+          .eq('call_sid', row.call_sid).maybeSingle();
+        if (loaded?.data) row = { ...row, ...loaded.data };
+        if (hasAlertMarker(row.processing_error)) { settled = 'already'; break; }
+        previous = row.processing_error ?? null;
+        claimed = withAlert(previous);
+        const result = await claimProcessingError(db, row.call_sid, previous, claimed, new Date());
+        if (result === 'ok') { settled = 'ok'; break; }
+        if (result === 'error') { settled = 'error'; break; }
+      }
+      if (settled === 'error') return { sent: false, reason: 'claim-failed' };
+      if (settled !== 'ok') return { sent: false, reason: 'already' };
     }
-    const started = Date.parse(picked.row.started_at || '');
-    const talk = picked.row.duration_seconds != null && picked.row.duration_seconds > 0
-      ? picked.row.duration_seconds
+    const started = Date.parse(row.started_at || '');
+    const talk = row.duration_seconds != null && row.duration_seconds > 0
+      ? row.duration_seconds
       : (input.talkSeconds ?? 0);
     email = mergeMikeCallEmail(input.built, inboundFactBlock({
-      callSid: picked.row.call_sid,
-      caller: picked.row.caller_number,
-      called: picked.row.tracking_number,
-      source: picked.row.source,
+      callSid: row.call_sid,
+      caller: row.caller_number,
+      called: row.tracking_number,
+      source: row.source,
       when: Number.isFinite(started) ? new Date(started) : new Date(input.startedAtMs),
       who: 'mike',
       durationSeconds: talk,
@@ -605,7 +620,13 @@ export async function deliverMikeCallEmail(
 }
 
 const SWEEP_MAX_MS = 3 * 60 * 60 * 1000;
-const SWEEP_MIKE_WAIT_MS = 10 * 60 * 1000;
+/**
+ * Mike's report is the email that has his summary. The recording callback and the
+ * answer callback write the same row at the end of the call. A 10-minute sweep
+ * claimed that row first and sent a copy with no summary. Wait long enough for
+ * the report to win, including a retry after that race.
+ */
+export const SWEEP_MIKE_WAIT_MS = 45 * 60 * 1000;
 const SWEEP_RETRY_MS = 2 * 60 * 1000;
 
 /** Backup send for a call whose immediate email failed, or whose Mike report never arrived. */
@@ -627,6 +648,32 @@ export function sweepInboundEmail(row: {
   const answered = row.answered === true || ANSWERED.has(dial);
   if (answered && party === 'mike') return age >= SWEEP_MIKE_WAIT_MS ? 'mike' : null;
   if (answered && party === 'shop') return age >= SWEEP_RETRY_MS ? 'shop' : null;
+  // Leg token missing. This is what the answer callback / recording race leaves behind
+  // on a Mike call. Do not claim it as a shop email while his report can still send.
   if (answered) return age >= SWEEP_MIKE_WAIT_MS ? 'shop' : null;
   return age >= SWEEP_RETRY_MS ? 'missed' : null;
+}
+
+/**
+ * Merge a recording note onto the claim and the answered-party token.
+ * Compare-and-swap so a Mike report that claims the row during this write is kept.
+ * Callers whose client has no `update` (unit-test fakes) fall back to one upsert.
+ */
+export async function commitProcessingNote(db: any, callSid: string, note: string | null, nowIso: string): Promise<void> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const latest = await db.from('inbound_call_recordings').select('processing_error').eq('call_sid', callSid).maybeSingle();
+    const current = latest?.data?.processing_error ?? null;
+    const next = mergeProcessingError(current, note);
+    if ((next ?? null) === (current ?? null)) return;
+    const table = db.from('inbound_call_recordings');
+    if (typeof table.update !== 'function') {
+      await table.upsert({ call_sid: callSid, processing_error: next, updated_at: nowIso }, { onConflict: 'call_sid' });
+      return;
+    }
+    let query = table.update({ processing_error: next, updated_at: nowIso }).eq('call_sid', callSid);
+    query = current == null ? query.is('processing_error', null) : query.eq('processing_error', current);
+    const wrote = await query.select('call_sid');
+    if (wrote?.error) return;
+    if (wrote?.data?.length) return;
+  }
 }

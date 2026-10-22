@@ -13,11 +13,14 @@ function numberNoun(base: string, number: string, party: 'shop' | 'mike'): strin
  * The notice plays before any ringing. Mike still says it himself when the call reaches him. */
 export function buildInboundTwiml(opts: { shopNumbers: string[]; baseUrl: string; timeout?: number; callerId?: string; actionQuery?: string; notice?: string; nextNumber?: string | null }): string {
   const base = opts.baseUrl.replace(/\/$/, '');
+  // Timeout is per <Number>. Extra shop numbers would push Mike to 30s or later.
+  const appendMike = Boolean(opts.nextNumber && !opts.shopNumbers.includes(opts.nextNumber));
+  const shops = appendMike ? opts.shopNumbers.slice(0, 1) : opts.shopNumbers;
   const numbers = [
-    ...opts.shopNumbers.map((n) => numberNoun(base, n, 'shop')),
-    ...(opts.nextNumber && !opts.shopNumbers.includes(opts.nextNumber) ? [numberNoun(base, opts.nextNumber, 'mike')] : []),
+    ...shops.map((n) => numberNoun(base, n, 'shop')),
+    ...(appendMike && opts.nextNumber ? [numberNoun(base, opts.nextNumber, 'mike')] : []),
   ].join('');
-  const sequential = opts.nextNumber && !opts.shopNumbers.includes(opts.nextNumber) ? ' sequential="true"' : '';
+  const sequential = appendMike ? ' sequential="true"' : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
   ${opts.notice ? `<Say voice="Polly.Joanna-Neural">${esc(opts.notice)}</Say>` : ''}<Dial${opts.callerId ? ` callerId="${esc(opts.callerId)}"` : ''} timeout="${opts.timeout ?? 30}"${sequential} answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status${esc(opts.actionQuery ?? '')}" method="POST">${numbers}</Dial>

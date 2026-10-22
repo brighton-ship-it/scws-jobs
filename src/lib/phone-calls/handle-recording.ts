@@ -1,5 +1,5 @@
 import { downloadRecording, transcribe, summarize, labelTurns, summaryCard, composeSummary } from './process.ts';
-import { mergeProcessingError } from './missed-alert.ts';
+import { commitProcessingNote } from './missed-alert.ts';
 import { findClientByPhone, buildNoteMessage, postCallNote } from './jobber-note.ts';
 
 export const MIN_SECONDS = 8;
@@ -52,13 +52,15 @@ export async function handleRecording(params: Record<string, string>, db: any, e
         } else noteStatus = 'no jobber client match';
       } catch (e) { noteStatus = 'jobber note failed: ' + (e instanceof Error ? e.message : 'error').slice(0, 200); }
     }
-    const latest = await db.from('inbound_call_recordings').select('processing_error').eq('call_sid', callSid).maybeSingle();
-    await db.from('inbound_call_recordings').upsert({ ...base, transcript, ...s, jobber_client_id: jobber, processing_status: 'done', processing_error: mergeProcessingError(latest?.data?.processing_error ?? row?.processing_error, noteStatus), updated_at: now() }, { onConflict: 'call_sid' });
+    const savedAt = now();
+    await db.from('inbound_call_recordings').upsert({ ...base, transcript, ...s, jobber_client_id: jobber, processing_status: 'done', updated_at: savedAt }, { onConflict: 'call_sid' });
+    await commitProcessingNote(db, callSid, noteStatus, savedAt);
     return { ok: true, reason: 'done' };
   } catch (e) {
     const msg = e instanceof Error ? e.message : 'error';
-    const latest = await db.from('inbound_call_recordings').select('processing_error').eq('call_sid', callSid).maybeSingle();
-    await db.from('inbound_call_recordings').upsert({ ...base, processing_status: 'failed', processing_error: mergeProcessingError(latest?.data?.processing_error ?? row?.processing_error, msg.slice(0, 300)), updated_at: now() }, { onConflict: 'call_sid' });
+    const savedAt = now();
+    await db.from('inbound_call_recordings').upsert({ ...base, processing_status: 'failed', updated_at: savedAt }, { onConflict: 'call_sid' });
+    await commitProcessingNote(db, callSid, msg.slice(0, 300), savedAt);
     return { ok: false, reason: msg };
   }
 }
