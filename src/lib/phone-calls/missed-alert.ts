@@ -1,7 +1,7 @@
 /**
- * One office email for every inbound call: shop answered, missed, or Mike.
- * Mike's email waits until his call has ended, then uses his end-of-call report
- * (summary and outcome) so the office does not also get that email separately.
+ * Office email for a missed inbound call, and for a call Mike answers.
+ * A call the shop answers does not email. Mike's email waits until his call
+ * has ended, then uses his end-of-call report (summary and outcome).
  * Mike's voice, greeting, and callback flag are not involved.
  */
 import { formatPhoneDisplay, OFFICE_ALERT_EMAILS } from '../receptionist/office-callback.ts';
@@ -215,9 +215,10 @@ const ANSWERED = new Set(['completed', 'answered']);
 /**
  * What the <Dial action> should do.
  * handoff: caller is still here and Mike has not been dialed yet.
- * send now: shop answered, or nobody did. A canceled dial means the caller is
- * already gone, so TwiML returned from this request will not run.
+ * send now: nobody answered. A canceled dial means the caller is already gone,
+ * so TwiML returned from this request will not run.
  * defer: Mike answered. His end-of-call report sends the one email, with the summary.
+ * no email: the shop answered.
  */
 export function inboundCallEmailPlan(input: {
   dialStatus: string | null | undefined;
@@ -230,13 +231,12 @@ export function inboundCallEmailPlan(input: {
 }): { handoff: boolean; send: 'now' | 'defer' | 'no'; who: AnsweredBy | null } {
   const status = (input.dialStatus || '').trim().toLowerCase();
   if (ANSWERED.has(status)) {
-    if (input.party === 'shop') return { handoff: false, send: 'now', who: 'shop' };
+    if (input.party === 'shop') return { handoff: false, send: 'no', who: null };
     if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
     // Both numbers were dialed and the leg callback has not arrived. Wait for Mike's
-    // report if it was him. The sweep does not send a shop backup until that report
-    // has had time to claim the row.
+    // report if it was him. If Mike was not in the dial, the shop answered: no email.
     if (input.mikeInDial) return { handoff: false, send: 'defer', who: 'mike' };
-    return { handoff: false, send: 'now', who: 'shop' };
+    return { handoff: false, send: 'no', who: null };
   }
   if (status === 'canceled' || status === 'cancelled') return { handoff: false, send: 'now', who: 'missed' };
   if (input.canHandoff && (status === 'no-answer' || status === 'busy' || status === 'failed')) {
@@ -362,6 +362,7 @@ export async function notifyMissedInboundCall(
   deps?: { send?: SendFn; env?: NodeJS.ProcessEnv; now?: Date },
 ): Promise<{ sent: boolean; reason: string }> {
   if (!input.callSid) return { sent: false, reason: 'no-sid' };
+  if (input.who === 'shop') return { sent: false, reason: 'shop-answered' };
   const env = deps?.env ?? process.env;
   const now = input.now ?? deps?.now ?? new Date();
   const send = deps?.send ?? (async (message) => {
@@ -647,10 +648,8 @@ export function sweepInboundEmail(row: {
   const party = partyFromProcessing(row.processing_error);
   const answered = row.answered === true || ANSWERED.has(dial);
   if (answered && party === 'mike') return age >= SWEEP_MIKE_WAIT_MS ? 'mike' : null;
-  if (answered && party === 'shop') return age >= SWEEP_RETRY_MS ? 'shop' : null;
-  // Leg token missing. This is what the answer callback / recording race leaves behind
-  // on a Mike call. Do not claim it as a shop email while his report can still send.
-  if (answered) return age >= SWEEP_MIKE_WAIT_MS ? 'shop' : null;
+  // The shop answered, or the leg token never said Mike. No talk-time email.
+  if (answered) return null;
   return age >= SWEEP_RETRY_MS ? 'missed' : null;
 }
 
