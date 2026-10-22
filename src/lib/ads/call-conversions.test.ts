@@ -63,12 +63,17 @@ describe('QA 10/22 call fixes', () => {
     assert.equal(out.shifted, 1);
     assert.deepEqual(out.calls.map((c) => c.startedAt), ['2026-10-08T15:00:00.000Z', '2026-10-08T08:00:00Z', '2026-10-08T08:00:00Z']);
   });
-  it('uses only this job invoice or approved quote, else holds', () => {
+  it('waits 5 days for this job invoice, then its approved quote', () => {
     const now = Date.parse('2026-10-22T12:00:00Z');
-    const start = '2026-10-08T15:00:00Z';
-    assert.deepEqual(callValueDecision({ ownInvoiceUsd: 4122.5, ownQuoteUsd: 200, callStartedAt: start }, now), { kind: 'send', value: 4122.5, source: 'invoice_pretax' });
-    assert.deepEqual(callValueDecision({ ownInvoiceUsd: null, ownQuoteUsd: 3545, callStartedAt: start }, now), { kind: 'send', value: 3545, source: 'approved_quote' });
-    assert.deepEqual(callValueDecision({ ownInvoiceUsd: null, ownQuoteUsd: null, callStartedAt: start }, now), { kind: 'hold' });
+    const call = '2026-10-08T15:00:00Z';
+    const d = (iso: string, inv: number | null, q: number | null, booked = iso) =>
+      callValueDecision({ ownInvoiceUsd: inv, ownQuoteUsd: q, callStartedAt: call, conversionAt: booked }, now);
+    assert.deepEqual(d(call, 4122.5, 200), { kind: 'send', value: 4122.5, source: 'invoice_pretax', after5d: false });
+    // booked 2 days ago (later than the call): still waiting even with a quote
+    assert.deepEqual(d(call, null, 3545, '2026-10-20T12:00:00Z'), { kind: 'hold', reason: 'waiting_invoice' });
+    // booked 6 days ago: quote is sent
+    assert.deepEqual(d(call, null, 3545, '2026-10-16T12:00:00Z'), { kind: 'send', value: 3545, source: 'approved_quote', after5d: true });
+    assert.deepEqual(d(call, null, null, '2026-10-16T12:00:00Z'), { kind: 'hold', reason: 'no_invoice_or_quote' });
     assert.deepEqual(callValueDecision({ ownInvoiceUsd: 500, callStartedAt: '2026-07-01T00:00:00Z' }, now), { kind: 'expired' });
   });
   it('keeps UNKNOWN sources and never shifts when the utc select failed', () => {

@@ -138,26 +138,39 @@ export function usableAdsCalls(
 }
 
 /**
- * Value for a won job from an Ads call, from THIS job only (never client-wide totals):
- * issued invoice pre-tax, else the job's own approved quote subtotal. With neither,
- * the row is HELD (no booking placeholder is ever uploaded: UPLOAD_CALLS cannot be restated).
- * After the 90-day lookback from the call start the row expires.
+ * Value for a won job from an Ads call, from THIS job only (never client-wide totals).
+ * - Issued invoice on this job: send its pre-tax amount.
+ * - No invoice and 5 days have passed since the later of call start / booking: send this
+ *   job's own approved quote subtotal.
+ * - Otherwise HOLD (waiting for the invoice, or no quote yet). The booking placeholder is
+ *   never sent: UPLOAD_CALLS cannot be restated. Expires 89 days after the call.
  */
 export type CallValueDecision =
-  | { kind: 'send'; value: number; source: 'invoice_pretax' | 'approved_quote' }
-  | { kind: 'hold' }
+  | { kind: 'send'; value: number; source: 'invoice_pretax' | 'approved_quote'; after5d: boolean }
+  | { kind: 'hold'; reason: 'waiting_invoice' | 'no_invoice_or_quote' }
   | { kind: 'expired' };
 
 export const CALL_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
+export const INVOICE_WAIT_MS = 5 * 24 * 60 * 60 * 1000;
 
 export function callValueDecision(
-  input: { ownInvoiceUsd?: number | null; ownQuoteUsd?: number | null; callStartedAt?: string | null },
+  input: {
+    ownInvoiceUsd?: number | null;
+    ownQuoteUsd?: number | null;
+    callStartedAt?: string | null;
+    conversionAt?: string | null;
+  },
   now = Date.now()
 ): CallValueDecision {
   const start = Date.parse(input.callStartedAt ?? '');
-  // Keep a day of margin inside Google's 90-day window.
   if (Number.isFinite(start) && now - start > CALL_LOOKBACK_MS - 24 * 60 * 60 * 1000) return { kind: 'expired' };
-  if (input.ownInvoiceUsd && input.ownInvoiceUsd > 0) return { kind: 'send', value: input.ownInvoiceUsd, source: 'invoice_pretax' };
-  if (input.ownQuoteUsd && input.ownQuoteUsd > 0) return { kind: 'send', value: input.ownQuoteUsd, source: 'approved_quote' };
-  return { kind: 'hold' };
+  if (input.ownInvoiceUsd && input.ownInvoiceUsd > 0)
+    return { kind: 'send', value: input.ownInvoiceUsd, source: 'invoice_pretax', after5d: false };
+  const booked = Date.parse(input.conversionAt ?? '');
+  const from = Math.max(Number.isFinite(start) ? start : -Infinity, Number.isFinite(booked) ? booked : -Infinity);
+  const waited = Number.isFinite(from) && now - from >= INVOICE_WAIT_MS;
+  if (!waited) return { kind: 'hold', reason: 'waiting_invoice' };
+  if (input.ownQuoteUsd && input.ownQuoteUsd > 0)
+    return { kind: 'send', value: input.ownQuoteUsd, source: 'approved_quote', after5d: true };
+  return { kind: 'hold', reason: 'no_invoice_or_quote' };
 }
