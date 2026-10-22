@@ -140,6 +140,9 @@ export interface OfflineCandidate {
   signal: OfflineSignal;
   campaign: string | null;
   keyword: string | null;
+  /** Ads call that brought the job in (E.164 caller + UTC start), for call-conversion import. */
+  callerPhone?: string | null;
+  callStartedAt?: string | null;
 }
 
 function stampOf(invoice: WonInvoiceInput): number {
@@ -383,6 +386,7 @@ export async function runOfflineImport(input: {
   existing: OfflineExistingRow[];
   mode: OfflineUploadMode;
   conversionAction: string | null;
+  resendUploadedIds?: ReadonlySet<string>;
   save: (row: OfflinePlanRow) => Promise<void>;
   upload?: (conversions: ClickConversion[]) => Promise<{ ok: boolean; status: number; body: unknown }>;
 }): Promise<{ dryRun: number; uploaded: number; skipped: number; errors: string[] }> {

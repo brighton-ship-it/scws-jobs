@@ -91,6 +91,8 @@ export interface GoogleAdsConfig {
   loginCustomerId: string | null;
   apiVersion: string;
   conversionAction: string | null;
+  /** Optional UPLOAD_CALLS action for won jobs that came from an Ads call. Unset = calls stay on Data Manager. */
+  callConversionAction?: string | null;
   /** Token with the datamanager scope for offline uploads; falls back to refreshToken. */
   dataManagerRefreshToken: string;
   /** OAuth client that issued dataManagerRefreshToken; falls back to clientId/clientSecret. */
@@ -116,6 +118,7 @@ export function googleAdsConfig(env: Record<string, string | undefined> = proces
     loginCustomerId: (env.GOOGLE_ADS_LOGIN_CUSTOMER_ID?.trim() || '').replace(/-/g, '') || null,
     apiVersion: resolveGoogleAdsApiVersion(env.GOOGLE_ADS_API_VERSION),
     conversionAction: env.GOOGLE_ADS_OFFLINE_CONVERSION_ACTION?.trim() || null,
+    callConversionAction: env.GOOGLE_ADS_CALL_CONVERSION_ACTION?.trim() || null,
     dataManagerRefreshToken: env.GOOGLE_DATAMANAGER_REFRESH_TOKEN?.trim() || refreshToken,
     dataManagerClientId: env.GOOGLE_DATAMANAGER_CLIENT_ID?.trim() || clientId,
     dataManagerClientSecret: env.GOOGLE_DATAMANAGER_CLIENT_SECRET?.trim() || clientSecret,
@@ -330,6 +333,31 @@ export async function uploadClickConversions(
     throw new Error('GOOGLE_ADS_OFFLINE_CONVERSION_ACTION is not set');
   }
   const url = `${ADS_HOST}/${config.apiVersion}/customers/${config.customerId}:uploadClickConversions`;
+  const response = await fetchImpl(url, {
+    method: 'POST',
+    headers: adsHeaders(config, accessToken),
+    body: JSON.stringify({ conversions, partialFailure: true }),
+  });
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+  return { ok: response.ok, status: response.status, body };
+}
+
+/**
+ * Google Ads ConversionUploadService.UploadCallConversions (still open to this developer
+ * token, unlike uploadClickConversions). Needs an "Import from calls" (UPLOAD_CALLS) action.
+ */
+export async function uploadCallConversions(
+  config: GoogleAdsConfig,
+  conversions: unknown[],
+  fetchImpl: typeof fetch,
+  accessToken: string
+): Promise<{ ok: boolean; status: number; body: unknown }> {
+  const url = `${ADS_HOST}/${config.apiVersion}/customers/${config.customerId}:uploadCallConversions`;
   const response = await fetchImpl(url, {
     method: 'POST',
     headers: adsHeaders(config, accessToken),
