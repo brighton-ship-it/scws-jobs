@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildRestatement, nextRestatement, restatementAllowed, sentStateOf, stageValues } from './conversion-stages.ts';
+import { buildRestatement, nextRestatement, restatementAllowed, sentOrderIdOf, sentStateOf, stageValues } from './conversion-stages.ts';
 import { candidatesFromBookedJobs, type BookedJobInput } from './booked-jobs.ts';
 
 const anchor = Date.parse('2026-10-01T17:00:00.000Z');
@@ -120,4 +120,13 @@ describe('candidates carry stages', () => {
     assert.deepEqual(r.candidates[0].stages, { booking: 200, approved: 4200, invoiced: 4722.5 });
     assert.equal(r.candidates[0].valueUsd, 200);
   });
+});
+
+it('restatements target the order id Google holds (-r2 after re-send)', () => {
+  assert.equal(sentOrderIdOf({ sent_order_id: 'J1-r2' }, 'J1'), 'J1-r2');
+  assert.equal(sentOrderIdOf({}, 'J1'), 'J1');
+  assert.equal(sentOrderIdOf(null, 'J1'), 'J1');
+  const adj = buildRestatement('customers/1/conversionActions/2', { jobberJobId: 'J1', orderId: 'J1-r2', value: 500, nowIso: '2026-10-22T10:00:00Z' });
+  assert.equal(adj.order_id, 'J1-r2');
+  assert.equal(buildRestatement('a', { jobberJobId: 'J1', value: 1, nowIso: '2026-10-22T10:00:00Z' }).order_id, 'J1');
 });

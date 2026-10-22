@@ -175,3 +175,6 @@ The suites cover the cookie, form-encoded bodies, lead tagging, book_job send ga
 
 ## One-time backfill via env (no cron secret needed)
 Set `BACKFILL_SINCE=YYYY-MM-DD` (>= 2026-09-01) on Production. The next scheduled live run behaves as `?backfillSince=...` and then writes settings key `ads_offline_env_backfill_v1` = `{since, at, resend}`; later runs skip that same day value (log: `already consumed`). **Remove the env var after the run** (log: `BACKFILL_SINCE=... consumed; remove the env var`). Click-path logic is unchanged; re-sends use transactionId `<jobId>-r2`.
+- Restatements target `payload.sent_order_id` (the `<id>-r2` order id after a backfill re-send), not the original job id.
+- The BACKFILL_SINCE marker is NOT written if any click upload errored that run (`NOT consumed: click upload errors=N`); the next run retries.
+- `dm_reported` (follow-up, not automated): the Google Ads API has no per-order-id report for uploaded conversions (no GAQL resource returns order_id), so it cannot be set from Ads per row. Restatements stay off until it is set; the pre-run Ads check routine guards the double-count risk by confirming 7833699992 totals.
