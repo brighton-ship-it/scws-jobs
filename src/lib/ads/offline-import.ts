@@ -35,6 +35,14 @@ export function isGa4BookJobAction(resource: string | null | undefined): boolean
   }
 }
 
+/** BACKFILL_SINCE env -> the day to backfill, or null if unset, invalid, or already consumed for that day. */
+export function envBackfillDay(raw: string | null | undefined, consumed: unknown): string | null {
+  const day = (raw ?? '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day < BACKFILL_EARLIEST_DAY) return null;
+  const since = consumed && typeof consumed === 'object' ? (consumed as { since?: unknown }).since : null;
+  return since === day ? null : day;
+}
+
 export function backfillFloorIso(day: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('backfillSince must be YYYY-MM-DD');
   if (day < BACKFILL_EARLIEST_DAY) throw new Error('backfillSince cannot be before 2026-09-01');

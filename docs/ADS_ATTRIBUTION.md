@@ -172,3 +172,6 @@ The suites cover the cookie, form-encoded bodies, lead tagging, book_job send ga
 - Call sources: LANDING_PAGE skipped; UNKNOWN/UNSPECIFIED/null are still sent and counted as `unknown_source_sent`.
 - If the started_at_utc select fails, the cron logs a WARNING and does not shift any call times that run.
 - Logs: one `[ads_offline] call row job=... caller=*1234 start=... status=... error=CODE` line per row, plus `call conversions uploaded=X errors=Y`.
+
+## One-time backfill via env (no cron secret needed)
+Set `BACKFILL_SINCE=YYYY-MM-DD` (>= 2026-09-01) on Production. The next scheduled live run behaves as `?backfillSince=...` and then writes settings key `ads_offline_env_backfill_v1` = `{since, at, resend}`; later runs skip that same day value (log: `already consumed`). **Remove the env var after the run** (log: `BACKFILL_SINCE=... consumed; remove the env var`). Click-path logic is unchanged; re-sends use transactionId `<jobId>-r2`.

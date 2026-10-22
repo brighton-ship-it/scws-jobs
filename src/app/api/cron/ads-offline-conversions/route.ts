@@ -25,6 +25,7 @@ import {
 import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
   backfillFloorIso,
+  envBackfillDay,
   needsStatusPoll,
   offlineUploadMode,
   requestIdFromRow,
@@ -55,7 +56,18 @@ export async function POST(request: NextRequest) {
 
   const started = Date.now();
   const mode = offlineUploadMode();
-  const backfillDay = request.nextUrl.searchParams.get('backfillSince');
+  let backfillDay = request.nextUrl.searchParams.get('backfillSince');
+  // One-time backfill from env (no secret handed around): BACKFILL_SINCE=YYYY-MM-DD makes the
+  // next scheduled live run act as ?backfillSince=..., then records it as consumed in settings.
+  let envBackfill: string | null = null;
+  if (!backfillDay && mode === 'live') {
+    try {
+      envBackfill = await pendingEnvBackfill(createServiceClient() as any, process.env.BACKFILL_SINCE);
+    } catch (error) {
+      console.warn('[ads_offline] BACKFILL_SINCE check failed:', error instanceof Error ? error.message : error);
+    }
+    if (envBackfill) backfillDay = envBackfill;
+  }
   let backfillFloor: string | null = null;
   if (backfillDay) {
     try {
@@ -392,7 +404,20 @@ export async function POST(request: NextRequest) {
     const sum = (key: string) =>
       Math.round(stageRows.reduce((t, r) => t + (Number(r[key]) || 0), 0) * 100) / 100;
 
+    if (envBackfill) {
+      const marked = await db.from('settings').upsert(
+        {
+          key: ENV_BACKFILL_KEY,
+          value: { since: envBackfill, at: new Date().toISOString(), resend: resendIds?.size ?? 0 },
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'key' }
+      );
+      if (marked.error) console.warn('[ads_offline] could not mark BACKFILL_SINCE consumed:', marked.error.message);
+      else console.log(`[ads_offline] BACKFILL_SINCE=${envBackfill} consumed; remove the env var`);
+    }
     return NextResponse.json({
+      env_backfill: envBackfill,
       stages: {
         rows: stageRows,
         totals: {
@@ -463,6 +488,16 @@ async function loadAdsCalls(db: any) {
     repair: (v) => repairAdsStartedAtStoredAsUtc(v),
   });
   return { ...usable, rows: rows.length, hasUtcColumn };
+}
+
+const ENV_BACKFILL_KEY = 'ads_offline_env_backfill_v1';
+
+async function pendingEnvBackfill(db: any, raw: string | undefined): Promise<string | null> {
+  const { data, error } = await db.from('settings').select('value').eq('key', ENV_BACKFILL_KEY).maybeSingle();
+  if (error) throw new Error(error.message);
+  const day = envBackfillDay(raw, data?.value ?? null);
+  if (raw?.trim() && !day) console.log(`[ads_offline] BACKFILL_SINCE=${raw.trim()} already consumed or invalid; skipping`);
+  return day;
 }
 
 function mapLead(row: Record<string, unknown>, source: AttributedLead['source']): AttributedLead {
