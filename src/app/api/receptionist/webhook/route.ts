@@ -10,6 +10,7 @@ import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
 import { handleCheckSchedule } from '@/lib/receptionist/check-schedule';
 import { handleBookServiceCall } from '@/lib/receptionist/book-service-call';
 import { buildCallEmail, extractCallOutcome } from '@/lib/receptionist/call-email';
+import { deliverMikeCallEmail } from '@/lib/phone-calls/missed-alert';
 import { diversionNumbers, jobberClientLine, leadSourceLine, resolveLeadSource, vapiAnsweredNumber, type RecordingHint } from '@/lib/receptionist/lead-source';
 import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/call-duration';
 import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
@@ -22,7 +23,6 @@ import { businessCallerId, phoneForCallbackTool } from '@/lib/receptionist/mike-
 import { linkAttemptVapi, overrideCallbackCaller, updateAttemptOutcome } from '@/lib/receptionist/mike-callback-run';
 import {
   OFFICE_ALERT_DEDUPE_MS,
-  OFFICE_ALERT_EMAILS,
   type OfficeAlertPatch,
   type OfficeAlertRow,
   type OfficeRequestIdentity,
@@ -34,8 +34,6 @@ import {
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
 import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
 import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
-
-const OFFICE_EMAILS = OFFICE_ALERT_EMAILS;
 
 interface VapiMessage {
   role: string;
@@ -143,7 +141,28 @@ export async function POST(request: NextRequest) {
     // Vapi sees the tracking number as the caller on a callback bridge. If that
     // number does not match exactly one in-flight callback, do not file a lead for it.
     if (!callbackAttempt && isReceptionistTestCaller(phone)) {
-      // Our own test line: no lead, no task, no office email, no Discord, no dashboard row.
+      // No lead, task, Discord, or dashboard row. If this test call came in on a
+      // tracking line, the office still gets the one inbound email.
+      try {
+        const rawMessages = message.artifact?.messages || message.messages || [];
+        const outcome = extractCallOutcome(rawMessages, { phone });
+        const built = buildCallEmail({
+          outcome,
+          summary: analysis.summary || '',
+          fallbackPhone: phone,
+          durationLabel: formatDurationLabel(resolveCallDurationSec(body)),
+          appUrl: process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app',
+        });
+        await deliverMikeCallEmail(supabase, {
+          phone,
+          startedAtMs: Date.parse(call.startedAt || '') || Date.now(),
+          talkSeconds: resolveCallDurationSec(body),
+          built,
+          inboundOnly: true,
+        });
+      } catch (err) {
+        console.error('[Receptionist] test-call inbound email failed', err instanceof Error ? err.message : err);
+      }
       console.log(`[Receptionist] Test call ${call.id} from a test line; not filing a lead`);
       return NextResponse.json({ ok: true, skipped: true, reason: 'test-call' });
     }
@@ -517,17 +536,27 @@ export async function POST(request: NextRequest) {
     const emailSubject = built.subject;
     const emailContent = built.text;
 
-    // Send to all office emails as separate messages (no CC)
+    // One email. If this Vapi call is an inbound leg, that row is claimed here so the
+    // Twilio path does not send a second copy. Direct and outbound Mike calls still email.
     let emailResult: { success?: boolean; error?: string } = {};
-    for (const email of OFFICE_EMAILS) {
-      emailResult = await sendEmail({
-        to: email,
-        subject: emailSubject,
-        html: textToHtml(emailContent),
-        text: emailContent,
-      });
-      console.log(`[Receptionist] Email to ${email}:`, emailResult);
-    }
+    const delivery = await deliverMikeCallEmail(supabase, {
+      phone,
+      startedAtMs: startTime.getTime(),
+      talkSeconds: durationSec,
+      built: { subject: emailSubject, text: emailContent },
+    }, {
+      send: async (message) => {
+        emailResult = await sendEmail({
+          to: message.to,
+          subject: message.subject,
+          html: textToHtml(message.text || ''),
+          text: message.text,
+        });
+        console.log(`[Receptionist] Email to ${message.to}:`, emailResult);
+        return emailResult;
+      },
+    });
+    if (delivery.reason === 'already') emailResult = { success: true };
 
     // Discord notification (instant mobile alert)
     await notifyNewCall({

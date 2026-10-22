@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { buildInboundTwiml, buildSimulatorTwiml, buildVoicemailTwiml, buildAfterHoursAiTwiml } from '@/lib/phone-calls/twiml';
 import { shopNumbers, publicUrl, TRACKING_SOURCES, lineFor, forwardTargets, isTestCall, RECORDING_NOTICE, aiFallbackNumber, directToAi } from '@/lib/phone-calls/config';
+import { desiredRingSeconds, dialTimeoutAttribute } from '@/lib/phone-calls/ring-timeout';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -45,15 +46,24 @@ export async function POST(req: NextRequest) {
   }
   // Per-number ring override via the (signed) voice URL, e.g. ?ring=+17604408520
   const ring = q.get('ring')?.split(',').map((x) => x.trim()).filter((x) => /^\+\d{10,15}$/.test(x));
-  const targets = ring?.length ? ring : line ? forwardTargets(line) : shopNumbers();
+  const targets = (ring?.length ? ring : line ? forwardTargets(line) : shopNumbers()).filter((n) => n !== ai);
   // Ported line with no forward target configured: never loop back into itself; take a voicemail instead.
   if (line && (!targets.length || targets.includes(line.number))) return xml(buildVoicemailTwiml(base));
+  if (!targets.length) {
+    if (!ai) return xml(buildVoicemailTwiml(base));
+    const a = new URLSearchParams(); if (line) a.set('line', line.key); a.set('afterhours', '1');
+    return xml(buildAfterHoursAiTwiml({ aiNumber: ai, baseUrl: base, actionQuery: `?${a.toString()}` }));
+  }
   // Ringing the same Twilio number (test loop) needs our own caller ID; otherwise pass the caller's number through.
   const callerId = targets.includes(to) ? to : undefined;
-  // Ring timeout (s): default 60 so a Google Voice ring group can roll to Mike (~35s) before Twilio gives up.
-  const t = parseInt(q.get('timeout') || process.env.PHONE_CALL_RING_TIMEOUT || '60', 10);
-  const timeout = Number.isFinite(t) ? Math.min(Math.max(t, 10), 120) : 60;
-  return xml(buildInboundTwiml({ notice: RECORDING_NOTICE, shopNumbers: targets, baseUrl: base, callerId, timeout, actionQuery: (() => { const a = new URLSearchParams(); if (line) a.set('line', line.key); if (q.get('ai') === '1') a.set('ai', '1'); const t = a.toString(); return t ? `?${t}` : undefined; })() }));
+  // Caller-facing ring (default 15s). Twilio adds ~5s, so the TwiML attribute is 10.
+  // Mike is the next number in this same dial, not a Google Voice forward and not a later webhook.
+  const timeout = dialTimeoutAttribute(desiredRingSeconds(q.get('timeout')));
+  const rollToMike = Boolean(ai && targets.length);
+  return xml(buildInboundTwiml({
+    notice: RECORDING_NOTICE, shopNumbers: targets, baseUrl: base, callerId, timeout, nextNumber: rollToMike ? ai : null,
+    actionQuery: (() => { const a = new URLSearchParams(); if (line) a.set('line', line.key); a.set('notice', '1'); if (rollToMike) { a.set('ai', '1'); a.set('rolled', '1'); } const t = a.toString(); return t ? `?${t}` : undefined; })(),
+  }));
 }
 
 export async function GET() {

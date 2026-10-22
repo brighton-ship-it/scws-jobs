@@ -61,7 +61,8 @@ describe('after-hours TwiML', () => {
   it('no Twilio <Say> (Mike speaks first), dials only Mike, recorded, with status action and no ai=1', () => {
     assert.doesNotMatch(x, /<Say/);
     assert.match(x, /<Response>\s*<Dial /);
-    assert.match(x, /<Number>\+17604915348<\/Number><\/Dial>/);
+    assert.match(x, /<Number[^>]*>\+17604915348<\/Number><\/Dial>/);
+    assert.match(x, /party=mike/);
     assert.doesNotMatch(x, /17602763468/);
     assert.match(x, /record="record-from-answer-dual"/);
     assert.match(x, /recordingStatusCallback="https:\/\/scws-jobs\.vercel\.app\/api\/calls\/inbound\/recording"/);

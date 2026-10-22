@@ -1,13 +1,26 @@
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Ring the shop numbers (simultaneously) with dual-channel recording from answer.
- * The notice (Polly neural voice) plays before ringing humans; Mike also says it himself if the call rolls to him. */
-export function buildInboundTwiml(opts: { shopNumbers: string[]; baseUrl: string; timeout?: number; callerId?: string; actionQuery?: string; notice?: string }): string {
+/** Child-leg callback so we know whether the shop or Mike picked up. `answered` fires when they do. */
+function numberNoun(base: string, number: string, party: 'shop' | 'mike'): string {
+  const cb = `${base}/api/calls/inbound/leg?party=${party}`;
+  return `<Number statusCallback="${esc(cb)}" statusCallbackEvent="answered completed" statusCallbackMethod="POST">${esc(number)}</Number>`;
+}
+
+/** Ring the shop, then Mike.
+ * `nextNumber` is Mike's Vapi line. It is the next <Number> in the same <Dial sequential>,
+ * so Twilio dials him the moment the shop leg times out. He is not behind the Google Voice
+ * ring group's own forward, and there is no second webhook before his phone rings.
+ * The notice plays before any ringing. Mike still says it himself when the call reaches him. */
+export function buildInboundTwiml(opts: { shopNumbers: string[]; baseUrl: string; timeout?: number; callerId?: string; actionQuery?: string; notice?: string; nextNumber?: string | null }): string {
   const base = opts.baseUrl.replace(/\/$/, '');
-  const numbers = opts.shopNumbers.map((n) => `<Number>${esc(n)}</Number>`).join('');
+  const numbers = [
+    ...opts.shopNumbers.map((n) => numberNoun(base, n, 'shop')),
+    ...(opts.nextNumber && !opts.shopNumbers.includes(opts.nextNumber) ? [numberNoun(base, opts.nextNumber, 'mike')] : []),
+  ].join('');
+  const sequential = opts.nextNumber && !opts.shopNumbers.includes(opts.nextNumber) ? ' sequential="true"' : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${opts.notice ? `<Say voice="Polly.Joanna-Neural">${esc(opts.notice)}</Say>` : ''}<Dial${opts.callerId ? ` callerId="${esc(opts.callerId)}"` : ''} timeout="${opts.timeout ?? 30}" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status${esc(opts.actionQuery ?? '')}" method="POST">${numbers}</Dial>
+  ${opts.notice ? `<Say voice="Polly.Joanna-Neural">${esc(opts.notice)}</Say>` : ''}<Dial${opts.callerId ? ` callerId="${esc(opts.callerId)}"` : ''} timeout="${opts.timeout ?? 30}"${sequential} answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status${esc(opts.actionQuery ?? '')}" method="POST">${numbers}</Dial>
 </Response>`;
 }
 
@@ -35,12 +48,14 @@ export function buildVoicemailTwiml(baseUrl: string): string {
 </Response>`;
 }
 
-/** No-answer handoff to the AI receptionist. Recorded through the same pipeline; no further action (no loop). */
-export function buildAiHandoffTwiml(aiNumber: string, baseUrl: string): string {
+/** No-answer handoff to the AI receptionist. Recorded through the same pipeline.
+ * Pass an action query of rolled=1 so the follow-up callback does not dial Mike again. */
+export function buildAiHandoffTwiml(aiNumber: string, baseUrl: string, actionQuery?: string): string {
   const base = baseUrl.replace(/\/$/, '');
+  const action = actionQuery ? ` action="${esc(base)}/api/calls/inbound/status${esc(actionQuery)}" method="POST"` : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  <Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST"><Number>${esc(aiNumber)}</Number></Dial>
+  <Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST"${action}>${numberNoun(base, aiNumber, 'mike')}</Dial>
 </Response>`;
 }
 
@@ -50,6 +65,6 @@ export function buildAfterHoursAiTwiml(opts: { aiNumber: string; baseUrl: string
   const base = opts.baseUrl.replace(/\/$/, '');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-  ${opts.notice ? `<Say voice="Polly.Joanna-Neural">${esc(opts.notice)}</Say>` : ''}<Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status${esc(opts.actionQuery ?? '')}" method="POST"><Number>${esc(opts.aiNumber)}</Number></Dial>
+  ${opts.notice ? `<Say voice="Polly.Joanna-Neural">${esc(opts.notice)}</Say>` : ''}<Dial timeout="30" answerOnBridge="true" record="record-from-answer-dual" recordingStatusCallback="${esc(base)}/api/calls/inbound/recording" recordingStatusCallbackEvent="completed" recordingStatusCallbackMethod="POST" action="${esc(base)}/api/calls/inbound/status${esc(opts.actionQuery ?? '')}" method="POST">${numberNoun(base, opts.aiNumber, 'mike')}</Dial>
 </Response>`;
 }

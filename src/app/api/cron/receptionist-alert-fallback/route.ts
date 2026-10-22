@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
-import { OFFICE_ALERT_EMAILS } from '@/lib/receptionist/office-callback';
+import { deliverMikeCallEmail, notifyMissedInboundCall, sweepInboundEmail } from '@/lib/phone-calls/missed-alert';
 import { buildCallEmail, type CallOutcome } from '@/lib/receptionist/call-email';
 import {
   FALLBACK_MARKER,
@@ -80,17 +80,54 @@ export async function POST(request: NextRequest) {
       summary: 'The call-ended report from the phone system never arrived. This alert comes from what Mike saved during the call. Check the call log for the full transcript.',
       appUrl: process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app',
     });
-    for (const to of OFFICE_ALERT_EMAILS) {
-      try {
-        await sendEmail({ to, subject: built.subject, text: built.text, html: textToHtml(built.text) });
-      } catch (err) {
-        console.error(`[AlertFallback] email to ${to} failed:`, err);
-      }
+    try {
+      const delivery = await deliverMikeCallEmail(supabase, {
+        phone: String(row.phone || ''),
+        startedAtMs: Date.parse(row.created_at || '') || now,
+        built,
+      }, {
+        send: async (message) => sendEmail({ to: message.to, subject: message.subject, text: message.text, html: textToHtml(message.text || '') }),
+      });
+      if (delivery.sent || delivery.reason === 'already') sent.push(row.id);
+    } catch (err) {
+      console.error('[AlertFallback] email failed:', err);
     }
-    sent.push(row.id);
   }
 
-  return NextResponse.json({ ok: true, minAgeMs: FALLBACK_MIN_AGE_MS, sent });
+  // Inbound calls whose immediate email failed, and Mike calls whose end-of-call report never arrived.
+  const sweepSince = new Date(now - 3 * 60 * 60 * 1000).toISOString();
+  const { data: inboundRows, error: inboundError } = await (supabase as any)
+    .from('inbound_call_recordings')
+    .select('call_sid, caller_number, tracking_number, source, started_at, updated_at, processing_error, answered, dial_status, duration_seconds, summary, outcome')
+    .gte('started_at', sweepSince)
+    .limit(100);
+  if (inboundError) console.error('[AlertFallback] inbound sweep failed:', inboundError.message);
+  const swept: string[] = [];
+  for (const row of (inboundRows || []) as any[]) {
+    const who = sweepInboundEmail(row, now);
+    if (!who || !row.call_sid) continue;
+    try {
+      const result = await notifyMissedInboundCall({
+        callSid: row.call_sid,
+        caller: row.caller_number,
+        called: row.tracking_number,
+        source: row.source,
+        startedAt: row.started_at,
+        phase: 'dial',
+        noticePlayed: who !== 'missed' ? false : true,
+        who,
+        ringSeconds: who === 'missed' ? (row.duration_seconds ?? 0) : null,
+        durationSeconds: who === 'missed' ? null : row.duration_seconds,
+        summary: who === 'mike' ? row.summary : null,
+        outcome: who === 'mike' ? row.outcome : null,
+      }, supabase);
+      if (result.sent) swept.push(row.call_sid);
+    } catch (err) {
+      console.error('[AlertFallback] inbound email failed:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  return NextResponse.json({ ok: true, minAgeMs: FALLBACK_MIN_AGE_MS, sent, swept });
 }
 
 export async function GET(request: NextRequest) {

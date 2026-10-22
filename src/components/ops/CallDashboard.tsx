@@ -664,11 +664,17 @@ function matchesFilter(c: MergedCall, f: CallFilter): boolean {
   return true;
 }
 
-function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; recorded: RecordedCall[] }) {
-  const [open, setOpen] = useState<string | null>(null);
+function CallsCard({ feed, recorded, focusSid }: { feed: FeedRow[] | null | undefined; recorded: RecordedCall[]; focusSid?: string | null }) {
+  const [open, setOpen] = useState<string | null>(focusSid ?? null);
   const [filter, setFilter] = useState<CallFilter>('all');
   const all = mergeCalls(feed ?? [], recorded);
-  const list = all.filter((c) => matchesFilter(c, filter));
+  const list = all.filter((c) => matchesFilter(c, filter) || (!!focusSid && c.rec?.call_sid === focusSid));
+  useEffect(() => {
+    if (!focusSid) return;
+    setOpen(focusSid);
+    const timer = window.setTimeout(() => document.getElementById(`call-${focusSid}`)?.scrollIntoView({ block: 'center' }), 80);
+    return () => window.clearTimeout(timer);
+  }, [focusSid, recorded]);
   return (
     <Card title="Calls · summaries & transcripts" subtitle="All incoming (Voice main/Ransom, tracking numbers, Mike) · last ~14 days + every recorded call (latest 25) · tap a call for its summary and transcript" delay={60}>
       <div className="mb-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Call filter">
@@ -692,13 +698,13 @@ function CallsCard({ feed, recorded }: { feed: FeedRow[] | null | undefined; rec
           const isOpen = open === id;
           const who = name || phone;
           return (
-            <li key={id} className={`px-1 py-3 ${outcome === 'Missed' ? 'bg-rose-50/70' : ''}`}>
+            <li key={id} id={id.startsWith('CA') ? `call-${id}` : undefined} className={`px-1 py-3 ${id === focusSid ? 'rounded-lg ring-2 ring-sky-400' : ''} ${outcome === 'Missed' ? 'bg-rose-50/70' : ''}`}>
               <button type="button" disabled={!expandable} onClick={() => setOpen(isOpen ? null : id)} className={`flex w-full min-w-0 flex-col gap-2 text-left ${expandable ? 'cursor-pointer' : 'cursor-default'}`} aria-expanded={expandable ? isOpen : undefined}>
                 <span className="flex min-w-0 flex-wrap items-center justify-between gap-2">
                   <span className="text-sm tabular-nums text-slate-500">{feedTime(c.at)} · {fmtDur(f?.durationSeconds ?? r?.duration_seconds ?? null)}</span>
                   <span className="flex max-w-full flex-wrap items-center gap-1 text-xs">
                     <OutcomePill o={outcome} by={f?.answeredBy} unknownWho={!!r} />
-                    {r?.processing_error === 'note posted' ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
+                    {String(r?.processing_error || '').includes('note posted') ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
                     {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
                     {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
                   </span>
@@ -994,7 +1000,7 @@ export function CallDashboardPage() {
             </div>
             <div className="grid gap-4 lg:grid-cols-12">
               <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
-              <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} /></div>
+              <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} focusSid={params?.get('call')} /></div>
             </div>
           </section>
 

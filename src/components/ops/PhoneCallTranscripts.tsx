@@ -90,7 +90,8 @@ export function useRecordedCalls(): RecordedCall[] {
   useEffect(() => {
     let key: string | null = null;
     try { key = new URL(window.location.href).searchParams.get(QUOTES_GP_KEY_QUERY) || localStorage.getItem('quotes_gp_key'); } catch {}
-    const load = () => fetch('/api/ops/phone-calls', { headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store' })
+    const focus = new URL(window.location.href).searchParams.get('call');
+    const load = () => fetch(`/api/ops/phone-calls${focus ? `?call=${encodeURIComponent(focus)}` : ''}`, { headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : { calls: [] })).then((j) => setRows(j.calls ?? [])).catch(() => {});
     load();
     const t = setInterval(load, 60_000);
