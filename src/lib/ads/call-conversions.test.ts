@@ -1,6 +1,6 @@
 import { describe, it, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bestWonValue, callRowLogLine, callTooRecent, e164, needsCallResend, toCallConversion, usableAdsCalls } from './call-conversions.ts';
+import { callValueDecision, callRowLogLine, callTooRecent, e164, needsCallResend, toCallConversion, usableAdsCalls } from './call-conversions.ts';
 
 const click = {
   conversion_action: 'customers/1/conversionActions/2',
@@ -63,8 +63,25 @@ describe('QA 10/22 call fixes', () => {
     assert.equal(out.shifted, 1);
     assert.deepEqual(out.calls.map((c) => c.startedAt), ['2026-10-08T15:00:00.000Z', '2026-10-08T08:00:00Z', '2026-10-08T08:00:00Z']);
   });
-  it('prefers invoiced over the $200 booking', () => {
-    assert.deepEqual(bestWonValue({ booking: 200, approved: null, invoiced: 4122.5 }), { value: 4122.5, source: 'invoiced' });
-    assert.deepEqual(bestWonValue({ booking: 200, approved: null, invoiced: null }), { value: 200, source: 'booking' });
+  it('uses only this job invoice or approved quote, else holds', () => {
+    const now = Date.parse('2026-10-22T12:00:00Z');
+    const start = '2026-10-08T15:00:00Z';
+    assert.deepEqual(callValueDecision({ ownInvoiceUsd: 4122.5, ownQuoteUsd: 200, callStartedAt: start }, now), { kind: 'send', value: 4122.5, source: 'invoice_pretax' });
+    assert.deepEqual(callValueDecision({ ownInvoiceUsd: null, ownQuoteUsd: 3545, callStartedAt: start }, now), { kind: 'send', value: 3545, source: 'approved_quote' });
+    assert.deepEqual(callValueDecision({ ownInvoiceUsd: null, ownQuoteUsd: null, callStartedAt: start }, now), { kind: 'hold' });
+    assert.deepEqual(callValueDecision({ ownInvoiceUsd: 500, callStartedAt: '2026-07-01T00:00:00Z' }, now), { kind: 'expired' });
+  });
+  it('keeps UNKNOWN sources and never shifts when the utc select failed', () => {
+    const out = usableAdsCalls(
+      [
+        { caller_phone: '1', campaign_name: null, started_at: '2026-10-08T08:00:00Z', call_source: 'UNKNOWN', call_view_resource: 'a' },
+        { caller_phone: '2', campaign_name: null, started_at: '2026-10-08T08:00:00Z', call_source: 'UNSPECIFIED', call_view_resource: 'b' },
+      ],
+      { hasUtcColumn: false, repairedLedger: new Set(), repair: () => 'SHIFTED', allowShift: false }
+    );
+    assert.equal(out.calls.length, 2);
+    assert.equal(out.unknownSource, 2);
+    assert.equal(out.shifted, 0);
+    assert.ok(out.calls.every((c) => c.startedAt === '2026-10-08T08:00:00Z'));
   });
 });
