@@ -178,3 +178,5 @@ Set `BACKFILL_SINCE=YYYY-MM-DD` (>= 2026-09-01) on Production. The next schedule
 - Restatements target `payload.sent_order_id` (the `<id>-r2` order id after a backfill re-send), not the original job id.
 - The BACKFILL_SINCE marker is NOT written if any click upload errored that run (`NOT consumed: click upload errors=N`); the next run retries.
 - `dm_reported` (follow-up, not automated): the Google Ads API has no per-order-id report for uploaded conversions (no GAQL resource returns order_id), so it cannot be set from Ads per row. Restatements stay off until it is set; the pre-run Ads check routine guards the double-count risk by confirming 7833699992 totals.
+- A row that was sent or tried as `<id>-r2` (payload.sent_order_id) always retries under `<id>-r2`, including after an error.
+- BACKFILL_SINCE marker `{since, attempts, done, resend, resend_errors}`: done only when the re-sent rows had zero errors (other click rows don't count). Max 3 nights per day value, then it logs GIVING UP.

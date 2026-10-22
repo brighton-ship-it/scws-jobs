@@ -12,6 +12,8 @@ import {
   uploadedIdsToResend,
   resendOrderId,
   envBackfillDay,
+  nextEnvBackfillMarker,
+  r2OrderIds,
   type AttributedLead,
   type OfflineCandidate,
 } from './offline-import.ts';
@@ -375,9 +377,32 @@ it('resendOrderId gives a distinct, stable transaction id', () => {
 
 it('BACKFILL_SINCE runs once per day value', () => {
   assert.equal(envBackfillDay('2026-09-22', null), '2026-09-22');
-  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-22' }), null);
+  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-22' }), null); // legacy marker = done
+  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-22', done: false, attempts: 2 }), '2026-09-22');
+  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-22', done: false, attempts: 3 }), null);
+  assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-22', done: true, attempts: 1 }), null);
   assert.equal(envBackfillDay('2026-09-22', { since: '2026-09-01' }), '2026-09-22');
   assert.equal(envBackfillDay('', null), null);
   assert.equal(envBackfillDay('2026-08-01', null), null);
   assert.equal(envBackfillDay('bad', null), null);
+});
+
+it('marker counts attempts and is done only with zero re-send errors', () => {
+  const m1 = nextEnvBackfillMarker(null, '2026-09-22', 1, 6, 't');
+  assert.deepEqual([m1.attempts, m1.done], [1, false]);
+  const m2 = nextEnvBackfillMarker(m1, '2026-09-22', 0, 6, 't');
+  assert.deepEqual([m2.attempts, m2.done], [2, true]);
+  assert.equal(nextEnvBackfillMarker({ since: '2026-09-01', attempts: 2 }, '2026-09-22', 0, 1, 't').attempts, 1);
+});
+
+it('failed -r2 rows retry under -r2', () => {
+  const ids = r2OrderIds(
+    [
+      { jobber_job_id: 'A', payload: { sent_order_id: 'A-r2' } },
+      { jobber_job_id: 'B', payload: { sent_order_id: 'B' } },
+      { jobber_job_id: 'C', payload: null },
+    ],
+    new Set(['C'])
+  );
+  assert.deepEqual([...ids].sort(), ['A', 'C']);
 });

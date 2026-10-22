@@ -35,12 +35,46 @@ export function isGa4BookJobAction(resource: string | null | undefined): boolean
   }
 }
 
-/** BACKFILL_SINCE env -> the day to backfill, or null if unset, invalid, or already consumed for that day. */
+export const ENV_BACKFILL_MAX_ATTEMPTS = 3;
+
+/**
+ * BACKFILL_SINCE env -> the day to backfill, or null if unset, invalid, done for that day,
+ * or already attempted ENV_BACKFILL_MAX_ATTEMPTS nights. Legacy markers ({since} only) count as done.
+ */
 export function envBackfillDay(raw: string | null | undefined, consumed: unknown): string | null {
   const day = (raw ?? '').trim();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(day) || day < BACKFILL_EARLIEST_DAY) return null;
-  const since = consumed && typeof consumed === 'object' ? (consumed as { since?: unknown }).since : null;
-  return since === day ? null : day;
+  const m = consumed && typeof consumed === 'object' ? (consumed as { since?: unknown; done?: unknown; attempts?: unknown }) : null;
+  if (!m || m.since !== day) return day;
+  if (m.done === undefined || m.done === true) return null;
+  const attempts = typeof m.attempts === 'number' ? m.attempts : 0;
+  return attempts >= ENV_BACKFILL_MAX_ATTEMPTS ? null : day;
+}
+
+/** Next marker after a run: done when the re-sent rows had no errors; attempts counted per day. */
+export function nextEnvBackfillMarker(
+  prior: unknown,
+  day: string,
+  resendErrors: number,
+  resend: number,
+  nowIso: string
+): { since: string; attempts: number; done: boolean; resend: number; resend_errors: number; at: string } {
+  const p = prior && typeof prior === 'object' ? (prior as { since?: unknown; attempts?: unknown }) : null;
+  const before = p && p.since === day && typeof p.attempts === 'number' ? p.attempts : 0;
+  return { since: day, attempts: before + 1, done: resendErrors === 0, resend, resend_errors: resendErrors, at: nowIso };
+}
+
+/** Rows that must go out under `<id>-r2`: this run's re-sends plus any row already sent (or tried) as -r2. */
+export function r2OrderIds(
+  existing: Array<{ jobber_job_id: string; payload?: unknown }>,
+  resendIds: ReadonlySet<string> | undefined
+): Set<string> {
+  const out = new Set<string>(resendIds ?? []);
+  for (const r of existing) {
+    const v = r.payload && typeof r.payload === 'object' ? (r.payload as { sent_order_id?: unknown }).sent_order_id : null;
+    if (typeof v === 'string' && v === resendOrderId(r.jobber_job_id)) out.add(r.jobber_job_id);
+  }
+  return out;
 }
 
 export function backfillFloorIso(day: string): string {
