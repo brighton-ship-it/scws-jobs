@@ -37,7 +37,7 @@ import {
   type OfflinePlanRow,
 } from '@/lib/ads/offline-import';
 import { fetchBookedJobs } from '@/lib/jobber/attribution-reads';
-import { nextRestatement, restatementAllowed, sentStateOf, type SentState } from '@/lib/ads/conversion-stages';
+import { nextRestatement, restatementAllowed, sentOrderIdOf, sentStateOf, type SentState } from '@/lib/ads/conversion-stages';
 import { selectLeadRows } from '@/lib/ads/lead-query';
 
 export const dynamic = 'force-dynamic';
@@ -203,6 +203,13 @@ export async function POST(request: NextRequest) {
           sent_stage: row.status === 'uploaded' ? (firstStage.get(row.jobber_job_id) ?? 1) : null,
           sent_value: row.status === 'uploaded' ? row.value_usd : null,
           call_upload: callJobIds.has(row.jobber_job_id) && row.status === 'uploaded' ? true : undefined,
+          // Order id Google holds for this row; restatements must target it (QA #239).
+          sent_order_id:
+            row.status === 'uploaded' && row.google_response && !callJobIds.has(row.jobber_job_id)
+              ? resendIds?.has(row.jobber_job_id)
+                ? resendOrderId(row.jobber_job_id)
+                : row.jobber_job_id
+              : (prior?.payload as { sent_order_id?: unknown } | null)?.sent_order_id ?? undefined,
           dm_request_id: callJobIds.has(row.jobber_job_id)
             ? null
             : ingestRequestId(row.google_response) ?? requestIdFromRow(prior ?? {}),
@@ -391,7 +398,15 @@ export async function POST(request: NextRequest) {
         booking_value_usd: c.stages.booking,
         approved_value_usd: c.stages.approved,
         invoiced_value_usd: c.stages.invoiced,
-        next_restatement: step && allowed ? { stage: step.stage, value_usd: step.value, from_usd: sent?.value } : null,
+        next_restatement:
+          step && allowed
+            ? {
+                stage: step.stage,
+                value_usd: step.value,
+                from_usd: sent?.value,
+                order_id: sentOrderIdOf(writtenPayload.get(c.jobberJobId) ?? row?.payload, c.jobberJobId),
+              }
+            : null,
         restatement_skipped: Boolean(
           mode === 'live' && step && row?.status === 'uploaded' && !resendIds?.has(c.jobberJobId) && !allowed
         ),
@@ -404,7 +419,12 @@ export async function POST(request: NextRequest) {
     const sum = (key: string) =>
       Math.round(stageRows.reduce((t, r) => t + (Number(r[key]) || 0), 0) * 100) / 100;
 
-    if (envBackfill) {
+    const clickErrors = result.errors.length;
+    if (envBackfill && clickErrors > 0) {
+      console.error(
+        `[ads_offline] BACKFILL_SINCE=${envBackfill} NOT consumed: click upload errors=${clickErrors} resend=${resendIds?.size ?? 0}; will retry next run`
+      );
+    } else if (envBackfill) {
       const marked = await db.from('settings').upsert(
         {
           key: ENV_BACKFILL_KEY,
@@ -414,7 +434,7 @@ export async function POST(request: NextRequest) {
         { onConflict: 'key' }
       );
       if (marked.error) console.warn('[ads_offline] could not mark BACKFILL_SINCE consumed:', marked.error.message);
-      else console.log(`[ads_offline] BACKFILL_SINCE=${envBackfill} consumed; remove the env var`);
+      else console.log(`[ads_offline] BACKFILL_SINCE=${envBackfill} consumed resend=${resendIds?.size ?? 0} click_errors=0; remove the env var`);
     }
     return NextResponse.json({
       env_backfill: envBackfill,

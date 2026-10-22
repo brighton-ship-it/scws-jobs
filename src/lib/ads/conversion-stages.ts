@@ -100,6 +100,12 @@ export interface StageStep {
  * returned CONVERSION_NOT_FOUND). A restatement is allowed only after something
  * outside this cron has marked the conversion reported in Ads.
  */
+/** The order id a row was last sent under: payload.sent_order_id (e.g. `<id>-r2`), else the job id. */
+export function sentOrderIdOf(payload: unknown, jobberJobId: string): string {
+  const v = payload && typeof payload === 'object' ? (payload as { sent_order_id?: unknown }).sent_order_id : null;
+  return typeof v === 'string' && v.trim() ? v.trim() : jobberJobId;
+}
+
 export function restatementAllowed(payload: unknown): boolean {
   return Boolean(payload && typeof payload === 'object' && (payload as { dm_reported?: unknown }).dm_reported === true);
 }
@@ -128,6 +134,8 @@ export function buildRestatement(
   conversionAction: string,
   input: {
     jobberJobId: string;
+    /** Order id Google actually holds (e.g. `<id>-r2` after a backfill re-send). Defaults to the job id. */
+    orderId?: string | null;
     value: number;
     nowIso: string;
     hashedEmail?: string | null;
@@ -140,7 +148,7 @@ export function buildRestatement(
   const out: ConversionAdjustment = {
     conversion_action: conversionAction,
     adjustment_type: 'RESTATEMENT',
-    order_id: input.jobberJobId,
+    order_id: input.orderId || input.jobberJobId,
     adjustment_date_time: formatAdsDateTime(input.nowIso),
     restatement_value: { adjusted_value: round(input.value), currency_code: 'USD' },
   };
