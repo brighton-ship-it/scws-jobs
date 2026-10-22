@@ -162,3 +162,10 @@ npm test
 ```
 
 The suites cover the cookie, form-encoded bodies, lead tagging, book_job send gate, invoice value, the offline builder, dry-run (no upload call), call matching, the closed-loop table, and the read-only Jobber and Ads queries.
+
+## Won jobs from Ads calls (action 7862907541, "SCWS Won Job (Call)")
+- Tracking only: primary_for_goal=false, not in Conversions. Its goal row QUALIFIED_LEAD~CALL_FROM_ADS is biddable=true, so promoting this action WOULD change bidding. Do not promote without Brighton's OK.
+- Only ads_calls with call_source AD (call asset / call ad Google forwarding numbers) are sent. LANDING_PAGE calls are skipped (website calls are counted by the site's click conversion; the Twilio 331-2502 site number is never in ads_calls).
+- ads_calls.started_at rows not flagged started_at_utc and not in the ads_calls_started_at_utc_v1 ledger are shifted Pacific->UTC in memory before matching.
+- Value: issued invoice pre-tax > Jobber job total > quote subtotal; call rows send the best stage (invoiced > approved > booking).
+- Logs: one `[ads_offline] call row job=... caller=*1234 start=... status=... error=CODE` line per row, plus `call conversions uploaded=X errors=Y`.

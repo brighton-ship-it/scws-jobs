@@ -58,3 +58,77 @@ export function needsCallResend(row: { status: string; payload?: unknown }): boo
   const p = row.payload as { call_upload?: unknown } | null | undefined;
   return !(p && typeof p === 'object' && p.call_upload === true);
 }
+
+/** Last 4 digits of a phone for logs. Never the full number. */
+export function last4(phone: string | null | undefined): string {
+  const d = (phone ?? '').replace(/\D/g, '');
+  return d.length >= 4 ? d.slice(-4) : 'none';
+}
+
+/** One log line per call-conversion row: job, caller last 4, call start, result/error code. */
+export function callRowLogLine(row: {
+  jobberJobId: string;
+  callerPhone: string | null | undefined;
+  callStartedAt: string | null | undefined;
+  status: string;
+  error?: string | null;
+  valueUsd?: number | null;
+  valueSource?: string | null;
+}): string {
+  const code = row.error ? (row.error.split(':')[0] || row.error).trim().slice(0, 80) : 'none';
+  return `[ads_offline] call row job=${row.jobberJobId} caller=*${last4(row.callerPhone)} start=${row.callStartedAt ?? 'none'} status=${row.status} value=${row.valueUsd ?? 'none'} source=${row.valueSource ?? 'none'} error=${code}`;
+}
+
+export interface AdsCallRow {
+  caller_phone: string | null;
+  campaign_name: string | null;
+  started_at: string | null;
+  started_at_utc?: boolean | null;
+  call_source?: string | null;
+  call_view_resource?: string | null;
+}
+
+/**
+ * Calls that may be credited as Ads call conversions.
+ * - Only Google forwarding-number calls from the ad/call asset (call_source AD, or legacy null).
+ *   LANDING_PAGE calls are website calls, already counted by the site's click conversion
+ *   (and the site's Twilio 331-2502 swap number is never in ads_calls).
+ * - started_at: legacy rows stored the Pacific wall clock as UTC. A row not flagged
+ *   started_at_utc and not in the repair ledger is shifted here (in memory) with `repair`.
+ */
+export function usableAdsCalls(
+  rows: AdsCallRow[],
+  input: { hasUtcColumn: boolean; repairedLedger: ReadonlySet<string>; repair: (s: string) => string | null }
+): { calls: Array<{ phone: string | null; campaign: string | null; startedAt: string | null }>; droppedLandingPage: number; shifted: number } {
+  let droppedLandingPage = 0;
+  let shifted = 0;
+  const calls: Array<{ phone: string | null; campaign: string | null; startedAt: string | null }> = [];
+  for (const r of rows) {
+    const src = (r.call_source ?? '').trim().toUpperCase();
+    if (src && src !== 'AD') {
+      droppedLandingPage += 1;
+      continue;
+    }
+    let startedAt = r.started_at;
+    const correct =
+      (input.hasUtcColumn && r.started_at_utc === true) ||
+      (r.call_view_resource ? input.repairedLedger.has(r.call_view_resource) : false);
+    if (startedAt && !correct) {
+      const fixed = input.repair(startedAt);
+      if (fixed && fixed !== new Date(startedAt).toISOString()) shifted += 1;
+      startedAt = fixed ?? startedAt;
+    }
+    calls.push({ phone: r.caller_phone, campaign: r.campaign_name, startedAt });
+  }
+  return { calls, droppedLandingPage, shifted };
+}
+
+/** Best real value for a won job: invoiced > approved quote > booking. */
+export function bestWonValue(stages: { booking: number; approved: number | null; invoiced: number | null }): {
+  value: number;
+  source: 'invoiced' | 'approved' | 'booking';
+} {
+  if (stages.invoiced && stages.invoiced > 0) return { value: stages.invoiced, source: 'invoiced' };
+  if (stages.approved && stages.approved > 0) return { value: stages.approved, source: 'approved' };
+  return { value: stages.booking, source: 'booking' };
+}

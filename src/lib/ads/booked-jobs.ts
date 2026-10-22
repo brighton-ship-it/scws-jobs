@@ -79,12 +79,14 @@ function positive(n: number | null | undefined): number | null {
 }
 
 export function bookedValue(job: BookedJobInput): { valueUsd: number; valueSource: ValueSource } | null {
-  const quote = positive(job.quoteSubtotal);
-  if (quote) return { valueUsd: quote, valueSource: 'quote_subtotal' };
+  // Real won-job money first: issued invoice pre-tax, then the Jobber job total.
+  // The quote subtotal is often the $200 service-call booking, so it is the last resort.
   const invoice = sumIssuedInvoicePretax(job.invoices);
   if (invoice) return { valueUsd: invoice, valueSource: 'invoice_pretax' };
   const total = positive(job.jobTotal);
   if (total) return { valueUsd: total, valueSource: 'job_total' };
+  const quote = positive(job.quoteSubtotal);
+  if (quote) return { valueUsd: quote, valueSource: 'quote_subtotal' };
   return null;
 }
 
