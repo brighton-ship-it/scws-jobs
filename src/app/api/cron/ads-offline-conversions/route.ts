@@ -2,7 +2,18 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';
 import { googleAdsConfig, refreshGoogleAccessToken, uploadCallConversions } from '@/lib/ads/google-ads-api';
-import { callTooRecent, e164, needsCallResend, toCallConversion, type CallInfo } from '@/lib/ads/call-conversions';
+import {
+  bestWonValue,
+  callRowLogLine,
+  callTooRecent,
+  e164,
+  needsCallResend,
+  toCallConversion,
+  usableAdsCalls,
+  type AdsCallRow,
+  type CallInfo,
+} from '@/lib/ads/call-conversions';
+import { ADS_CALLS_TIME_REPAIR_KEY, repairAdsStartedAtStoredAsUtc } from '@/lib/ads/call-match';
 import {
   dmStatusLogLine,
   ingestEvents,
@@ -76,7 +87,7 @@ export async function POST(request: NextRequest) {
     const [bookings, customers, calls, invoices, existing] = await Promise.all([
       selectLeadRows(db.from('booking_requests'), leadColumns, since),
       selectLeadRows(db.from('customers'), leadColumns, since),
-      db.from('ads_calls').select('caller_phone, campaign_name, started_at').not('caller_phone', 'is', null).limit(5000),
+      loadAdsCalls(db),
       fetchBookedJobs(),
       db.from('ads_offline_conversions').select('jobber_job_id, status, value_usd, payload, gclid, google_response').limit(5000),
     ]);
@@ -85,19 +96,16 @@ export async function POST(request: NextRequest) {
       ...(bookings.data ?? []).map((row) => mapLead(row, 'booking_requests')),
       ...(customers.data ?? []).map((row) => mapLead(row, 'customers')),
     ];
+    console.log(
+      `[ads_offline] ads_calls rows=${calls.rows} utc_column=${calls.hasUtcColumn} shifted=${calls.shifted} dropped_landing_page=${calls.droppedLandingPage}`
+    );
     if (bookings.error) console.warn('[ads_offline] booking_requests:', bookings.error.message);
     if (customers.error) console.warn('[ads_offline] customers:', customers.error.message);
 
     const { candidates, excluded } = candidatesFromBookedJobs({
       jobs: invoices,
       leads,
-      adsCalls: (calls.data ?? []).map(
-        (row: { caller_phone: string | null; campaign_name: string | null; started_at: string | null }) => ({
-          phone: row.caller_phone,
-          campaign: row.campaign_name,
-          startedAt: row.started_at,
-        })
-      ),
+      adsCalls: calls.calls,
       floorIso: backfillFloor ?? undefined,
     });
 
@@ -224,6 +232,12 @@ export async function POST(request: NextRequest) {
       const tooRecent = new Set(callCands.filter((c) => callTooRecent({ callerPhone: c.callerPhone, callStartedAt: c.callStartedAt })).map((c) => c.jobberJobId));
       const ready = callCands.filter((c) => !tooRecent.has(c.jobberJobId));
       for (const c of ready) {
+        // Credit the real won value (invoice > approved quote > booking), not the $200 booking placeholder.
+        const best = bestWonValue(c.stages);
+        if (best.value > c.valueUsd) {
+          c.valueUsd = best.value;
+          c.valueSource = best.source === 'invoiced' ? 'invoice_pretax' : c.valueSource;
+        }
         callJobIds.add(c.jobberJobId);
         callInfo.set(c.jobberJobId, { callerPhone: c.callerPhone, callStartedAt: c.callStartedAt });
       }
@@ -238,7 +252,21 @@ export async function POST(request: NextRequest) {
         mode,
         conversionAction: config.conversionAction ?? callAction,
         resendUploadedIds: callResend,
-        save: saveRow,
+        save: async (row) => {
+          await saveRow(row);
+          const info = callInfo.get(row.jobber_job_id);
+          console.log(
+            callRowLogLine({
+              jobberJobId: row.jobber_job_id,
+              callerPhone: info?.callerPhone,
+              callStartedAt: info?.callStartedAt,
+              status: row.status,
+              error: row.error,
+              valueUsd: row.value_usd,
+              valueSource: ready.find((c) => c.jobberJobId === row.jobber_job_id)?.valueSource ?? null,
+            })
+          );
+        },
         upload: async (conversions) => {
           const calls = conversions.map((c) => toCallConversion(callAction, c, callInfo.get(c.order_id)));
           const sendable = calls.filter((c): c is NonNullable<typeof c> => c != null);
@@ -249,6 +277,9 @@ export async function POST(request: NextRequest) {
           return res;
         },
       });
+      console.log(
+        `[ads_offline] call conversions uploaded=${callResult.uploaded} errors=${callResult.errors.length} skipped=${callResult.skipped} waiting6h=${tooRecent.size}`
+      );
     }
 
     const result = await runOfflineImport({
@@ -373,6 +404,27 @@ export async function POST(request: NextRequest) {
     console.error('[ads_offline] Cron failed:', message);
     return NextResponse.json({ error: message, mode }, { status: 500 });
   }
+}
+
+async function loadAdsCalls(db: any) {
+  const base = 'caller_phone, campaign_name, started_at, call_source, call_view_resource';
+  let hasUtcColumn = true;
+  let res = await db.from('ads_calls').select(`${base}, started_at_utc`).not('caller_phone', 'is', null).limit(5000);
+  if (res.error) {
+    hasUtcColumn = false;
+    res = await db.from('ads_calls').select(base).not('caller_phone', 'is', null).limit(5000);
+  }
+  if (res.error) console.warn('[ads_offline] ads_calls:', res.error.message);
+  const ledger = await db.from('settings').select('value').eq('key', ADS_CALLS_TIME_REPAIR_KEY).maybeSingle();
+  const list = ledger?.data?.value?.resources;
+  const repairedLedger = new Set<string>(Array.isArray(list) ? list.filter((r: unknown) => typeof r === 'string') : []);
+  const rows: AdsCallRow[] = res.data ?? [];
+  const usable = usableAdsCalls(rows, {
+    hasUtcColumn,
+    repairedLedger,
+    repair: (v) => repairAdsStartedAtStoredAsUtc(v),
+  });
+  return { ...usable, rows: rows.length, hasUtcColumn };
 }
 
 function mapLead(row: Record<string, unknown>, source: AttributedLead['source']): AttributedLead {
