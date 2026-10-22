@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { finalStatusPatch } from '@/lib/phone-calls/final-status';
+import { confirmedAbandon, notifyMissedInboundCall } from '@/lib/phone-calls/missed-alert';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -33,20 +34,52 @@ export async function POST(request: NextRequest) {
     const callerNumber = params.From;
     const callStatus = params.CallStatus;
 
-    // Final-status callback (every number's StatusCallback points here). Close out recorded-line rows that never
-    // reached the <Dial> (caller hung up during the recording notice); rows with a dial status are left alone.
+    // Final-status callback (every number's StatusCallback points here). Close out recorded-line rows that
+    // never got a dial result (hung up during the notice, or the dial action never arrived). Rows that already
+    // have a dial status, and answered calls whose dial result lands during a short wait, are left alone.
     const patch = valid ? finalStatusPatch(params) : null;
-    if (patch) {
+    if (patch && callSid) {
       const db: any = optionalServiceClient();
       if (db) {
         try {
-          const { data, error } = await db.from('inbound_call_recordings').update(patch)
-            .eq('call_sid', callSid).is('dial_status', null).eq('processing_status', 'pending').select('call_sid');
-          if (error) console.error('[calls/webhook] final status update failed', error.message);
-          else if (data?.length) console.log(`[calls/webhook] final ${callStatus} ${callSid}: closed as hung up before dial`);
-          else {
-            const { data: row } = await db.from('inbound_call_recordings').select('dial_status, processing_status, outcome').eq('call_sid', callSid).maybeSingle();
-            console.log(`[calls/webhook] final ${callStatus} ${callSid}: ${row ? `left as is (dial=${row.dial_status} processing=${row.processing_status} outcome=${row.outcome})` : 'no recorded-line row'}`);
+          const { data: existing } = await db.from('inbound_call_recordings')
+            .select('call_sid, caller_number, tracking_number, source, started_at, dial_status, processing_status')
+            .eq('call_sid', callSid).maybeSingle();
+          const decision = await confirmedAbandon({
+            params,
+            row: existing ?? null,
+            reread: async () => {
+              const again = await db.from('inbound_call_recordings').select('dial_status, processing_status').eq('call_sid', callSid).maybeSingle();
+              return again?.data ?? null;
+            },
+          });
+          if (!decision.closeOut) {
+            console.log(`[calls/webhook] final ${callStatus} ${callSid}: ${decision.reason === 'dial-arrived' ? 'dial result arrived, no missed alert' : existing ? `left as is (dial=${existing.dial_status} processing=${existing.processing_status})` : 'no recorded-line row'}`);
+          } else {
+            const { data, error } = await db.from('inbound_call_recordings').update({ ...patch, summary: decision.summary || patch.summary })
+              .eq('call_sid', callSid).is('dial_status', null).eq('processing_status', 'pending')
+              .select('call_sid, caller_number, tracking_number, source, started_at');
+            if (error) console.error('[calls/webhook] final status update failed', error.message);
+            else if (data?.length) {
+              console.log(`[calls/webhook] final ${callStatus} ${callSid}: closed as missed before Mike (${decision.phase})`);
+              const row = data[0];
+              const length = parseInt(params.CallDuration || '', 10);
+              try {
+                await notifyMissedInboundCall({
+                  callSid,
+                  caller: row.caller_number || callerNumber,
+                  called: row.tracking_number || calledNumber,
+                  source: row.source,
+                  startedAt: row.started_at,
+                  phase: decision.phase,
+                  noticePlayed: decision.noticePlayed,
+                  ringSeconds: decision.ringSeconds,
+                  callLengthSeconds: Number.isFinite(length) ? length : null,
+                }, db);
+              } catch (err) { console.error('[calls/webhook] missed alert failed', err instanceof Error ? err.message : err); }
+            } else {
+              console.log(`[calls/webhook] final ${callStatus} ${callSid}: dial result arrived before close-out`);
+            }
           }
         } catch (e) { console.error('[calls/webhook] final status update failed', e instanceof Error ? e.message : e); }
       }
