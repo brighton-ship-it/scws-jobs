@@ -44,7 +44,7 @@ export async function POST(req: NextRequest) {
     mikeOnly,
     mikeInDial: mikeOnly || q.get('rolled') === '1',
   });
-  // Mike's one email is his end-of-call report. Shop and missed emails go out now.
+  // Mike's email is his end-of-call report. Missed calls email now. A shop answer does not.
   if (plan.send === 'now' && plan.who && params.CallSid) {
     const dur = parseInt(params.DialCallDuration || '', 10);
     try {
