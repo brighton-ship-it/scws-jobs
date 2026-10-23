@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   annotateFeed, balanceColumnMissing, callbackCandidates, callbackSources, calledAfterInvoice, firstCallback, formatCallbackStatus,
   formatCollectionAttempts, groupPastDueClients, handlingCallback, hasWorkAfter, hasWorkOnOrAfter, indexWorkTimes, isHangupUnder10s, listOpenInvoices, needsCallback,
-  OUTREACH_TOOLTIP, requestResolvesCallback, summarizeOutreach, voiceAttempts,
+  OUTREACH_TOOLTIP, dedupeOutreachAttempts, requestResolvesCallback, summarizeOutreach, voiceAttempts,
 } from './callbacks.ts';
 import { DEFAULT_STAFF_LINES, staffLines, staffLabel } from './staff-lines.ts';
 import { parseTwilioCollectionMessages, parseTwilioOutbound } from './twilio-outbound.ts';
@@ -141,6 +141,126 @@ test('shop Voice attempts count, name the last caller, and flag going cold', () 
   assert.equal(owen?.goingCold, true);
   assert.equal(view.invoices.count, 1);
   assert.equal(view.leads.rows.some((r) => r.name === 'Owen'), false);
+});
+
+test('Stephanie has one callback after the Mike call: Shanicey at 9:30:57 AM, 11s', () => {
+  // Production phone_call_log on 2026-10-23. The 9:33 AM dial is not in the log.
+  const attempts = [
+    { at: '2026-10-12T14:08:43.736Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 23 },
+    { at: '2026-10-23T15:44:37.942Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 164 },
+    { at: '2026-10-23T16:30:57.782Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 11 },
+  ];
+  const seenAt = new Date('2026-10-23T16:24:00Z');
+  const before = summarizeOutreach({
+    phone: '(760) 571-7808', attempts, fromMs, now: seenAt, anchorAt: '2026-10-23T16:17:28.304Z', trackCold: true,
+  });
+  assert.equal(before.attempts, 0);
+  assert.equal(before.label, 'No Voice attempts yet');
+  const feed = annotateFeed([
+    { at: '2026-10-23T16:17:28.304Z', name: 'Stephanie', phone: '(760) 571-7808', line: 'Mike', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 5, summary: null },
+  ], [], seenAt, { attempts, fromMs });
+  assert.equal(feed[0].callback, 'No callback yet');
+  assert.equal(feed[0].outreach, 'No Voice attempts yet');
+  const after = summarizeOutreach({
+    phone: '7605717808', attempts, fromMs, now: new Date('2026-10-23T17:00:00Z'), anchorAt: '2026-10-23T16:17:28.304Z',
+  });
+  assert.equal(after.attempts, 1);
+  assert.equal(after.lastBy, 'Shanicey');
+  assert.equal(after.lastAt, '2026-10-23T16:30:57.782Z');
+  assert.match(after.label, /^1 attempt, last/);
+});
+
+test('Peter Crotty has four staff dials and one callback on the Oct 19 card', () => {
+  // Production rows. Three Brighton dials on Oct 15, then Liz at 9:57 AM PT on Oct 19.
+  const attempts = [
+    { at: '2026-10-15T21:14:16.925Z', phone: '+17607497141', staff: 'Brighton', durationSeconds: 0 },
+    { at: '2026-10-15T21:15:05.919Z', phone: '+17607497141', staff: 'Brighton', durationSeconds: 2 },
+    { at: '2026-10-15T21:15:44.484Z', phone: '+17607497141', staff: 'Brighton', durationSeconds: 193 },
+    { at: '2026-10-19T16:57:33.530Z', phone: '+17607497141', staff: 'Liz', durationSeconds: 86 },
+  ];
+  assert.equal(attempts.length, 4);
+  const oct19 = summarizeOutreach({
+    phone: '(760) 749-7141', attempts, fromMs, now: new Date('2026-10-23T17:00:00Z'), anchorAt: '2026-10-19T16:55:50.317Z',
+  });
+  assert.equal(oct19.attempts, 1);
+  assert.equal(oct19.lastBy, 'Liz');
+  assert.equal(oct19.lastAt, '2026-10-19T16:57:33.530Z');
+  const feed: FeedRow[] = [
+    { at: '2026-10-16T16:54:55.510Z', name: 'Peter Crotty', phone: '(760) 749-7141', line: 'Main', outcome: 'Answered', answeredBy: 'Liz', durationSeconds: 73, summary: null },
+    { at: '2026-10-16T20:36:39.811Z', name: 'Peter Crotty', phone: '(760) 749-7141', line: 'Main', outcome: 'Answered', answeredBy: 'Liz', durationSeconds: 46, summary: null },
+    { at: '2026-10-19T16:55:50.317Z', name: 'Peter Crotty', phone: '(760) 749-7141', line: 'Main', outcome: 'Answered', answeredBy: 'Liz', durationSeconds: 34, summary: null },
+  ];
+  const rows = annotateFeed(feed, [], new Date('2026-10-23T17:00:00Z'), { attempts, fromMs });
+  assert.equal(rows[0].outreach, null);
+  assert.equal(rows[1].outreach, null);
+  assert.match(rows[2].outreach ?? '', /^1 attempt, last/);
+  assert.match(rows[2].outreach ?? '', /Liz/);
+});
+
+test('a callback stops at the next inbound from that number', () => {
+  const phone = '(760) 222-3333';
+  const attempts = [
+    { at: '2026-10-14T17:30:00Z', phone: '7602223333', staff: 'Liz', durationSeconds: 20 },
+    { at: '2026-10-14T19:30:00Z', phone: '7602223333', staff: 'Shanicey', durationSeconds: 40 },
+  ];
+  const feed: FeedRow[] = [
+    { at: '2026-10-14T17:00:00Z', name: 'Ada', phone, line: 'Main', outcome: 'Missed', answeredBy: null, durationSeconds: 0, summary: null },
+    { at: '2026-10-14T19:00:00Z', name: 'Ada', phone, line: 'Mike', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 30, summary: null },
+    { at: '2026-10-14T21:00:00Z', name: 'Ada', phone, line: 'Main', outcome: 'Voicemail', answeredBy: null, durationSeconds: 15, summary: null },
+  ];
+  const sources = callbackSources({
+    log: [
+      { direction: 'outbound', started_at: '2026-10-14T17:30:00Z', caller_phone: '+17602223333', duration_seconds: 20, ring_group: 'Liz' },
+      { direction: 'outbound', started_at: '2026-10-14T19:30:00Z', caller_phone: '+17602223333', duration_seconds: 40, ring_group: 'Shanicey' },
+    ],
+  });
+  const rows = annotateFeed(feed, sources, new Date('2026-10-14T22:00:00Z'), { attempts, fromMs });
+  assert.match(rows[0].outreach ?? '', /^1 attempt/);
+  assert.match(rows[0].outreach ?? '', /Liz/);
+  assert.equal(rows[0].callback, 'Called back 10:30 AM PT, 20s');
+  assert.match(rows[1].outreach ?? '', /^1 attempt/);
+  assert.match(rows[1].outreach ?? '', /Shanicey/);
+  assert.equal(rows[1].callback, 'Called back 12:30 PM PT, 40s');
+  assert.equal(rows[2].outreach, 'No Voice attempts yet');
+  assert.equal(rows[2].callback, 'No callback yet');
+});
+
+test('a blank staff name merges into the named row, and a missing call time counts nothing', () => {
+  const named = dedupeOutreachAttempts([
+    { at: '2026-10-23T16:30:57.782Z', phone: '+17605717808', staff: null, durationSeconds: 11 },
+    { at: '2026-10-23T16:31:05.000Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 4 },
+  ]);
+  assert.equal(named.length, 1);
+  assert.equal(named[0].staff, 'Shanicey');
+  assert.equal(named[0].durationSeconds, 11);
+  const longerBlank = dedupeOutreachAttempts([
+    { at: '2026-10-23T16:30:57.782Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 4 },
+    { at: '2026-10-23T16:31:05.000Z', phone: '+17605717808', staff: '', durationSeconds: 11 },
+  ]);
+  assert.equal(longerBlank.length, 1);
+  assert.equal(longerBlank[0].staff, 'Shanicey');
+  assert.equal(longerBlank[0].durationSeconds, 11);
+  const twin = dedupeOutreachAttempts([
+    { at: '2026-10-16T21:30:20.331Z', phone: '+16198557276', staff: 'Liz', durationSeconds: 0 },
+    { at: '2026-10-16T21:30:31.428Z', phone: '6198557276', staff: 'Liz', durationSeconds: 0 },
+  ]);
+  assert.equal(twin.length, 1);
+  const twoPeople = dedupeOutreachAttempts([
+    { at: '2026-10-23T16:30:57.782Z', phone: '+17605717808', staff: 'Liz', durationSeconds: 11 },
+    { at: '2026-10-23T16:31:05.000Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 4 },
+  ]);
+  assert.equal(twoPeople.length, 2);
+  const attempts = [{ at: '2026-10-23T16:30:57.782Z', phone: '+17605717808', staff: 'Shanicey', durationSeconds: 11 }];
+  const missing = summarizeOutreach({
+    phone: '7605717808', attempts, fromMs, now: new Date('2026-10-23T17:00:00Z'), anchorAt: '',
+  });
+  assert.equal(missing.attempts, 0);
+  assert.equal(missing.label, 'No Voice attempts yet');
+  const feed = annotateFeed([
+    { at: '', name: 'Stephanie', phone: '(760) 571-7808', line: 'Mike', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 5, summary: null },
+  ], [], new Date('2026-10-23T17:00:00Z'), { attempts, fromMs });
+  assert.equal(feed[0].outreach, 'No Voice attempts yet');
+  assert.equal(feed[0].callback, 'No callback yet');
 });
 
 test('past-due clients match Jobber phones and ignore other invoice statuses', () => {
