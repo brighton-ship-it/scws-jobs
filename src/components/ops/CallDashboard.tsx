@@ -282,7 +282,7 @@ function CallbackLine({ text, dark }: { text: string; dark: boolean }) {
   const cls = called ? (dark ? 'text-emerald-300' : 'text-emerald-700') : (dark ? 'text-amber-300' : 'text-amber-800');
   return <div className={`mt-1 break-words text-xs font-medium leading-snug xl:text-sm ${cls}`}>{text}</div>;
 }
-const OUTREACH_TIP = 'Counts shop Voice callbacks after this call (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. The same dial logged twice within 15 seconds counts once. Personal cell calls are not in this log, so a callback from a cell does not show here.';
+const OUTREACH_TIP = 'Counts shop Voice callbacks after this call and before the next call from that number (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. The same dial logged twice within 15 seconds counts once. Personal cell calls are not in this log, so a callback from a cell does not show here.';
 const COLD_TIP = 'Going cold: 3 or more Voice attempts with no connected call or booking, or no attempt in the last 3 days.';
 function OutreachLine({ text, cold, dark }: { text: string; cold?: boolean; dark: boolean }) {
   return (
