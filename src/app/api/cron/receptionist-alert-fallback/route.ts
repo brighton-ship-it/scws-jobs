@@ -94,8 +94,12 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Inbound calls whose immediate email failed. Mike calls wait (see SWEEP_MIKE_WAIT_MS)
-  // so this sweep does not claim the row before his end-of-call report.
+  // Inbound backup, same cron (vercel.json: every 10 minutes). No extra env.
+  // A short shop leg is voicemail and retries as missed. An answered call that
+  // still does not name a party waits SWEEP_UNKNOWN_MIKE_MS (10 minutes from the
+  // row's last update), then one missed-call email, if Mike was in the dial and
+  // nothing has claimed the row. A known Mike call still waits SWEEP_MIKE_WAIT_MS
+  // so this does not claim the row before his end-of-call report.
   const sweepSince = new Date(now - 3 * 60 * 60 * 1000).toISOString();
   const { data: inboundRows, error: inboundError } = await (supabase as any)
     .from('inbound_call_recordings')
