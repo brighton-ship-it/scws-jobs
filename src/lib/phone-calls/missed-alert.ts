@@ -1,8 +1,12 @@
 /**
  * Office email for a missed inbound call, and for a call Mike answers.
- * A call the shop answers does not email. Mike's email waits until his call
- * has ended, then uses his end-of-call report (summary and outcome).
- * Mike's voice, greeting, and callback flag are not involved.
+ * A call the shop answers does not email. A shop leg that stays connected for
+ * under SHOP_ANSWER_MIN_SECONDS is the handset or the carrier's voicemail:
+ * Twilio still says completed, and that counts as missed.
+ * Mike's email waits for his end-of-call report. If that report never comes
+ * and the answered party was never recorded, the sweep sends one missed-call
+ * email after SWEEP_UNKNOWN_MIKE_MS. His voice, greeting, and callback flag
+ * are not involved.
  */
 import { formatPhoneDisplay, OFFICE_ALERT_EMAILS } from '../receptionist/office-callback.ts';
 import { AI_RECEPTIONIST, PORTED_LINES, TRACKING_SOURCES, directToAi } from './config.ts';
@@ -15,6 +19,11 @@ export const CALL_ALERT_MARKER = 'call-alert-sent';
 export const MISSED_ALERT_MARKER = 'missed-alert-sent';
 /** `leg:shop` or `leg:mike`, written when that party answers. */
 export const LEG_PREFIX = 'leg:';
+/**
+ * The dial included Mike and the leg callback had not named who answered.
+ * The sweep uses this to send one missed-call email if his report never claims the row.
+ */
+export const AWAIT_MIKE_MARKER = 'await-mike';
 
 export type AnsweredBy = 'shop' | 'mike' | 'missed';
 
@@ -34,7 +43,7 @@ export function partyFromProcessing(value: string | null | undefined): 'shop' | 
 
 /** Keep the alert claim and the answered-party token; append a recording note. */
 export function mergeProcessingError(current: string | null | undefined, note: string | null | undefined): string | null {
-  const kept = processingParts(current).filter((part) => part === CALL_ALERT_MARKER || part === MISSED_ALERT_MARKER || part.startsWith(LEG_PREFIX));
+  const kept = processingParts(current).filter((part) => part === CALL_ALERT_MARKER || part === MISSED_ALERT_MARKER || part === AWAIT_MIKE_MARKER || part.startsWith(LEG_PREFIX));
   if (note && !kept.includes(note)) kept.push(note);
   return kept.length ? kept.join('|') : null;
 }
@@ -47,6 +56,16 @@ export function withParty(current: string | null | undefined, party: 'shop' | 'm
 export function withAlert(current: string | null | undefined): string {
   const rest = processingParts(current).filter((part) => part !== CALL_ALERT_MARKER && part !== MISSED_ALERT_MARKER);
   return [CALL_ALERT_MARKER, ...rest].join('|');
+}
+
+export function withAwaitMike(current: string | null | undefined): string {
+  const parts = processingParts(current);
+  if (parts.includes(AWAIT_MIKE_MARKER)) return parts.join('|');
+  return [...parts, AWAIT_MIKE_MARKER].join('|');
+}
+
+export function awaitingMikeReport(value: string | null | undefined): boolean {
+  return processingParts(value).includes(AWAIT_MIKE_MARKER);
 }
 
 const BRIGHTON = 'brighton@scwellservice.com';
@@ -213,12 +232,25 @@ export function missedAlertCopy(input: {
 const ANSWERED = new Set(['completed', 'answered']);
 
 /**
+ * Connected time on the shop leg, in seconds, below which the pickup is treated
+ * as voicemail. Twilio reports the handset's or the carrier's voicemail as
+ * `completed`. A person who actually takes the call is at or above this.
+ * This does not change who is dialed or when the caller is bridged.
+ */
+export const SHOP_ANSWER_MIN_SECONDS = 20;
+
+/** True when this connected shop leg is short enough to be voicemail, not a person. */
+export function shopLegCountsAsMissed(seconds: number | null | undefined): boolean {
+  return seconds != null && Number.isFinite(seconds) && seconds >= 0 && seconds < SHOP_ANSWER_MIN_SECONDS;
+}
+
+/**
  * What the <Dial action> should do.
  * handoff: caller is still here and Mike has not been dialed yet.
- * send now: nobody answered. A canceled dial means the caller is already gone,
- * so TwiML returned from this request will not run.
- * defer: Mike answered. His end-of-call report sends the one email, with the summary.
- * no email: the shop answered.
+ * send now: nobody answered, or the shop leg was voicemail. A canceled dial
+ * means the caller is already gone, so TwiML returned from this request will not run.
+ * defer: Mike may have answered. His end-of-call report sends the one email.
+ * no email: the shop answered and stayed on the line.
  */
 export function inboundCallEmailPlan(input: {
   dialStatus: string | null | undefined;
@@ -228,11 +260,20 @@ export function inboundCallEmailPlan(input: {
   mikeOnly: boolean;
   /** Mike was one of the numbers in this dial. */
   mikeInDial: boolean;
+  /** DialCallDuration. Connected time, not ring time. Null when Twilio omitted it. */
+  shopSeconds?: number | null;
 }): { handoff: boolean; send: 'now' | 'defer' | 'no'; who: AnsweredBy | null } {
   const status = (input.dialStatus || '').trim().toLowerCase();
   if (ANSWERED.has(status)) {
-    if (input.party === 'shop') return { handoff: false, send: 'no', who: null };
     if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
+    // The shop number is the one that connected, or Mike was not in this dial at all.
+    // A short connection is voicemail. Unknown duration stays a real answer: a missing
+    // DialCallDuration must not turn a conversation into a missed-call email.
+    const shopLeg = input.party === 'shop' || !input.mikeInDial;
+    if (shopLeg && shopLegCountsAsMissed(input.shopSeconds)) {
+      return { handoff: false, send: 'now', who: 'missed' };
+    }
+    if (input.party === 'shop') return { handoff: false, send: 'no', who: null };
     // Both numbers were dialed and the leg callback has not arrived. Wait for Mike's
     // report if it was him. If Mike was not in the dial, the shop answered: no email.
     if (input.mikeInDial) return { handoff: false, send: 'defer', who: 'mike' };
@@ -468,6 +509,25 @@ export async function recordAnsweredParty(db: any, callSid: string, party: 'shop
   return result === 'ok' ? 'recorded' : 'already';
 }
 
+/**
+ * The dial included Mike and we still do not know who answered, so his report
+ * is the email. Remember that for the sweep. A party token or an alert claim
+ * that lands first is left alone.
+ */
+export async function noteMikeAwaitingReport(db: any, callSid: string): Promise<'noted' | 'already' | 'missing'> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
+    const row = loaded?.data;
+    if (!row) return 'missing';
+    const current = row.processing_error ?? null;
+    if (hasAlertMarker(current) || partyFromProcessing(current) || awaitingMikeReport(current)) return 'already';
+    const result = await claimProcessingError(db, callSid, current, withAwaitMike(current), new Date());
+    if (result === 'ok') return 'noted';
+    if (result === 'error') return 'missing';
+  }
+  return 'already';
+}
+
 /** Inbound start vs Mike's report. Long enough for a call where the office flag is saved near the end. */
 const MIKE_MATCH_MS = 20 * 60 * 1000;
 
@@ -628,15 +688,22 @@ const SWEEP_MAX_MS = 3 * 60 * 60 * 1000;
  * the report to win, including a retry after that race.
  */
 export const SWEEP_MIKE_WAIT_MS = 45 * 60 * 1000;
+/**
+ * Answered, Mike was in the dial, and nobody has said who picked up.
+ * His report usually lands in the first minute. After this, one missed-call
+ * email. The clock is the row's last update (the dial result), not the sweep.
+ */
+export const SWEEP_UNKNOWN_MIKE_MS = 10 * 60 * 1000;
 const SWEEP_RETRY_MS = 2 * 60 * 1000;
 
-/** Backup send for a call whose immediate email failed, or whose Mike report never arrived. */
+/** Backup send for a call whose immediate email failed, a short shop leg, or a Mike report that never arrived. */
 export function sweepInboundEmail(row: {
   processing_error: string | null;
   dial_status: string | null;
   answered: boolean | null;
   updated_at?: string | null;
   started_at?: string | null;
+  duration_seconds?: number | null;
 }, nowMs: number): AnsweredBy | null {
   if (hasAlertMarker(row.processing_error)) return null;
   const updated = Date.parse(row.updated_at || row.started_at || '');
@@ -648,7 +715,15 @@ export function sweepInboundEmail(row: {
   const party = partyFromProcessing(row.processing_error);
   const answered = row.answered === true || ANSWERED.has(dial);
   if (answered && party === 'mike') return age >= SWEEP_MIKE_WAIT_MS ? 'mike' : null;
-  // The shop answered, or the leg token never said Mike. No talk-time email.
+  // Shop voicemail: Twilio said completed. A long connection was a person.
+  if (answered && party === 'shop') {
+    return shopLegCountsAsMissed(row.duration_seconds) && age >= SWEEP_RETRY_MS ? 'missed' : null;
+  }
+  // Leg token still missing. Mike was in the dial, and neither his report nor
+  // another email has claimed the row. One missed-call email, not a shop email.
+  if (answered && awaitingMikeReport(row.processing_error)) {
+    return age >= SWEEP_UNKNOWN_MIKE_MS ? 'missed' : null;
+  }
   if (answered) return null;
   return age >= SWEEP_RETRY_MS ? 'missed' : null;
 }

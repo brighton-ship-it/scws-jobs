@@ -10,6 +10,7 @@ import {
   confirmedAbandon,
   callDashboardUrl,
   lineLabel,
+  AWAIT_MIKE_MARKER,
   CALL_ALERT_MARKER,
   deliverMikeCallEmail,
   inboundAlertCopy,
@@ -17,14 +18,18 @@ import {
   mergeMikeCallEmail,
   mergeProcessingError,
   missedAlertRecipients,
+  noteMikeAwaitingReport,
   notifyMissedInboundCall,
   partyFromProcessing,
   pickInboundForMike,
   recordAnsweredParty,
   ringSecondsForAlert,
+  SHOP_ANSWER_MIN_SECONDS,
+  shopLegCountsAsMissed,
   statusCallbackPlan,
   sweepInboundEmail,
   SWEEP_MIKE_WAIT_MS,
+  SWEEP_UNKNOWN_MIKE_MS,
   commitProcessingNote,
   MISSED_ALERT_MARKER,
 } from './missed-alert.ts';
@@ -102,9 +107,24 @@ describe('inbound TwiML rolls to Mike in the same dial', () => {
 describe('status callback', () => {
   const base = { canHandoff: false, party: null as 'shop' | 'mike' | null, mikeOnly: false, mikeInDial: true };
   it('does not email when the shop answered', () => {
+    assert.equal(SHOP_ANSWER_MIN_SECONDS, 20);
+    assert.equal(shopLegCountsAsMissed(20), false);
+    assert.equal(shopLegCountsAsMissed(null), false);
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 125 }), { handoff: false, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 20 }), { handoff: false, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'answered', party: 'shop', mikeInDial: false, shopSeconds: 95 }), { handoff: false, send: 'no', who: null });
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true }), { handoff: false, send: 'no', who: null });
-    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'answered', party: 'shop', mikeInDial: false }), { handoff: false, send: 'no', who: null });
-    assert.deepEqual(inboundCallEmailPlan({ dialStatus: 'completed', canHandoff: false, party: null, mikeOnly: false, mikeInDial: false }), { handoff: false, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ dialStatus: 'completed', canHandoff: false, party: null, mikeOnly: false, mikeInDial: false, shopSeconds: 95 }), { handoff: false, send: 'no', who: null });
+  });
+  it('counts a short shop leg as missed, because that is voicemail answering', () => {
+    assert.equal(shopLegCountsAsMissed(0), true);
+    assert.equal(shopLegCountsAsMissed(19), true);
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 8 }), { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 19 }), { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ dialStatus: 'completed', canHandoff: false, party: null, mikeOnly: false, mikeInDial: false, shopSeconds: 12 }), { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'mike', shopSeconds: 8 }), { handoff: false, send: 'defer', who: 'mike' });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, mikeOnly: true, mikeInDial: true, shopSeconds: 8 }), { handoff: false, send: 'defer', who: 'mike' });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, mikeInDial: true, shopSeconds: 8 }), { handoff: false, send: 'defer', who: 'mike' });
   });
   it('waits for Mike\'s end-of-call report when Mike answered', () => {
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'mike' }), { handoff: false, send: 'defer', who: 'mike' });
@@ -418,6 +438,7 @@ describe('one email when Mike also reports the call', () => {
   });
   it('keeps the answered party when the recording note is saved', () => {
     assert.equal(mergeProcessingError('call-alert-sent|leg:shop', 'note posted'), 'call-alert-sent|leg:shop|note posted');
+    assert.equal(mergeProcessingError(AWAIT_MIKE_MARKER, 'note posted'), `${AWAIT_MIKE_MARKER}|note posted`);
     assert.equal(mergeMikeCallEmail(built, 'Answered by: Mike').text.startsWith('Answered by: Mike'), true);
   });
 });
@@ -440,7 +461,7 @@ describe('who answered, and the backup send', () => {
     const unknown = { processing_error: null, dial_status: 'completed', answered: true, updated_at: new Date(now - 11 * 60_000).toISOString() };
     assert.equal(sweepInboundEmail(unknown, now), null);
     assert.equal(sweepInboundEmail({ ...unknown, updated_at: new Date(now - SWEEP_MIKE_WAIT_MS - 60_000).toISOString() }, now), null);
-    assert.equal(sweepInboundEmail({ processing_error: 'leg:shop', dial_status: 'completed', answered: true, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), null);
+    assert.equal(sweepInboundEmail({ processing_error: 'leg:shop', dial_status: 'completed', answered: true, duration_seconds: 125, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), null);
     assert.equal(sweepInboundEmail({ processing_error: null, dial_status: 'canceled', answered: false, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), 'missed');
     assert.equal(sweepInboundEmail({ processing_error: null, dial_status: null, answered: null, updated_at: new Date(now - 30 * 60_000).toISOString() }, now), null);
   });
@@ -448,6 +469,147 @@ describe('who answered, and the backup send', () => {
     const { db, state } = memoryDb({ call_sid: 'CA1', processing_error: `${CALL_ALERT_MARKER}|leg:mike` });
     await commitProcessingNote(db, 'CA1', 'note posted', '2026-10-22T15:00:00.000Z');
     assert.equal(state.row?.processing_error, `${CALL_ALERT_MARKER}|leg:mike|note posted`);
+  });
+});
+
+describe('shop voicemail and a missing Mike report', () => {
+  const now = Date.parse('2026-10-22T15:00:00.000Z');
+  const input = {
+    callSid: 'CA1', caller: '+17603159054', called: '+17603312502', source: 'google_ads',
+    startedAt: '2026-10-22T14:29:01.000Z', phase: 'dial' as const, noticePlayed: true,
+    now: new Date('2026-10-22T14:29:16.000Z'),
+  };
+  const seed = {
+    call_sid: 'CA1', caller_number: '+17603159054', tracking_number: '+17603312502', source: 'google_ads',
+    started_at: '2026-10-22T14:29:01.000Z', processing_error: null as string | null,
+    dial_status: 'completed', answered: true, duration_seconds: 11,
+    updated_at: new Date(now - 3 * 60_000).toISOString(),
+  };
+
+  it('emails a voicemail-answered shop leg once, and the sweep does not send again', async () => {
+    const plan = inboundCallEmailPlan({ dialStatus: 'completed', canHandoff: false, party: 'shop', mikeOnly: false, mikeInDial: true, shopSeconds: 11 });
+    assert.deepEqual(plan, { handoff: false, send: 'now', who: 'missed' });
+    const { db, state } = memoryDb({ ...seed, processing_error: 'leg:shop' });
+    const sent: string[] = [];
+    const send = async (message: { to: string; subject: string; text: string }) => {
+      sent.push(message.subject);
+      assert.match(message.subject, /^Missed call:/);
+      assert.match(message.text, /Nobody answered this call/);
+      assert.equal(message.text.includes('The shop answered'), false);
+      return { success: true };
+    };
+    const first = await notifyMissedInboundCall({ ...input, who: 'missed' }, db, { send });
+    const second = await notifyMissedInboundCall({ ...input, who: 'missed' }, db, { send });
+    assert.equal(first.reason, 'sent');
+    assert.equal(second.reason, 'already');
+    assert.equal(sent.length, OFFICE_ALERT_EMAILS.length);
+    assert.equal(sweepInboundEmail(state.row as typeof seed, now), null);
+  });
+
+  it('retries a voicemail email that failed, still only once', async () => {
+    const { db, state } = memoryDb({ ...seed, processing_error: 'leg:shop', duration_seconds: 6 });
+    const failed = await notifyMissedInboundCall({ ...input, who: 'missed' }, db, {
+      send: async () => ({ success: false, error: 'down' }),
+    });
+    assert.equal(failed.reason, 'email-failed');
+    assert.equal(state.row?.processing_error, 'leg:shop');
+    const sweepAt = Date.now() + 3 * 60_000;
+    assert.equal(sweepInboundEmail(state.row as typeof seed, sweepAt), 'missed');
+    let calls = 0;
+    const retried = await notifyMissedInboundCall({ ...input, who: 'missed' }, db, {
+      send: async () => { calls += 1; return { success: true }; },
+    });
+    assert.equal(retried.reason, 'sent');
+    assert.equal(calls, OFFICE_ALERT_EMAILS.length);
+    assert.equal(sweepInboundEmail(state.row as typeof seed, sweepAt), null);
+  });
+
+  it('does not email when the shop stayed on the line', () => {
+    const plan = inboundCallEmailPlan({ dialStatus: 'completed', canHandoff: false, party: 'shop', mikeOnly: false, mikeInDial: true, shopSeconds: 95 });
+    assert.deepEqual(plan, { handoff: false, send: 'no', who: null });
+    assert.equal(sweepInboundEmail({
+      processing_error: 'leg:shop', dial_status: 'completed', answered: true, duration_seconds: 95,
+      updated_at: new Date(now - 30 * 60_000).toISOString(),
+    }, now), null);
+    assert.equal(sweepInboundEmail({
+      processing_error: `${AWAIT_MIKE_MARKER}|leg:shop`, dial_status: 'completed', answered: true, duration_seconds: 95,
+      updated_at: new Date(now - 30 * 60_000).toISOString(),
+    }, now), null);
+  });
+
+  it('sends one missed-call email when Mike was in the dial and his report never arrives', async () => {
+    assert.equal(SWEEP_UNKNOWN_MIKE_MS, 10 * 60 * 1000);
+    const { db, state } = memoryDb({
+      ...seed, duration_seconds: 80, started_at: '2026-10-22T14:49:00.000Z',
+      updated_at: new Date(now - 60_000).toISOString(),
+    });
+    assert.equal(await noteMikeAwaitingReport(db, 'CA1'), 'noted');
+    assert.equal(state.row?.processing_error, AWAIT_MIKE_MARKER);
+    assert.equal(await noteMikeAwaitingReport(db, 'CA1'), 'already');
+    state.row!.updated_at = new Date(now - SWEEP_UNKNOWN_MIKE_MS + 1000).toISOString();
+    assert.equal(sweepInboundEmail(state.row as typeof seed, now), null);
+    state.row!.updated_at = new Date(now - SWEEP_UNKNOWN_MIKE_MS).toISOString();
+    assert.equal(sweepInboundEmail(state.row as typeof seed, now), 'missed');
+
+    const sent: string[] = [];
+    const send = async (message: { subject: string }) => {
+      sent.push(message.subject);
+      assert.match(message.subject, /^Missed call:/);
+      return { success: true };
+    };
+    const first = await notifyMissedInboundCall({ ...input, who: 'missed', startedAt: '2026-10-22T14:49:00.000Z', ringSeconds: 15 }, db, { send });
+    assert.equal(first.reason, 'sent');
+    assert.equal(state.row?.processing_error, `${CALL_ALERT_MARKER}|${AWAIT_MIKE_MARKER}`);
+    assert.equal(sweepInboundEmail(state.row as typeof seed, now), null);
+    const again = await notifyMissedInboundCall({ ...input, who: 'missed', ringSeconds: 15 }, db, { send });
+    assert.equal(again.reason, 'already');
+    assert.equal(sent.length, OFFICE_ALERT_EMAILS.length);
+
+    let mikeSends = 0;
+    const report = await deliverMikeCallEmail(db, {
+      phone: '+17603159054',
+      startedAtMs: Date.parse('2026-10-22T14:49:00.000Z'),
+      built: { subject: 'Mike answered: (760) 315-9054', text: 'SUMMARY:\nPump is short-cycling.' },
+    }, {
+      rows: [state.row as typeof seed],
+      send: async () => { mikeSends += 1; return { success: true }; },
+    });
+    assert.equal(report.reason, 'already');
+    assert.equal(mikeSends, 0);
+  });
+
+  it('leaves a shop answer silent when the leg arrives after the dial, and still catches a short one', async () => {
+    const known = memoryDb({ call_sid: 'CA1', processing_error: 'leg:shop' });
+    assert.equal(await noteMikeAwaitingReport(known.db, 'CA1'), 'already');
+    assert.equal(known.state.row?.processing_error, 'leg:shop');
+
+    const { db, state } = memoryDb({ call_sid: 'CA1', processing_error: null });
+    assert.equal(await noteMikeAwaitingReport(db, 'CA1'), 'noted');
+    assert.equal(await recordAnsweredParty(db, 'CA1', 'shop'), 'recorded');
+    assert.equal(state.row?.processing_error, `${AWAIT_MIKE_MARKER}|leg:shop`);
+    const baseRow = {
+      processing_error: state.row?.processing_error ?? null,
+      dial_status: 'completed', answered: true, duration_seconds: 95,
+      updated_at: new Date(now - 11 * 60_000).toISOString(),
+    };
+    assert.equal(sweepInboundEmail(baseRow, now), null);
+    assert.equal(sweepInboundEmail({ ...baseRow, duration_seconds: 9, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), 'missed');
+    assert.equal(sweepInboundEmail({ ...baseRow, duration_seconds: 9, updated_at: new Date(now - 30_000).toISOString() }, now), null);
+    assert.equal(await noteMikeAwaitingReport(memoryDb(null).db, 'CA1'), 'missing');
+  });
+
+  it('keeps a known Mike call on the long wait', () => {
+    const row = {
+      processing_error: `${AWAIT_MIKE_MARKER}|leg:mike`, dial_status: 'completed', answered: true, duration_seconds: 40,
+      updated_at: new Date(now - 11 * 60_000).toISOString(),
+    };
+    assert.equal(sweepInboundEmail(row, now), null);
+    assert.equal(sweepInboundEmail({ ...row, updated_at: new Date(now - SWEEP_MIKE_WAIT_MS - 1000).toISOString() }, now), 'mike');
+    assert.equal(sweepInboundEmail({
+      processing_error: `${CALL_ALERT_MARKER}|${AWAIT_MIKE_MARKER}`,
+      dial_status: 'completed', answered: true, duration_seconds: 80,
+      updated_at: new Date(now - 20 * 60_000).toISOString(),
+    }, now), null);
   });
 });
 
