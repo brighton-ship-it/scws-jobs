@@ -13,7 +13,9 @@ export const COLD_ATTEMPTS = 3;
 export const COLD_DAYS = 3;
 /** Shop Google Voice lines only. Personal cells are not in the audit log. */
 export const OUTREACH_TOOLTIP =
-  'Counts outbound calls from shop Google Voice lines (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. Personal cell calls are not in this log, so a callback from a cell does not show here.';
+  'Counts shop Voice callbacks after this call (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. The same dial logged twice within 15 seconds counts once. Personal cell calls are not in this log, so a callback from a cell does not show here.';
+/** Same staff, same number, this close together: one dial written twice, not two attempts. */
+export const ATTEMPT_DEDUPE_MS = 15_000;
 export const COLD_TOOLTIP =
   'Going cold: 3 or more Voice attempts with no connected call or booking, or no attempt in the last 3 days.';
 
@@ -333,6 +335,33 @@ export function voiceAttempts(log: Array<Record<string, any>>, lines: StaffLine[
   return out;
 }
 
+/**
+ * Collapse audit/webhook twins of one dial. Keeps the longer talk time.
+ * A second dial outside the window stays, even from the same person.
+ */
+export function dedupeOutreachAttempts(attempts: OutreachAttempt[]): OutreachAttempt[] {
+  const sorted = [...attempts].sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const kept: OutreachAttempt[] = [];
+  for (const attempt of sorted) {
+    const phone = digits10(attempt.phone);
+    const t = Date.parse(attempt.at);
+    const staff = attempt.staff ?? '';
+    const priorIndex = phone && Number.isFinite(t)
+      ? kept.findIndex((row) => {
+        const rt = Date.parse(row.at);
+        return digits10(row.phone) === phone && (row.staff ?? '') === staff && Number.isFinite(rt) && Math.abs(rt - t) <= ATTEMPT_DEDUPE_MS;
+      })
+      : -1;
+    if (priorIndex < 0) {
+      kept.push(attempt);
+      continue;
+    }
+    const prior = kept[priorIndex];
+    if ((attempt.durationSeconds ?? 0) > (prior.durationSeconds ?? 0)) kept[priorIndex] = attempt;
+  }
+  return kept;
+}
+
 function formatAttemptWhen(iso: string, now: Date): string {
   const d = new Date(iso);
   const time = d.toLocaleTimeString('en-US', { timeZone: 'America/Los_Angeles', hour: 'numeric', minute: '2-digit' });
@@ -360,15 +389,18 @@ export function summarizeOutreach(input: {
 }): OutreachView {
   const phone = digits10(input.phone);
   const end = input.now.getTime();
-  const inWindow = input.attempts.filter((a) => {
+  const anchor = Date.parse(input.anchorAt);
+  // A callback is a later dial. Earlier calls to the same number are not attempts for this card.
+  const inWindow = dedupeOutreachAttempts(input.attempts.filter((a) => {
     if (!phone || digits10(a.phone) !== phone) return false;
     const t = Date.parse(a.at);
-    return Number.isFinite(t) && t >= input.fromMs && t <= end;
-  }).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+    if (!Number.isFinite(t) || t < input.fromMs || t > end) return false;
+    if (Number.isFinite(anchor) && t <= anchor) return false;
+    return true;
+  })).sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   const last = inWindow.length ? inWindow[inWindow.length - 1] : null;
   const connected = !!input.connected || inWindow.some((a) => (a.durationSeconds ?? 0) > 0);
   const booked = !!input.booked;
-  const anchor = Date.parse(input.anchorAt);
   const lastMs = last ? Date.parse(last.at) : NaN;
   const stale = Number.isFinite(lastMs)
     ? end - lastMs >= COLD_DAYS * 86400_000
