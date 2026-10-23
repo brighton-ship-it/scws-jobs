@@ -8,6 +8,7 @@
  * mirror fresh before any wide or full-history work.
  */
 import { jobberGraphql } from '../jobber/client.ts';
+import { JOB_TRUE_FALSE_FIELDS, customFieldSelectionRejected } from '../jobber/job-custom-fields.ts';
 
 type Db = any;
 const digits10 = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
@@ -17,13 +18,22 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const DAY = 86400_000;
 
 const CLIENT_FIELDS = 'client { id name companyName createdAt phones { number } emails { address } }';
+/** Job mirror query. Custom fields are optional: a schema or permission miss drops them and retries the page. */
+export function jobsMirrorQuery(includeCustomFields: boolean): string {
+  const custom = includeCustomFields ? ` ${JOB_TRUE_FALSE_FIELDS}` : '';
+  return `query MirJobs($first: Int!, $after: String, $filter: JobFilterAttributes) { jobs(first: $first, after: $after, filter: $filter) {
+    nodes { id jobNumber jobStatus title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount }${custom} ${CLIENT_FIELDS} }
+    pageInfo { hasNextPage endCursor } } }`;
+}
+/** Flips off for the rest of this process if Jobber rejects Job.customFields, so the jobs sync keeps running. */
+let includeJobCustomFields = true;
+let jobCustomFieldsFailure: string | null = null;
+let jobCustomFieldsLoaded = false;
 export const Q = {
   invoices: `query MirInv($first: Int!, $after: String, $filter: InvoiceFilterAttributes) { invoices(first: $first, after: $after, filter: $filter) {
     nodes { id invoiceNumber invoiceStatus issuedDate dueDate subject updatedAt amounts { subtotal total taxAmount paymentsTotal discountAmount } jobs(first: 5) { nodes { id title } } paymentRecords(first: 15) { nodes { id } } ${CLIENT_FIELDS} }
     pageInfo { hasNextPage endCursor } } }`,
-  jobs: `query MirJobs($first: Int!, $after: String, $filter: JobFilterAttributes) { jobs(first: $first, after: $after, filter: $filter) {
-    nodes { id jobNumber jobStatus title createdAt completedAt updatedAt jobCosting { totalRevenue totalCost lineItemCost labourCost expenseCost profitAmount } ${CLIENT_FIELDS} }
-    pageInfo { hasNextPage endCursor } } }`,
+  jobs: jobsMirrorQuery(true),
   quotes: `query MirQuotes($first: Int!, $after: String, $filter: QuoteFilterAttributes) { quotes(first: $first, after: $after, filter: $filter) {
     nodes { id title quoteStatus sentAt transitionedAt createdAt updatedAt amounts { subtotal total discountAmount } client { id name companyName phones { number } emails { address } } }
     pageInfo { hasNextPage endCursor } } }`,
@@ -82,14 +92,21 @@ export function rollingTasks(now: Date, wide: boolean): Array<{ field: Field; fi
 async function page(field: Field, filter: unknown, after: string | null) {
   for (let attempt = 0; ; attempt++) {
     let res: any;
+    const query = field === 'jobs' ? jobsMirrorQuery(includeJobCustomFields) : Q[field];
     try {
-      res = await jobberGraphql(Q[field], { first: PAGE[field], after, filter });
+      res = await jobberGraphql(query, { first: PAGE[field], after, filter });
     } catch (e) {
       if (attempt >= 5 || !/throttl|rate|cost|429|50\d/i.test(e instanceof Error ? e.message : '')) throw e;
       await sleep(3000 * (attempt + 1)); continue;
     }
-    const msg = res?.errors?.[0]?.message as string | undefined;
+    const msg = (res?.errors ?? []).map((e: { message?: string }) => e?.message ?? '').filter(Boolean).join(' ');
     if (msg) {
+      // A bad custom-field selection must not take down job costing, visits, or the rest of the mirror.
+      if (field === 'jobs' && includeJobCustomFields && customFieldSelectionRejected(msg)) {
+        includeJobCustomFields = false;
+        jobCustomFieldsFailure = msg.slice(0, 180);
+        return page(field, filter, after);
+      }
       if (attempt >= 8 || !/throttl|rate|cost/i.test(msg)) throw new Error(`${field}: ${msg}`);
       // Wait exactly long enough for the bucket to refill to this query's cost (+ headroom).
       const c = res?.extensions?.cost; const ts = c?.throttleStatus;
@@ -102,6 +119,7 @@ async function page(field: Field, filter: unknown, after: string | null) {
     const ts = res?.extensions?.cost?.throttleStatus;
     if (ts && ts.currentlyAvailable < MIRROR_BUCKET_RESERVE) await sleep(Math.min(20_000, ((MIRROR_BUCKET_RESERVE - ts.currentlyAvailable) / (ts.restoreRate || 500)) * 1000));
     const conn = res?.data?.[field];
+    if (field === 'jobs' && includeJobCustomFields) jobCustomFieldsLoaded = true;
     return { nodes: (conn?.nodes ?? []) as any[], next: conn?.pageInfo?.hasNextPage ? (conn.pageInfo.endCursor as string) : null };
   }
 }
@@ -435,7 +453,8 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
         let p;
         try { p = await page(f, backfillFilter(f), cursor); }
         catch (e) {
-          // Timesheets are hidden from this Jobber app (permissions): skip them; metrics falls back to live (same '—' as before).
+          // Timesheets are hidden from this Jobber app (no Timesheets read scope). Stop retrying.
+          // /ops/metrics shows "Needs Jobber timesheet permission" until an admin re-authorizes.
           if (f === 'timeSheetEntries' && /permission|hidden/i.test(e instanceof Error ? e.message : '')) { await setState(db, key, { cursor: null, done: true, last_error: 'permission' }); cursor = null; break; }
           throw e;
         }
@@ -631,6 +650,8 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
         } else if (!report.jobsReconcile) report.jobsReconcile = { phase, rows, done: false };
       }
     }
+    if (jobCustomFieldsFailure) await setState(db, 'jobs:customFields', { done: true, last_error: jobCustomFieldsFailure });
+    else if (jobCustomFieldsLoaded) await setState(db, 'jobs:customFields', { done: true, last_error: null, last_success_at: new Date().toISOString() });
     return report;
   } catch (e) {
     const msg = e instanceof Error ? e.message.slice(0, 300) : 'error';
