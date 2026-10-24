@@ -9,6 +9,7 @@ const DELIVERY_MUTATION =
 /** Flags that would notify, remind, or mark a client confirmation. Must stay false when present. */
 const NOTIFY_FLAGS = new Set([
   'notifyTeam',
+  'emailAssignments',
   'smsAllowed',
   'receivesReminders',
   'receivesFollowUps',
@@ -20,7 +21,7 @@ const NOTIFY_FLAGS = new Set([
 ]);
 
 const NOTIFY_ARG =
-  /notify|sendEmail|emailClient|textClient|sms|reminder|bookingConfirm|markSent|clientConfirmed|visitConfirmation/i;
+  /notify|sendEmail|emailClient|emailAssign|textClient|sms|reminder|bookingConfirm|markSent|clientConfirmed|visitConfirmation/i;
 
 export function assertWriteDoesNotDeliver(query: string): void {
   if (DELIVERY_MUTATION.test(query)) {

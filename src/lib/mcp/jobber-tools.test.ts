@@ -86,7 +86,7 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('create_products'));
     assert.ok(names.includes('list_products'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.13.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.14.0');
     assert.ok(names.includes('delete_quote_draft'));
     assert.equal(names.includes('delete_quote'), false);
     const deleteDraftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'delete_quote_draft');
@@ -114,6 +114,26 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.equal(tasksSchema?.properties?.limit?.type, 'number');
     assert.match(tasksTool?.description || '', /Read-only/);
     assert.match(tasksTool?.description || '', /BASIC_TASK/);
+    assert.ok(names.includes('create_task'));
+    assert.equal(JOBBER_MCP_READONLY_TOOLS.includes('create_task'), false);
+    assert.equal(names.includes('edit_task'), false);
+    assert.equal(names.includes('delete_task'), false);
+    const createTaskTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'create_task');
+    const createTaskSchema = createTaskTool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, { type?: string; description?: string }>;
+    };
+    assert.deepEqual(createTaskSchema?.required, ['title', 'assigneeIds']);
+    assert.equal(createTaskSchema?.properties?.instructions?.type, 'string');
+    assert.equal(createTaskSchema?.properties?.description?.type, 'string');
+    assert.equal(createTaskSchema?.properties?.assigneeIds?.type, 'array');
+    assert.equal(createTaskSchema?.properties?.startAt?.type, 'string');
+    assert.equal(createTaskSchema?.properties?.endAt?.type, 'string');
+    assert.equal(createTaskSchema?.properties?.dryRun?.type, 'boolean');
+    assert.match(createTaskTool?.description || '', /dryRun defaults to true/);
+    assert.match(createTaskTool?.description || '', /emailAssignments is forced false/);
+    assert.match(createTaskTool?.description || '', /taskCreate/);
+    assert.match(createTaskTool?.description || '', /does not call taskEdit or taskDelete/i);
     const notesTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'list_notes');
     const notesSchema = notesTool?.inputSchema as { properties?: Record<string, { type?: string }> };
     assert.equal(notesSchema?.properties?.jobNumber?.type, 'string');
