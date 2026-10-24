@@ -15,8 +15,13 @@
  * empty for the window AND the slot is strictly earlier than the primary pool's first
  * slot (or the primary pool has none). They apply to every territory.
  *
- * Never assign Travis, Brighton, a drill crew, or anyone else outside the primary pool
- * and the fallback roster above.
+ * Jeremiah Biliunas (Oct 24 2026, Brighton) is bookable in every territory on
+ * Wednesday–Friday, and on Saturday/Sunday when RECEPTIONIST_WEEKEND_TECHS lists his
+ * exact Jobber name. Monday and Tuesday stay with the territory primary (Brian/Cowin).
+ * He is not a fallback and he is not selected by setting the weekend roster to "all".
+ *
+ * Never assign Travis, Brighton, Doug Pollack, a drill crew, or anyone else outside
+ * the primary pool, the fallback roster, and that extra roster.
  */
 
 import { getCountyByCity } from '../tax-rates.ts';
@@ -119,12 +124,32 @@ export const FALLBACK_TECH_ROSTER = {
   },
 };
 
+/**
+ * Extra bookable tech. Not part of the Mon/Tue territory primary and not a fallback.
+ * weekdayPool is PT weekday indexes (Sun=0 … Sat=6) he may be offered on besides
+ * Saturday/Sunday, which stay gated by RECEPTIONIST_WEEKEND_TECHS.
+ */
+export const WEEKEND_EXTRA_TECH_ROSTER = {
+  jeremiah: {
+    key: 'jeremiah' as const,
+    name: 'Jeremiah Biliunas',
+    email: 'jeremiah@scwellservice.com',
+    altNames: [] as string[],
+    envIdKey: 'JOBBER_TECH_JEREMIAH_BILIUNAS_ID' as const,
+    weekdayPool: [3, 4, 5] as const, // Wed, Thu, Fri
+  },
+};
+
 export type ShopTech = {
-  key: 'cowin' | 'brian' | 'chris' | 'haze' | 'colton' | 'sergio';
+  key: 'cowin' | 'brian' | 'chris' | 'haze' | 'colton' | 'sergio' | 'jeremiah';
   name: string;
   email: string;
   altNames: string[];
   envIdKey: string;
+};
+
+export type WeekendExtraTech = ShopTech & {
+  weekdayPool: readonly number[];
 };
 
 const COWIN_CITIES = [
@@ -475,6 +500,26 @@ export function resolveFallbackTechs(
     if (!match || seen.has(match.id)) continue;
     seen.add(match.id);
     resolved.push({ ...match, key: tech.key });
+  }
+  return resolved;
+}
+
+/** Jeremiah (and any later weekend-extra roster entry), matched like the other techs. */
+export function weekendExtraTechs(): WeekendExtraTech[] {
+  return [{ ...WEEKEND_EXTRA_TECH_ROSTER.jeremiah }];
+}
+
+export function resolveWeekendExtraTechs(
+  users: JobberUser[],
+  env: NodeJS.ProcessEnv = process.env
+): { id: string; name: string; key: ShopTech['key']; weekdayPool: readonly number[] }[] {
+  const resolved: { id: string; name: string; key: ShopTech['key']; weekdayPool: readonly number[] }[] = [];
+  const seen = new Set<string>();
+  for (const tech of weekendExtraTechs()) {
+    const match = resolveTechUserId(tech, users, env);
+    if (!match || seen.has(match.id)) continue;
+    seen.add(match.id);
+    resolved.push({ ...match, key: tech.key, weekdayPool: tech.weekdayPool });
   }
   return resolved;
 }

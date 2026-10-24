@@ -446,6 +446,139 @@ describe('handleBookServiceCall', () => {
     assert.deepEqual(result.visit?.technicians, ['Brian Eads']);
   });
 
+  it('books Saturday for Jeremiah and keeps a free Monday on Brian', async () => {
+    const jeremiah = {
+      id: 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQzODgyOQ==',
+      name: { full: 'Jeremiah Biliunas' },
+      email: { raw: 'jeremiah@scwellservice.com' },
+    };
+    const env = { ...process.env, RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas' } as NodeJS.ProcessEnv;
+    const users = [BRIAN, COWIN, DOUG, TRAVIS, jeremiah];
+    const mondayStart = '2026-09-07T15:00:00.000Z';
+
+    async function book(startAt: string, assignee: { id: string; name: string }, occupied: unknown[] = []) {
+      const bodies: GraphqlBody[] = [];
+      const inner = mockJobber({
+        users,
+        occupied,
+        createdJob: {
+          id: 'job-1',
+          title: SERVICE_CALL_TITLE,
+          visits: {
+            nodes: [
+              {
+                id: 'visit-1',
+                startAt,
+                endAt: new Date(new Date(startAt).getTime() + 2 * 60 * 60 * 1000).toISOString(),
+                assignedUsers: { nodes: [{ id: assignee.id, name: { full: assignee.name } }] },
+              },
+            ],
+          },
+        },
+      });
+      const { result } = await handleBookServiceCall(
+        {
+          phone: '7605550100',
+          name: 'Pat Wells',
+          address: '100 Well Rd',
+          city: 'Ramona',
+          startAt,
+          urgency: 'normal',
+        },
+        {
+          now: startAt === SAT_8AM_START ? FRI_6PM : new Date('2026-09-07T01:00:00.000Z'),
+          accessToken: 'test-token',
+          env,
+          fetchFn: async (url, init) => {
+            bodies.push(JSON.parse(String(init?.body || '{}')) as GraphqlBody);
+            return inner(url, init);
+          },
+        }
+      );
+      return { result, bodies };
+    }
+
+    const saturday = await book(SAT_8AM_START, { id: jeremiah.id, name: 'Jeremiah Biliunas' });
+    assert.equal(saturday.result.booked, true, saturday.result.message);
+    assert.match(saturday.result.visit?.date || '', /Saturday/i);
+    assert.deepEqual(saturday.result.visit?.technicians, ['Jeremiah Biliunas']);
+    const saturdayVisit = saturday.bodies.find((body) => (body.query || '').includes('VisitCreate'));
+    const saturdaySchedule = (saturdayVisit?.variables?.input as { visits?: Array<{ schedule?: { teamMemberIdsToAssign?: string[] } }> })
+      ?.visits?.[0]?.schedule;
+    assert.deepEqual(saturdaySchedule?.teamMemberIdsToAssign, [jeremiah.id]);
+
+    const monday = await book(mondayStart, { id: 'user-brian', name: 'Brian Eads' });
+    assert.equal(monday.result.booked, true, monday.result.message);
+    assert.match(monday.result.visit?.date || '', /Monday/i);
+    assert.deepEqual(monday.result.visit?.technicians, ['Brian Eads']);
+    const mondayVisit = monday.bodies.find((body) => (body.query || '').includes('VisitCreate'));
+    const mondaySchedule = (mondayVisit?.variables?.input as { visits?: Array<{ schedule?: { teamMemberIdsToAssign?: string[] } }> })
+      ?.visits?.[0]?.schedule;
+    assert.deepEqual(mondaySchedule?.teamMemberIdsToAssign, ['user-brian']);
+  });
+
+  it('books a Wednesday for Jeremiah when Brian is already on that window', async () => {
+    const jeremiah = {
+      id: 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQzODgyOQ==',
+      name: { full: 'Jeremiah Biliunas' },
+      email: { raw: 'jeremiah@scwellservice.com' },
+    };
+    const wednesday = '2026-09-09T15:00:00.000Z';
+    const env = { ...process.env, RECEPTIONIST_WEEKEND_TECHS: '' } as NodeJS.ProcessEnv;
+    const bodies: GraphqlBody[] = [];
+    const inner = mockJobber({
+      users: [BRIAN, COWIN, DOUG, TRAVIS, jeremiah],
+      occupied: [
+        {
+          startAt: wednesday,
+          endAt: '2026-09-09T17:00:00.000Z',
+          assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+        },
+      ],
+      createdJob: {
+        id: 'job-wednesday',
+        title: SERVICE_CALL_TITLE,
+        visits: {
+          nodes: [
+            {
+              id: 'visit-wednesday',
+              startAt: wednesday,
+              endAt: '2026-09-09T17:00:00.000Z',
+              assignedUsers: { nodes: [{ id: jeremiah.id, name: { full: 'Jeremiah Biliunas' } }] },
+            },
+          ],
+        },
+      },
+    });
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550100',
+        name: 'Pat Wells',
+        address: '100 Well Rd',
+        city: 'Ramona',
+        startAt: wednesday,
+        urgency: 'normal',
+      },
+      {
+        now: new Date('2026-09-09T01:00:00.000Z'),
+        accessToken: 'test-token',
+        env,
+        fetchFn: async (url, init) => {
+          bodies.push(JSON.parse(String(init?.body || '{}')) as GraphqlBody);
+          return inner(url, init);
+        },
+      }
+    );
+
+    assert.equal(result.booked, true, result.message);
+    assert.match(result.visit?.date || '', /Wednesday/i);
+    assert.deepEqual(result.visit?.technicians, ['Jeremiah Biliunas']);
+    const visitCreate = bodies.find((body) => (body.query || '').includes('VisitCreate'));
+    const schedule = (visitCreate?.variables?.input as { visits?: Array<{ schedule?: { teamMemberIdsToAssign?: string[] } }> })
+      ?.visits?.[0]?.schedule;
+    assert.deepEqual(schedule?.teamMemberIdsToAssign, [jeremiah.id]);
+  });
+
   it('creates a Ramona Service Call visit assigned to Brian Eads', async () => {
     const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
     const bodies: string[] = [];
