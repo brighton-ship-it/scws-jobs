@@ -1,5 +1,9 @@
 # Supabase migrations
 
+## `20261024_ads_offline_dm_request_id.sql`
+
+Adds `ads_offline_conversions.dm_request_id` and copies it from `payload.dm_request_id` where the column is still empty. The offline cron writes the column on each save. Until this is applied, that upsert drops the column, logs a WARNING, and keeps the id in `payload`. Apply it in the SQL Editor. The app does not run this file.
+
 ## `20261021_receptionist_calls_needs_callback.sql`
 
 Adds `receptionist_calls.needs_callback` (default false). The receptionist webhook sets it, with a notes line, when a service caller hangs up with no booking and no callback. It is a label for the office. The Mike callback cron does not read it, and it does not text or dial. Until this is applied, the webhook saves the note and retries the update without the column.

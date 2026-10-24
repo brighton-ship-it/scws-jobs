@@ -21,10 +21,12 @@ import {
   dmStatusLogLine,
   ingestEvents,
   ingestRequestId,
+  offlineBatchRowLogLine,
   retrieveRequestStatus,
   summarizeRequestStatus,
   type DmStatusSummary,
 } from '@/lib/ads/data-manager';
+import { missingColumnName, withoutColumn } from '@/lib/ads/optional-column';
 import { candidatesFromBookedJobs } from '@/lib/ads/booked-jobs';
 import {
   backfillFloorIso,
@@ -202,6 +204,7 @@ export async function POST(request: NextRequest) {
     const touched = new Set<string>();
     const writtenPayload = new Map<string, Record<string, unknown>>();
     const callJobIds = new Set<string>();
+    let warnedMissingDmRequestId = false;
     const saveRow = async (row: OfflinePlanRow) => {
         touched.add(row.jobber_job_id);
         const prior = existingRows.find((r) => r.jobber_job_id === row.jobber_job_id);
@@ -232,25 +235,36 @@ export async function POST(request: NextRequest) {
           payload.call_terminal_code = terminalCallUploadCode(row.error) ?? 'REJECTED_TERMINAL';
         }
         writtenPayload.set(row.jobber_job_id, payload);
-        const { error } = await db.from('ads_offline_conversions').upsert(
-          {
-            jobber_job_id: row.jobber_job_id,
-            invoice_ids: row.invoice_ids,
-            conversion_at: row.conversion_at,
-            value_usd: row.value_usd,
-            gclid: row.gclid,
-            gbraid: row.gbraid,
-            wbraid: row.wbraid,
-            signal: row.signal,
-            status: row.status,
-            mode: row.mode,
-            payload,
-            google_response: row.google_response ?? prior?.google_response ?? null,
-            error: row.error,
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: 'jobber_job_id' }
-        );
+        const dmRequestId = typeof payload.dm_request_id === 'string' && payload.dm_request_id.trim() ? payload.dm_request_id.trim() : null;
+        let record: Record<string, unknown> = {
+          jobber_job_id: row.jobber_job_id,
+          invoice_ids: row.invoice_ids,
+          conversion_at: row.conversion_at,
+          value_usd: row.value_usd,
+          gclid: row.gclid,
+          gbraid: row.gbraid,
+          wbraid: row.wbraid,
+          signal: row.signal,
+          status: row.status,
+          mode: row.mode,
+          payload,
+          google_response: row.google_response ?? prior?.google_response ?? null,
+          error: row.error,
+          dm_request_id: dmRequestId,
+          updated_at: new Date().toISOString(),
+        };
+        let { error } = await db.from('ads_offline_conversions').upsert(record, { onConflict: 'jobber_job_id' });
+        // Column is added in the SQL Editor. Until then the id stays on payload.dm_request_id.
+        if (error && missingColumnName(error) === 'dm_request_id') {
+          if (!warnedMissingDmRequestId) {
+            warnedMissingDmRequestId = true;
+            console.warn(
+              '[ads_offline] WARNING ads_offline_conversions.dm_request_id column missing; request id kept on payload.dm_request_id only. Apply supabase/migrations/20261024_ads_offline_dm_request_id.sql in the Supabase SQL Editor.'
+            );
+          }
+          record = withoutColumn(record, 'dm_request_id');
+          ({ error } = await db.from('ads_offline_conversions').upsert(record, { onConflict: 'jobber_job_id' }));
+        }
         if (error) throw new Error(error.message);
       };
 
@@ -393,7 +407,17 @@ export async function POST(request: NextRequest) {
               const sendable = conversions.map((c) =>
                 r2Ids.has(c.order_id) ? { ...c, order_id: resendOrderId(c.order_id) } : c
               );
-              return ingestEvents(config, sendable, fetch, token);
+              let res: { ok: boolean; status: number; body: unknown } | undefined;
+              try {
+                res = await ingestEvents(config, sendable, fetch, token);
+                return res;
+              } finally {
+                // Log the ledger job id and yes/no match keys. Never the click id or hash.
+                const requestId = res ? ingestRequestId(res.body) : null;
+                for (const conversion of conversions) {
+                  console.log(offlineBatchRowLogLine({ jobId: conversion.order_id, conversion, requestId }));
+                }
+              }
             }
           : undefined,
     });

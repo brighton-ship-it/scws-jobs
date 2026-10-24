@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIngestRequest, conversionActionId, dmStatusLogLine, ingestEvents, ingestErrorMessage, rfc3339, summarizeRequestStatus, toDataManagerEvent } from './data-manager.ts';
+import { buildIngestRequest, conversionActionId, dmStatusLogLine, ingestEvents, ingestErrorMessage, offlineBatchRowLogLine, rfc3339, summarizeRequestStatus, toDataManagerEvent } from './data-manager.ts';
 import { buildClickConversion } from './offline-conversion.ts';
 
 const config = { customerId: '1234567890', loginCustomerId: null, conversionAction: 'customers/1234567890/conversionActions/7833699992' };
@@ -100,5 +100,51 @@ describe('Data Manager ingest', () => {
     assert.equal(ok.status, 'SUCCESS');
     assert.equal(ok.errors.length, 0);
     assert.match(dmStatusLogLine(ok), /requestId=a6fc9385-36e4-4636-9e6c-0d92d227a755 status=SUCCESS records=11 errors=none/);
+  });
+
+  it('logs each offline batch row as yes/no match keys plus the request id', () => {
+    const withClick = buildClickConversion('7833699992', {
+      jobberJobId: 'Z2lkOi8vSm9iYmVyL0pvYi8x',
+      conversionAt: '2026-09-18T22:03:00Z',
+      valueUsd: 800,
+      gclid: 'SECRET_GCLID_DO_NOT_LOG',
+      email: 'secret.person@example.com',
+      phone: '7605552106',
+    })!;
+    const line = offlineBatchRowLogLine({
+      jobId: withClick.order_id,
+      conversion: withClick,
+      requestId: '02e097a9-8858-44b2-8288-e584c9ddd9f4',
+    });
+    assert.equal(
+      line,
+      '[ads_offline] offline row job=Z2lkOi8vSm9iYmVyL0pvYi8x gclid=yes gbraid=no wbraid=no hashed_email=yes hashed_phone=yes requestId=02e097a9-8858-44b2-8288-e584c9ddd9f4'
+    );
+    assert.doesNotMatch(line, /SECRET_GCLID_DO_NOT_LOG/);
+    assert.doesNotMatch(line, /secret\.person@example\.com/);
+    assert.doesNotMatch(line, /7605552106/);
+    assert.doesNotMatch(line, /[0-9a-f]{64}/);
+
+    const braid = buildClickConversion('7833699992', {
+      jobberJobId: 'job-braid',
+      conversionAt: '2026-09-18T22:03:00Z',
+      valueUsd: 200,
+      gbraid: 'SECRET_GBRAID',
+    })!;
+    assert.match(offlineBatchRowLogLine({ jobId: 'job-braid', conversion: braid, requestId: null }), /gclid=no gbraid=yes wbraid=no hashed_email=no hashed_phone=no requestId=none$/);
+    assert.doesNotMatch(offlineBatchRowLogLine({ jobId: 'job-braid', conversion: braid, requestId: '  ' }), /SECRET_GBRAID/);
+
+    const wbraid = buildClickConversion('7833699992', {
+      jobberJobId: 'job-w',
+      conversionAt: '2026-09-18T22:03:00Z',
+      valueUsd: 200,
+      wbraid: 'SECRET_WBRAID',
+      phone: '7605550101',
+    })!;
+    assert.match(
+      offlineBatchRowLogLine({ jobId: 'job-w', conversion: wbraid, requestId: 'req-1' }),
+      /gclid=no gbraid=no wbraid=yes hashed_email=no hashed_phone=yes requestId=req-1$/
+    );
+    assert.doesNotMatch(offlineBatchRowLogLine({ jobId: 'job-w', conversion: wbraid, requestId: 'req-1' }), /SECRET_WBRAID/);
   });
 });

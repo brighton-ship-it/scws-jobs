@@ -186,6 +186,39 @@ export function dmStatusLogLine(summary: DmStatusSummary): string {
   return `[ads_offline] datamanager requestId=${summary.requestId ?? 'none'} status=${summary.status} records=${summary.recordCount ?? 'none'} errors=${fmt(summary.errors)} warnings=${fmt(summary.warnings)}`;
 }
 
+const yesNo = (present: boolean) => (present ? 'yes' : 'no');
+
+/**
+ * Presence of the match keys on one offline event. The strings themselves
+ * (click ids and hashes) stay off the log.
+ */
+export function offlineMatchFlags(conversion: ClickConversion): {
+  gclid: boolean;
+  gbraid: boolean;
+  wbraid: boolean;
+  hashedEmail: boolean;
+  hashedPhone: boolean;
+} {
+  const ids = conversion.user_identifiers ?? [];
+  return {
+    gclid: Boolean(conversion.gclid?.trim()),
+    gbraid: Boolean(conversion.gbraid?.trim()),
+    wbraid: Boolean(conversion.wbraid?.trim()),
+    hashedEmail: ids.some((row) => Boolean(row.hashed_email?.trim())),
+    hashedPhone: ids.some((row) => Boolean(row.hashed_phone_number?.trim())),
+  };
+}
+
+/** One Data Manager batch row. Job id and request id only; match keys are yes/no. */
+export function offlineBatchRowLogLine(input: {
+  jobId: string;
+  conversion: ClickConversion;
+  requestId: string | null;
+}): string {
+  const flags = offlineMatchFlags(input.conversion);
+  return `[ads_offline] offline row job=${input.jobId} gclid=${yesNo(flags.gclid)} gbraid=${yesNo(flags.gbraid)} wbraid=${yesNo(flags.wbraid)} hashed_email=${yesNo(flags.hashedEmail)} hashed_phone=${yesNo(flags.hashedPhone)} requestId=${input.requestId?.trim() || 'none'}`;
+}
+
 /** A Data Manager SUCCESS was not enough for this account: those events are absent from Ads totals. */
 export function conversionLanded(payload: unknown): boolean {
   return asRecord(payload)?.dm_reported === true;
