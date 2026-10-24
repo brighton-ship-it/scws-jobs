@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { isTerminalCallUploadError } from './call-conversions.ts';
 import {
   backfillFloorIso,
   candidatesFromInvoices,
@@ -235,6 +236,126 @@ describe('partial failure handling', () => {
     assert.equal(saved.b.status, 'error');
     assert.match(saved.b.error ?? '', /UNPARSEABLE_GCLID/);
     assert.equal(result.errors.length, 1);
+  });
+
+  it('stores an indexed ATT reject as rejected_terminal and does not upload it again', async () => {
+    const saved: Array<{ status: string; error: string | null }> = [];
+    const body = {
+      partialFailureError: {
+        code: 3,
+        message: 'not compliant, at conversions[0]',
+        details: [
+          {
+            errors: [
+              {
+                errorCode: { conversionUploadError: 'CONVERSION_NOT_COMPLIANT_WITH_ATT_POLICY' },
+                message: 'The conversion is not compliant with ATT policy.',
+                location: { fieldPathElements: [{ fieldName: 'conversions', index: 0 }] },
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const result = await runOfflineImport({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [],
+      candidates: [cand('job-3484')],
+      terminalError: isTerminalCallUploadError,
+      save: async (row) => {
+        saved.push({ status: row.status, error: row.error });
+      },
+      upload: async () => ({ ok: true, status: 200, body }),
+    });
+    assert.equal(saved[0].status, 'rejected_terminal');
+    assert.match(saved[0].error ?? '', /CONVERSION_NOT_COMPLIANT_WITH_ATT_POLICY/);
+    assert.equal(result.errors.length, 1);
+    assert.equal(result.uploaded, 0);
+    const again = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [{ jobber_job_id: 'job-3484', status: 'rejected_terminal', error: saved[0].error }],
+      resendUploadedIds: new Set(['job-3484']),
+      candidates: [cand('job-3484')],
+    });
+    assert.equal(again.toUpload.length, 0);
+    assert.equal(again.rows.length, 0);
+    const legacy = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [{ jobber_job_id: 'job-3484', status: 'error', error: 'CONVERSION_NOT_COMPLIANT_WITH_ATT_POLICY: no' }],
+      candidates: [cand('job-3484')],
+    });
+    assert.equal(legacy.toUpload.length, 0);
+    const clickStillRetries = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [{ jobber_job_id: 'click', status: 'error', error: 'CONVERSION_NOT_COMPLIANT_WITH_ATT_POLICY: no' }],
+      candidates: [candidate({ jobberJobId: 'click', signal: 'click_id' })],
+    });
+    assert.deepEqual(clickStillRetries.toUpload.map((row) => row.order_id), ['click']);
+  });
+
+  it('keeps an unindexed ATT message and TOO_RECENT_CALL retryable', async () => {
+    const unindexed = await runOfflineImport({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [],
+      candidates: [cand('job-a')],
+      terminalError: isTerminalCallUploadError,
+      save: async (row) => {
+        assert.equal(row.status, 'error');
+      },
+      upload: async () => ({
+        ok: true,
+        status: 200,
+        body: { partialFailureError: { code: 3, message: 'CONVERSION_NOT_COMPLIANT_WITH_ATT_POLICY' } },
+      }),
+    });
+    assert.equal(unindexed.errors.length, 1);
+
+    let retried = '';
+    await runOfflineImport({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [],
+      candidates: [cand('job-b')],
+      terminalError: isTerminalCallUploadError,
+      save: async (row) => {
+        retried = row.status;
+        assert.match(row.error ?? '', /TOO_RECENT_CALL/);
+      },
+      upload: async () => ({
+        ok: true,
+        status: 200,
+        body: {
+          partialFailureError: {
+            code: 3,
+            message: 'too recent',
+            details: [
+              {
+                errors: [
+                  {
+                    errorCode: { conversionUploadError: 'TOO_RECENT_CALL' },
+                    message: 'Try again in 6 hours.',
+                    location: { fieldPathElements: [{ fieldName: 'conversions', index: 0 }] },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      }),
+    });
+    assert.equal(retried, 'error');
+    const plan = planOfflineRows({
+      mode: 'live',
+      conversionAction: 'customers/1/conversionActions/9',
+      existing: [{ jobber_job_id: 'job-b', status: 'error', error: 'TOO_RECENT_CALL: Try again in 6 hours.' }],
+      candidates: [cand('job-b')],
+    });
+    assert.deepEqual(plan.toUpload.map((row) => row.order_id), ['job-b']);
   });
 
   it('parses indexes, ignores empty, and fails all when no index is readable', () => {

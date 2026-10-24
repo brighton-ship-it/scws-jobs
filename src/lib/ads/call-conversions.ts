@@ -59,6 +59,138 @@ export function needsCallResend(row: { status: string; payload?: unknown }): boo
   return !(p && typeof p === 'object' && p.call_upload === true);
 }
 
+/**
+ * Ledger status for a call upload Google will reject again if we resend the
+ * same caller and start time. Stored on ads_offline_conversions.status (text,
+ * no new column).
+ */
+export const CALL_UPLOAD_TERMINAL_STATUS = 'rejected_terminal' as const;
+
+/**
+ * ConversionUploadError codes that are a property of this call or click.
+ * A later cron run sends the same caller id and start time, so these cannot
+ * succeed on retry. Left off on purpose (still status=error, retried):
+ * TOO_RECENT_CALL / TOO_RECENT_EVENT (wait 6h), CONVERSION_PRECEDES_CALL
+ * (timestamp fix), UNPARSEABLE_GCLID / UNPARSEABLE_CALLERS_PHONE_NUMBER
+ * (identifier fix), and account/setup codes (terms, auth, wrong customer).
+ */
+export const TERMINAL_CALL_UPLOAD_ERRORS = [
+  'CONVERSION_NOT_COMPLIANT_WITH_ATT_POLICY',
+  'EXPIRED_CALL',
+  'EXPIRED_EVENT',
+  'CONVERSION_TRACKING_NOT_ENABLED_AT_CALL_TIME',
+  'CONVERSION_TRACKING_NOT_ENABLED_AT_IMPRESSION_TIME',
+  'CALL_NOT_FOUND',
+  'EVENT_NOT_FOUND',
+  'CLICK_NOT_FOUND',
+  'CALL_CONVERSION_ALREADY_EXISTS',
+  'CLICK_CONVERSION_ALREADY_EXISTS',
+  'ORDER_ID_ALREADY_IN_USE',
+] as const;
+
+function containsUploadCode(text: string, code: string): boolean {
+  let from = 0;
+  while (from < text.length) {
+    const at = text.indexOf(code, from);
+    if (at < 0) return false;
+    const before = at > 0 ? text.charAt(at - 1) : '';
+    const after = at + code.length < text.length ? text.charAt(at + code.length) : '';
+    const word = (ch: string) => ch !== '' && /[A-Za-z0-9_]/.test(ch);
+    if (!word(before) && !word(after)) return true;
+    from = at + code.length;
+  }
+  return false;
+}
+
+/** The permanent code inside a Google upload error, or null if this failure can be retried. */
+export function terminalCallUploadCode(error: string | null | undefined): string | null {
+  if (!error) return null;
+  for (const code of TERMINAL_CALL_UPLOAD_ERRORS) {
+    if (containsUploadCode(error, code)) return code;
+  }
+  return null;
+}
+
+export function isTerminalCallUploadError(error: string | null | undefined): boolean {
+  return terminalCallUploadCode(error) != null;
+}
+
+export type CallSendSkip = {
+  action: 'skip';
+  status: 'not_sent' | typeof CALL_UPLOAD_TERMINAL_STATUS;
+  reason: string;
+  /** Ledger row is still status=error and should be rewritten to rejected_terminal. */
+  promoteTerminal: boolean;
+};
+
+/**
+ * Whether this call candidate is uploaded tonight.
+ * Already-uploaded and permanently rejected rows are skipped. The caller logs
+ * every skip so a counted quote candidate cannot disappear without a reason.
+ */
+export function callSendDisposition(input: {
+  status?: string | null;
+  error?: string | null;
+  resend?: boolean;
+}): { action: 'upload' } | CallSendSkip {
+  const code = terminalCallUploadCode(input.error);
+  if (input.status === CALL_UPLOAD_TERMINAL_STATUS || (input.status === 'error' && code)) {
+    return {
+      action: 'skip',
+      status: CALL_UPLOAD_TERMINAL_STATUS,
+      reason: code ?? 'REJECTED_TERMINAL',
+      promoteTerminal: input.status !== CALL_UPLOAD_TERMINAL_STATUS,
+    };
+  }
+  if (input.status === 'uploaded' && !input.resend) {
+    return { action: 'skip', status: 'not_sent', reason: 'ALREADY_UPLOADED', promoteTerminal: false };
+  }
+  return { action: 'upload' };
+}
+
+export interface CallLedgerRow {
+  jobber_job_id: string;
+  status: string;
+  error?: string | null;
+  payload?: unknown;
+}
+
+/**
+ * Split call candidates that already have a value into upload vs do-not-upload.
+ * Duplicate job ids count once for upload; the extra copy is a logged skip.
+ */
+export function partitionCallUploads<T extends { jobberJobId: string }>(
+  candidates: T[],
+  existing: CallLedgerRow[]
+): { upload: T[]; skipped: Array<{ candidate: T } & CallSendSkip> } {
+  const byId = new Map(existing.map((row) => [row.jobber_job_id, row]));
+  const upload: T[] = [];
+  const skipped: Array<{ candidate: T } & CallSendSkip> = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (seen.has(candidate.jobberJobId)) {
+      skipped.push({
+        candidate,
+        action: 'skip',
+        status: 'not_sent',
+        reason: 'DUPLICATE_JOB',
+        promoteTerminal: false,
+      });
+      continue;
+    }
+    seen.add(candidate.jobberJobId);
+    const prior = byId.get(candidate.jobberJobId);
+    const disposition = callSendDisposition({
+      status: prior?.status,
+      error: prior?.error,
+      resend: prior ? needsCallResend(prior) : false,
+    });
+    if (disposition.action === 'skip') skipped.push({ candidate, ...disposition });
+    else upload.push(candidate);
+  }
+  return { upload, skipped };
+}
+
 /** Last 4 digits of a phone for logs. Never the full number. */
 export function last4(phone: string | null | undefined): string {
   const d = (phone ?? '').replace(/\D/g, '');
