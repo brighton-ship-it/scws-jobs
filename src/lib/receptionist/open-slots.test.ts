@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   computeOpenSlots,
+  extraSlotDayAllowed,
   isVisitDayAllowed,
   isWeekdayVisitStart,
   lookupOpenSlots,
@@ -773,5 +774,188 @@ describe('board-aware availability', () => {
         .length,
       3
     );
+  });
+});
+
+describe('Jeremiah Biliunas weekday and weekend pool', () => {
+  const JEREMIAH = {
+    id: 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQzODgyOQ==',
+    name: { full: 'Jeremiah Biliunas' },
+    email: { raw: 'jeremiah@scwellservice.com' },
+  };
+  const FRI_6PM = new Date('2026-09-05T01:00:00.000Z'); // Fri Sep 4, 6 PM PT
+  const SUN_6PM = new Date('2026-09-07T01:00:00.000Z'); // Sun Sep 6, 6 PM PT
+  const THU_6PM = new Date('2026-09-11T01:00:00.000Z'); // Thu Sep 10, 6 PM PT
+  const weekendEnv = envOf({ RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas' });
+  const noWeekendEnv = envOf({ RECEPTIONIST_WEEKEND_TECHS: '' });
+  const pool = [BRIAN, COWIN, DOUG, TRAVIS, JEREMIAH];
+
+  function bookedWeekdays(now: Date, id: string, name: string) {
+    return computeOpenSlots({
+      occupied: [],
+      now,
+      technicianId: id,
+      technicianName: name,
+      maxSlots: 60,
+      allowWeekend: false,
+      env: noWeekendEnv,
+    }).map((slot) => visitFor(slot, id, name));
+  }
+
+  function lookup(city: string, now: Date, env: NodeJS.ProcessEnv, occupied: unknown[] = [], users = pool) {
+    return lookupOpenSlots(
+      { city },
+      { now, accessToken: 'test-token', env, fetchFn: mockUsersAndVisits(users, occupied) }
+    );
+  }
+
+  it('extraSlotDayAllowed is Wed–Fri always and Sat/Sun only on the weekend roster', () => {
+    const tech = { name: 'Jeremiah Biliunas', weekdayPool: [3, 4, 5] as const };
+    assert.equal(extraSlotDayAllowed('2026-09-07T15:00:00.000Z', tech, weekendEnv), false); // Monday
+    assert.equal(extraSlotDayAllowed('2026-09-08T15:00:00.000Z', tech, weekendEnv), false); // Tuesday
+    assert.equal(extraSlotDayAllowed('2026-09-09T15:00:00.000Z', tech, noWeekendEnv), true); // Wednesday
+    assert.equal(extraSlotDayAllowed('2026-09-10T15:00:00.000Z', tech, noWeekendEnv), true); // Thursday
+    assert.equal(extraSlotDayAllowed('2026-09-11T15:00:00.000Z', tech, noWeekendEnv), true); // Friday
+    assert.equal(extraSlotDayAllowed('2026-09-05T15:00:00.000Z', tech, weekendEnv), true); // Saturday
+    assert.equal(extraSlotDayAllowed('2026-09-06T15:00:00.000Z', tech, weekendEnv), true); // Sunday
+    assert.equal(extraSlotDayAllowed('2026-09-05T15:00:00.000Z', tech, noWeekendEnv), false);
+    assert.equal(extraSlotDayAllowed('2026-09-06T15:00:00.000Z', tech, noWeekendEnv), false);
+    assert.equal(extraSlotDayAllowed('', tech, weekendEnv), false);
+  });
+
+  it('Sat/Sun slots are Jeremiah in every territory when he is the weekend roster', async () => {
+    for (const city of ['Ramona', 'Anza', 'Borrego Springs', 'Murrieta']) {
+      const result = await lookup(city, FRI_6PM, weekendEnv);
+      assert.ok(result.openSlots.length > 0, city);
+      assert.ok(result.openSlots.every((slot) => /saturday|sunday/i.test(slot.date)), city);
+      assert.ok(result.openSlots.every((slot) => slot.technician === 'Jeremiah Biliunas' && slot.technicianId === JEREMIAH.id), city);
+      assert.ok(result.allowlistedTechIds.includes(JEREMIAH.id), city);
+      assert.equal(result.openSlots.some((slot) => /doug|pollack|travis/i.test(slot.technician)), false, city);
+      assert.equal(
+        result.openSlots.some((slot) => /brian|cowin/i.test(slot.technician)),
+        false,
+        city
+      );
+    }
+    const ramona = await lookup('Ramona', FRI_6PM, weekendEnv);
+    assert.equal(ramona.assignedTechName, 'Brian Eads');
+    assert.equal(ramona.assignedTechId, 'user-brian');
+    const anza = await lookup('Anza', FRI_6PM, weekendEnv);
+    assert.equal(anza.assignedTechName, 'Cowin');
+    const desert = await lookup('Borrego Springs', FRI_6PM, weekendEnv);
+    assert.equal(desert.assignedTechName, 'Cowin or Brian Eads');
+  });
+
+  it('Brian without the weekend roster stays weekday-only when Jeremiah cannot cover Sat/Sun', async () => {
+    const occupied = [
+      {
+        startAt: '2026-09-05T15:00:00.000Z',
+        endAt: '2026-09-05T15:00:00.000Z',
+        allDay: true,
+        title: 'Drill new well',
+        assignedUsers: { nodes: [{ id: JEREMIAH.id, name: { full: 'Jeremiah Biliunas' } }] },
+      },
+      {
+        startAt: '2026-09-06T15:00:00.000Z',
+        endAt: '2026-09-06T15:00:00.000Z',
+        allDay: true,
+        title: 'Drill new well',
+        assignedUsers: { nodes: [{ id: JEREMIAH.id, name: { full: 'Jeremiah Biliunas' } }] },
+      },
+    ];
+    const result = await lookup('Ramona', FRI_6PM, weekendEnv, occupied);
+    assert.match(result.openSlots[0].date, /Monday/i);
+    assert.ok(result.openSlots.every((slot) => slot.technicianId === 'user-brian'));
+    assert.equal(result.openSlots.some((slot) => /saturday|sunday/i.test(slot.date)), false);
+  });
+
+  it('Wed–Fri slots assign Jeremiah when the territory primary is booked, with or without the weekend env', async () => {
+    const occupied = [
+      ...bookedWeekdays(THU_6PM, 'user-brian', 'Brian Eads'),
+      ...bookedWeekdays(THU_6PM, 'user-cowin', 'Cowin'),
+    ];
+    for (const city of ['Ramona', 'Anza', 'Borrego Springs']) {
+      const withWeekend = await lookup(city, THU_6PM, weekendEnv, occupied);
+      assert.ok(withWeekend.openSlots.some((slot) => /friday/i.test(slot.date) && slot.technicianId === JEREMIAH.id), city);
+      assert.ok(withWeekend.openSlots.some((slot) => /saturday/i.test(slot.date) && slot.technicianId === JEREMIAH.id), city);
+      assert.equal(withWeekend.openSlots.some((slot) => /monday|tuesday/i.test(slot.date)), false, city);
+      assert.equal(withWeekend.openSlots.some((slot) => slot.technicianId === 'user-brian' || slot.technicianId === 'user-cowin'), false, city);
+
+      const weekdaysOnly = await lookup(city, THU_6PM, noWeekendEnv, occupied);
+      assert.ok(weekdaysOnly.openSlots.length > 0, city);
+      assert.ok(weekdaysOnly.openSlots.every((slot) => slot.technicianId === JEREMIAH.id), city);
+      assert.ok(weekdaysOnly.openSlots.some((slot) => /friday/i.test(slot.date)), city);
+      assert.equal(weekdaysOnly.openSlots.some((slot) => /saturday|sunday|monday|tuesday/i.test(slot.date)), false, city);
+    }
+  });
+
+  it('Mon/Tue stay with the territory primary even when Jeremiah is free', async () => {
+    for (const [city, techId] of [
+      ['Ramona', 'user-brian'],
+      ['Anza', 'user-cowin'],
+      ['Murrieta', 'user-cowin'],
+    ] as const) {
+      const result = await lookup(city, SUN_6PM, weekendEnv);
+      assert.ok(result.openSlots.length > 0, city);
+      assert.ok(result.openSlots.every((slot) => /monday|tuesday/i.test(slot.date)), city);
+      assert.ok(result.openSlots.every((slot) => slot.technicianId === techId), city);
+    }
+    const desert = await lookup('Borrego Springs', SUN_6PM, weekendEnv);
+    assert.ok(desert.openSlots.every((slot) => /monday|tuesday/i.test(slot.date)));
+    assert.equal(desert.openSlots.some((slot) => slot.technicianId === JEREMIAH.id), false);
+  });
+
+  it('Mon/Tue are not offered to Jeremiah when he is the only tech with a free board', async () => {
+    const occupied = [
+      ...bookedWeekdays(SUN_6PM, 'user-brian', 'Brian Eads'),
+      ...bookedWeekdays(SUN_6PM, 'user-cowin', 'Cowin'),
+    ];
+    const result = await lookup('Borrego Springs', SUN_6PM, weekendEnv, occupied);
+    assert.match(result.openSlots[0].date, /Wednesday/i);
+    assert.equal(result.openSlots[0].technician, 'Jeremiah Biliunas');
+    assert.equal(result.openSlots.some((slot) => /monday|tuesday/i.test(slot.date)), false);
+    assert.ok(result.allowlistedTechIds.includes(JEREMIAH.id));
+  });
+
+  it('a wrong Jobber id pin drops Jeremiah and does not open Brian weekends', async () => {
+    const bad = envOf({
+      RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas',
+      JOBBER_TECH_JEREMIAH_BILIUNAS_ID: TRAVIS.id,
+    });
+    const result = await lookup('Ramona', FRI_6PM, bad);
+    assert.equal(result.allowlistedTechIds.includes(JEREMIAH.id), false);
+    assert.equal(result.openSlots.some((slot) => slot.technicianId === JEREMIAH.id), false);
+    assert.match(result.openSlots[0].date, /Monday/i);
+    assert.equal(result.openSlots[0].technicianId, 'user-brian');
+    assert.equal(result.openSlots.some((slot) => /saturday|sunday/i.test(slot.date)), false);
+
+    const pinned = envOf({
+      RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas',
+      JOBBER_TECH_JEREMIAH_BILIUNAS_ID: JEREMIAH.id,
+    });
+    const ok = await lookup('Ramona', FRI_6PM, pinned);
+    assert.equal(ok.openSlots[0].technicianId, JEREMIAH.id);
+    assert.match(ok.openSlots[0].date, /Saturday/i);
+  });
+
+  it('a booked primary Friday goes to Jeremiah ahead of a fallback tech', async () => {
+    const friday = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 1,
+      env: noWeekendEnv,
+    })[0];
+    const result = await lookup(
+      'Ramona',
+      THU_530PM,
+      noWeekendEnv,
+      [visitFor(friday, 'user-brian', 'Brian Eads')],
+      [...pool, CHRIS, HAZE, SERGIO]
+    );
+    const atFriday = result.openSlots.find((slot) => slot.startAt === friday.startAt);
+    assert.equal(atFriday?.technicianId, JEREMIAH.id);
+    assert.equal(atFriday?.technician, 'Jeremiah Biliunas');
   });
 });

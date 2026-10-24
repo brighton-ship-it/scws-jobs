@@ -7,11 +7,13 @@
  * working-days data and the service techs historically have no weekend visits, so an
  * empty board on a weekend must not be read as "available". A slot is returned
  * only when it does not overlap a Jobber visit for an allowlisted tech
- * (Ramona: Brian Eads; Anza: Cowin; plus fallback techs
- * Chris/Haze/Colton/Sergio only when strictly earlier and fully open). After-hours callers
- * (including Friday night) are offered the next open window. If neither
- * allowed tech has a window, return no slots. If Jobber is down, return no
- * slots — never invent times or assign Travis.
+ * (Ramona: Brian Eads; Anza: Cowin; desert: both). Jeremiah Biliunas is bookable
+ * in every territory on Wednesday–Friday, and on Saturday/Sunday only when his
+ * name is in RECEPTIONIST_WEEKEND_TECHS. Monday/Tuesday stay with the territory
+ * primary. Fallback techs Chris/Haze/Colton/Sergio are offered only when strictly
+ * earlier and fully open. After-hours callers (including Friday night) are offered
+ * the next open window. If no allowed tech has a window, return no slots. If
+ * Jobber is down, return no slots — never invent times or assign Travis or Doug.
  *
  * Availability is computed from the CONTENTS of each tech's board, not from "any
  * visit on the day": a short service call leaves the other windows open, an all-day
@@ -45,6 +47,7 @@ import {
   isAllowlistedTechId,
   resolveFallbackTechs,
   resolveTechsForLocation,
+  resolveWeekendExtraTechs,
   normalizePlace,
   type JobberUser,
   type ShopTech,
@@ -361,6 +364,24 @@ export function isVisitDayAllowed(
   const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
   if (Number.isNaN(date.getTime())) return false;
   return isWeekdayVisitStart(date) || techWorksWeekends(techName, env);
+}
+
+/**
+ * Days a weekend-extra tech may be offered. Wednesday–Friday come from weekdayPool.
+ * Saturday/Sunday require RECEPTIONIST_WEEKEND_TECHS. Monday/Tuesday are never his.
+ */
+export function extraSlotDayAllowed(
+  startAt: string | Date | null | undefined,
+  tech: { name: string; weekdayPool: readonly number[] },
+  env: NodeJS.ProcessEnv = process.env
+): boolean {
+  if (!startAt) return false;
+  const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
+  if (Number.isNaN(date.getTime())) return false;
+  const weekday = ptWeekday(date);
+  if (weekday < 0) return false;
+  if (weekday === 0 || weekday === 6) return techWorksWeekends(tech.name, env);
+  return tech.weekdayPool.includes(weekday);
 }
 
 function addPtDays(now: Date, days: number): string {
@@ -741,17 +762,22 @@ export async function lookupOpenSlots(
       boardCache.set(cacheKey, { at: now.getTime(), users, occupied: [...occupied], complete, startBefore: startBeforeMs });
     }
     }
-    const resolved = resolveTechsForLocation(location, users, deps.env ?? process.env);
+    const env = deps.env ?? process.env;
+    const resolved = resolveTechsForLocation(location, users, env);
     const primaryIds = new Set(resolved.map((tech) => tech.id));
-    const fallbackResolved = resolveFallbackTechs(users, deps.env ?? process.env).filter(
+    const fallbackResolved = resolveFallbackTechs(users, env).filter(
       (tech) => !primaryIds.has(tech.id)
+    );
+    const fallbackIds = new Set(fallbackResolved.map((tech) => tech.id));
+    const extraResolved = resolveWeekendExtraTechs(users, env).filter(
+      (tech) => !primaryIds.has(tech.id) && !fallbackIds.has(tech.id)
     );
     const assignedTechName = resolved.length
       ? formatTechNames(resolved.map((tech) => tech.name))
       : spokenAllowed;
-    const allowlistedTechIds = resolved.map((tech) => tech.id);
+    const primaryAllowIds = resolved.map((tech) => tech.id);
 
-    if (resolved.length === 0 && fallbackResolved.length === 0) {
+    if (resolved.length === 0 && fallbackResolved.length === 0 && extraResolved.length === 0) {
       return emptyOpenSlots(assignedTechName, {
         lookupStatus: 'ok',
         error: `Allowlisted service tech not found in Jobber users (${spokenAllowed})`,
@@ -769,14 +795,31 @@ export async function lookupOpenSlots(
         technicianName: tech.name,
         maxSlots: perTechMax,
         siteCity,
-        env: deps.env ?? process.env,
-      }).filter((slot) => isAllowlistedTechId(slot.technicianId, allowlistedTechIds))
+        env,
+      }).filter((slot) => isAllowlistedTechId(slot.technicianId, primaryAllowIds))
     );
-    const primarySlots = mergeOpenSlots(slotsByTech, perTechMax * Math.max(resolved.length, 1));
+    // Jeremiah's calendar is read here. Territory primary still wins the same startAt.
+    // Mon/Tue are dropped; Sat/Sun stay off unless his name is on the weekend roster.
+    const extraSlotsByTech = extraResolved.map((tech) =>
+      computeOpenSlots({
+        occupied,
+        now,
+        technicianId: tech.id,
+        technicianName: tech.name,
+        maxSlots: perTechMax,
+        siteCity,
+        allowWeekend: techWorksWeekends(tech.name, env),
+        env,
+      }).filter((slot) => extraSlotDayAllowed(slot.startAt, tech, env))
+    );
+    const primarySlots = mergeOpenSlots(
+      [...slotsByTech, ...extraSlotsByTech],
+      perTechMax * Math.max(resolved.length + extraResolved.length, 1)
+    );
     // Fallback techs need a COMPLETE view of the board; if visits were truncated, skip them.
     // They are also location-gated: never sent across territory, nearest first.
     const callerZone = dispatchZoneForPlace(location);
-    const homeZones = fallbackHomeZones(deps.env ?? process.env);
+    const homeZones = fallbackHomeZones(env);
     const gated = complete
       ? fallbackResolved.map((tech) =>
           locationGateFallbackSlots({
@@ -787,7 +830,7 @@ export async function lookupOpenSlots(
               technicianName: tech.name,
               maxSlots: perTechMax,
               siteCity,
-              env: deps.env ?? process.env,
+              env,
             }),
             occupied,
             technicianId: tech.id,
@@ -804,17 +847,22 @@ export async function lookupOpenSlots(
       perTechMax * Math.max(fallbackResolved.length, 1)
     );
     const openSlots = mergeWithFallbackSlots(primarySlots, fallbackSlots).filter((slot) =>
-      isVisitDayAllowed(slot.startAt, slot.technician, deps.env ?? process.env)
+      isVisitDayAllowed(slot.startAt, slot.technician, env)
     );
-    const allIds = [...allowlistedTechIds, ...(complete ? fallbackResolved.map((tech) => tech.id) : [])];
+    const allIds = [
+      ...primaryAllowIds,
+      ...extraResolved.map((tech) => tech.id),
+      ...(complete ? fallbackResolved.map((tech) => tech.id) : []),
+    ];
+    const lead = resolved[0] ?? fallbackResolved[0] ?? extraResolved[0];
 
     return {
       lookupStatus: 'ok',
       openSlots,
       assignedTechName,
-      assignedTechId: (resolved[0] ?? fallbackResolved[0]).id,
+      assignedTechId: lead?.id ?? null,
       allowlistedTechIds: allIds,
-      board: [...resolved, ...(complete ? fallbackResolved : [])].map((tech) => ({
+      board: [...resolved, ...extraResolved, ...(complete ? fallbackResolved : [])].map((tech) => ({
         technician: tech.name,
         visits: occupied
           .filter((visit) => visitBelongsToTech(visit, tech.id, tech.name))

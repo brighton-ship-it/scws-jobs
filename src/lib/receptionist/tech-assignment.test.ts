@@ -17,7 +17,10 @@ import {
   resolveFallbackTechs,
   resolveTechUserId,
   resolveTechsForLocation,
+  resolveWeekendExtraTechs,
   userMatchesTech,
+  WEEKEND_EXTRA_TECH_ROSTER,
+  weekendExtraTechs,
 } from './tech-assignment.ts';
 
 const TRAVIS = {
@@ -191,6 +194,53 @@ describe('fallback service techs', () => {
   });
 });
 
+
+describe('Jeremiah Biliunas — Wed–Fri extra, not a Mon/Tue primary', () => {
+  const JEREMIAH = {
+    id: 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQzODgyOQ==',
+    name: { full: 'Jeremiah Biliunas' },
+    email: { raw: 'jeremiah@scwellservice.com' },
+  };
+  const roster = [TRAVIS, BRIGHTON, HAZE, CHRIS, SCHROEDER, BRIAN, COWIN, DOUG, JEREMIAH];
+
+  it('resolves him by email and exact name, and honors the Jobber id pin', () => {
+    assert.equal(WEEKEND_EXTRA_TECH_ROSTER.jeremiah.email, 'jeremiah@scwellservice.com');
+    assert.equal(WEEKEND_EXTRA_TECH_ROSTER.jeremiah.envIdKey, 'JOBBER_TECH_JEREMIAH_BILIUNAS_ID');
+    assert.deepEqual(weekendExtraTechs().map((tech) => tech.name), ['Jeremiah Biliunas']);
+    assert.deepEqual(resolveWeekendExtraTechs(roster, {}), [
+      { id: JEREMIAH.id, name: 'Jeremiah Biliunas', key: 'jeremiah', weekdayPool: [3, 4, 5] },
+    ]);
+    assert.equal(
+      resolveTechUserId(WEEKEND_EXTRA_TECH_ROSTER.jeremiah, roster, {
+        JOBBER_TECH_JEREMIAH_BILIUNAS_ID: JEREMIAH.id,
+      })?.id,
+      JEREMIAH.id
+    );
+    assert.deepEqual(
+      resolveWeekendExtraTechs(roster, { JOBBER_TECH_JEREMIAH_BILIUNAS_ID: TRAVIS.id }),
+      []
+    );
+  });
+
+  it('does not treat a first name or a blocked user as Jeremiah', () => {
+    const tech = WEEKEND_EXTRA_TECH_ROSTER.jeremiah;
+    assert.equal(userMatchesTech({ id: 'x', name: { full: 'Jeremiah' }, email: { raw: '' } }, tech), false);
+    assert.equal(userMatchesTech(DOUG, tech), false);
+    assert.equal(userMatchesTech(TRAVIS, tech), false);
+    assert.deepEqual(resolveWeekendExtraTechs([TRAVIS, DOUG, BRIGHTON], {}), []);
+  });
+
+  it('stays out of the territory primary and the fallback roster', () => {
+    for (const city of ['Ramona', 'Anza', 'Borrego Springs', 'Murrieta', 'Hemet']) {
+      const names = allowedTechsForLocation({ city }).map((tech) => tech.name);
+      assert.equal(names.includes('Jeremiah Biliunas'), false, city);
+      assert.equal(resolveTechsForLocation({ city }, roster, {}).some((tech) => tech.id === JEREMIAH.id), false, city);
+    }
+    assert.equal(fallbackTechs().some((tech) => tech.key === 'jeremiah'), false);
+    assert.equal(allowedTechSpokenName({ city: 'Ramona' }), TECH_BRIAN_EADS);
+    assert.equal(allowedTechSpokenName({ city: 'Anza' }), TECH_COWIN);
+  });
+});
 
 it('Doug Pollack (let go Oct 2026) is never an allowed tech in any territory', () => {
   for (const city of ['Anza', 'Aguanga', 'Borrego Springs', 'Ramona', 'Hemet', 'Fowler']) {
