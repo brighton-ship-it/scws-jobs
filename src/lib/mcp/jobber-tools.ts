@@ -4,11 +4,12 @@
  * Clients (search, create, property), users, unsent quote drafts, product
  * lookup, invoice reads plus unsent invoice drafts and tax/Client Hub edits,
  * requests (search, create, assessment schedule), job reads plus one-off
- * create, visit schedule, and close, notes, tax rates, and catalog cost
- * reads plus a one-product price/cost/visibility edit. Nothing sends,
- * emails, or texts a client. jobComplete does not exist. Products are not
- * deleted. Per-invoice card / ACH / partial payment toggles are not in
- * Jobber's API.
+ * create, visit schedule, and close, task list plus task create (dryRun
+ * defaults to true; taskEdit and taskDelete are not called), notes, tax
+ * rates, and catalog cost reads plus a one-product price/cost/visibility
+ * edit. Nothing sends, emails, or texts a client. jobComplete does not
+ * exist. Products are not deleted. Per-invoice card / ACH / partial payment
+ * toggles are not in Jobber's API.
  */
 
 import { mentionsGpFlag } from '../jobber/gross-profit.ts';
@@ -49,6 +50,7 @@ import {
 } from '../jobber/mcp-invoice-writes.ts';
 import { createClient, createProperty, listUsers, parseCreateClientArgs, parsePropertyAddressArgs } from '../jobber/mcp-client-writes.ts';
 import { listTasks } from '../jobber/mcp-tasks.ts';
+import { createTask, parseCreateTaskArgs } from '../jobber/mcp-task-create.ts';
 import {
   closeJob,
   createJob,
@@ -83,7 +85,7 @@ import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 import { qboStatus, runQboQuery, runQboReport } from '../quickbooks/durable-read.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.13.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.14.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -135,13 +137,13 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, create_request, create_job, create_visit, and create_note write records. Nothing emails, texts, or notifies a client.',
+  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, create_request, create_job, create_visit, create_note, and create_task write records. create_task dryRun defaults to true. Nothing emails, texts, or notifies a client.',
   'Never send, approve, or convert quotes. delete_quote_draft removes an unsent draft only, via quoteDelete or via quoteArchive when quoteDelete is not in the schema, and refuses sent, approved, converted, and archived quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
   'edit_invoice sets message (client-facing body), taxRateId, and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings / copy, not a charge. create_invoice_draft requires message. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
   'create_client refuses when the same email or full name already exists unless force=true. Look up an existing client before creating a draft.',
   'list_users returns team member ids. Pass those ids as assigneeIds. Assessment and visit times are America/Los_Angeles.',
-  'list_tasks is read-only. It lists BASIC_TASK items. Open unscheduled tasks come from schedulingAspects UNSCHEDULED with no status. Dated tasks use REMAINING or COMPLETED across several windows under 1.5 years. The response queries array is the count of each scheduledItems call. It does not create, edit, or delete a task.',
+  'list_tasks is read-only. It lists BASIC_TASK items. Open unscheduled tasks come from schedulingAspects UNSCHEDULED with no status. Dated tasks use REMAINING or COMPLETED across several windows under 1.5 years. The response queries array is the count of each scheduledItems call. It does not create, edit, or delete a task. create_task calls taskCreate only. dryRun defaults to true. emailAssignments is forced false. taskEdit and taskDelete are not called.',
   'create_job cannot put a datetime on jobCreate. It creates a one-off job with createVisits false, then visitCreate when startAt and endAt are set. Job lines have no productOrServiceId; the catalog id is copied as name and street price.',
   'Use list_tax_rates to pick taxRateId (id, name, label, rate, default). search_products returns catalog street price, not internal cost. get_products returns internalUnitCost, unitPrice (Jobber defaultUnitCost), markup, and visible. edit_product changes only those cost, price, markup, visible, and description fields on one product and returns before and after. dryRun does not write. Products are not deleted.',
   'Quote lines may set optional, recommended, and productOrServiceId. Recommended lines should also be optional.',
@@ -316,7 +318,7 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
   {
     name: 'list_users',
     description:
-      'List Jobber users (team members) with encoded ids, name, email, and status. Optional query matches name or email, for example Brighton Scala. Read-only. Does not invite or email anyone. Pass ids as assigneeIds on create_request, create_job, or create_visit.',
+      'List Jobber users (team members) with encoded ids, name, email, and status. Optional query matches name or email, for example Brighton Scala. Read-only. Does not invite or email anyone. Pass ids as assigneeIds on create_request, create_job, create_visit, or create_task.',
     inputSchema: {
       type: 'object',
       additionalProperties: false,
@@ -339,6 +341,49 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         },
         status: { type: 'string', description: 'open (default) or completed.' },
         limit: { type: 'number', description: 'Max tasks to return. Default 25, max 50.' },
+      },
+    },
+  },
+  {
+    name: 'create_task',
+    description:
+      'Create one Jobber task with taskCreate. instructions is Task.instructions; description is an alias (the same text list_tasks returns as description). assigneeIds are user ids from list_users and at least one is required. Optional clientId and propertyId. Optional startAt and endAt are America/Los_Angeles wall times when they have no zone (start and end are aliases) and are sent as ISO8601DateTime. dryRun defaults to true and returns would_create without calling taskCreate. emailAssignments is forced false. teamReminderOffset and recurrenceRule are omitted. Does not email, text, or notify the customer. Does not call taskEdit or taskDelete.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['title', 'assigneeIds'],
+      properties: {
+        title: { type: 'string' },
+        instructions: {
+          type: 'string',
+          description: 'Task.instructions. Public name. description is an alias.',
+        },
+        description: {
+          type: 'string',
+          description: 'Alias of instructions. Same text list_tasks returns as description.',
+        },
+        assigneeIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'User ids from list_users. At least one.',
+        },
+        clientId: { type: 'string', description: 'Optional encoded client id.' },
+        propertyId: { type: 'string', description: 'Optional encoded property id.' },
+        startAt: {
+          type: 'string',
+          description:
+            'Optional start. ISO datetime. A value without a zone is America/Los_Angeles wall time. Requires endAt. start is an alias.',
+        },
+        endAt: {
+          type: 'string',
+          description: 'Optional end. Same timezone rules as startAt. Requires startAt. end is an alias.',
+        },
+        start: { type: 'string', description: 'Alias of startAt.' },
+        end: { type: 'string', description: 'Alias of endAt.' },
+        dryRun: {
+          type: 'boolean',
+          description: 'Default true. false calls taskCreate. true returns would_create and does not write.',
+        },
       },
     },
   },
@@ -1406,6 +1451,22 @@ export async function callJobberMcpTool(
             ? 'Read-only. More tasks exist than this response includes. queries lists each scheduledItems call (fetched, kept, error). covered is the date range those calls requested. Task has no color or label field. Nothing was created, edited, or deleted.'
             : 'Read-only. queries lists each scheduledItems call (fetched, kept, error). covered is the date range those calls requested. Task has no color or label field. Nothing was created, edited, or deleted.',
         });
+      }
+      case 'create_task': {
+        assertNoNotifyArgs(args);
+        const created = await createTask(parseCreateTaskArgs(args), deps);
+        return textResult(
+          {
+            ...created,
+            note:
+              created.status === 'would_create'
+                ? 'dryRun: taskCreate was not called. emailAssignments would be false. Pass dryRun:false to create. Nothing was emailed or texted.'
+                : created.status === 'created'
+                  ? 'Created with taskCreate. emailAssignments is false. The task was re-read with task(id) when that read succeeded. Nothing was emailed or texted.'
+                  : 'taskCreate returned userErrors. taskEdit and taskDelete were not called. Nothing was emailed or texted.',
+          },
+          created.status === 'failed'
+        );
       }
       case 'search_quotes': {
         const query = optionalString(args, 'query');

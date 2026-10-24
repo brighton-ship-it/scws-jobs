@@ -42,7 +42,9 @@
  * Task has no color field and no label field. Those are returned as null
  * and are not selected.
  *
- * taskCreate, taskEdit, and taskDelete exist on Mutation and are not called.
+ * taskCreate, taskEdit, and taskDelete exist on Mutation. This list module
+ * does not call them. taskCreate is mcp-task-create.ts. taskEdit and
+ * taskDelete are not called.
  */
 
 import {

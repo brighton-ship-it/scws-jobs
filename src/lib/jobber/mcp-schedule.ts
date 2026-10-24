@@ -77,6 +77,43 @@ export function assertEndAfterStart(start: ShopLocalDateTime, end: ShopLocalDate
 }
 
 /**
+ * TaskCreateInput.startAt / endAt are ISO8601DateTime, not
+ * LocalDateTimeAttributes. Convert a shop wall time to an offset ISO string
+ * so a zone-less "09:00" stays 09:00 in America/Los_Angeles.
+ * A repeated fall-back hour uses the earlier (daylight) instant.
+ * A spring-forward gap throws.
+ */
+export function shopWallTimeToIso8601(local: ShopLocalDateTime): string {
+  const wallAsUtc = wallComponentsToUtcMs(local.date, local.time);
+  let utcMs = wallAsUtc;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const shown = instantInTimeZone(new Date(utcMs), local.timezone);
+    const shownAsUtc = wallComponentsToUtcMs(shown.date, shown.time);
+    const delta = wallAsUtc - shownAsUtc;
+    if (delta === 0) break;
+    utcMs += delta;
+  }
+  const shown = instantInTimeZone(new Date(utcMs), local.timezone);
+  if (shown.date !== local.date || shown.time !== local.time) {
+    throw new Error(
+      `${local.date}T${local.time} is not a valid ${local.timezone} wall time (daylight-saving gap).`
+    );
+  }
+  const offsetMinutes = Math.round((wallAsUtc - utcMs) / 60000);
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const abs = Math.abs(offsetMinutes);
+  const hours = String(Math.floor(abs / 60)).padStart(2, '0');
+  const minutes = String(abs % 60).padStart(2, '0');
+  return `${local.date}T${local.time}${sign}${hours}:${minutes}`;
+}
+
+function wallComponentsToUtcMs(date: string, time: string): number {
+  const [year, month, day] = date.split('-').map((part) => Number(part));
+  const [hour, minute, second] = time.split(':').map((part) => Number(part));
+  return Date.UTC(year, month - 1, day, hour, minute || 0, second || 0);
+}
+
+/**
  * ScheduledItemAttributes. notifyTeam is forced off.
  * teamReminderOffset is omitted so this does not schedule a reminder.
  */
