@@ -45,6 +45,7 @@ import {
   isBlockedAssignee,
 } from './tech-assignment.ts';
 import { jobberClientProperties, type JobberProperties } from '../jobber/quotes.ts';
+import { decideBookingArea, type ServiceAreaResult } from './service-area.ts';
 
 const FORBIDDEN_SARAH_JOB = /\b(drill|drilling|pump|quote|estimate|rehab|rehabilitation|crew)\b/i;
 
@@ -128,6 +129,12 @@ export type BookServiceCallResult = {
   error?: string;
   alreadyBooked?: boolean;
   recentBooking?: ScheduleVisit;
+  /** Initial-service drive charge. 0 when the nearer shop is within 1 hour, or this is a repeat visit. */
+  driveSurchargeUsd?: number;
+  driveHours?: number | null;
+  nearerShop?: 'ramona' | 'anza' | null;
+  county?: ServiceAreaResult['county'];
+  outOfArea?: boolean;
 };
 
 export type OfficeFlag = {
@@ -778,6 +785,14 @@ export async function bookServiceCall(
 
     const repeatVisit = isRepeatVisitRequest(input);
     const jobTitle = serviceCallJobTitle(repeatVisit);
+    const area = decideBookingArea({
+      address: input.address,
+      city: input.city,
+      zip: input.zip || input.postalCode,
+    });
+    // Drive surcharge is the initial service only. Repeat / warranty visits stay at $0.
+    const driveLine = !repeatVisit && area.bookable ? area.driveLine : null;
+    const driveInstructions = driveLine ? area.driveInstructions : null;
     const jobData = await jobberGraphql(
       token,
       JOB_CREATE,
@@ -785,7 +800,11 @@ export async function bookServiceCall(
         input: {
           propertyId,
           title: jobTitle,
-          ...(repeatVisit ? { instructions: REPEAT_VISIT_INSTRUCTIONS } : {}),
+          ...(repeatVisit
+            ? { instructions: REPEAT_VISIT_INSTRUCTIONS }
+            : driveInstructions
+              ? { instructions: driveInstructions }
+              : {}),
           allowReviewRequest: false,
           lineItems: [
             {
@@ -795,6 +814,7 @@ export async function bookServiceCall(
               unitPrice: repeatVisit ? 0 : SERVICE_CALL_PRICE_USD,
               saveToProductsAndServices: false,
             },
+            ...(driveLine ? [driveLine] : []),
           ],
           invoicing: {
             invoicingType: 'FIXED_PRICE',
@@ -831,7 +851,11 @@ export async function bookServiceCall(
             visits: [
               {
                 title: jobTitle,
-                ...(repeatVisit ? { instructions: REPEAT_VISIT_INSTRUCTIONS } : {}),
+                ...(repeatVisit
+                  ? { instructions: REPEAT_VISIT_INSTRUCTIONS }
+                  : driveInstructions
+                    ? { instructions: driveInstructions }
+                    : {}),
                 schedule: buildScheduledItemAttributes({
                   startAt: chosen.startAt,
                   endAt: chosen.endAt,
@@ -913,13 +937,19 @@ export async function bookServiceCall(
       };
     }
 
+    const driveNote = driveLine && area.driveSpoken ? ` ${area.driveSpoken}` : '';
     return {
       booked: true,
       canConfirm: true,
       mayBook: true,
       lookupStatus: 'ok',
       weekendEmergency: false,
-      message: `You're scheduled for a ${SERVICE_CALL_TITLE} on ${visit.date}, ${visit.time}. ${visit.technicians.join(' and ')} will handle the visit.`,
+      message: `You're scheduled for a ${SERVICE_CALL_TITLE} on ${visit.date}, ${visit.time}. ${visit.technicians.join(' and ')} will handle the visit.${driveNote}`,
+      driveSurchargeUsd: driveLine ? area.driveSurchargeUsd : 0,
+      driveHours: area.driveHours,
+      nearerShop: area.nearerShop,
+      county: area.county,
+      outOfArea: false,
       confirmationRule:
         'You may confirm only this visit (date, time, technician) from the book response. Do not invent another time.',
       visit,

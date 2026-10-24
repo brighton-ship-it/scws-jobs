@@ -51,8 +51,9 @@ describe('runTextAgent', () => {
     assert.equal(r.handedOff, true);
     assert.deepEqual(log, ['handoff:false']);
   });
-  it('scrubs prices other than $200/$300 and caps length', () => {
+  it('scrubs prices other than $100/$200/$300 and caps length', () => {
     assert.equal(scrubReply('A pump is $2,500 and the visit is $200.'), 'A pump is a price and the visit is $200.');
+    assert.equal(scrubReply('The first visit adds $100 for the drive.'), 'The first visit adds $100 for the drive.');
     assert.ok(scrubReply('x'.repeat(500)).length <= 320);
   });
   it('offeredStarts reads earlier check_schedule results in the thread', () => {
