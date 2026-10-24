@@ -6,6 +6,7 @@
  */
 
 import { getValidJobberAccessToken } from '../jobber/auth.ts';
+import { decideBookingArea } from './service-area.ts';
 import {
   ASSIGNED_USERS_PAGE,
   THROTTLE_MAX_ATTEMPTS,
@@ -81,6 +82,13 @@ export type ScheduleLookupResult = {
   alreadyBooked?: boolean;
   /** Already-booked caller only: open slots sooner than their visit (office moves it). */
   earlierSlots?: OpenSlotSummary[];
+  bookable?: boolean;
+  outOfArea?: boolean;
+  county?: string | null;
+  driveHours?: number | null;
+  driveSurchargeUsd?: number;
+  nearerShop?: 'ramona' | 'anza' | null;
+  driveSpoken?: string;
 };
 
 export type CheckScheduleInput = {
@@ -710,6 +718,12 @@ export async function handleCheckSchedule(
       };
     }
 
+    const area = decideBookingArea({
+      city: input.city,
+      address: input.address,
+      zip: input.zip || input.postalCode,
+    });
+    const driveSpoken = area.bookable ? area.driveSpoken : '';
     return {
       result: {
         ...result,
@@ -720,9 +734,16 @@ export async function handleCheckSchedule(
         assignedTechName: slots.assignedTechName,
         assignedTechId: slots.assignedTechId,
         allowlistedTechIds: slots.allowlistedTechIds,
+        bookable: area.bookable,
+        outOfArea: area.outOfArea,
+        county: area.county,
+        driveHours: area.driveHours,
+        driveSurchargeUsd: area.bookable ? area.driveSurchargeUsd : 0,
+        nearerShop: area.nearerShop,
+        driveSpoken,
         bookingMessage:
           slots.openSlots.length > 0
-            ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.`
+            ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.${driveSpoken ? ` ${driveSpoken}` : ''}`
             : "I don't see an open Jobber slot I can book. I'll have the office call you back.",
         bookingBlockReason: slots.openSlots.length === 0 ? 'no_slots' : undefined,
       },

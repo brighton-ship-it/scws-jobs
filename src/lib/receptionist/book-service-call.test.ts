@@ -16,6 +16,7 @@ import {
 import { handleCheckSchedule } from './check-schedule.ts';
 import { computeOpenSlots } from './open-slots.ts';
 import { joinUniqueTexts, appendOfficeNotes } from './office-callback.ts';
+import { DRIVE_SURCHARGE_LINE_NAME } from './drive-surcharge.ts';
 
 const THU_4PM = new Date('2026-09-03T23:00:00.000Z');
 const THU_530PM = new Date('2026-09-04T00:30:00.000Z');
@@ -1164,5 +1165,118 @@ describe('repeated note dedupe', () => {
     );
     assert.equal(merged.match(/tripped breaker/gi)?.length, 1);
     assert.match(merged, /Wants live call/);
+  });
+});
+
+describe('initial-service drive surcharge on the Jobber booking', () => {
+  type JobLine = { name?: string; description?: string; unitPrice?: number; quantity?: number };
+
+  async function book(input: { city: string; address: string; repeatVisit?: boolean }) {
+    const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
+    const title = input.repeatVisit ? `${REPEAT_VISIT_TITLE_PREFIX}: ${SERVICE_CALL_TITLE}` : SERVICE_CALL_TITLE;
+    const bodies: string[] = [];
+    const inner = mockJobber({
+      createdJob: {
+        id: 'job-drive',
+        title,
+        visits: {
+          nodes: [{
+            id: 'visit-drive',
+            startAt: slot.startAt,
+            endAt: slot.endAt,
+            assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+          }],
+        },
+      },
+    });
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550199',
+        name: 'Robert Trujillo',
+        address: input.address,
+        city: input.city,
+        startAt: slot.startAt,
+        notes: 'no water',
+        repeatVisit: input.repeatVisit,
+      },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: async (url, init) => {
+          bodies.push(String(init?.body || ''));
+          return inner(url, init);
+        },
+      },
+    );
+    const jobBody = JSON.parse(bodies.find((body) => body.includes('JobCreate')) || '{}') as {
+      variables?: { input?: { instructions?: string; lineItems?: JobLine[] } };
+    };
+    return { result, lines: jobBody.variables?.input?.lineItems || [], instructions: jobBody.variables?.input?.instructions };
+  }
+
+  it('books Santa Ysabel inside 1 hour with no drive surcharge', async () => {
+    const { result, lines, instructions } = await book({
+      city: 'Santa Ysabel',
+      address: '4930 Mesa Grande Rd',
+    });
+    assert.equal(result.booked, true);
+    assert.equal(result.outOfArea, false);
+    assert.equal(result.county, 'San Diego');
+    assert.equal(result.driveSurchargeUsd, 0);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].name, SERVICE_CALL_TITLE);
+    assert.equal(lines[0].unitPrice, SERVICE_CALL_PRICE_USD);
+    assert.equal(instructions, undefined);
+    assert.doesNotMatch(result.message, /\$100 per hour/);
+  });
+
+  it('books Barstow beyond 1 hour and puts the drive surcharge on the initial service', async () => {
+    const { result, lines, instructions } = await book({
+      city: 'Barstow',
+      address: '200 E Main St',
+    });
+    assert.equal(result.booked, true);
+    assert.equal(result.canConfirm, true);
+    assert.equal(result.outOfArea, false);
+    assert.equal(result.bookingBlockReason, undefined);
+    assert.ok((result.driveSurchargeUsd || 0) > 0);
+    assert.match(result.message, /\$100 per hour of drive time beyond 1 hour/);
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].unitPrice, SERVICE_CALL_PRICE_USD);
+    assert.equal(lines[1].name, DRIVE_SURCHARGE_LINE_NAME);
+    assert.equal(lines[1].unitPrice, result.driveSurchargeUsd);
+    assert.equal(lines[1].quantity, 1);
+    assert.match(lines[1].description || '', /initial service/i);
+    assert.match(lines[1].description || '', /\$100 per hour/);
+    assert.match(instructions || '', /initial service drive surcharge/i);
+
+    const schedule = await handleCheckSchedule(
+      { phone: '7605550199', city: 'Barstow', address: '200 E Main St', intent: 'book' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: mockJobber({
+          clients: [{ id: 'client-rt', name: 'Robert Trujillo', phones: [{ number: '760-555-0199' }] }],
+        }),
+      },
+    );
+    assert.equal(schedule.result.mayBook, true);
+    assert.equal(schedule.result.outOfArea, false);
+    assert.equal(schedule.result.bookable, true);
+    assert.ok((schedule.result.driveSurchargeUsd || 0) > 0);
+    assert.match(schedule.result.bookingMessage || '', /\$100 per hour of drive time beyond 1 hour/);
+  });
+
+  it('does not add the drive surcharge on a repeat visit', async () => {
+    const { result, lines } = await book({
+      city: 'Barstow',
+      address: '200 E Main St',
+      repeatVisit: true,
+    });
+    assert.equal(result.booked, true);
+    assert.equal(result.driveSurchargeUsd, 0);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].unitPrice, 0);
+    assert.doesNotMatch(result.message, /\$100 per hour/);
   });
 });

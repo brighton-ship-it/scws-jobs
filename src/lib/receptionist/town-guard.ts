@@ -6,6 +6,8 @@
  */
 
 import {
+  bookableTownName,
+  isBookablePlace,
   isCountyPhrase,
   isKnownTown,
   matchedTownName,
@@ -49,12 +51,13 @@ export function validateTownArg(town: string | undefined, ctx: TownContext = {})
   if (isZip(raw)) return { ok: true, town: raw.replace(/\D/g, '').slice(0, 5) };
 
   const tokens = new Set<string>([...nameTokens(ctx.callerName), ...nameTokens(ctx.customerName)]);
-  if (tokens.has(place) && !isKnownTown(raw)) {
+  if (tokens.has(place) && !isKnownTown(raw) && !isBookablePlace(raw)) {
     return { ok: false, reason: 'matches_caller_name', message: TOWN_GUARD_MESSAGE };
   }
 
   if (isKnownTown(raw)) return { ok: true, town: matchedTownName(raw) || raw };
   if (isCountyPhrase(raw)) return { ok: true, town: raw };
+  if (isBookablePlace(raw)) return { ok: true, town: bookableTownName(raw) || matchedTownName(raw) || raw };
 
   const contained = matchedTownName(raw);
   if (contained && !tokens.has(place)) return { ok: true, town: contained };

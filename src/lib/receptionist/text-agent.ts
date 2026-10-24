@@ -5,7 +5,7 @@
  *
  * Code guards (not just prompt): book_job only with a startAt that a check_schedule result in
  * this same thread listed, at most one booking per thread, and every reply is capped and
- * scrubbed of prices other than the $200 service call.
+ * scrubbed of prices other than the $200 service call, the $300 two-man rate, and the $100 drive surcharge.
  */
 
 export type ThreadMessage = {
@@ -51,11 +51,12 @@ Rules:
 - Texts are short: 1 to 2 sentences, under 300 characters, no lists, no emojis, no links.
 - First tool call is lookup_customer with their number. If found, use their name and address on file (confirm it once). If not found, don't say so; just ask.
 - Ask one thing at a time: the problem, then name, then street address and town of the well.
-- For a service problem (no water, pump not working, low pressure, leak, tank, cycling, water quality) in the service area: call check_service_area with the town, then check_schedule. Offer the earliest listed slot (or two). Say "That's a $200 service call, which covers the first hour." Wait for a clear yes before book_job, and pass that slot's startAt exactly.
+- For a service problem (no water, pump not working, low pressure, leak, tank, cycling, water quality) in the service area: call check_service_area with the town, then check_schedule. Offer the earliest listed slot (or two). Say "That's a $200 service call, which covers the first hour." If check_service_area includes a drive surcharge, still book and say the first visit adds that charge ($100 per hour of drive past 1 hour from the nearer shop). Wait for a clear yes before book_job, and pass that slot's startAt exactly.
+- San Diego, Riverside, and San Bernardino counties are bookable, including Santa Ysabel, Quail Springs, and Mesa Grande. Do not hand those off for location and do not refuse because of drive time.
 - Only offer times that check_schedule listed. Never invent a date, time or technician. Never say booked or confirmed until book_job returns booked: true; then confirm the day, window and tech exactly as returned and say "If anything changes, just call or text us."
 - No water at all, livestock without water, flooding, sparks or burning smell: still offer the earliest slot, and also call hand_off_to_office with urgent true. For sparks or burning smell, tell them to turn off the pump breaker only if safe, and call 911 if anyone is in danger.
 - Hand off (hand_off_to_office) and tell them the office will reach out when: they ask for a person, it's about a bill or invoice, a new well or drilling quote, a pump install or other project quote, a complaint, a cancellation or reschedule, they decline the slots, or you're unsure. Never discuss balances, payments or collections.
-- Pricing: service call $200 for the first hour, then $200 an hour; two-man crew $300 an hour; bigger work is a fixed price quoted before work starts. Never give other prices, discounts or price matching.
+- Pricing: service call $200 for the first hour, then $200 an hour; two-man crew $300 an hour. When a tool result includes a drive surcharge, the first visit also adds that amount ($100 per hour of drive past 1 hour). Never give other prices, discounts or price matching.
 - Hours: open 7 days a week, 7 AM to 5 PM Pacific. Don't give phone numbers unless asked.
 - If they ask whether you're a person or AI, say you're SCWS's virtual assistant and offer to have the office reach out.
 - Never say "you're not in our system". Never mention tools or systems.
@@ -66,7 +67,7 @@ Now (Pacific): ${when}`;
 
 export const TEXT_AGENT_TOOLS = [
   { type: 'function', function: { name: 'lookup_customer', description: 'Find the texter in Jobber by phone. Returns name, address on file and recent jobs.', parameters: { type: 'object', properties: {}, required: [] } } },
-  { type: 'function', function: { name: 'check_service_area', description: 'Check whether a town is in the SCWS service area.', parameters: { type: 'object', properties: { town: { type: 'string' } }, required: ['town'] } } },
+  { type: 'function', function: { name: 'check_service_area', description: 'Check whether a town is bookable. San Diego, Riverside, and San Bernardino counties are bookable. A drive surcharge means still book and say the $100 per hour charge past 1 hour.', parameters: { type: 'object', properties: { town: { type: 'string' } }, required: ['town'] } } },
   { type: 'function', function: { name: 'check_schedule', description: 'Get real open service-call slots (openSlots with startAt) for the address. Call before offering any time.', parameters: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } } },
   { type: 'function', function: { name: 'book_job', description: 'Book the $200 service call into a slot the texter said yes to. startAt must be copied from check_schedule openSlots.', parameters: { type: 'object', properties: { name: { type: 'string' }, address: { type: 'string' }, town: { type: 'string' }, startAt: { type: 'string' }, problem: { type: 'string' } }, required: ['name', 'address', 'town', 'startAt', 'problem'] } } },
   { type: 'function', function: { name: 'hand_off_to_office', description: 'Send this conversation to the office (Liz) to follow up by phone or text.', parameters: { type: 'object', properties: { reason: { type: 'string' }, urgent: { type: 'boolean' }, summary: { type: 'string', description: 'Name, address, town, problem, what was offered.' } }, required: ['reason', 'urgent', 'summary'] } } },
@@ -105,7 +106,7 @@ export function alreadyBooked(thread: ThreadMessage[]): boolean {
 /** Keep replies SMS-sized and free of any price except the service call rates. */
 export function scrubReply(text: string): string {
   let t = (text || '').replace(/\s+/g, ' ').trim();
-  t = t.replace(/\$\s?(\d[\d,]*)/g, (m, n) => (['200', '300'].includes(String(n).replace(/,/g, '')) ? m : 'a price'));
+  t = t.replace(/\$\s?(\d[\d,]*)/g, (m, n) => (['100', '200', '300'].includes(String(n).replace(/,/g, '')) ? m : 'a price'));
   if (t.length > MAX_REPLY) {
     const cut = t.slice(0, MAX_REPLY);
     const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('? '), cut.lastIndexOf('! '));
