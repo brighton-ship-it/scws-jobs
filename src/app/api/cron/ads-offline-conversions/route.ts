@@ -7,7 +7,10 @@ import {
   callRowLogLine,
   callTooRecent,
   e164,
+  isTerminalCallUploadError,
   needsCallResend,
+  partitionCallUploads,
+  terminalCallUploadCode,
   toCallConversion,
   usableAdsCalls,
   type AdsCallRow,
@@ -107,7 +110,7 @@ export async function POST(request: NextRequest) {
       selectLeadRows(db.from('customers'), leadColumns, since),
       loadAdsCalls(db),
       fetchBookedJobs(),
-      db.from('ads_offline_conversions').select('jobber_job_id, status, value_usd, payload, gclid, google_response').limit(5000),
+      db.from('ads_offline_conversions').select('jobber_job_id, status, value_usd, payload, gclid, google_response, error').limit(5000),
     ]);
 
     const leads: AttributedLead[] = [
@@ -180,6 +183,7 @@ export async function POST(request: NextRequest) {
       payload: unknown;
       gclid?: string | null;
       google_response?: unknown;
+      error?: string | null;
     }> = existing.data ?? [];
     const resendIds = backfillFloor ? uploadedIdsToResend(existingRows, candidates.map((c) => c.jobberJobId)) : undefined;
     if (resendIds) console.log(`[ads_offline] backfill since=${backfillDay} resend=${resendIds.size}`);
@@ -224,6 +228,9 @@ export async function POST(request: NextRequest) {
             : ingestRequestId(row.google_response) ?? requestIdFromRow(prior ?? {}),
           dm_status: row.google_response ? null : (prior?.payload as { dm_status?: unknown } | null)?.dm_status ?? null,
         };
+        if (row.status === 'rejected_terminal') {
+          payload.call_terminal_code = terminalCallUploadCode(row.error) ?? 'REJECTED_TERMINAL';
+        }
         writtenPayload.set(row.jobber_job_id, payload);
         const { error } = await db.from('ads_offline_conversions').upsert(
           {
@@ -278,7 +285,13 @@ export async function POST(request: NextRequest) {
           held.push({ c, reason: d.reason === 'waiting_invoice' ? 'HELD_WAITING_INVOICE' : 'NO_INVOICE_OR_APPROVED_QUOTE' });
         } else expired.push(c);
       }
-      const logHeld = (c: (typeof ready)[number], status: string, error: string) =>
+      const logCall = (
+        c: (typeof ready)[number],
+        status: string,
+        error: string,
+        valueUsd: number | null = null,
+        valueSource: string | null = null
+      ) =>
         console.log(
           callRowLogLine({
             jobberJobId: c.jobberJobId,
@@ -286,34 +299,49 @@ export async function POST(request: NextRequest) {
             callStartedAt: c.callStartedAt,
             status,
             error,
-            valueUsd: null,
-            valueSource: null,
+            valueUsd,
+            valueSource,
           })
         );
-      for (const h of held) logHeld(h.c, 'held', h.reason);
-      for (const c of expired) logHeld(c, 'expired', 'PAST_90D_LOOKBACK');
+      for (const h of held) logCall(h.c, 'held', h.reason);
+      for (const c of expired) logCall(c, 'expired', 'PAST_90D_LOOKBACK');
+      // sent_after_5d_quote counts every quote send, including ones we will not upload.
+      // Log each skip (already uploaded, terminal Google reject, duplicate) so the
+      // counter and the call-row lines describe the same candidates.
+      const { upload: uploadable, skipped: notSent } = partitionCallUploads(sendNow, existingRows);
+      for (const skip of notSent) {
+        if (skip.promoteTerminal) {
+          const prior = existingRows.find((r) => r.jobber_job_id === skip.candidate.jobberJobId);
+          if (prior) await markCallRejectedTerminal(db, prior, skip.reason);
+        }
+        logCall(skip.candidate, skip.status, skip.reason, skip.candidate.valueUsd, skip.candidate.valueSource ?? null);
+      }
       console.log(
         `[ads_offline] call conversions held=${held.length} held_waiting_invoice=${heldWaitingInvoice} sent_after_5d_quote=${sentAfter5dQuote} expired=${expired.length}`
       );
-      for (const c of [...held.map((h) => h.c), ...expired]) callJobIds.add(c.jobberJobId); // keep off the Data Manager path
-      ready.splice(0, ready.length, ...sendNow);
-      for (const c of ready) {
-        callJobIds.add(c.jobberJobId);
+      for (const c of [...held.map((h) => h.c), ...expired, ...sendNow]) callJobIds.add(c.jobberJobId); // keep off the Data Manager path
+      for (const c of uploadable) {
         callInfo.set(c.jobberJobId, { callerPhone: c.callerPhone, callStartedAt: c.callStartedAt });
       }
       mainCandidates = candidates.filter((c) => !callJobIds.has(c.jobberJobId) && !tooRecent.has(c.jobberJobId));
       if (tooRecent.size) console.log(`[ads_offline] call conversions waiting 6h=${tooRecent.size}`);
       const callResend = new Set(
-        existingRows.filter((r) => callJobIds.has(r.jobber_job_id) && needsCallResend(r)).map((r) => r.jobber_job_id)
+        existingRows.filter((r) => uploadable.some((c) => c.jobberJobId === r.jobber_job_id) && needsCallResend(r)).map((r) => r.jobber_job_id)
       );
+      if (sendNow.length > 0 && uploadable.length === 0) {
+        console.log('[ads_offline] call conversions sent=0 http=none');
+      }
+      const loggedUploads = new Set<string>();
       callResult = await runOfflineImport({
-        candidates: ready,
+        candidates: uploadable,
         existing: existingRows,
         mode,
         conversionAction: config.conversionAction ?? callAction,
         resendUploadedIds: callResend,
+        terminalError: isTerminalCallUploadError,
         save: async (row) => {
           await saveRow(row);
+          loggedUploads.add(row.jobber_job_id);
           const info = callInfo.get(row.jobber_job_id);
           console.log(
             callRowLogLine({
@@ -323,7 +351,7 @@ export async function POST(request: NextRequest) {
               status: row.status,
               error: row.error,
               valueUsd: row.value_usd,
-              valueSource: ready.find((c) => c.jobberJobId === row.jobber_job_id)?.valueSource ?? null,
+              valueSource: uploadable.find((c) => c.jobberJobId === row.jobber_job_id)?.valueSource ?? null,
             })
           );
         },
@@ -337,6 +365,10 @@ export async function POST(request: NextRequest) {
           return res;
         },
       });
+      for (const c of uploadable) {
+        if (loggedUploads.has(c.jobberJobId)) continue;
+        logCall(c, 'not_sent', 'NOT_IN_UPLOAD_PLAN', c.valueUsd, c.valueSource ?? null);
+      }
       console.log(
         `[ads_offline] call conversions uploaded=${callResult.uploaded} errors=${callResult.errors.length} skipped=${callResult.skipped} waiting6h=${tooRecent.size}`
       );
@@ -489,6 +521,34 @@ export async function POST(request: NextRequest) {
     console.error('[ads_offline] Cron failed:', message);
     return NextResponse.json({ error: message, mode }, { status: 500 });
   }
+}
+
+/** Rewrite a permanent call-upload failure so later crons do not call Google again. */
+async function markCallRejectedTerminal(
+  db: any,
+  row: { jobber_job_id: string; status: string; error?: string | null; payload: unknown },
+  code: string
+): Promise<void> {
+  if (row.status === 'rejected_terminal') return;
+  const priorPayload =
+    row.payload && typeof row.payload === 'object' ? (row.payload as Record<string, unknown>) : {};
+  const payload = { ...priorPayload, call_terminal_code: code };
+  const { error } = await db
+    .from('ads_offline_conversions')
+    .update({
+      status: 'rejected_terminal',
+      error: row.error ?? code,
+      payload,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('jobber_job_id', row.jobber_job_id);
+  if (error) {
+    console.warn(`[ads_offline] could not mark job=${row.jobber_job_id} rejected_terminal: ${error.message}`);
+    return;
+  }
+  row.status = 'rejected_terminal';
+  row.error = row.error ?? code;
+  row.payload = payload;
 }
 
 async function loadAdsCalls(db: any) {

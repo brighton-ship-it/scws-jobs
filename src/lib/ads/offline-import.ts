@@ -6,6 +6,7 @@
  * id, a google_ads lead, or a matched ads call.
  */
 
+import { CALL_UPLOAD_TERMINAL_STATUS, isTerminalCallUploadError } from './call-conversions.ts';
 import { buildClickConversion, type ClickConversion } from './offline-conversion.ts';
 import { hasStoredClickId, normalizeEmail, normalizePhone, type WebsiteLead } from './book-job.ts';
 import { invoicePretaxUsd, type InvoiceAmountInput } from './invoice-value.ts';
@@ -295,6 +296,7 @@ function matchLead(
 export interface OfflineExistingRow {
   jobber_job_id: string;
   status: string;
+  error?: string | null;
 }
 
 export interface OfflinePlanRow {
@@ -306,7 +308,7 @@ export interface OfflinePlanRow {
   gbraid: string | null;
   wbraid: string | null;
   signal: OfflineSignal;
-  status: 'dry_run' | 'uploaded' | 'error' | 'skipped';
+  status: 'dry_run' | 'uploaded' | 'error' | 'skipped' | typeof CALL_UPLOAD_TERMINAL_STATUS;
   mode: OfflineUploadMode;
   payload: ClickConversion | null;
   error: string | null;
@@ -321,7 +323,7 @@ export function planOfflineRows(input: {
   /** Uploaded job ids a one-shot backfill is allowed to send again. */
   resendUploadedIds?: ReadonlySet<string>;
 }): { rows: OfflinePlanRow[]; toUpload: ClickConversion[] } {
-  const existing = new Map(input.existing.map((row) => [row.jobber_job_id, row.status]));
+  const existing = new Map(input.existing.map((row) => [row.jobber_job_id, row]));
   const rows: OfflinePlanRow[] = [];
   const toUpload: ClickConversion[] = [];
   const seen = new Set<string>();
@@ -330,8 +332,13 @@ export function planOfflineRows(input: {
   for (const candidate of input.candidates) {
     if (seen.has(candidate.jobberJobId)) continue;
     seen.add(candidate.jobberJobId);
-    const status = existing.get(candidate.jobberJobId);
+    const prior = existing.get(candidate.jobberJobId);
+    const status = prior?.status;
     const resend = input.resendUploadedIds?.has(candidate.jobberJobId) === true;
+    // Permanent call-upload reject. A backfill resend must not upload it again.
+    // Legacy rows are still status=error with the Google code in `error`.
+    if (status === CALL_UPLOAD_TERMINAL_STATUS) continue;
+    if (candidate.signal === 'ads_call' && status === 'error' && isTerminalCallUploadError(prior?.error)) continue;
     if (status === 'uploaded' && !resend) continue;
 
     if (isTestGclid(candidate.gclid)) {
@@ -434,6 +441,11 @@ export async function runOfflineImport(input: {
   mode: OfflineUploadMode;
   conversionAction: string | null;
   resendUploadedIds?: ReadonlySet<string>;
+  /**
+   * Indexed partial-failure text that should be stored as rejected_terminal
+   * instead of a retryable error. Unindexed failures stay retryable.
+   */
+  terminalError?: (error: string) => boolean;
   save: (row: OfflinePlanRow) => Promise<void>;
   upload?: (conversions: ClickConversion[]) => Promise<{ ok: boolean; status: number; body: unknown }>;
 }): Promise<{ dryRun: number; uploaded: number; skipped: number; errors: string[] }> {
@@ -478,13 +490,23 @@ export async function runOfflineImport(input: {
       if (!uploadResult.ok) failure = uploadErrorMessage(uploadResult.status, uploadResult.body);
       else if (failures.all) failure = failures.all;
       else if (failures.byIndex.has(index)) failure = failures.byIndex.get(index)!;
+      // Only an error tied to this conversion index can be terminal. A partial
+      // failure with no index, or a whole-request HTTP error, stays retryable.
+      const indexed = uploadResult.ok && !failures.all && failures.byIndex.has(index);
+      const terminal = Boolean(failure && indexed && input.terminalError?.(failure));
       saved = failure
-        ? { ...row, status: 'error' as const, error: failure, google_response: uploadResult.body }
+        ? {
+            ...row,
+            status: terminal ? CALL_UPLOAD_TERMINAL_STATUS : 'error',
+            error: failure,
+            google_response: uploadResult.body,
+          }
         : { ...row, google_response: uploadResult.body };
     }
     await input.save(saved);
     if (saved.status === 'uploaded') result.uploaded += 1;
-    else if (saved.status === 'error') result.errors.push(`${saved.jobber_job_id}: ${saved.error}`);
+    else if (saved.status === 'error' || saved.status === CALL_UPLOAD_TERMINAL_STATUS)
+      result.errors.push(`${saved.jobber_job_id}: ${saved.error}`);
     else if (saved.status === 'skipped') result.skipped += 1;
   }
   return result;
