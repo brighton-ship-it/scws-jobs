@@ -52,7 +52,7 @@ function parseClock(text: string): number | null {
   const ap = m[3]?.replace(/\./g, '');
   if (ap === 'pm' && h < 12) h += 12;
   if (ap === 'am' && h === 12) h = 0;
-  if (!ap && h >= 1 && h <= 6) h += 12; // slots are 8, 10, 1pm: bare 1-6 means afternoon
+  if (!ap && h >= 1 && h <= 6) h += 12; // slots are 8, 10, 1pm, 4pm: bare 1-6 means afternoon
   return h * 60 + min;
 }
 

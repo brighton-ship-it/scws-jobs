@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  SLOT_HOURS_PT,
   computeOpenSlots,
   extraSlotDayAllowed,
   isVisitDayAllowed,
@@ -719,13 +720,14 @@ describe('board-aware availability', () => {
     assert.equal(slots.some((s) => s.startAt === pt(13, 8)), false);
     assert.ok(times.some((t) => /10:00 AM and 12:00 PM/.test(t)));
     assert.ok(times.some((t) => /1:00 PM and 3:00 PM/.test(t)));
+    assert.ok(times.some((t) => /4:00 PM and 6:00 PM/.test(t)));
   });
 
   it('one anytime (all-day) service call does not close the day', () => {
     const slots = run([
       { startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title: 'Service Call', ...brian },
     ]);
-    assert.equal(slots.length, 3);
+    assert.deepEqual(slots.map((s) => s.startAt), SLOT_HOURS_PT.map((hour) => pt(13, hour)));
   });
 
   it('all-day drilling / install job closes the whole day', () => {
@@ -737,7 +739,7 @@ describe('board-aware availability', () => {
 
   it('an unidentified all-day visit counts as a double stop but leaves windows open; two of them hit the cap', () => {
     const misc = { startAt: pt(13, 0), endAt: pt(13, 23, 59), allDay: true, title: 'Clean Up Plumbing & Electric', ...brian };
-    assert.equal(run([misc]).length, 3);
+    assert.deepEqual(run([misc]).map((s) => s.startAt), SLOT_HOURS_PT.map((hour) => pt(13, hour)));
     assert.equal(run([misc, { ...misc, title: 'Other cleanup' }]).length, 0);
   });
 
@@ -749,9 +751,10 @@ describe('board-aware availability', () => {
 
   it('a long timed job spanning windows blocks only what it overlaps (plus travel)', () => {
     const slots = run([{ startAt: pt(13, 9), endAt: pt(13, 14), title: 'Pump install', city: 'Ramona', ...brian }]);
-    assert.equal(slots.length, 0); // 8 slot can't finish before 9, 10/13 overlap
+    // 8 AM can't finish before 9; 10 AM and 1 PM overlap the 9 AM–2 PM job; 4 PM is clear.
+    assert.deepEqual(slots.map((s) => s.startAt), [pt(13, 16)]);
     const morningOnly = run([{ startAt: pt(13, 7), endAt: pt(13, 11), title: 'Pump install', city: 'Ramona', ...brian }]);
-    assert.deepEqual(morningOnly.map((s) => s.startAt), [pt(13, 13)]);
+    assert.deepEqual(morningOnly.map((s) => s.startAt), [pt(13, 13), pt(13, 16)]);
   });
 
   it('travel time: a far-away visit ending at 10 pushes out the next window; a same-city one does not', () => {
@@ -769,11 +772,61 @@ describe('board-aware availability', () => {
   });
 
   it("another tech's visits never block Brian", () => {
-    assert.equal(
+    assert.deepEqual(
       run([{ startAt: pt(13, 8), endAt: pt(13, 17), allDay: true, title: 'Drilling', technicianIds: ['x'], technicianNames: ['Someone'] }])
-        .length,
-      3
+        .map((s) => s.startAt),
+      SLOT_HOURS_PT.map((hour) => pt(13, hour))
     );
+  });
+});
+
+describe('same-day 4 PM window', () => {
+  // Tue Oct 13 2026 2:15 PM PT (PDT). The 8 AM, 10 AM, and 1 PM starts have passed.
+  const TUE_215PM = new Date('2026-10-13T21:15:00.000Z');
+
+  it('a 2:15 PM PT call on a free weekday still offers 4–6 PM today and keeps 8/10/1 the next day', () => {
+    const slots = computeOpenSlots({
+      occupied: [],
+      now: TUE_215PM,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 8,
+    });
+    const today = slots.filter((slot) => slot.date.includes('October 13'));
+    assert.deepEqual(today.map((slot) => slot.startAt), ['2026-10-13T23:00:00.000Z']);
+    assert.equal(today[0].endAt, '2026-10-14T01:00:00.000Z');
+    assert.match(today[0].time, /4:00 PM and 6:00 PM/);
+    assert.equal(today[0].technician, 'Brian Eads');
+    const wednesday = slots.filter((slot) => slot.date.includes('October 14'));
+    assert.deepEqual(wednesday.map((slot) => slot.startAt), [
+      '2026-10-14T15:00:00.000Z',
+      '2026-10-14T17:00:00.000Z',
+      '2026-10-14T20:00:00.000Z',
+      '2026-10-14T23:00:00.000Z',
+    ]);
+    assert.match(wednesday[0].time, /8:00 AM and 10:00 AM/);
+    assert.match(wednesday[1].time, /10:00 AM and 12:00 PM/);
+    assert.match(wednesday[2].time, /1:00 PM and 3:00 PM/);
+    assert.match(wednesday[3].time, /4:00 PM and 6:00 PM/);
+  });
+
+  it('does not offer 4 PM when that window is already taken', () => {
+    const slots = computeOpenSlots({
+      occupied: [{
+        startAt: '2026-10-13T23:00:00.000Z',
+        endAt: '2026-10-14T01:00:00.000Z',
+        title: 'Service Call',
+        technicianIds: ['user-brian'],
+        technicianNames: ['Brian Eads'],
+      }],
+      now: TUE_215PM,
+      technicianId: 'user-brian',
+      technicianName: 'Brian Eads',
+      maxSlots: 4,
+    });
+    assert.equal(slots.some((slot) => slot.date.includes('October 13')), false);
+    assert.match(slots[0].date, /Wednesday/i);
+    assert.match(slots[0].time, /8:00 AM and 10:00 AM/);
   });
 });
 
@@ -957,5 +1010,51 @@ describe('Jeremiah Biliunas weekday and weekend pool', () => {
     const atFriday = result.openSlots.find((slot) => slot.startAt === friday.startAt);
     assert.equal(atFriday?.technicianId, JEREMIAH.id);
     assert.equal(atFriday?.technician, 'Jeremiah Biliunas');
+  });
+
+  it('Sunday 2:15 PM PT in Coachella offers Jeremiah at 4 PM and keeps Monday 8/10/1 on Cowin', async () => {
+    // Sun Oct 25 2026 2:15 PM PT. Martin called; the 8/10/1 starts had already passed.
+    const sun215 = new Date('2026-10-25T21:15:00.000Z');
+    const users = [BRIAN, COWIN, DOUG, TRAVIS, JEREMIAH, CHRIS];
+    const result = await lookup('Coachella', sun215, weekendEnv, [], users);
+    assert.equal(result.lookupStatus, 'ok');
+    assert.equal(result.assignedTechName, 'Cowin');
+    const first = result.openSlots[0];
+    assert.equal(first.startAt, '2026-10-25T23:00:00.000Z');
+    assert.equal(first.endAt, '2026-10-26T01:00:00.000Z');
+    assert.match(first.date, /Sunday/i);
+    assert.match(first.time, /4:00 PM and 6:00 PM/);
+    assert.equal(first.technician, 'Jeremiah Biliunas');
+    assert.equal(first.technicianId, JEREMIAH.id);
+    assert.equal(result.openSlots.filter((slot) => /sunday/i.test(slot.date)).length, 1);
+    const monday = result.openSlots.filter((slot) => /monday/i.test(slot.date));
+    const mondayTimes = monday.map((slot) => slot.time);
+    assert.ok(mondayTimes.some((time) => /8:00 AM and 10:00 AM/.test(time)));
+    assert.ok(mondayTimes.some((time) => /10:00 AM and 12:00 PM/.test(time)));
+    assert.ok(mondayTimes.some((time) => /1:00 PM and 3:00 PM/.test(time)));
+    assert.ok(monday.every((slot) => slot.technicianId === 'user-cowin'));
+    assert.equal(result.openSlots.some((slot) => slot.technicianId === 'user-chris'), false);
+  });
+
+  it('a taken Sunday 4 PM window is not offered, and the day stays closed without a weekend roster', async () => {
+    const sun215 = new Date('2026-10-25T21:15:00.000Z');
+    const users = [BRIAN, COWIN, JEREMIAH, CHRIS];
+    const occupied = [{
+      startAt: '2026-10-25T23:00:00.000Z',
+      endAt: '2026-10-26T01:00:00.000Z',
+      title: 'Service Call',
+      assignedUsers: { nodes: [{ id: JEREMIAH.id, name: { full: 'Jeremiah Biliunas' } }] },
+    }];
+    const taken = await lookup('Coachella', sun215, weekendEnv, occupied, users);
+    assert.equal(taken.openSlots.some((slot) => /sunday/i.test(slot.date)), false);
+    assert.match(taken.openSlots[0].date, /Monday/i);
+    assert.match(taken.openSlots[0].time, /8:00 AM and 10:00 AM/);
+    assert.equal(taken.openSlots[0].technicianId, 'user-cowin');
+
+    const noWeekend = await lookup('Coachella', sun215, noWeekendEnv, [], users);
+    assert.equal(noWeekend.openSlots.some((slot) => /sunday/i.test(slot.date)), false);
+    assert.match(noWeekend.openSlots[0].date, /Monday/i);
+    assert.match(noWeekend.openSlots[0].time, /8:00 AM and 10:00 AM/);
+    assert.equal(noWeekend.openSlots[0].technicianId, 'user-cowin');
   });
 });

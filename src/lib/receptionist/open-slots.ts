@@ -54,7 +54,12 @@ import {
   userDisplayName,
 } from './tech-assignment.ts';
 
-export const SLOT_HOURS_PT = [8, 10, 13] as const;
+/**
+ * Bookable window starts in America/Los_Angeles. Each lasts SLOT_DURATION_MINUTES
+ * (120): 8–10 AM, 10 AM–12 PM, 1–3 PM, and 4–6 PM. A start at or before "now"
+ * is skipped, so a call after 1 PM still has the same-day 4 PM window.
+ */
+export const SLOT_HOURS_PT = [8, 10, 13, 16] as const;
 export const SLOT_DURATION_MINUTES = 120;
 export const MAX_OPEN_SLOTS = 6;
 export const SLOT_LOOKAHEAD_DAYS = 14;
