@@ -1,6 +1,6 @@
 # Shared Jobber MCP gateway
 
-Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **create tasks** (`create_task`, dry-run by default), **add notes and read note text** (jobs, including visit notes, plus clients, quotes, and requests), **draft quotes, edit or delete line items on unsent drafts, and delete an unsent draft**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, **read completed jobs with photo URLs** (GBP posts and photo backfill), and **read catalog cost/price and edit one product's cost, price, markup, or visibility** (never delete) without holding Jobber OAuth secrets on their machines.
+Remote Streamable HTTP MCP on this Next.js app so shop bots (Travis, Damien, Brighton / Grok Bot / Cursor) can look up Jobber clients, **create clients and properties**, **edit a property address** (`edit_property`, dry-run by default), **create requests and schedule on-site assessments**, **create one-off jobs and visits**, **create tasks** (`create_task`, dry-run by default), **add notes and read note text** (jobs, including visit notes, plus clients, quotes, and requests), **draft quotes, edit or delete line items on unsent drafts, and delete an unsent draft**, **read invoices and edit tax plus Client Hub payment settings** (never send, and never edit line items), **read jobs and close them**, **read completed jobs with photo URLs** (GBP posts and photo backfill), and **read catalog cost/price and edit one product's cost, price, markup, or visibility** (never delete) without holding Jobber OAuth secrets on their machines.
 
 **Endpoint:** `https://scws-jobs.vercel.app/api/mcp/jobber`  
 **Transport:** Streamable HTTP (JSON-RPC `POST`). Stateless — no SSE session.  
@@ -15,6 +15,7 @@ Quote writes and new invoices are **unsent**. Nothing in this gateway emails, te
 | --- | --- |
 | Search / get / create clients (deduped by email or full name) | Send quote to customer |
 | Add a property to a client | Approve / convert quote |
+| Edit a property address (`edit_property`: `propertyEdit`, `dryRun` defaults to true) | Setting a property as primary (`isBillingAddress` is read-only; no primary input) |
 | List users (ids for assignment) | Delete a sent, approved, converted, or archived quote |
 | List tasks (`list_tasks`: open or completed, optional assignee) | Edit or delete a task (`taskEdit`, `taskDelete`) |
 | Create a task (`create_task`: `taskCreate` only, `dryRun` defaults to true) | Assignment email, reminder, or any customer notify (`emailAssignments` forced false; `teamReminderOffset` omitted) |
@@ -89,12 +90,13 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.14.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.15.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
 - `create_client` — `clientCreate`. firstName, lastName, optional companyName, emails, phones, billingAddress, and an initial property. Same email or full name returns the matches and does not create unless `force=true`. `receivesReminders`, follow-up flags, and `smsAllowed` are false
 - `create_property` — `propertyCreate`. `PropertyCreateInput.properties[].address` (street1, city, province, postalCode, country default `US`)
+- `edit_property` — `propertyEdit(propertyId, input: PropertyEditInput!)`. `propertyId` is required. `street1`, `street2`, `city`, `province`, `postalCode`, and `country` are optional individually and at least one is required. The tool reads `property(id)` first and merges the supplied fields onto the current address, then sends that full `address` so omitted fields stay. `dryRun` defaults to **true** and returns `would_update` (the `propertyEdit` variables) without calling the mutation. `dryRun: false` calls `propertyEdit` and re-reads the property. Optional `clientId` is not a mutation argument; when set, the property's client id must match or the tool refuses. `PropertyEditInput` on the 2025-01-20 schema is `address` (`AddressAttributes`), `customFields`, and `taxRateId`. This tool sends `address` only. There is no property primary flag. `Property.isBillingAddress` is read-only. `clientEdit` (including `billingAddress` and `propertiesToEdit`) is not called. Nothing is emailed, texted, or notified
 - `list_users` — team members (`id`, name, email, status) so assignee ids can be chosen by name, for example Brighton Scala
 - `list_tasks` — read-only. `scheduledItems` filtered to `BASIC_TASK`. Optional `assigneeId` and `status` `open` (default) or `completed`. Returns id, title, description (`instructions`; Task has no notes, color, or label), client, property address, start and end, completed status, and assignees. There is no other task list in the schema (`Query.task(id)` is one task, and Client, Property, User, and Request have no tasks connection). `occursWithin` is required and must be under 1.5 years. Dated tasks use status `REMAINING` or `COMPLETED`, `includeUnscheduled: false`, and four windows stepping backward from today minus 1 year through today plus 6 months. Unscheduled tasks (no start or end) are a separate call: `schedulingAspects: [UNSCHEDULED]`, `includeUnscheduled: true`, and no status (`REMAINING` plus `[ALL]` did not return them on live data). If that call with `assignedTo` keeps nothing, a second call omits `assignedTo` and filters assignees locally. The response `queries` array is each call's name, filter, `fetched`, `kept`, and `error`. `covered` is the date range those calls requested. Tasks outside `covered` are not included. This tool does not call `taskCreate`, `taskEdit`, or `taskDelete`.
 - `create_task` — `taskCreate` only. `title` and `assigneeIds` (at least one user id from `list_users`) are required. `instructions` is `Task.instructions`; `description` is an alias (the same text `list_tasks` returns as description). Optional `clientId` and `propertyId`. Optional `startAt` and `endAt` (`start` and `end` are aliases) use the same America/Los_Angeles wall-time convention as `create_visit` / `create_request`. `TaskCreateInput.startAt` and `endAt` are `ISO8601DateTime`, not `LocalDateTimeAttributes`, so the gateway converts that wall time to an offset ISO string. `dryRun` defaults to **true** and returns `would_create` (parsed input plus the variables that would be sent) without calling the mutation. `dryRun: false` calls `taskCreate`, returns `userErrors`, and re-reads `task(id)` when that read works. `emailAssignments` is forced false. `teamReminderOffset` and `recurrenceRule` are omitted. Nothing is emailed, texted, or notified. `taskEdit` and `taskDelete` are not called
@@ -135,6 +137,7 @@ Checked against API version 2025-01-20 introspection. The gateway still sends `X
 - The 2025-04-16 changelog removed the older `clientNoteCreate`, `jobNoteCreate`, and `requestNoteCreate` names. The tools call `clientCreateNote`, `jobCreateNote`, and `requestCreateNote`, which were already on the 2025-01-20 schema.
 - `taskCreate` can set `emailAssignments` and `teamReminderOffset`. `create_task` forces `emailAssignments` false and omits `teamReminderOffset`. It does not call `taskEdit` or `taskDelete`.
 - Nothing in these tools sends, emails, texts, or notifies the client.
+- A property cannot be marked primary. `propertyEdit` does not accept a primary flag. `Property.isBillingAddress` is read-only output. `edit_property` does not call `clientEdit`.
 - `ProductOrService` has no `unitPrice` field. The street/default price is `defaultUnitCost`. `edit_product` accepts `description` (sent as ProductsAndServicesEditInput.description) and maps `unitPrice` onto `ProductsAndServicesEditInput.defaultUnitCost` and does not send `unitPrice` to GraphQL.
 - The 2025-01-20 schema has `productsAndServicesEdit` and no product delete mutation. `visible: false` hides a catalog row from line-item autocomplete. There is no archived flag.
 
@@ -149,7 +152,7 @@ Grok Bot only accepts **remote** Streamable HTTP MCP (not local stdio). Each per
    - **Transport:** Streamable HTTP (if the UI only says HTTP/SSE, still use this URL)
    - **Header:** `Authorization` = `Bearer <that person's key>`
    - Tell the bot this is a **static API key**, not OAuth. Do not start an OAuth connect card.
-3. Confirm tools load: `search_clients`, `create_client`, `list_users`, `create_request`, `create_job`, `create_visit`, `create_quote_draft`, `search_requests`, `search_invoices`, `search_jobs`, etc.
+3. Confirm tools load: `search_clients`, `create_client`, `create_property`, `edit_property`, `list_users`, `create_request`, `create_job`, `create_visit`, `create_quote_draft`, `search_requests`, `search_invoices`, `search_jobs`, etc.
 4. Cursor MCP (`~/.cursor/mcp.json`) is the same URL + header:
 
 ```json
@@ -254,6 +257,7 @@ curl -sS \
 | `src/lib/jobber/mcp-jobs.ts` | read-only job search / get, including photo URLs |
 | `src/lib/jobber/mcp-job-writes.ts` | `jobClose`, one-off `jobCreate`, `visitCreate` |
 | `src/lib/jobber/mcp-client-writes.ts` | `clientCreate`, `propertyCreate`, `users` |
+| `src/lib/jobber/mcp-property-edit.ts` | `edit_property` (`propertyEdit` address only, `dryRun` default true) |
 | `src/lib/jobber/mcp-requests.ts` | read-only request search / get |
 | `src/lib/jobber/mcp-request-writes.ts` | `requestCreate` plus assessment schedule and `requestCreateNote` |
 | `src/lib/jobber/mcp-notes.ts` | client / request / job / quote notes |
