@@ -1,7 +1,7 @@
 /**
  * MCP tools for shop bots.
  *
- * Clients (search, create, property), users, unsent quote drafts, product
+ * Clients (search, create, property, property address edit), users, unsent quote drafts, product
  * lookup, invoice reads plus unsent invoice drafts and tax/Client Hub edits,
  * requests (search, create, assessment schedule), job reads plus one-off
  * create, visit schedule, and close, task list plus task create (dryRun
@@ -49,6 +49,7 @@ import {
   parseRemoveLineItemIds,
 } from '../jobber/mcp-invoice-writes.ts';
 import { createClient, createProperty, listUsers, parseCreateClientArgs, parsePropertyAddressArgs } from '../jobber/mcp-client-writes.ts';
+import { editProperty, parseEditPropertyArgs } from '../jobber/mcp-property-edit.ts';
 import { listTasks } from '../jobber/mcp-tasks.ts';
 import { createTask, parseCreateTaskArgs } from '../jobber/mcp-task-create.ts';
 import {
@@ -85,7 +86,7 @@ import { diagnoseJobberDurableStore } from '../jobber/token-store.ts';
 import { qboStatus, runQboQuery, runQboReport } from '../quickbooks/durable-read.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.14.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.15.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -137,7 +138,7 @@ export const FORBIDDEN_JOBBER_MCP_TOOLS = [
 ] as const;
 
 export const JOBBER_MCP_INSTRUCTIONS = [
-  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, create_request, create_job, create_visit, create_note, and create_task write records. create_task dryRun defaults to true. Nothing emails, texts, or notifies a client.',
+  'Shared SCWS Jobber gateway. Quote and invoice creates stay unsent. close_job marks a job closed. cancel_job, cancel_visit, and reschedule_visit are guarded (explicit ids, reason, refuse invoiced/paid/completed unless force, dryRun, audit log). create_client, create_property, edit_property, create_request, create_job, create_visit, create_note, and create_task write records. create_task and edit_property dryRun default to true. edit_property calls propertyEdit for the address only and cannot set a primary property. Nothing emails, texts, or notifies a client.',
   'Never send, approve, or convert quotes. delete_quote_draft removes an unsent draft only, via quoteDelete or via quoteArchive when quoteDelete is not in the schema, and refuses sent, approved, converted, and archived quotes. Never send or mark an invoice sent. Never call jobComplete (removed). Never collect a payment. Never touch payroll. Never turn on a notify, reminder, or booking-confirmation flag.',
   'edit_invoice sets message (client-facing body), taxRateId, and Client Hub payment settings (allowCardPayments, allowAchPayments, allowPartialPayments). Those are settings / copy, not a charge. create_invoice_draft requires message. Invoice line items cannot be edited. Never send, mark sent, record, or collect a payment.',
   'Customer-facing title/message must not include GP FLAG math.',
@@ -312,6 +313,33 @@ export const JOBBER_MCP_TOOLS: McpToolDefinition[] = [
         province: { type: 'string' },
         postalCode: { type: 'string' },
         country: { type: 'string', description: 'Default US when omitted.' },
+      },
+    },
+  },
+  {
+    name: 'edit_property',
+    description:
+      'Update an existing Jobber property address with propertyEdit. propertyId is required. street1, street2, city, province, postalCode, and country are optional individually and at least one is required. Omitted fields stay as they are: the current address is read and merged, then the full address is sent. dryRun defaults to true and returns would_update without calling propertyEdit. Pass dryRun:false to write. Optional clientId is not sent to Jobber; when set, the property client must match or the tool refuses. Jobber has no property primary flag (isBillingAddress is read-only). clientEdit is not called. customFields and taxRateId are not changed. Does not email or text the client.',
+    inputSchema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['propertyId'],
+      properties: {
+        propertyId: { type: 'string', description: 'Property encoded id (Jobber GraphQL id).' },
+        clientId: {
+          type: 'string',
+          description: 'Optional client encoded id. Checked against the property. Not a propertyEdit argument.',
+        },
+        street1: { type: 'string' },
+        street2: { type: 'string' },
+        city: { type: 'string' },
+        province: { type: 'string', description: 'State or province. California is CA.' },
+        postalCode: { type: 'string' },
+        country: { type: 'string', description: 'Only sent when set or already on the property. Not defaulted on edit.' },
+        dryRun: {
+          type: 'boolean',
+          description: 'Default true. false calls propertyEdit. true returns would_update and does not write.',
+        },
       },
     },
   },
@@ -1416,6 +1444,20 @@ export async function callJobberMcpTool(
           notified: false,
           property,
           note: 'Created with propertyCreate. Nothing was emailed or texted.',
+        });
+      }
+      case 'edit_property': {
+        assertNoNotifyArgs(args);
+        const result = await editProperty(parseEditPropertyArgs(args), deps);
+        return textResult({
+          ...result,
+          note: result.dryRun
+            ? result.status === 'unchanged'
+              ? 'dryRun: propertyEdit was not called. Address already matches. Nothing was emailed or texted.'
+              : 'dryRun: propertyEdit was not called. would_update is the propertyEdit input that would be sent. Pass dryRun:false to write. Nothing was emailed or texted.'
+            : result.mutated
+              ? 'Updated with propertyEdit. after is a fresh read. Nothing was emailed or texted.'
+              : 'Address already matched. propertyEdit was not called. Nothing was emailed or texted.',
         });
       }
       case 'list_users': {

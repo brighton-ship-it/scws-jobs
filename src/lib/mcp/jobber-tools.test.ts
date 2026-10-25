@@ -86,7 +86,7 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('create_products'));
     assert.ok(names.includes('list_products'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.14.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.15.0');
     assert.ok(names.includes('delete_quote_draft'));
     assert.equal(names.includes('delete_quote'), false);
     const deleteDraftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'delete_quote_draft');
@@ -151,6 +151,20 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(draftSchema?.properties?.updateLineItems?.items?.properties?.taxable);
     assert.equal(draftSchema?.properties?.removeLineItemIds?.type, 'array');
     assert.match(draftTool?.description || '', /unsent draft/i);
+    assert.ok(names.includes('edit_property'));
+    assert.equal(JOBBER_MCP_READONLY_TOOLS.includes('edit_property'), false);
+    const editPropertyTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'edit_property');
+    const editPropertySchema = editPropertyTool?.inputSchema as {
+      required?: string[];
+      properties?: Record<string, { type?: string }>;
+    };
+    assert.deepEqual(editPropertySchema?.required, ['propertyId']);
+    assert.equal(editPropertySchema?.properties?.street1?.type, 'string');
+    assert.equal(editPropertySchema?.properties?.clientId?.type, 'string');
+    assert.equal(editPropertySchema?.properties?.dryRun?.type, 'boolean');
+    assert.match(editPropertyTool?.description || '', /dryRun defaults to true/);
+    assert.match(editPropertyTool?.description || '', /propertyEdit/);
+    assert.match(editPropertyTool?.description || '', /no property primary flag/);
     for (const name of [
       'create_client',
       'create_property',
