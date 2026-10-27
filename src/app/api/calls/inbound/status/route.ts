@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { EMPTY_RESPONSE, buildVoicemailTwiml, buildAiHandoffTwiml } from '@/lib/phone-calls/twiml';
 import { publicUrl, PORTED_LINES, aiFallbackNumber } from '@/lib/phone-calls/config';
-import { inboundCallEmailPlan, noteMikeAwaitingReport, notifyMissedInboundCall, partyFromProcessing } from '@/lib/phone-calls/missed-alert';
+import { amdFromProcessing, inboundCallEmailPlan, noteMikeAwaitingReport, notifyMissedInboundCall, partyFromProcessing } from '@/lib/phone-calls/missed-alert';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -33,12 +33,18 @@ export async function POST(req: NextRequest) {
   const mikeOnly = q.get('afterhours') === '1' || q.get('leg') === 'mike';
   const mikeInDial = mikeOnly || q.get('rolled') === '1';
   let party: 'shop' | 'mike' | null = null;
+  let processingError: string | null = null;
   if (db && params.CallSid) {
     try {
       const loaded = await db.from('inbound_call_recordings').select('processing_error').eq('call_sid', params.CallSid).maybeSingle();
-      party = partyFromProcessing(loaded?.data?.processing_error);
+      processingError = loaded?.data?.processing_error ?? null;
+      party = partyFromProcessing(processingError);
     } catch (e) { console.error('[phone-calls] answered-by lookup failed', e instanceof Error ? e.message : e); }
   }
+  // AMD hangs up a Google Voice/voicemail shop leg while the caller is still here.
+  // rolled=1 stays set (Mike was listed on the sequential dial) but that leg never started.
+  // Mike's own follow-up action (leg=mike / after hours) must not dial him again.
+  const shopMachine = amdFromProcessing(processingError) === 'machine' && !mikeOnly;
   const plan = inboundCallEmailPlan({
     dialStatus: params.DialCallStatus,
     canHandoff,
@@ -46,6 +52,7 @@ export async function POST(req: NextRequest) {
     mikeOnly,
     mikeInDial,
     shopSeconds,
+    shopMachine,
   });
   // Mike's email is his end-of-call report. Missed calls, including a short shop
   // voicemail leg, email now. A real shop answer does not.
@@ -69,7 +76,7 @@ export async function POST(req: NextRequest) {
       await noteMikeAwaitingReport(db, params.CallSid);
     } catch (e) { console.error('[phone-calls] mike-await note failed', e instanceof Error ? e.message : e); }
   }
-  // Shop leg not answered, caller still here, Mike not dialed yet.
+  // Caller still here and Mike has not been dialed: shop no-answer, or AMD hung up a machine.
   if (plan.handoff && ai) {
     return new NextResponse(buildAiHandoffTwiml(ai, new URL(publicUrl(req)).origin, '?rolled=1&leg=mike'), { headers: { 'Content-Type': 'text/xml' } });
   }

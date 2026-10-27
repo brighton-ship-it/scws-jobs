@@ -68,5 +68,6 @@ describe('after-hours TwiML', () => {
     assert.match(x, /recordingStatusCallback="https:\/\/scws-jobs\.vercel\.app\/api\/calls\/inbound\/recording"/);
     assert.match(x, /action="https:\/\/scws-jobs\.vercel\.app\/api\/calls\/inbound\/status\?afterhours=1"/);
     assert.doesNotMatch(x, /ai=1/);
+    assert.doesNotMatch(x, /machineDetection/);
   });
 });

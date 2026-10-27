@@ -119,6 +119,7 @@ describe('AI receptionist no-answer handoff', () => {
     const x = buildAiHandoffTwiml('+17604915348', 'https://x.test/');
     assert.match(x, /<Number[^>]*>\+17604915348<\/Number>/);
     assert.doesNotMatch(x, /<Dial[^>]* action=/);
+    assert.doesNotMatch(x, /machineDetection/);
   });
 });
 

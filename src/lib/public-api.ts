@@ -37,6 +37,10 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   { method: 'POST', path: '/api/calls/inbound', match: 'exact' },
   { method: 'POST', path: '/api/calls/inbound/status', match: 'exact' },
   { method: 'POST', path: '/api/calls/inbound/recording', match: 'exact' },
+  // Shop/Mike leg progress and answering-machine result. Routes still require a Twilio signature.
+  // Middleware 401s these if they are omitted, and Twilio then never records who answered.
+  { method: 'POST', path: '/api/calls/inbound/leg', match: 'exact' },
+  { method: 'POST', path: '/api/calls/inbound/amd', match: 'exact' },
   // Mike outbound callback TwiML. Routes still require a valid Twilio signature.
   { method: 'POST', path: '/api/calls/mike-callback/voice', match: 'exact' },
   { method: 'POST', path: '/api/calls/mike-callback/bridge', match: 'exact' },

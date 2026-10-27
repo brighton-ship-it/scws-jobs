@@ -24,6 +24,10 @@ export const LEG_PREFIX = 'leg:';
  * The sweep uses this to send one missed-call email if his report never claims the row.
  */
 export const AWAIT_MIKE_MARKER = 'await-mike';
+/** AMD heard a person on the shop leg. Do not dial Mike. */
+export const AMD_HUMAN = 'amd:human';
+/** AMD heard a machine, fax, or nothing it could call a person. The shop leg is not a human answer. */
+export const AMD_MACHINE = 'amd:machine';
 
 export type AnsweredBy = 'shop' | 'mike' | 'missed';
 
@@ -41,9 +45,24 @@ export function partyFromProcessing(value: string | null | undefined): 'shop' | 
   return party === 'shop' || party === 'mike' ? party : null;
 }
 
+/** `amd:human` or `amd:machine` from the shop-leg answering-machine check. */
+export function amdFromProcessing(value: string | null | undefined): 'human' | 'machine' | null {
+  const parts = processingParts(value);
+  if (parts.includes(AMD_HUMAN)) return 'human';
+  if (parts.includes(AMD_MACHINE)) return 'machine';
+  return null;
+}
+
+/** First AMD result wins. A later human/machine callback must not flip it. */
+export function withAmd(current: string | null | undefined, kind: 'human' | 'machine'): string {
+  if (amdFromProcessing(current)) return processingParts(current).join('|');
+  const marker = kind === 'human' ? AMD_HUMAN : AMD_MACHINE;
+  return [...processingParts(current), marker].join('|');
+}
+
 /** Keep the alert claim and the answered-party token; append a recording note. */
 export function mergeProcessingError(current: string | null | undefined, note: string | null | undefined): string | null {
-  const kept = processingParts(current).filter((part) => part === CALL_ALERT_MARKER || part === MISSED_ALERT_MARKER || part === AWAIT_MIKE_MARKER || part.startsWith(LEG_PREFIX));
+  const kept = processingParts(current).filter((part) => part === CALL_ALERT_MARKER || part === MISSED_ALERT_MARKER || part === AWAIT_MIKE_MARKER || part.startsWith(LEG_PREFIX) || part.startsWith('amd:'));
   if (note && !kept.includes(note)) kept.push(note);
   return kept.length ? kept.join('|') : null;
 }
@@ -262,8 +281,18 @@ export function inboundCallEmailPlan(input: {
   mikeInDial: boolean;
   /** DialCallDuration. Connected time, not ring time. Null when Twilio omitted it. */
   shopSeconds?: number | null;
+  /**
+   * The shop leg answered, but AMD said it was not a person (Google Voice / voicemail).
+   * The caller is still here. Dial Mike. A real shop conversation does not set this.
+   */
+  shopMachine?: boolean;
 }): { handoff: boolean; send: 'now' | 'defer' | 'no'; who: AnsweredBy | null } {
   const status = (input.dialStatus || '').trim().toLowerCase();
+  if (input.shopMachine) {
+    if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
+    if (status === 'canceled' || status === 'cancelled') return { handoff: false, send: 'now', who: 'missed' };
+    return { handoff: true, send: 'no', who: null };
+  }
   if (ANSWERED.has(status)) {
     if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
     // The shop number is the one that connected, or Mike was not in this dial at all.
@@ -503,9 +532,18 @@ export async function recordAnsweredParty(db: any, callSid: string, party: 'shop
   const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
   const row = loaded?.data;
   if (!row) return 'missing';
-  if (partyFromProcessing(row.processing_error) || hasAlertMarker(row.processing_error)) return 'already';
-  const next = withParty(row.processing_error, party);
-  const result = await claimProcessingError(db, callSid, row.processing_error ?? null, next, new Date());
+  const current = row.processing_error ?? null;
+  // Google Voice writes leg:shop when the carrier answers. AMD then says machine.
+  // Mike's later leg must still be allowed to replace that token.
+  if (party === 'mike' && !hasAlertMarker(current) && partyFromProcessing(current) === 'shop' && amdFromProcessing(current) === 'machine') {
+    const next = processingParts(current).map((part) => part === `${LEG_PREFIX}shop` ? `${LEG_PREFIX}mike` : part).join('|');
+    const result = await claimProcessingError(db, callSid, current, next, new Date());
+    return result === 'ok' ? 'recorded' : 'already';
+  }
+  if (party === 'shop' && amdFromProcessing(current) === 'machine') return 'already';
+  if (partyFromProcessing(current) || hasAlertMarker(current)) return 'already';
+  const next = withParty(current, party);
+  const result = await claimProcessingError(db, callSid, current, next, new Date());
   return result === 'ok' ? 'recorded' : 'already';
 }
 

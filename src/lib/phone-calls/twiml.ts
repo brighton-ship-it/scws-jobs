@@ -1,9 +1,25 @@
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
-/** Child-leg callback so we know whether the shop or Mike picked up. `answered` fires when they do. */
-function numberNoun(base: string, number: string, party: 'shop' | 'mike'): string {
+/**
+ * How long Twilio may listen after the shop number answers before it must say
+ * human, machine, fax, or unknown. Matches the business-hours ring window.
+ * Speech longer than the threshold is a machine (voicemail / Google Voice prompt).
+ * A short human greeting stays a person. Silence this long, with no speech, is unknown.
+ */
+export const SHOP_AMD_TIMEOUT_SECONDS = 15;
+export const SHOP_AMD_SPEECH_THRESHOLD_MS = 6000;
+export const SHOP_AMD_SILENCE_TIMEOUT_MS = 10000;
+
+/** Child-leg callback so we know whether the shop or Mike picked up. `answered` fires when they do.
+ * `detectMachine` is only for the shop number that sits in front of Mike. Google Voice can answer
+ * that leg immediately; AMD tells us it was not a person so we can leave it and dial Mike.
+ * Mike's own number is never screened. */
+function numberNoun(base: string, number: string, party: 'shop' | 'mike', detectMachine = false): string {
   const cb = `${base}/api/calls/inbound/leg?party=${party}`;
-  return `<Number statusCallback="${esc(cb)}" statusCallbackEvent="answered completed" statusCallbackMethod="POST">${esc(number)}</Number>`;
+  const amd = detectMachine
+    ? ` machineDetection="Enable" machineDetectionTimeout="${SHOP_AMD_TIMEOUT_SECONDS}" machineDetectionSpeechThreshold="${SHOP_AMD_SPEECH_THRESHOLD_MS}" machineDetectionSilenceTimeout="${SHOP_AMD_SILENCE_TIMEOUT_MS}" amdStatusCallback="${esc(`${base}/api/calls/inbound/amd`)}" amdStatusCallbackMethod="POST"`
+    : '';
+  return `<Number${amd} statusCallback="${esc(cb)}" statusCallbackEvent="answered completed" statusCallbackMethod="POST">${esc(number)}</Number>`;
 }
 
 /** Ring the shop, then Mike.
@@ -17,7 +33,7 @@ export function buildInboundTwiml(opts: { shopNumbers: string[]; baseUrl: string
   const appendMike = Boolean(opts.nextNumber && !opts.shopNumbers.includes(opts.nextNumber));
   const shops = appendMike ? opts.shopNumbers.slice(0, 1) : opts.shopNumbers;
   const numbers = [
-    ...shops.map((n) => numberNoun(base, n, 'shop')),
+    ...shops.map((n) => numberNoun(base, n, 'shop', appendMike)),
     ...(appendMike && opts.nextNumber ? [numberNoun(base, opts.nextNumber, 'mike')] : []),
   ].join('');
   const sequential = appendMike ? ' sequential="true"' : '';

@@ -59,6 +59,10 @@ export async function POST(req: NextRequest) {
   // Mike is the next number in this same dial, not a Google Voice forward and not a later webhook.
   const timeout = dialTimeoutAttribute(desiredRingSeconds(q.get('timeout')));
   const rollToMike = Boolean(dial.mike);
+  // rolled=1: this dial already lists Mike, so a no-answer of the whole dial must not dial him again.
+  // If Google Voice answers the shop number, sequential never reaches that second Number. AMD hangs
+  // the shop leg up and the status callback still dials Mike. rolled=1 stays on this action so a
+  // real no-answer (shop, then Mike) does not dial him a third time.
   return xml(buildInboundTwiml({
     notice: RECORDING_NOTICE, shopNumbers: dial.shop, baseUrl: base, callerId, timeout, nextNumber: dial.mike,
     actionQuery: (() => { const a = new URLSearchParams(); if (line) a.set('line', line.key); a.set('notice', '1'); if (rollToMike) { a.set('ai', '1'); a.set('rolled', '1'); } const t = a.toString(); return t ? `?${t}` : undefined; })(),
