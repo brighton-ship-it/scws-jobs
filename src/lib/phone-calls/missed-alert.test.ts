@@ -134,6 +134,16 @@ describe('status callback', () => {
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, mikeOnly: true, mikeInDial: true, shopSeconds: 8 }), { handoff: false, send: 'defer', who: 'mike' });
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, mikeInDial: true, shopSeconds: 8 }), { handoff: false, send: 'defer', who: 'mike' });
   });
+  it('does not email a short shop leg when AMD heard a person', () => {
+    // Live main-line call: shop child answered_by=human, DialCallDuration 17, Mike never dialed.
+    assert.equal(shopLegCountsAsMissed(17), true);
+    assert.equal(shopLegCountsAsMissed(17, true), false);
+    assert.equal(shopLegCountsAsMissed(8, true), false);
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 17, shopHuman: true }), { handoff: false, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, mikeInDial: true, shopSeconds: 17, shopHuman: true }), { handoff: false, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 8, shopHuman: true }), { handoff: false, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', mikeInDial: true, shopSeconds: 17 }), { handoff: false, send: 'now', who: 'missed' });
+  });
   it('waits for Mike\'s end-of-call report when Mike answered', () => {
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'mike' }), { handoff: false, send: 'defer', who: 'mike' });
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, mikeOnly: true, mikeInDial: true }), { handoff: false, send: 'defer', who: 'mike' });
@@ -619,6 +629,69 @@ describe('shop voicemail and a missing Mike report', () => {
     assert.equal(sweepInboundEmail({ ...baseRow, duration_seconds: 9, updated_at: new Date(now - 3 * 60_000).toISOString() }, now), 'missed');
     assert.equal(sweepInboundEmail({ ...baseRow, duration_seconds: 9, updated_at: new Date(now - 30_000).toISOString() }, now), null);
     assert.equal(await noteMikeAwaitingReport(memoryDb(null).db, 'CA1'), 'missing');
+  });
+
+  it('does not turn await-mike into a missed email when the shop already answered', () => {
+    const old = new Date(now - SWEEP_UNKNOWN_MIKE_MS - 60_000).toISOString();
+    assert.equal(sweepInboundEmail({
+      processing_error: `${AWAIT_MIKE_MARKER}|amd:human|leg:shop`,
+      dial_status: 'completed', answered: true, duration_seconds: 17, updated_at: old,
+    }, now), null);
+    assert.equal(sweepInboundEmail({
+      processing_error: `${AWAIT_MIKE_MARKER}|amd:human`,
+      dial_status: 'completed', answered: true, duration_seconds: 80, updated_at: old,
+    }, now), null);
+    assert.equal(sweepInboundEmail({
+      processing_error: `${AWAIT_MIKE_MARKER}|leg:shop`,
+      dial_status: 'completed', answered: true, duration_seconds: 95, updated_at: old,
+    }, now), null);
+    assert.equal(sweepInboundEmail({
+      processing_error: AWAIT_MIKE_MARKER,
+      dial_status: 'completed', answered: true, duration_seconds: 80, updated_at: old,
+    }, now), 'missed');
+  });
+
+  it('does not mark await-mike after AMD heard a person, and keeps leg:shop if that note wins the race', async () => {
+    const known = memoryDb({ call_sid: 'CA1', processing_error: 'amd:human' });
+    assert.equal(await noteMikeAwaitingReport(known.db, 'CA1'), 'already');
+    assert.equal(known.state.row?.processing_error, 'amd:human');
+
+    const state = { call_sid: 'CA1', processing_error: null as string | null };
+    let raced = false;
+    const db = {
+      from() {
+        return {
+          select() {
+            return { eq() { return { maybeSingle: async () => ({ data: { ...state }, error: null }) }; } };
+          },
+          update(patch: { processing_error: string }) {
+            const filters: Array<(row: typeof state) => boolean> = [];
+            const api: any = {
+              eq(col: string, val: string) { filters.push((row) => (row as Record<string, unknown>)[col] === val); return api; },
+              is(col: string, val: null) { filters.push((row) => (row as Record<string, unknown>)[col] == null); return api; },
+              select: async () => {
+                if (!raced && state.processing_error == null) {
+                  raced = true;
+                  state.processing_error = AWAIT_MIKE_MARKER;
+                  return { data: [], error: null };
+                }
+                if (!state || filters.some((filter) => !filter(state))) return { data: [], error: null };
+                state.processing_error = patch.processing_error;
+                return { data: [{ call_sid: 'CA1' }], error: null };
+              },
+            };
+            return api;
+          },
+        };
+      },
+    };
+    assert.equal(await recordAnsweredParty(db, 'CA1', 'shop'), 'recorded');
+    assert.equal(state.processing_error, `${AWAIT_MIKE_MARKER}|leg:shop`);
+    assert.equal(sweepInboundEmail({
+      processing_error: `${state.processing_error}|amd:human`,
+      dial_status: 'completed', answered: true, duration_seconds: 17,
+      updated_at: new Date(now - SWEEP_UNKNOWN_MIKE_MS - 60_000).toISOString(),
+    }, now), null);
   });
 
   it('keeps a known Mike call on the long wait', () => {

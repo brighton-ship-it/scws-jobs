@@ -75,21 +75,25 @@ export type AmdRecord = {
   next: string | null;
 };
 
-/** First AMD result on the parent call wins. */
+/** First AMD result on the parent call wins.
+ * Retries when await-mike (or the leg token) lands between the read and the claim.
+ * Dropping answered_by=human made the sweep email a shop answer as missed. */
 export async function recordShopAmd(db: any, callSid: string, kind: 'human' | 'machine'): Promise<AmdRecord> {
-  const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
-  const row = loaded?.data;
-  if (!row) return { status: 'missing', kind: null, previous: null, next: null };
-  const current = row.processing_error ?? null;
-  const existing = amdFromProcessing(current);
-  if (existing) return { status: 'already', kind: existing, previous: current, next: current };
-  const next = withAmd(current, kind);
-  const result = await claimProcessing(db, callSid, current, next);
-  if (result === 'ok') return { status: 'recorded', kind, previous: current, next };
-  if (result === 'error') return { status: 'error', kind: null, previous: current, next: null };
-  const again = await db.from('inbound_call_recordings').select('processing_error').eq('call_sid', callSid).maybeSingle();
-  const now = again?.data?.processing_error ?? null;
-  return { status: 'already', kind: amdFromProcessing(now), previous: current, next: now };
+  let previous: string | null = null;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
+    const row = loaded?.data;
+    if (!row) return { status: 'missing', kind: null, previous: null, next: null };
+    const current = row.processing_error ?? null;
+    previous = current;
+    const existing = amdFromProcessing(current);
+    if (existing) return { status: 'already', kind: existing, previous: current, next: current };
+    const next = withAmd(current, kind);
+    const result = await claimProcessing(db, callSid, current, next);
+    if (result === 'ok') return { status: 'recorded', kind, previous: current, next };
+    if (result === 'error') return { status: 'error', kind: null, previous: current, next: null };
+  }
+  return { status: 'already', kind: amdFromProcessing(previous), previous, next: previous };
 }
 
 export async function revertShopAmd(db: any, callSid: string, previous: string | null, next: string): Promise<void> {
@@ -190,7 +194,8 @@ export async function handleShopAmd(input: {
     return { httpStatus: wrote === 'error' ? 500 : 200, action: 'roll' };
   }
   if (recorded.kind !== 'machine') {
-    if (recorded.kind === 'human' && recorded.status === 'recorded') {
+    // Also on a retry: the first request can save amd:human and lose the leg token.
+    if (recorded.kind === 'human') {
       try { await recordAnsweredParty(input.db, parent, 'shop'); }
       catch (error) { console.error('[phone-calls] amd human note failed', error instanceof Error ? error.message : error); }
     }
