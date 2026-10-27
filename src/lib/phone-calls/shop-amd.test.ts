@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { AI_RECEPTIONIST } from './config.ts';
-import { handleShopAmd, shopAmdDecision, shopLegRecordsAnswer } from './shop-amd.ts';
+import { handleShopAmd, recordShopAmd, shopAmdDecision, shopLegRecordsAnswer } from './shop-amd.ts';
 import { buildAfterHoursAiTwiml, buildAiHandoffTwiml, buildInboundTwiml } from './twiml.ts';
 
 const PARENT = `CA${'a'.repeat(32)}`;
@@ -79,6 +79,54 @@ describe('shop answering-machine decision', () => {
 });
 
 describe('AMD callback', () => {
+  it('keeps a human marker when await-mike wins the first write', async () => {
+    const state = { call_sid: PARENT, processing_error: null as string | null };
+    let raced = false;
+    const db = {
+      from() {
+        return {
+          select() {
+            return { eq() { return { maybeSingle: async () => ({ data: { ...state }, error: null }) }; } };
+          },
+          update(patch: { processing_error: string }) {
+            const filters: Array<(row: typeof state) => boolean> = [];
+            const api: any = {
+              eq(col: string, val: string) { filters.push((row) => (row as Record<string, unknown>)[col] === val); return api; },
+              is(col: string, val: null) { filters.push((row) => (row as Record<string, unknown>)[col] == null); return api; },
+              select: async () => {
+                if (!raced && state.processing_error == null) {
+                  raced = true;
+                  state.processing_error = 'await-mike';
+                  return { data: [], error: null };
+                }
+                if (filters.some((filter) => !filter(state))) return { data: [], error: null };
+                state.processing_error = patch.processing_error;
+                return { data: [{ call_sid: PARENT }], error: null };
+              },
+            };
+            return api;
+          },
+        };
+      },
+    };
+    const recorded = await recordShopAmd(db, PARENT, 'human');
+    assert.equal(recorded.status, 'recorded');
+    assert.equal(recorded.kind, 'human');
+    assert.equal(state.processing_error, 'await-mike|amd:human');
+  });
+
+  it('writes the shop leg when a human result is already stored without it', async () => {
+    const { db, state } = memoryDb('amd:human');
+    const { fetchImpl, calls } = fakeFetch([]);
+    const result = await handleShopAmd({
+      answeredBy: 'human', parentCallSid: PARENT, childCallSid: CHILD, db, env: ENV, fetchImpl,
+    });
+    assert.equal(result.action, 'keep');
+    assert.equal(result.httpStatus, 200);
+    assert.equal(calls.length, 0);
+    assert.equal(state.row.processing_error, 'amd:human|leg:shop');
+  });
+
   it('records a human and does not change the live call', async () => {
     const { db, state } = memoryDb();
     const { fetchImpl, calls } = fakeFetch([]);

@@ -1,8 +1,11 @@
 /**
  * Office email for a missed inbound call, and for a call Mike answers.
  * A call the shop answers does not email. A shop leg that stays connected for
- * under SHOP_ANSWER_MIN_SECONDS is the handset or the carrier's voicemail:
- * Twilio still says completed, and that counts as missed.
+ * under SHOP_ANSWER_MIN_SECONDS is the handset or the carrier's voicemail
+ * when AMD did not hear a person: Twilio still says completed.
+ * answered_by=human is a person even when that bridge is short. It does not
+ * email missed, and an await-mike note must not turn it into one later.
+ * DialBridged alone is not a person: Google Voice bridges too.
  * Mike's email waits for his end-of-call report. If that report never comes
  * and the answered party was never recorded, the sweep sends one missed-call
  * email after SWEEP_UNKNOWN_MIKE_MS. His voice, greeting, and callback flag
@@ -252,14 +255,20 @@ const ANSWERED = new Set(['completed', 'answered']);
 
 /**
  * Connected time on the shop leg, in seconds, below which the pickup is treated
- * as voicemail. Twilio reports the handset's or the carrier's voicemail as
- * `completed`. A person who actually takes the call is at or above this.
- * This does not change who is dialed or when the caller is bridged.
+ * as voicemail when AMD did not hear a person. Twilio reports the handset's
+ * or the carrier's voicemail as `completed`. A person who actually takes the
+ * call is at or above this, or AMD said human. This does not change who is
+ * dialed or when the caller is bridged.
  */
 export const SHOP_ANSWER_MIN_SECONDS = 20;
 
-/** True when this connected shop leg is short enough to be voicemail, not a person. */
-export function shopLegCountsAsMissed(seconds: number | null | undefined): boolean {
+/**
+ * True when this connected shop leg is short enough to be voicemail, not a person.
+ * `humanAnswer` is Twilio AMD `answered_by=human`. A short real conversation
+ * (shop talk of 17s after Google Voice picks up) is not voicemail.
+ */
+export function shopLegCountsAsMissed(seconds: number | null | undefined, humanAnswer = false): boolean {
+  if (humanAnswer) return false;
   return seconds != null && Number.isFinite(seconds) && seconds >= 0 && seconds < SHOP_ANSWER_MIN_SECONDS;
 }
 
@@ -286,6 +295,12 @@ export function inboundCallEmailPlan(input: {
    * The caller is still here. Dial Mike. A real shop conversation does not set this.
    */
   shopMachine?: boolean;
+  /**
+   * AMD heard a person on the shop leg (`answered_by=human`). A short bridge is
+   * still that conversation. Do not email missed, and do not leave the row on
+   * await-mike. DialBridged is not this flag: Google Voice bridges too.
+   */
+  shopHuman?: boolean;
 }): { handoff: boolean; send: 'now' | 'defer' | 'no'; who: AnsweredBy | null } {
   const status = (input.dialStatus || '').trim().toLowerCase();
   if (input.shopMachine) {
@@ -295,6 +310,9 @@ export function inboundCallEmailPlan(input: {
   }
   if (ANSWERED.has(status)) {
     if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
+    // The shop number was a person. 17s of talk after Google Voice is still a person.
+    // Mike was listed on the sequential dial but was not the party who connected.
+    if (input.shopHuman) return { handoff: false, send: 'no', who: null };
     // The shop number is the one that connected, or Mike was not in this dial at all.
     // A short connection is voicemail. Unknown duration stays a real answer: a missing
     // DialCallDuration must not turn a conversation into a missed-call email.
@@ -527,24 +545,32 @@ export function legCallbackCounts(params: Record<string, string>): boolean {
   return Number.isFinite(dur) && dur > 0;
 }
 
-/** Remember who answered. A later recording note must not erase this. */
+/** Remember who answered. A later recording note must not erase this.
+ * Retries when the dial action writes await-mike between the read and the claim.
+ * One lost compare-and-swap used to drop leg:shop, and the sweep then emailed missed. */
 export async function recordAnsweredParty(db: any, callSid: string, party: 'shop' | 'mike'): Promise<'recorded' | 'already' | 'missing'> {
-  const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
-  const row = loaded?.data;
-  if (!row) return 'missing';
-  const current = row.processing_error ?? null;
-  // Google Voice writes leg:shop when the carrier answers. AMD then says machine.
-  // Mike's later leg must still be allowed to replace that token.
-  if (party === 'mike' && !hasAlertMarker(current) && partyFromProcessing(current) === 'shop' && amdFromProcessing(current) === 'machine') {
-    const next = processingParts(current).map((part) => part === `${LEG_PREFIX}shop` ? `${LEG_PREFIX}mike` : part).join('|');
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
+    const row = loaded?.data;
+    if (!row) return 'missing';
+    const current = row.processing_error ?? null;
+    // Google Voice writes leg:shop when the carrier answers. AMD then says machine.
+    // Mike's later leg must still be allowed to replace that token.
+    if (party === 'mike' && !hasAlertMarker(current) && partyFromProcessing(current) === 'shop' && amdFromProcessing(current) === 'machine') {
+      const next = processingParts(current).map((part) => part === `${LEG_PREFIX}shop` ? `${LEG_PREFIX}mike` : part).join('|');
+      const result = await claimProcessingError(db, callSid, current, next, new Date());
+      if (result === 'ok') return 'recorded';
+      if (result === 'error') return 'already';
+      continue;
+    }
+    if (party === 'shop' && amdFromProcessing(current) === 'machine') return 'already';
+    if (partyFromProcessing(current) || hasAlertMarker(current)) return 'already';
+    const next = withParty(current, party);
     const result = await claimProcessingError(db, callSid, current, next, new Date());
-    return result === 'ok' ? 'recorded' : 'already';
+    if (result === 'ok') return 'recorded';
+    if (result === 'error') return 'already';
   }
-  if (party === 'shop' && amdFromProcessing(current) === 'machine') return 'already';
-  if (partyFromProcessing(current) || hasAlertMarker(current)) return 'already';
-  const next = withParty(current, party);
-  const result = await claimProcessingError(db, callSid, current, next, new Date());
-  return result === 'ok' ? 'recorded' : 'already';
+  return 'already';
 }
 
 /**
@@ -558,7 +584,8 @@ export async function noteMikeAwaitingReport(db: any, callSid: string): Promise<
     const row = loaded?.data;
     if (!row) return 'missing';
     const current = row.processing_error ?? null;
-    if (hasAlertMarker(current) || partyFromProcessing(current) || awaitingMikeReport(current)) return 'already';
+    // AMD already heard a person. Mike was listed on the dial but did not take the call.
+    if (hasAlertMarker(current) || partyFromProcessing(current) || awaitingMikeReport(current) || amdFromProcessing(current) === 'human') return 'already';
     const result = await claimProcessingError(db, callSid, current, withAwaitMike(current), new Date());
     if (result === 'ok') return 'noted';
     if (result === 'error') return 'missing';
@@ -751,12 +778,17 @@ export function sweepInboundEmail(row: {
   const dial = (row.dial_status || '').toLowerCase();
   if (!dial) return null;
   const party = partyFromProcessing(row.processing_error);
+  const human = amdFromProcessing(row.processing_error) === 'human';
   const answered = row.answered === true || ANSWERED.has(dial);
   if (answered && party === 'mike') return age >= SWEEP_MIKE_WAIT_MS ? 'mike' : null;
-  // Shop voicemail: Twilio said completed. A long connection was a person.
+  // Shop voicemail: Twilio said completed and AMD did not hear a person.
+  // A long connection, or answered_by=human, was a person — even under 20s.
   if (answered && party === 'shop') {
-    return shopLegCountsAsMissed(row.duration_seconds) && age >= SWEEP_RETRY_MS ? 'missed' : null;
+    return shopLegCountsAsMissed(row.duration_seconds, human) && age >= SWEEP_RETRY_MS ? 'missed' : null;
   }
+  // Human on the shop leg, but leg:shop lost the race with await-mike.
+  // Do not email missed while waiting for a Mike report that will never come.
+  if (answered && human) return null;
   // Leg token still missing. Mike was in the dial, and neither his report nor
   // another email has claimed the row. One missed-call email, not a shop email.
   if (answered && awaitingMikeReport(row.processing_error)) {

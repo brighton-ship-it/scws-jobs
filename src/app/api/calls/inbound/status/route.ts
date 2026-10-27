@@ -44,7 +44,12 @@ export async function POST(req: NextRequest) {
   // AMD hangs up a Google Voice/voicemail shop leg while the caller is still here.
   // rolled=1 stays set (Mike was listed on the sequential dial) but that leg never started.
   // Mike's own follow-up action (leg=mike / after hours) must not dial him again.
-  const shopMachine = amdFromProcessing(processingError) === 'machine' && !mikeOnly;
+  // answered_by=human is a shop answer even when DialCallDuration is under 20s.
+  // DialBridged is true for Google Voice too, so it does not by itself skip the email.
+  const amd = amdFromProcessing(processingError);
+  const answeredBy = (params.AnsweredBy || '').trim().toLowerCase();
+  const shopMachine = amd === 'machine' && !mikeOnly;
+  const shopHuman = !mikeOnly && !shopMachine && (amd === 'human' || answeredBy === 'human');
   const plan = inboundCallEmailPlan({
     dialStatus: params.DialCallStatus,
     canHandoff,
@@ -53,6 +58,7 @@ export async function POST(req: NextRequest) {
     mikeInDial,
     shopSeconds,
     shopMachine,
+    shopHuman,
   });
   // Mike's email is his end-of-call report. Missed calls, including a short shop
   // voicemail leg, email now. A real shop answer does not.
