@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { desiredRingSeconds, dialTimeoutAttribute, BUSINESS_HOURS_RING_SECONDS } from './ring-timeout.ts';
-import { buildAiHandoffTwiml, buildInboundTwiml } from './twiml.ts';
+import { buildAiHandoffTwiml, buildInboundTwiml, SHOP_AMD_SPEECH_THRESHOLD_MS, SHOP_AMD_TIMEOUT_SECONDS } from './twiml.ts';
 import { AI_RECEPTIONIST } from './config.ts';
 import { OFFICE_ALERT_EMAILS } from '../receptionist/office-callback.ts';
 import {
@@ -74,6 +74,13 @@ describe('inbound TwiML rolls to Mike in the same dial', () => {
     assert.equal(x.split(SHOP).length - 1, 1);
     assert.match(x, /status\?ai=1&amp;rolled=1&amp;notice=1"/);
     assert.doesNotMatch(x, /<Number>\+17604915348<\/Number>\s*<Number>/);
+    const shopTag = x.match(/<Number[^>]*>\+17602763468<\/Number>/)?.[0] ?? '';
+    const mikeTag = x.match(/<Number[^>]*>\+17604915348<\/Number>/)?.[0] ?? '';
+    assert.match(shopTag, /machineDetection="Enable"/);
+    assert.match(shopTag, new RegExp(`machineDetectionTimeout="${SHOP_AMD_TIMEOUT_SECONDS}"`));
+    assert.match(shopTag, new RegExp(`machineDetectionSpeechThreshold="${SHOP_AMD_SPEECH_THRESHOLD_MS}"`));
+    assert.match(shopTag, /amdStatusCallback="https:\/\/scws-jobs\.vercel\.app\/api\/calls\/inbound\/amd"/);
+    assert.doesNotMatch(mikeTag, /machineDetection/);
   });
   it('still reaches Mike about 15s after the first ring when several shop numbers are configured', () => {
     const extra = '+17605550111';
@@ -94,6 +101,7 @@ describe('inbound TwiML rolls to Mike in the same dial', () => {
     const plain = buildInboundTwiml({ shopNumbers: [SHOP], baseUrl: 'https://x.test', timeout: 10 });
     assert.doesNotMatch(plain, /sequential/);
     assert.doesNotMatch(plain, /17604915348/);
+    assert.doesNotMatch(plain, /machineDetection/);
   });
   it('a fallback Mike leg cannot dial him twice', () => {
     const handoff = buildAiHandoffTwiml(MIKE, 'https://x.test', '?rolled=1&leg=mike');
@@ -138,6 +146,14 @@ describe('status callback', () => {
   it('emails when the caller hangs up, because returned TwiML will not run', () => {
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'canceled', canHandoff: true }), { handoff: false, send: 'now', who: 'missed' });
     assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'canceled' }), { handoff: false, send: 'now', who: 'missed' });
+  });
+  it('dials Mike when the answered shop leg was a machine, and leaves a person or Mike alone', () => {
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', shopSeconds: 8, shopMachine: true }), { handoff: true, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', shopSeconds: 208, shopMachine: true }), { handoff: true, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: null, shopMachine: true }), { handoff: true, send: 'no', who: null });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'mike', mikeOnly: true, shopMachine: true }), { handoff: false, send: 'defer', who: 'mike' });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'canceled', shopMachine: true }), { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ ...base, dialStatus: 'completed', party: 'shop', shopSeconds: 95 }), { handoff: false, send: 'no', who: null });
   });
   it('emails when Mike was already in the dial and nobody answered', () => {
     for (const dialStatus of ['no-answer', 'busy', 'failed', '']) {
@@ -438,6 +454,7 @@ describe('one email when Mike also reports the call', () => {
   });
   it('keeps the answered party when the recording note is saved', () => {
     assert.equal(mergeProcessingError('call-alert-sent|leg:shop', 'note posted'), 'call-alert-sent|leg:shop|note posted');
+    assert.equal(mergeProcessingError('amd:machine|leg:mike', 'note posted'), 'amd:machine|leg:mike|note posted');
     assert.equal(mergeProcessingError(AWAIT_MIKE_MARKER, 'note posted'), `${AWAIT_MIKE_MARKER}|note posted`);
     assert.equal(mergeMikeCallEmail(built, 'Answered by: Mike').text.startsWith('Answered by: Mike'), true);
   });
@@ -450,6 +467,12 @@ describe('who answered, and the backup send', () => {
     assert.equal(partyFromProcessing(state.row?.processing_error), 'shop');
     assert.equal(await recordAnsweredParty(db, 'CA1', 'mike'), 'already');
     assert.equal(partyFromProcessing(state.row?.processing_error), 'shop');
+  });
+  it('lets Mike replace a shop token when AMD said the shop leg was a machine', async () => {
+    const { db, state } = memoryDb({ call_sid: 'CA1', processing_error: 'amd:machine|leg:shop' });
+    assert.equal(await recordAnsweredParty(db, 'CA1', 'shop'), 'already');
+    assert.equal(await recordAnsweredParty(db, 'CA1', 'mike'), 'recorded');
+    assert.equal(state.row?.processing_error, 'amd:machine|leg:mike');
   });
   it('sweeps a finished Mike call only after his report had time to arrive', () => {
     const now = Date.parse('2026-10-22T15:00:00.000Z');
@@ -623,8 +646,12 @@ describe('Mike is unchanged and callbacks stay off', () => {
     for (const path of [
       '../../app/api/calls/inbound/route.ts',
       '../../app/api/calls/inbound/status/route.ts',
+      '../../app/api/calls/inbound/leg/route.ts',
+      '../../app/api/calls/inbound/amd/route.ts',
       '../../app/api/calls/webhook/route.ts',
       './missed-alert.ts',
+      './shop-amd.ts',
+      './twiml.ts',
       './ring-timeout.ts',
     ]) {
       const text = readFileSync(new URL(path, import.meta.url), 'utf8');
