@@ -8,11 +8,16 @@
  *
  * OFF unless MISSED_CALL_TEXT_ENABLED=true. MISSED_CALL_TEXT_TEST_NUMBERS (comma list) texts
  * ONLY those numbers while the flag is unset. Nothing in this file sends anything.
+ *
+ * Every inbound line on the dial plan (ported Main/Ransom plus tracking numbers whose
+ * Voice URL is /api/calls/inbound) is eligible. MISSED_CALL_TEXT_LINES and
+ * MISSED_CALL_TEXT_LINES_EXTRA only add numbers; they cannot turn a dial-plan line off.
  */
 import { digits10 } from '../ads/call-dashboard.ts';
 import { isOwnNumber } from '../ads/real-leads.ts';
 import { staffLines } from '../ads/staff-lines.ts';
 import { hasWorkOnOrAfter, type OutreachAttempt } from '../ads/callbacks.ts';
+import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
 import { doNotCallText, matchesCollectionsHold, zonedParts, DEFAULT_HOLD_PHRASES } from './mike-callback.ts';
 
 /** Brighton's cell. Test calls come from here; it never gets a real follow-up text. */
@@ -43,7 +48,7 @@ export interface TextConfig {
   testNumbers: Set<string>;
   /** Never texted, even in full mode (owner test lines, MISSED_CALL_TEXT_DNC). */
   blocked: Set<string>;
-  /** If non-empty, only calls to these SCWS numbers (10-digit) get a text. Calls with no known called number are skipped. */
+  /** Dial-plan inbound lines, plus any MISSED_CALL_TEXT_LINES / _EXTRA. Calls to other numbers, or with no known called number, are skipped. */
   lines: Set<string>;
   waitMs: number;
   lookbackMs: number;
@@ -78,6 +83,50 @@ function num(raw: string | undefined, fallback: number, min = 0): number {
   return Number.isFinite(n) && n >= min ? n : fallback;
 }
 
+/** 10-digit numbers that use the inbound dial plan, plus optional env additions. */
+export function inboundTextLines(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const set = new Set<string>();
+  const add = (raw: string | null | undefined) => {
+    const d = digits10(raw);
+    if (d) set.add(d);
+  };
+  for (const number of Object.keys(TRACKING_SOURCES)) add(number);
+  for (const line of Object.values(PORTED_LINES)) add(line.number);
+  for (const part of (env.TWILIO_TRACKING_NUMBERS ?? '').split(/[,;]+/)) add(part);
+  for (const part of (env.MISSED_CALL_TEXT_LINES ?? '').split(/[,;]+/)) add(part);
+  for (const part of (env.MISSED_CALL_TEXT_LINES_EXTRA ?? '').split(/[,;]+/)) add(part);
+  return set;
+}
+
+/** How close a Mike leg may be to the inbound recording it followed. */
+export const MIKE_LINE_BEFORE_MS = 60_000;
+export const MIKE_LINE_AFTER_MS = 6 * 60_000;
+
+/**
+ * Called number for a Mike hang-up. receptionist_calls does not store it.
+ * Use the closest inbound recording for that caller in the handoff window.
+ */
+export function trackingNumberForCaller(
+  phone: string | null | undefined,
+  at: string,
+  recordings: Array<{ phone: string | null; at: string; calledNumber: string | null }>,
+): string | null {
+  const d = digits10(phone);
+  const t = Date.parse(at);
+  if (!d || !Number.isFinite(t)) return null;
+  let best: { number: string; dt: number } | null = null;
+  for (const row of recordings) {
+    if (digits10(row.phone) !== d) continue;
+    const rt = Date.parse(row.at);
+    if (!Number.isFinite(rt) || rt < t - MIKE_LINE_BEFORE_MS || rt > t + MIKE_LINE_AFTER_MS) continue;
+    const n = digits10(row.calledNumber);
+    if (!n) continue;
+    const dt = Math.abs(rt - t);
+    if (!best || dt < best.dt) best = { number: n, dt };
+  }
+  return best ? `+1${best.number}` : null;
+}
+
 export function textConfig(env: NodeJS.ProcessEnv = process.env): TextConfig {
   const testNumbers = numberSet(env.MISSED_CALL_TEXT_TEST_NUMBERS);
   const mode = truthy(env.MISSED_CALL_TEXT_ENABLED) ? 'full' : testNumbers.size ? 'test' : 'off';
@@ -91,8 +140,7 @@ export function textConfig(env: NodeJS.ProcessEnv = process.env): TextConfig {
     mode,
     testNumbers,
     blocked,
-    // MISSED_CALL_TEXT_LINES_EXTRA adds lines without rewriting the main (sensitive) list.
-    lines: new Set([...numberSet(env.MISSED_CALL_TEXT_LINES), ...numberSet(env.MISSED_CALL_TEXT_LINES_EXTRA)]),
+    lines: inboundTextLines(env),
     waitMs: num(env.MISSED_CALL_TEXT_WAIT_SECONDS, 60) * 1000,
     lookbackMs: num(env.MISSED_CALL_TEXT_LOOKBACK_HOURS, 12, 1) * 3600_000,
     dedupeMs: DAY_MS,
