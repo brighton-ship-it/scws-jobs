@@ -15,6 +15,7 @@ import {
   staffPhoneSet,
   textAllowedFor,
   textConfig,
+  trackingNumberForCaller,
   STOP_WORDS,
   START_WORDS,
   HELP_WORDS,
@@ -113,11 +114,14 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
       return r.data ?? [];
     } catch (e) { notes.push(`${label}: ${e instanceof Error ? e.message : 'error'}`); return [] as any[]; }
   };
-  const [mike, office, texts, activeJobs] = await Promise.all([
+  const [mike, office, texts, activeJobs, inboundLines] = await Promise.all([
     read('mike calls', db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, transcript, duration_sec, called_at').gte('called_at', since).limit(500)),
     read('office requests', db.from('booking_requests').select('vapi_call_id, phone, service_type, created_at').in('service_type', ['Callback', 'Emergency']).gte('created_at', new Date(now.getTime() - config.lookbackMs - 3600_000).toISOString()).limit(1000)),
     read('texts', db.from('missed_call_texts').select('missed_call_key, caller_phone, outcome, sent_at').gte('missed_at', new Date(now.getTime() - 3 * 86400_000).toISOString()).limit(2000)),
     read('active jobs', db.from('jobber_jobs').select('client_id, data').neq('data->>jobStatus', 'archived').limit(3000)),
+    // Mike rows have no called number. Match the inbound recording so a hang-up on Main
+    // is the same line as a ring hang-up. A miss here must not block texts that already know the line.
+    read('inbound lines', db.from('inbound_call_recordings').select('caller_number, tracking_number, started_at').gte('started_at', new Date(now.getTime() - config.lookbackMs - 10 * 60_000).toISOString()).limit(500)),
   ]);
   const clientIds = Array.from(new Set(activeJobs.map((r) => r.client_id).filter(Boolean)));
   const activeJobPhones = new Set<string>();
@@ -136,6 +140,7 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
     });
   }
   const officeRows = office.map((r) => ({ vapiCallId: r.vapi_call_id ?? null, phone: r.phone ?? null, at: r.created_at, serviceType: r.service_type ?? null }));
+  const lineRows = inboundLines.map((row) => ({ phone: row.caller_number ?? null, at: row.started_at, calledNumber: row.tracking_number ?? null }));
   for (const r of mike) {
     if (!r.called_at || isOwnNumber(r.phone)) continue;
     const call = { vapiCallId: r.vapi_call_id ?? null, phone: r.phone ?? null, at: r.called_at };
@@ -146,7 +151,7 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
       key: `vapi:${r.vapi_call_id || `${r.called_at}:${r.phone}`}`,
       at: r.called_at,
       phone: r.phone ? `+${String(r.phone).replace(/\D/g, '').replace(/^(?!1)(\d{10})$/, '1$1')}` : null,
-      calledNumber: null,
+      calledNumber: trackingNumberForCaller(r.phone, r.called_at, lineRows),
       trigger: turns === 0 || (Number(r.duration_sec) || 0) < 20 ? 'mike_hangup' : 'mike_unfinished',
       name: r.customer_name && !/^caller:/i.test(r.customer_name) ? r.customer_name : null,
       summary: r.summary ?? null,

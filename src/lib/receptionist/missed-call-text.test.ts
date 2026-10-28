@@ -1,11 +1,12 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, newestPerPhone, callerTurns, WORDING, STOP_WORDS, type TextCandidate, type TextContext } from './missed-call-text.ts';
+import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, newestPerPhone, callerTurns, trackingNumberForCaller, WORDING, STOP_WORDS, type TextCandidate, type TextContext } from './missed-call-text.ts';
+import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
 import { sendTextMessage, TextNotAllowedError, handleTextReply } from './missed-call-text-run.ts';
 
 const NOW = new Date('2026-10-19T17:00:00Z'); // Mon 10:00 AM PT
 const call = (over: Partial<TextCandidate> = {}): TextCandidate => ({
-  key: 'vapi:abc', at: '2026-10-19T16:55:00Z', phone: '+16195550142', calledNumber: null, trigger: 'mike_hangup',
+  key: 'vapi:abc', at: '2026-10-19T16:55:00Z', phone: '+16195550142', calledNumber: '+17604408520', trigger: 'mike_hangup',
   name: null, summary: 'Caller hung up after the greeting.', spam: false, vendor: false, ...over,
 });
 const ctx = (over: Partial<TextContext> = {}): TextContext => ({
@@ -128,18 +129,37 @@ t2('approved wording A is the default and the flag stays off by default', () => 
 
 describe('missed-call text line allowlist', () => {
   const env = { ...FULL, MISSED_CALL_TEXT_LINES: '7603312502,7602791262' } as NodeJS.ProcessEnv;
-  it('skips calls to lines not enabled (main Google Voice line) and unknown lines', () => {
+  it('texts every dial-plan line even when the env list is a subset', () => {
     const c = textConfig(env);
-    assert.equal(decideText(call({ calledNumber: '+17604408520', trigger: 'ring_hangup' }), ctx(), c, NOW, 'mobile').reason, 'line_not_enabled');
-    assert.equal(decideText(call({ calledNumber: null }), ctx(), c, NOW, 'mobile').reason, 'line_not_enabled');
+    for (const number of [...Object.keys(TRACKING_SOURCES), ...Object.values(PORTED_LINES).map((l) => l.number)]) {
+      const d = decideText(call({ calledNumber: number, trigger: 'ring_hangup' }), ctx(), c, NOW, 'mobile');
+      assert.notEqual((d as { reason?: string }).reason, 'line_not_enabled', number);
+    }
+    assert.equal(c.lines.has('7604408520'), true);
+    assert.equal(c.lines.has('7607895955'), true);
+    assert.equal(c.lines.has('7608256285'), true);
+    assert.equal(c.lines.has('9516510957'), true);
   });
-  it('allows calls to an enabled Twilio line', () => {
-    const d = decideText(call({ calledNumber: '+17603312502', trigger: 'ring_hangup' }), ctx(), textConfig(env), NOW, 'mobile');
-    assert.notEqual((d as any).reason, 'line_not_enabled');
+  it('skips numbers that are not on the dial plan and calls with no called number', () => {
+    const c = textConfig(env);
+    assert.equal(decideText(call({ calledNumber: '+17602763468', trigger: 'ring_hangup' }), ctx(), c, NOW, 'mobile').reason, 'line_not_enabled');
+    assert.equal(decideText(call({ calledNumber: null }), ctx(), c, NOW, 'mobile').reason, 'line_not_enabled');
   });
 });
 
-it('MISSED_CALL_TEXT_LINES_EXTRA adds to the line list', () => {
-  const c = textConfig({ MISSED_CALL_TEXT_LINES: '7603312502', MISSED_CALL_TEXT_LINES_EXTRA: '+17608250520,7608256285' } as unknown as NodeJS.ProcessEnv);
-  assert.equal(c.lines.size, 3);
+it('MISSED_CALL_TEXT_LINES_EXTRA adds a number that is not already on the dial plan', () => {
+  const c = textConfig({ MISSED_CALL_TEXT_LINES_EXTRA: '+17605550199' } as unknown as NodeJS.ProcessEnv);
+  assert.equal(c.lines.has('7605550199'), true);
+  assert.equal(c.lines.has('7604408520'), true);
+});
+
+it('a Mike hang-up keeps the inbound tracking number from the matching recording', () => {
+  const at = '2026-10-19T16:55:00Z';
+  const rows = [
+    { phone: '+16195550142', at: '2026-10-19T16:50:00Z', calledNumber: '+17603312502' },
+    { phone: '+16195550142', at: '2026-10-19T16:54:40Z', calledNumber: '+17604408520' },
+    { phone: '+17605550000', at: '2026-10-19T16:54:50Z', calledNumber: '+17607895955' },
+  ];
+  assert.equal(trackingNumberForCaller('+16195550142', at, rows), '+17604408520');
+  assert.equal(trackingNumberForCaller('+16195550142', '2026-10-19T18:00:00Z', rows), null);
 });
