@@ -1,8 +1,8 @@
 /**
  * Missed-call / hang-up text follow-up (CHIIRP-style), pure rules only.
  *
- * One text from SCWS to a caller whose call ended without a booking, a callback or an
- * emergency flag: they hung up while the line rang, hung up on Mike, or Mike didn't finish.
+ * One text from SCWS to every inbound caller who did not end up with a real booking,
+ * whether or not they reached Mike. A callback or emergency row is not a booking.
  * Replies go to the AI text conversation (text-agent.ts), which books with Mike's tools and
  * hands off to the office (Liz) when needed.
  *
@@ -16,9 +16,9 @@
 import { digits10 } from '../ads/call-dashboard.ts';
 import { isOwnNumber } from '../ads/real-leads.ts';
 import { staffLines } from '../ads/staff-lines.ts';
-import { hasWorkOnOrAfter, type OutreachAttempt } from '../ads/callbacks.ts';
+import { type OutreachAttempt } from '../ads/callbacks.ts';
 import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
-import { doNotCallText, matchesCollectionsHold, zonedParts, DEFAULT_HOLD_PHRASES } from './mike-callback.ts';
+import { doNotCallText, zonedParts, DEFAULT_HOLD_PHRASES } from './mike-callback.ts';
 
 /** Brighton's cell. Test calls come from here; it never gets a real follow-up text. */
 export const OWNER_TEST_NUMBERS = ['4083181171', '7603312502', '7604630493'];
@@ -31,7 +31,7 @@ export type TextTrigger = 'ring_hangup' | 'voicemail' | 'mike_hangup' | 'mike_un
 export type WordingOption = 'A' | 'B' | 'C';
 
 export interface TextCandidate {
-  /** Stable id for the call (recording sid, voice log key, or vapi call id). */
+  /** Stable id for the call (recording sid, voice log key, twilio parent sid, or vapi call id). */
   key: string;
   at: string;
   phone: string | null;
@@ -41,6 +41,8 @@ export interface TextCandidate {
   summary: string | null;
   spam: boolean;
   vendor: boolean;
+  /** Set when this candidate is a Mike call, so a booking row for that call can match. */
+  vapiCallId?: string | null;
 }
 
 export interface TextConfig {
@@ -189,11 +191,20 @@ export function textBody(trigger: TextTrigger, option: WordingOption): string {
   return trigger === 'mike_hangup' || trigger === 'mike_unfinished' ? w.cutoff : w.missed;
 }
 
+/** A booking_requests row, or a Jobber job/request already joined to a phone. */
+export interface BookingRow {
+  vapiCallId: string | null;
+  phone: string | null;
+  at: string;
+  serviceType: string | null;
+  kind?: 'booking_request' | 'jobber_job' | 'jobber_request';
+}
+
 export interface TextContext {
   laterInbound: Array<{ phone: string | null; at: string }>;
   voiceAttempts: OutreachAttempt[];
   work: Map<string, number[]>;
-  /** Phones on a client with an open (not archived) Jobber job: mid-job customers. */
+  /** Open Jobber-job phones. decideText does not skip on this. */
   activeJobPhones: Set<string>;
   unpaidPhones: Set<string>;
   holdPhones: Set<string>;
@@ -202,6 +213,8 @@ export interface TextContext {
   /** Earlier text rows (any outcome). */
   texts: Array<{ key: string; phone: string | null; outcome: string; sentAt: string | null }>;
   staffPhones: Set<string>;
+  /** Real-booking evidence. Callback and emergency rows are ignored. */
+  bookings: BookingRow[];
 }
 
 export type TextDecision =
@@ -210,20 +223,6 @@ export type TextDecision =
   | { action: 'skip'; reason: string };
 
 const NON_CUSTOMER = /wrong number|misdial|robocall|recorded message|automated (message|call)|press \d|this message is intended|survey|telemarket|solicit|job (application|opening)|looking for work|applying/i;
-
-function calledAgain(phone: string, afterMs: number, rows: Array<{ phone: string | null; at: string }>): boolean {
-  return rows.some((row) => {
-    const t = Date.parse(row.at);
-    return digits10(row.phone) === phone && Number.isFinite(t) && t > afterMs + SAME_CALL_MS;
-  });
-}
-
-function shopCalledBack(phone: string, afterMs: number, attempts: OutreachAttempt[]): boolean {
-  return attempts.some((row) => {
-    const t = Date.parse(row.at);
-    return digits10(row.phone) === phone && Number.isFinite(t) && t > afterMs;
-  });
-}
 
 export function isQuiet(date: Date, config: TextConfig): boolean {
   const h = zonedParts(date, config.timeZone).hour;
@@ -275,15 +274,9 @@ export function decideText(
   });
   if (recent) return { action: 'skip', reason: 'texted_24h' };
   if (ctx.dncPhones.has(phone) || doNotCallText(call.name, call.summary)) return { action: 'skip', reason: 'opted_out' };
-  const notes = ctx.holdNotes.filter((row) => !row.phone || digits10(row.phone) === phone).map((row) => row.text);
-  if (ctx.holdPhones.has(phone) || matchesCollectionsHold({ name: call.name, summary: call.summary, notes, phrases: config.holdPhrases })) {
-    return { action: 'skip', reason: 'hold' };
+  if (mikeCallFinished({ vapiCallId: call.vapiCallId ?? null, phone: call.phone, at: call.at }, ctx.bookings ?? [])) {
+    return { action: 'skip', reason: 'booked' };
   }
-  if (ctx.unpaidPhones.has(phone)) return { action: 'skip', reason: 'existing_customer_open_invoice' };
-  if (ctx.activeJobPhones.has(phone)) return { action: 'skip', reason: 'active_job' };
-  if (hasWorkOnOrAfter(call.phone, call.at, ctx.work)) return { action: 'skip', reason: 'jobber_work' };
-  if (calledAgain(phone, at, ctx.laterInbound)) return { action: 'skip', reason: 'called_again' };
-  if (shopCalledBack(phone, at, ctx.voiceAttempts)) return { action: 'skip', reason: 'shop_called_back' };
 
   const to = `+1${phone}`;
   const body = textBody(call.trigger, config.option);
@@ -316,19 +309,176 @@ export function staffPhoneSet(env: NodeJS.ProcessEnv = process.env): Set<string>
   return new Set(staffLines(env).map((l) => digits10(l.phone)).filter((p): p is string => !!p));
 }
 
-/** Mike calls: was the call finished (booked, callback or emergency logged)? */
+/**
+ * A booking_requests row counts only when it is a job or an assessment.
+ * Callback, emergency, phone inquiry, and "needs callback" rows do not.
+ */
+export function isRealBookingServiceType(serviceType: string | null | undefined): boolean {
+  const t = (serviceType || '').trim();
+  if (!t) return false;
+  if (/^(callback|emergency)$/i.test(t)) return false;
+  if (/phone inquiry|sms inquiry|^needs callback\b/i.test(t)) return false;
+  return /\bjob\b|assessment/i.test(t);
+}
+
+function bookingCounts(row: BookingRow): boolean {
+  if (row.kind === 'jobber_job' || row.kind === 'jobber_request') return true;
+  return isRealBookingServiceType(row.serviceType);
+}
+
+/**
+ * True only for a real booking: a job/assessment booking_requests row, or a Jobber
+ * job/request for that phone created after the call. Callback and emergency do not finish the call.
+ * Clock skew of two minutes still counts as this call.
+ */
 export function mikeCallFinished(
   call: { vapiCallId: string | null; phone: string | null; at: string },
-  officeRows: Array<{ vapiCallId: string | null; phone: string | null; at: string; serviceType: string | null }>,
+  rows: BookingRow[],
 ): boolean {
   const p = digits10(call.phone);
   const t = Date.parse(call.at);
-  return officeRows.some((row) => {
-    if (!/^(callback|emergency)$/i.test((row.serviceType || '').trim())) return false;
-    if (call.vapiCallId && row.vapiCallId === call.vapiCallId) return true;
+  return rows.some((row) => {
+    if (!bookingCounts(row)) return false;
+    if (call.vapiCallId && row.vapiCallId && row.vapiCallId === call.vapiCallId) return true;
     const rt = Date.parse(row.at);
-    return !!p && digits10(row.phone) === p && Number.isFinite(rt) && Number.isFinite(t) && rt >= t - 2 * 60_000 && rt <= t + 20 * 60_000;
+    return !!p && digits10(row.phone) === p && Number.isFinite(rt) && Number.isFinite(t) && rt >= t - 2 * 60_000;
   });
+}
+
+/** A shop leg is a real answer only at or above this. Shorter pickups are Google Voice or a hang-up. */
+export const SHOP_ANSWERED_MIN_SECONDS = 20;
+
+const OPEN_CALL = new Set(['queued', 'ringing', 'in-progress']);
+const MISSED_LEG = new Set(['no-answer', 'busy', 'failed', 'canceled', 'cancelled']);
+
+/** One Twilio call resource, parent or child. */
+export interface TwilioLeg {
+  sid: string;
+  parentSid: string | null;
+  from: string | null;
+  to: string | null;
+  direction: string;
+  status: string;
+  at: string | null;
+  durationSeconds: number | null;
+}
+
+export interface ClassifiedParent {
+  sid: string;
+  at: string;
+  phone: string | null;
+  /** Shop leg connected for at least SHOP_ANSWERED_MIN_SECONDS. Not a text candidate. */
+  shopAnswered: boolean;
+  candidate: TextCandidate | null;
+}
+
+export function parseTwilioLegs(payload: unknown): TwilioLeg[] {
+  const calls = payload && typeof payload === 'object' && Array.isArray((payload as { calls?: unknown }).calls)
+    ? (payload as { calls: unknown[] }).calls
+    : [];
+  const legs: TwilioLeg[] = [];
+  for (const raw of calls) {
+    const c = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null;
+    if (!c) continue;
+    const sid = typeof c.sid === 'string' ? c.sid : '';
+    if (!sid) continue;
+    const parent = typeof c.parent_call_sid === 'string' && c.parent_call_sid ? c.parent_call_sid : null;
+    const started = typeof c.start_time === 'string' ? c.start_time : typeof c.date_created === 'string' ? c.date_created : null;
+    const t = started ? Date.parse(started) : NaN;
+    const duration = c.duration == null || c.duration === '' ? null : Number(c.duration);
+    legs.push({
+      sid,
+      parentSid: parent,
+      from: typeof c.from === 'string' ? c.from : null,
+      to: typeof c.to === 'string' ? c.to : null,
+      direction: typeof c.direction === 'string' ? c.direction : '',
+      status: typeof c.status === 'string' ? c.status : '',
+      at: Number.isFinite(t) ? new Date(t).toISOString() : null,
+      durationSeconds: duration != null && Number.isFinite(duration) ? Math.round(duration) : null,
+    });
+  }
+  return legs;
+}
+
+function legMissed(leg: TwilioLeg): boolean {
+  if (MISSED_LEG.has(leg.status.toLowerCase())) return true;
+  return leg.durationSeconds === 0;
+}
+
+function mikeLeg(leg: TwilioLeg, mikeNumbers: Set<string>): boolean {
+  const to = digits10(leg.to);
+  return !!to && mikeNumbers.has(to);
+}
+
+/** Same caller within a few minutes: one inbound episode (parent plus the Mike row that followed). */
+export function sameTextEpisode(
+  a: { phone: string | null; at: string },
+  b: { phone: string | null; at: string },
+  windowMs = 6 * 60_000,
+): boolean {
+  const pa = digits10(a.phone);
+  const pb = digits10(b.phone);
+  const ta = Date.parse(a.at);
+  const tb = Date.parse(b.at);
+  return !!pa && pa === pb && Number.isFinite(ta) && Number.isFinite(tb) && Math.abs(ta - tb) <= windowMs;
+}
+
+/**
+ * Inbound parent calls to SCWS numbers.
+ * A shop leg counts as answered only when it connected for at least ~20s.
+ * Otherwise the parent is a candidate: ring_hangup when Mike never connected, mike_unfinished when he did.
+ * A still-open parent is left for the next run.
+ */
+export function classifyInboundParents(input: {
+  legs: TwilioLeg[];
+  lines: Set<string>;
+  mikeNumbers: Set<string>;
+  sinceMs?: number;
+}): ClassifiedParent[] {
+  const children = new Map<string, TwilioLeg[]>();
+  for (const leg of input.legs) {
+    if (!leg.parentSid || leg.parentSid === leg.sid) continue;
+    const list = children.get(leg.parentSid) ?? [];
+    list.push(leg);
+    children.set(leg.parentSid, list);
+  }
+  const out: ClassifiedParent[] = [];
+  for (const leg of input.legs) {
+    if (leg.parentSid) continue;
+    if (!leg.direction.toLowerCase().startsWith('inbound')) continue;
+    if (OPEN_CALL.has(leg.status.toLowerCase())) continue;
+    const line = digits10(leg.to);
+    if (!line || (input.lines.size > 0 && !input.lines.has(line))) continue;
+    if (!leg.at) continue;
+    const started = Date.parse(leg.at);
+    if (input.sinceMs != null && (!Number.isFinite(started) || started < input.sinceMs)) continue;
+    const kids = children.get(leg.sid) ?? [];
+    const shopAnswered = kids.some((child) => !mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 0) >= SHOP_ANSWERED_MIN_SECONDS);
+    const reachedMike = kids.some((child) => mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 1) > 0);
+    const phone = digits10(leg.from);
+    if (shopAnswered) {
+      out.push({ sid: leg.sid, at: leg.at, phone: leg.from, shopAnswered: true, candidate: null });
+      continue;
+    }
+    out.push({
+      sid: leg.sid,
+      at: leg.at,
+      phone: leg.from,
+      shopAnswered: false,
+      candidate: {
+        key: `twilio:${leg.sid}`,
+        at: leg.at,
+        phone: phone ? `+1${phone}` : leg.from,
+        calledNumber: `+1${line}`,
+        trigger: reachedMike ? 'mike_unfinished' : 'ring_hangup',
+        name: null,
+        summary: null,
+        spam: false,
+        vendor: false,
+      },
+    });
+  }
+  return out;
 }
 
 /** Caller lines in a Vapi transcript ("User: ..."). */
