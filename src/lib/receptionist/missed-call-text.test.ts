@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, newestPerPhone, callerTurns, trackingNumberForCaller, WORDING, STOP_WORDS, type TextCandidate, type TextContext } from './missed-call-text.ts';
+import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, newestPerPhone, callerTurns, trackingNumberForCaller, classifyInboundParents, parseTwilioLegs, WORDING, STOP_WORDS, type TextCandidate, type TextContext, type TwilioLeg } from './missed-call-text.ts';
 import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
 import { sendTextMessage, TextNotAllowedError, handleTextReply } from './missed-call-text-run.ts';
 
@@ -11,7 +11,7 @@ const call = (over: Partial<TextCandidate> = {}): TextCandidate => ({
 });
 const ctx = (over: Partial<TextContext> = {}): TextContext => ({
   laterInbound: [], voiceAttempts: [], work: new Map(), activeJobPhones: new Set(), unpaidPhones: new Set(),
-  holdPhones: new Set(), holdNotes: [], dncPhones: new Set(), texts: [], staffPhones: new Set(), ...over,
+  holdPhones: new Set(), holdNotes: [], dncPhones: new Set(), texts: [], staffPhones: new Set(), bookings: [], ...over,
 });
 const FULL = { MISSED_CALL_TEXT_ENABLED: 'true' } as NodeJS.ProcessEnv;
 
@@ -52,21 +52,21 @@ describe('decideText', () => {
     const ok = decideText(call({ key: 'vapi:new' }), ctx({ texts: [{ key: 'vapi:old', phone: '6195550142', outcome: 'sent', sentAt: '2026-10-18T16:00:00Z' }] }), f, NOW, 'mobile');
     assert.equal(ok.action, 'send');
   });
-  it('skips landlines, opted-out, active-job customers, spam, staff, holds and open invoices', () => {
+  it('skips landlines, opted-out, spam, staff, and toll-free numbers', () => {
     assert.equal((decideText(call(), ctx(), f, NOW, 'landline') as any).reason, 'not_mobile:landline');
     assert.equal((decideText(call(), ctx({ dncPhones: new Set(['6195550142']) }), f, NOW, 'mobile') as any).reason, 'opted_out');
-    assert.equal((decideText(call(), ctx({ activeJobPhones: new Set(['6195550142']) }), f, NOW, 'mobile') as any).reason, 'active_job');
     assert.equal((decideText(call({ spam: true }), ctx(), f, NOW, 'mobile') as any).reason, 'spam');
     assert.equal((decideText(call({ summary: 'A recorded message, press 1 to speak to an agent.' }), ctx(), f, NOW, 'mobile') as any).reason, 'spam');
     assert.equal((decideText(call(), ctx({ staffPhones: new Set(['6195550142']) }), f, NOW, 'mobile') as any).reason, 'own_number');
-    assert.equal((decideText(call(), ctx({ holdPhones: new Set(['6195550142']) }), f, NOW, 'mobile') as any).reason, 'hold');
-    assert.equal((decideText(call(), ctx({ unpaidPhones: new Set(['6195550142']) }), f, NOW, 'mobile') as any).reason, 'existing_customer_open_invoice');
     assert.equal((decideText(call({ phone: '+18005551212' }), ctx(), f, NOW, 'mobile') as any).reason, 'toll_free');
   });
-  it('skips when they called back, got Jobber work, or the shop called them', () => {
-    assert.equal((decideText(call(), ctx({ laterInbound: [{ phone: '6195550142', at: '2026-10-19T16:59:30Z' }] }), f, NOW, 'mobile') as any).reason, 'called_again');
-    assert.equal((decideText(call(), ctx({ work: new Map([['6195550142', [Date.parse('2026-10-19T16:58:00Z')]]]) }), f, NOW, 'mobile') as any).reason, 'jobber_work');
-    assert.equal((decideText(call(), ctx({ voiceAttempts: [{ at: '2026-10-19T16:57:00Z', phone: '6195550142', staff: 'Liz', durationSeconds: 30 }] }), f, NOW, 'mobile') as any).reason, 'shop_called_back');
+  it('texts callers with an open job, a hold, an open invoice, a later call, or a shop callback', () => {
+    assert.equal(decideText(call(), ctx({ activeJobPhones: new Set(['6195550142']) }), f, NOW, 'mobile').action, 'send');
+    assert.equal(decideText(call(), ctx({ holdPhones: new Set(['6195550142']) }), f, NOW, 'mobile').action, 'send');
+    assert.equal(decideText(call(), ctx({ unpaidPhones: new Set(['6195550142']) }), f, NOW, 'mobile').action, 'send');
+    assert.equal(decideText(call(), ctx({ laterInbound: [{ phone: '6195550142', at: '2026-10-19T16:59:30Z' }] }), f, NOW, 'mobile').action, 'send');
+    assert.equal(decideText(call(), ctx({ work: new Map([['6195550142', [Date.parse('2026-10-19T16:58:00Z')]]]) }), f, NOW, 'mobile').action, 'send');
+    assert.equal(decideText(call(), ctx({ voiceAttempts: [{ at: '2026-10-19T16:57:00Z', phone: '6195550142', staff: 'Liz', durationSeconds: 30 }] }), f, NOW, 'mobile').action, 'send');
   });
   it('waits a minute after the call, and holds texts overnight until 8 AM', () => {
     const soon = decideText(call({ at: '2026-10-19T16:59:30Z' }), ctx(), f, NOW, 'mobile');
@@ -92,12 +92,15 @@ describe('wording and helpers', () => {
     assert.equal(textBody('ring_hangup', 'A'), WORDING.A.missed);
     assert.equal(textBody('mike_unfinished', 'B'), WORDING.B.cutoff);
   });
-  it('Mike calls with a callback or emergency row count as finished', () => {
-    const rows = [{ vapiCallId: 'v1', phone: '16195550142', at: '2026-10-19T16:56:00Z', serviceType: 'Callback' }];
-    assert.equal(mikeCallFinished({ vapiCallId: 'v1', phone: null, at: '2026-10-19T16:55:00Z' }, rows), true);
-    assert.equal(mikeCallFinished({ vapiCallId: 'v2', phone: '+16195550142', at: '2026-10-19T16:55:00Z' }, rows), true);
-    assert.equal(mikeCallFinished({ vapiCallId: 'v2', phone: '+17605550000', at: '2026-10-19T16:55:00Z' }, rows), false);
-    assert.equal(mikeCallFinished({ vapiCallId: 'v3', phone: null, at: '2026-10-19T16:55:00Z' }, [{ ...rows[0], vapiCallId: 'v3', serviceType: 'Phone Inquiry' }]), false);
+  it('callback and emergency rows do not finish a Mike call; a job or assessment does', () => {
+    const callback = { vapiCallId: 'v1', phone: '16195550142', at: '2026-10-19T16:56:00Z', serviceType: 'Callback' };
+    assert.equal(mikeCallFinished({ vapiCallId: 'v1', phone: null, at: '2026-10-19T16:55:00Z' }, [callback]), false);
+    assert.equal(mikeCallFinished({ vapiCallId: 'v2', phone: '+16195550142', at: '2026-10-19T16:55:00Z' }, [callback]), false);
+    assert.equal(mikeCallFinished({ vapiCallId: 'v2', phone: '+16195550142', at: '2026-10-19T16:55:00Z' }, [{ ...callback, serviceType: 'Emergency' }]), false);
+    assert.equal(mikeCallFinished({ vapiCallId: 'v3', phone: null, at: '2026-10-19T16:55:00Z' }, [{ ...callback, vapiCallId: 'v3', serviceType: 'Phone Inquiry' }]), false);
+    assert.equal(mikeCallFinished({ vapiCallId: 'v1', phone: '+16195550142', at: '2026-10-19T16:55:00Z' }, [{ ...callback, serviceType: 'Job' }]), true);
+    assert.equal(mikeCallFinished({ vapiCallId: null, phone: '+16195550142', at: '2026-10-19T16:55:00Z' }, [{ ...callback, vapiCallId: null, serviceType: 'On-site assessment' }]), true);
+    assert.equal(mikeCallFinished({ vapiCallId: 'v2', phone: '+17605550000', at: '2026-10-19T16:55:00Z' }, [{ ...callback, serviceType: 'Job' }]), false);
   });
   it('newest call per phone; caller turns; STOP words', () => {
     const out = newestPerPhone([call({ key: 'a', at: '2026-10-19T16:00:00Z' }), call({ key: 'b', at: '2026-10-19T16:30:00Z' })]);
@@ -125,6 +128,86 @@ t2('approved wording A is the default and the flag stays off by default', () => 
   const c = tcA({} as any);
   assertA.equal(c.option, 'A');
   assertA.equal(c.mode, 'off');
+});
+
+describe('Brighton 10/29: text unless there was a real booking', () => {
+  const f = textConfig(FULL);
+  const MAIN = '+17604408520';
+  const SHOP = '+17602763468';
+  const MIKE = '+17604915348';
+  const CALLER = '+16195550142';
+  const lines = new Set(['7604408520']);
+  const mikeNumbers = new Set(['7604915348']);
+  const at = '2026-10-19T16:55:00Z';
+  const parent = (sid: string, durationSeconds: number): TwilioLeg => ({
+    sid, parentSid: null, from: CALLER, to: MAIN, direction: 'inbound', status: 'completed', at, durationSeconds,
+  });
+  const child = (sid: string, parentSid: string, to: string, durationSeconds: number, status = 'completed'): TwilioLeg => ({
+    sid, parentSid, from: MAIN, to, direction: 'outbound-dial', status, at, durationSeconds,
+  });
+  const one = (legs: TwilioLeg[]) => classifyInboundParents({ legs, lines, mikeNumbers })[0];
+
+  it('texts a 17s main-line hang-up before Mike', () => {
+    const fromJson = one(parseTwilioLegs({
+      calls: [{
+        sid: 'CA17', parent_call_sid: null, from: CALLER, to: MAIN, direction: 'inbound',
+        status: 'completed', start_time: 'Sun, 19 Oct 2026 16:55:00 +0000', duration: '17',
+      }],
+    }));
+    assert.equal(fromJson.shopAnswered, false);
+    assert.equal(fromJson.candidate?.trigger, 'ring_hangup');
+    const sent = decideText(fromJson.candidate!, ctx(), f, NOW, 'mobile');
+    assert.equal(sent.action, 'send');
+    if (sent.action === 'send') assert.match(sent.body, /Sorry we missed your call/);
+    const shopSeventeen = one([parent('CA17b', 17), child('CA17shop', 'CA17b', SHOP, 17)]);
+    assert.equal(shopSeventeen.candidate?.trigger, 'ring_hangup');
+    assert.equal(decideText(shopSeventeen.candidate!, ctx(), f, NOW, 'mobile').action, 'send');
+  });
+
+  it('texts when the shop leg only shows answered for 5 to 7 seconds', () => {
+    for (const seconds of [5, 6, 7]) {
+      const row = one([parent(`P${seconds}`, 40), child(`S${seconds}`, `P${seconds}`, SHOP, seconds)]);
+      assert.equal(row.shopAnswered, false, String(seconds));
+      assert.equal(row.candidate?.trigger, 'ring_hangup');
+      assert.equal(decideText(row.candidate!, ctx(), f, NOW, 'mobile').action, 'send');
+    }
+  });
+
+  it('texts a Mike call that only filed a callback request', () => {
+    const row = one([parent('CAm', 90), child('CAmike', 'CAm', MIKE, 70)]);
+    assert.equal(row.candidate?.trigger, 'mike_unfinished');
+    const callback = { vapiCallId: 'v-cb', phone: CALLER, at: '2026-10-19T16:56:00Z', serviceType: 'Callback', kind: 'booking_request' as const };
+    assert.equal(mikeCallFinished({ vapiCallId: 'v-cb', phone: CALLER, at }, [callback]), false);
+    const sent = decideText({ ...row.candidate!, vapiCallId: 'v-cb' }, ctx({ bookings: [callback] }), f, NOW, 'mobile');
+    assert.equal(sent.action, 'send');
+    if (sent.action === 'send') assert.match(sent.body, /cut off/);
+  });
+
+  it('skips a Mike call that ended in a real booking', () => {
+    const job = { vapiCallId: 'v-job', phone: CALLER, at: '2026-10-19T16:56:00Z', serviceType: 'Job', kind: 'booking_request' as const };
+    const assessment = { vapiCallId: null, phone: '6195550142', at: '2026-10-19T16:58:00Z', serviceType: 'Assessment', kind: 'booking_request' as const };
+    const jobberJob = { vapiCallId: null, phone: '6195550142', at: '2026-10-19T17:10:00Z', serviceType: null, kind: 'jobber_job' as const };
+    const jobberRequest = { vapiCallId: null, phone: CALLER, at: '2026-10-19T16:57:00Z', serviceType: null, kind: 'jobber_request' as const };
+    const callAt = { vapiCallId: 'v-job', phone: CALLER, at };
+    assert.equal(mikeCallFinished(callAt, [job]), true);
+    assert.equal(mikeCallFinished({ vapiCallId: null, phone: CALLER, at }, [assessment]), true);
+    assert.equal(mikeCallFinished({ vapiCallId: null, phone: CALLER, at }, [jobberJob]), true);
+    assert.equal(mikeCallFinished({ vapiCallId: null, phone: CALLER, at }, [jobberRequest]), true);
+    assert.equal(mikeCallFinished({ vapiCallId: null, phone: CALLER, at }, [{ ...jobberJob, at: '2026-10-19T12:00:00Z' }]), false);
+    const skipped = decideText(call({ vapiCallId: 'v-job' }), ctx({ bookings: [job] }), f, NOW, 'mobile');
+    assert.deepEqual(skipped, { action: 'skip', reason: 'booked' });
+  });
+
+  it('skips a shop leg that was answered for 99 seconds', () => {
+    const row = one([parent('CA99', 110), child('CA99shop', 'CA99', SHOP, 99)]);
+    assert.equal(row.shopAnswered, true);
+    assert.equal(row.candidate, null);
+    const boundary = one([parent('CA20', 40), child('CA20shop', 'CA20', SHOP, 20)]);
+    assert.equal(boundary.candidate, null);
+    const under = one([parent('CA19', 40), child('CA19shop', 'CA19', SHOP, 19)]);
+    assert.equal(under.candidate?.trigger, 'ring_hangup');
+    assert.equal(decideText(under.candidate!, ctx(), f, NOW, 'mobile').action, 'send');
+  });
 });
 
 describe('missed-call text line allowlist', () => {
