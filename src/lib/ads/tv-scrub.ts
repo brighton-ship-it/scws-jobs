@@ -3,7 +3,7 @@
  * so the API strips it server-side for ?view=tv (not just hidden in the page).
  */
 const PAYMENT_KEYS = new Set(['paid', 'cash', 'cashCount', 'paidClients', 'paidValue', 'multiplePaid', 'partPaid', 'balance', 'totalOwed', 'pastDue', 'notDue', 'collectionEmails', 'daysPastDue', 'invoiceNumber']);
-const DROP_KEYS = new Set(['invoiceFollowUp', 'gaps', 'sources', 'method', 'debug']);
+const DROP_KEYS = new Set(['invoiceFollowUp', 'gaps', 'sources', 'method', 'debug', 'missedCallTexts']);
 
 function scrub(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(scrub);

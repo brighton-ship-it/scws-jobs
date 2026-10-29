@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
+import { recordInboundSms } from '@/lib/receptionist/missed-call-inbound';
 import twilio from 'twilio';
 
 const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID?.trim();
@@ -147,6 +148,13 @@ export async function POST(req: NextRequest) {
     }, {
       onConflict: 'phone_number'
     });
+
+    // Attach a reply to a missed-call auto-text when one exists. Does not send.
+    try {
+      await recordInboundSms(supabase, { from, body, sid: messageSid || null, now: new Date() });
+    } catch (e) {
+      console.error('[missed-call-text] inbound log failed', e instanceof Error ? e.message : e);
+    }
     
     // If we have name and enough info, create a lead/callback request
     if (customerInfo.name && conversation.messages.length >= 4) {

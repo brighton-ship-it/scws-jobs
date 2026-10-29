@@ -11,6 +11,7 @@ import { EMPTY_TWIML, forwardMessagingServiceSid, mediaUrls, planForward } from 
 import { optionalServiceClient } from '@/lib/supabase/service';
 import { textConfig } from '@/lib/receptionist/missed-call-text';
 import { handleTextReply, sendOfficeText, type ReplyOutcome } from '@/lib/receptionist/missed-call-text-run';
+import { recordInboundSms } from '@/lib/receptionist/missed-call-inbound';
 import type { TextAgentTools } from '@/lib/receptionist/text-agent';
 import { handleLookupCustomer } from '@/lib/receptionist/lookup-customer';
 import { checkServiceArea } from '@/lib/receptionist/service-area';
@@ -48,14 +49,28 @@ export async function POST(req: NextRequest) {
   if (!valid) return new NextResponse('Forbidden', { status: 403 });
 
   const plan = planForward(params);
+  const now = new Date();
   // Missed-call text thread (flag off = skipped without any read). Liz still gets every text below.
   let ai: ReplyOutcome | null = null;
   if (textConfig().mode !== 'off' && params.From && plan.action === 'forward') {
     try {
       const db: any = optionalServiceClient();
-      if (db) ai = await handleTextReply({ db, from: params.From, body: params.Body || '', env: process.env, now: new Date(), tools: textAgentTools(db) });
+      if (db) ai = await handleTextReply({ db, from: params.From, body: params.Body || '', env: process.env, now, tools: textAgentTools(db) });
     } catch (e) { console.error('[missed-call-text] reply failed', e instanceof Error ? e.message : e); }
     if (ai?.handled && ai.label) plan.body = `[${ai.label}] ${plan.body}`.slice(0, 1500);
+  }
+  // When the text agent answers, it already stored this reply on the thread. Store it here
+  // only when that did not happen (flag off, thread closed, HELP, no model). Does not send.
+  if (plan.action === 'forward' && params.From && !ai?.handled) {
+    const text = (params.Body || '').trim();
+    const photos = mediaUrls(params).length;
+    const inbound = text || (photos ? `(${photos} photo${photos === 1 ? '' : 's'})` : '');
+    if (inbound) {
+      try {
+        const db: any = optionalServiceClient();
+        if (db) await recordInboundSms(db, { from: params.From, body: inbound, sid: params.MessageSid || null, now });
+      } catch (e) { console.error('[missed-call-text] inbound log failed', e instanceof Error ? e.message : e); }
+    }
   }
   const sent: Array<{ to: string; sid?: string; error?: string }> = [];
   if (plan.action === 'forward') {

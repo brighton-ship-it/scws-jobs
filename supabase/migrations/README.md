@@ -1,5 +1,9 @@
 # Supabase migrations
 
+## `20261029_missed_call_text_delivery.sql`
+
+Adds `delivery_status`, `delivery_error`, and `delivery_updated_at` on `missed_call_texts`, plus an index on `twilio_message_sid`. `/api/sms/status` (Twilio delivery receipt) and the call dashboard write them. Inbound replies are stored on the existing `thread` column by `/api/sms/forward` and `/api/sms/inbound`; that does not need this migration. Until the columns exist, the office dashboard still lists texts and replies, and delivery shows as Sent. Apply it in the SQL Editor. Undo with `20261029_missed_call_text_delivery_rollback.sql`.
+
 ## `20261024_ads_offline_dm_request_id.sql`
 
 Adds `ads_offline_conversions.dm_request_id` and copies it from `payload.dm_request_id` where the column is still empty. The offline cron writes the column on each save. Until this is applied, that upsert drops the column, logs a WARNING, and keeps the id in `payload`. Apply it in the SQL Editor. The app does not run this file.

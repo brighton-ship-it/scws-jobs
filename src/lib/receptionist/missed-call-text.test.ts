@@ -37,6 +37,23 @@ describe('missed-call text config', () => {
     await assert.rejects(sendTextMessage({ to: '+16195550142', body: 'x' }, {} as NodeJS.ProcessEnv, fetchImpl), TextNotAllowedError);
     assert.equal(called, false);
   });
+  it('send posts one message and does not add a status callback', async () => {
+    let method = '';
+    let body = '';
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      method = init?.method || 'GET';
+      body = String(init?.body || '');
+      return new Response(JSON.stringify({ sid: 'SM1', status: 'queued' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const sent = await sendTextMessage({ to: '+16195550142', body: 'Hi' }, { ...FULL, TWILIO_ACCOUNT_SID: 'AC', TWILIO_AUTH_TOKEN: 'tok' }, fetchImpl);
+    assert.equal(method, 'POST');
+    assert.equal(sent.sid, 'SM1');
+    assert.equal(sent.status, 'queued');
+    const keys: string[] = [];
+    new URLSearchParams(body).forEach((_value, key) => keys.push(key));
+    keys.sort();
+    assert.deepEqual(keys, ['Body', 'MessagingServiceSid', 'To']);
+  });
 });
 
 describe('decideText', () => {

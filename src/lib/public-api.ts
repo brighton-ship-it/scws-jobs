@@ -31,6 +31,8 @@ const PUBLIC_API_RULES: PublicApiRule[] = [
   { method: 'POST', path: '/api/sms/collections-inbound', match: 'exact' },
   // Signed by Twilio (route verifies X-Twilio-Signature).
   { method: 'POST', path: '/api/sms/forward', match: 'exact' },
+  // Carrier delivery receipts for missed-call texts. Route verifies X-Twilio-Signature and does not send.
+  { method: 'POST', path: '/api/sms/status', match: 'exact' },
   { method: 'POST', path: '/api/calls/webhook', match: 'exact' },
   { method: 'POST', path: '/api/calls/status', match: 'exact' },
   // Recorded inbound line (Twilio-signed; routes validate X-Twilio-Signature)

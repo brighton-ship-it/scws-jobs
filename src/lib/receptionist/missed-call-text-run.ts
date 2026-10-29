@@ -125,7 +125,7 @@ export async function sendTextMessage(
   input: { to: string; body: string },
   env: NodeJS.ProcessEnv,
   fetchImpl: typeof fetch = fetch,
-): Promise<{ sid: string }> {
+): Promise<{ sid: string; status: string | null }> {
   const config = textConfig(env);
   if (!textAllowedFor(input.to, config)) throw new TextNotAllowedError(input.to);
   const auth = twilioAuth(env);
@@ -139,7 +139,7 @@ export async function sendTextMessage(
   });
   const data = (await res.json().catch(() => ({}))) as any;
   if (!res.ok || !data?.sid) throw new Error(`twilio_${data?.code ?? res.status}`);
-  return { sid: data.sid };
+  return { sid: data.sid, status: typeof data.status === 'string' && data.status ? data.status : null };
 }
 
 /** Office SMS (Liz by default, same targets as inbound-text forwarding). Not gated: it goes to staff only. */
@@ -339,10 +339,7 @@ export async function runMissedCallTextPass(db: any, env: NodeJS.ProcessEnv, now
     budget -= 1;
     try {
       const sent = await sendTextMessage({ to: decision.to, body: decision.body }, env, fetchImpl);
-      await db.from('missed_call_texts').update({
-        outcome: 'sent', sent_at: new Date().toISOString(), twilio_message_sid: sent.sid, thread_status: 'open',
-        thread: [{ role: 'assistant', content: decision.body, at: new Date().toISOString() }], updated_at: new Date().toISOString(),
-      }).eq('id', claimed);
+      await markTextSent(db, claimed, sent, decision.body);
       summary.sent += 1;
       snap.ctx.texts.push({ key: call.key, phone: decision.to, outcome: 'sent', sentAt: now.toISOString() });
     } catch (e) {
@@ -352,6 +349,21 @@ export async function runMissedCallTextPass(db: any, env: NodeJS.ProcessEnv, now
     }
   }
   return summary;
+}
+
+/** Record the Twilio accept. Falls back if the delivery columns are not in this database yet. */
+async function markTextSent(db: any, id: string, sent: { sid: string; status: string | null }, body: string): Promise<void> {
+  const at = new Date().toISOString();
+  const base = {
+    outcome: 'sent', sent_at: at, twilio_message_sid: sent.sid, thread_status: 'open',
+    thread: [{ role: 'assistant', content: body, at }], updated_at: at,
+  };
+  const upd = await db.from('missed_call_texts').update({
+    ...base, delivery_status: sent.status || 'queued', delivery_updated_at: at,
+  }).eq('id', id);
+  if (upd?.error && /delivery_status|delivery_updated_at/i.test(String(upd.error.message || ''))) {
+    await db.from('missed_call_texts').update(base).eq('id', id);
+  }
 }
 
 async function saveRow(db: any, call: TextCandidate, patch: Record<string, unknown>, claim = false): Promise<string | null> {
