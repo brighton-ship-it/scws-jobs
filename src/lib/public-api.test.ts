@@ -54,6 +54,12 @@ describe('isPublicApiRoute', () => {
     assert.equal(isPublicApiRoute('POST', '/api/collections/sms-batch/extra'), false);
   });
 
+  it('lets the missed-call delivery receipt past middleware (route still requires a Twilio signature)', () => {
+    assert.equal(isPublicApiRoute('POST', '/api/sms/status'), true);
+    assert.equal(isPublicApiRoute('GET', '/api/sms/status'), false);
+    assert.equal(isPublicApiRoute('POST', '/api/sms/status/extra'), false);
+  });
+
   it('lets inbound leg and AMD callbacks past middleware (routes still require a Twilio signature)', () => {
     assert.equal(isPublicApiRoute('POST', '/api/calls/inbound/leg'), true);
     assert.equal(isPublicApiRoute('POST', '/api/calls/inbound/amd'), true);

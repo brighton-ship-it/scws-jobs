@@ -220,6 +220,8 @@ export interface Dashboard {
   needsCallback?: import('./callbacks.ts').NeedsCallbackView | null;
   /** Additive. Unpaid Jobber invoice clients to collect. Past-due clients are listed even with no inbound call. */
   invoiceFollowUp?: import('./callbacks.ts').NeedsCallbackView | null;
+  /** Additive. Missed-call auto-texts, replies, and text bookings for the selected range. Omitted on the shop TV. */
+  missedCallTexts?: import('./missed-call-text-feed.ts').MissedCallTextView | null;
 }
 
 export interface CallLogRow {

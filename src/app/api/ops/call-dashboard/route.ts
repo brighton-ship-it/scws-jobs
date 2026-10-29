@@ -26,6 +26,7 @@ import { callbackVapiIds, dropBookedByMike, mikeOutreachAttempts, mikeStatusLabe
 import { loadRecentAttempts } from '@/lib/receptionist/mike-callback-run';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
+import { loadMissedCallTextView } from '@/lib/ads/missed-call-text-data';
 
 /** Calls kept in the feed: enough for ~14 days so older tracking-line calls show who answered. */
 const FEED_ROWS = 500;
@@ -52,6 +53,12 @@ export async function GET(request: NextRequest) {
     const since = new Date(Date.now() - 95 * 86400_000).toISOString();
     const nowDash = new Date();
     const fromMs = Math.max(rangeStart(range, nowDash).getTime(), Date.parse(DASH_FLOOR_ISO));
+    const textsP = request.nextUrl.searchParams.get('view') === 'tv'
+      ? Promise.resolve(null)
+      : loadMissedCallTextView(db, new Date(fromMs).toISOString()).catch((e: unknown) => ({
+        view: null,
+        note: `missed-call texts: ${e instanceof Error ? e.message : 'error'}`,
+      }));
     const liveOutP = unstable_cache(
       () => loadLiveOutbound(new Date(fromMs).toISOString()),
       ['live-outbound-v1', new Date(fromMs).toISOString().slice(0, 10)],
@@ -363,6 +370,11 @@ export async function GET(request: NextRequest) {
     dropStaleFields(dash);
     dash.gaps.push('Invoice follow-up calls are outbound Google Voice calls from Liz (619-320-8264), Shanicey (442-227-2898), and Brighton (619-259-0410), matched to the customer phone or Jobber client after the invoice was issued. The Voice audit log starts in early October 2026, so earlier calls are not in it.');
     dash.gaps.push(...notes);
+    const texts = await textsP;
+    if (texts) {
+      dash.missedCallTexts = texts.view;
+      if (texts.note) dash.gaps.push(texts.note);
+    }
     const ms = await mirrorState();
     const payload = { ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) };
     // TV mode may be on a shop screen: no collections or payment info leaves the server.

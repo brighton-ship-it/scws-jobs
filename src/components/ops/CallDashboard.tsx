@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
 import { DirectMailCard } from './DirectMailCard';
+import { MissedCallTextsCard } from './MissedCallTexts';
 const SECTIONS = ['today', 'sales', 'ads', 'collections'] as const;
 import {
   CallsSpendChart, Funnel, Gauge, Sparkline, WeeklyBars, WeeklyCashBars, compactUsd, mult, palette, usd,
@@ -989,7 +990,7 @@ export function CallDashboardPage() {
           <HeadlineKpis data={data} rangeLabel={rangeLabel} moneyLabel={moneyLabel} />
 
           <section className="space-y-4">
-            <SectionHead id="today" title="Calls and leads" hint={`Today’s lines, callbacks still open, and the call list · ${rangeLabel}.`} />
+            <SectionHead id="today" title="Calls and leads" hint={`Today’s lines, callbacks still open, missed-call texts, and the call list · ${rangeLabel}.`} />
             <div className="grid grid-cols-1 gap-3 min-[520px]:grid-cols-2 lg:grid-cols-4">
               <Tile label="Calls today" value={today ? String(today.total) : '—'} sub={today ? `${today.answered} answered · ${today.forwardedAi} to Mike · all incoming lines` : 'all incoming'} />
               <Tile label="Missed today" value={today ? String(today.missed) : '—'} sub="missed or voicemail, all lines" tone={today && today.missed > 0 ? 'alert' : 'plain'} />
@@ -1002,6 +1003,7 @@ export function CallDashboardPage() {
               <div className="min-w-0 lg:col-span-5"><NeedsCallbackCard view={nc} rangeLabel={rangeLabel} /></div>
               <div className="min-w-0 lg:col-span-7"><CallsCard feed={data.callFeed} recorded={recorded} focusSid={params?.get('call')} /></div>
             </div>
+            <MissedCallTextsCard view={data.missedCallTexts ?? null} rangeLabel={rangeLabel} />
           </section>
 
           <section className="space-y-4">
