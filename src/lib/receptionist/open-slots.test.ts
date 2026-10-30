@@ -1085,3 +1085,28 @@ describe('tech days off (RECEPTIONIST_TECH_DAYS_OFF)', () => {
     assert.ok(pto[0] && !pto[0].startAt.startsWith('2026-10-30'));
   });
 });
+
+describe('time-off visits (QA #261)', () => {
+  const now = new Date('2026-10-30T15:00:00Z'); // Fri 8 AM PT
+  const base = { technicianId: 'k', technicianName: 'Colton Hagler', env: {} as unknown as NodeJS.ProcessEnv, allowWeekend: false, maxSlots: 4, now };
+  it('a timed "Holiday Ranch" visit keeps the rest of the day open', async () => {
+    const { computeOpenSlots, isTimeOffVisit } = await import('./open-slots.ts');
+    const visit = { id: 'h', startAt: '2026-10-30T16:00:00Z', endAt: '2026-10-30T18:00:00Z', allDay: false, title: 'Holiday Ranch well service', technicianIds: ['k'], technicianNames: ['Colton Hagler'] } as any;
+    assert.equal(isTimeOffVisit(visit), false);
+    assert.equal(isTimeOffVisit({ ...visit, title: 'Pump unavailable - order part' }), false);
+    assert.equal(isTimeOffVisit({ ...visit, title: 'Sick smell water' }), false);
+    const slots = computeOpenSlots({ ...base, occupied: [visit] });
+    assert.ok(slots.some((slot) => slot.startAt.startsWith('2026-10-30')));
+  });
+  it('an all-day PTO visit closes the day', async () => {
+    const { computeOpenSlots } = await import('./open-slots.ts');
+    const visit = { id: 'p', startAt: '2026-10-30T07:00:00Z', endAt: '2026-10-31T06:59:59Z', allDay: true, title: 'PTO', technicianIds: ['k'], technicianNames: ['Colton Hagler'] } as any;
+    const slots = computeOpenSlots({ ...base, occupied: [visit] });
+    assert.ok(slots.length > 0 && slots.every((slot) => !slot.startAt.startsWith('2026-10-30')));
+  });
+  it('a reversed days-off range is ignored, not collapsed to its start', async () => {
+    const { techDaysOff } = await import('./open-slots.ts');
+    const days = techDaysOff({ RECEPTIONIST_TECH_DAYS_OFF: 'Chris Glass:2026-11-02..2026-10-30' } as unknown as NodeJS.ProcessEnv);
+    assert.equal(days.get('chris glass')?.size ?? 0, 0);
+  });
+});

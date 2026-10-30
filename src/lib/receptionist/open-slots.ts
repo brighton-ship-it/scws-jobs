@@ -391,7 +391,11 @@ export function techDaysOff(env: NodeJS.ProcessEnv = process.env): Map<string, S
     for (const part of entry.slice(idx + 1).split(',')) {
       const [a, b] = part.split('..').map((x) => x.trim());
       if (!/^\d{4}-\d{2}-\d{2}$/.test(a || '')) continue;
-      if (b && /^\d{4}-\d{2}-\d{2}$/.test(b) && b >= a) {
+      if (b !== undefined) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(b) || b < a) {
+          console.warn(`[Receptionist] RECEPTIONIST_TECH_DAYS_OFF: ignoring bad range "${part.trim()}" for ${name}`);
+          continue;
+        }
         const cur = new Date(`${a}T12:00:00Z`);
         for (let n = 0; n < 62 && cur.toISOString().slice(0, 10) <= b; n++) {
           days.add(cur.toISOString().slice(0, 10));
@@ -483,10 +487,15 @@ function stopWeight(visit: OccupiedVisit): number {
   return classifyVisit(visit) === 'other' ? 2 : 1;
 }
 
-const TIME_OFF_RE = /\b(pto|time[- ]?off|day[- ]?off|days[- ]?off|vacation|sick|out of office|ooo|holiday|unavailable|glamis)\b/i;
+const TIME_OFF_RE = /\b(?:pto|time[- ]off|days?[- ]off|vacation|out of office|ooo|glamis)\b/i;
 
-/** A visit titled as time off (PTO, day off, vacation, …) closes the whole day. */
-export function isTimeOffVisit(visit: Pick<OccupiedVisit, 'title' | 'jobTitle'>): boolean {
+/**
+ * An ALL-DAY visit titled as time off (PTO, day off, vacation, OOO, Glamis) closes the
+ * whole day. Timed visits never match: "Holiday Ranch well service" or "Pump unavailable"
+ * are real jobs and must keep the rest of the day open.
+ */
+export function isTimeOffVisit(visit: Pick<OccupiedVisit, 'title' | 'jobTitle' | 'allDay'>): boolean {
+  if (!visit.allDay) return false;
   return [visit.title, visit.jobTitle].some((text) => text && TIME_OFF_RE.test(text));
 }
 
