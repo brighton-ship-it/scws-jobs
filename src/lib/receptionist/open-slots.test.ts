@@ -1058,3 +1058,30 @@ describe('Jeremiah Biliunas weekday and weekend pool', () => {
     assert.equal(noWeekend.openSlots[0].technicianId, 'user-cowin');
   });
 });
+
+describe('tech days off (RECEPTIONIST_TECH_DAYS_OFF)', () => {
+  const env = { RECEPTIONIST_TECH_DAYS_OFF: 'Chris Glass:2026-10-30..2026-11-01; Haze Tarbell:2026-10-30' } as unknown as NodeJS.ProcessEnv;
+  it('parses ranges and single days', async () => {
+    const { techIsOffOn } = await import('./open-slots.ts');
+    assert.equal(techIsOffOn('Chris Glass', '2026-10-31', env), true);
+    assert.equal(techIsOffOn('Chris Glass', '2026-11-02', env), false);
+    assert.equal(techIsOffOn('Haze Tarbell', '2026-10-30', env), true);
+    assert.equal(techIsOffOn('Cowin', '2026-10-30', env), false);
+  });
+  it('isVisitDayAllowed rejects a day off (Fri 10/30 4 PM PT)', async () => {
+    const { isVisitDayAllowed } = await import('./open-slots.ts');
+    assert.equal(isVisitDayAllowed('2026-10-30T23:00:00Z', 'Chris Glass', env), false);
+    assert.equal(isVisitDayAllowed('2026-10-30T23:00:00Z', 'Colton Hagler', env), true);
+  });
+  it('computeOpenSlots skips days off and time-off visits', async () => {
+    const { computeOpenSlots } = await import('./open-slots.ts');
+    const now = new Date('2026-10-30T15:00:00Z');
+    const off = computeOpenSlots({ occupied: [], now, technicianId: 'c', technicianName: 'Chris Glass', env, allowWeekend: false, maxSlots: 1 });
+    assert.ok(off[0] && !off[0].startAt.startsWith('2026-10-30'));
+    const pto = computeOpenSlots({
+      occupied: [{ id: 'v', startAt: '2026-10-30T07:00:00Z', endAt: '2026-10-31T06:59:59Z', allDay: true, title: 'PTO - Glamis', technicianIds: ['k'], technicianNames: ['Colton Hagler'] } as any],
+      now, technicianId: 'k', technicianName: 'Colton Hagler', env: {} as unknown as NodeJS.ProcessEnv, allowWeekend: false, maxSlots: 1,
+    });
+    assert.ok(pto[0] && !pto[0].startAt.startsWith('2026-10-30'));
+  });
+});
