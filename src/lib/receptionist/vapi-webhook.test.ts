@@ -277,6 +277,21 @@ describe('caller urgency', () => {
     }), false);
   });
 
+  it('treats pressure completely gone plus today as urgent, same as no water', () => {
+    assert.equal(isCallerUrgent({
+      structuredUrgency: 'normal',
+      transcript: 'AI: What is going on?\nUser: The pressure is completely gone. I need someone today.',
+      messages: [
+        { role: 'bot', message: 'What is going on with the well?' },
+        { role: 'user', message: 'The pressure is completely gone. I need someone today.' },
+      ],
+    }), true);
+    assert.equal(isCallerUrgent({
+      structuredUrgency: 'normal',
+      messages: [{ role: 'user', message: 'Pressure is a little low. Next week is fine.' }],
+    }), false);
+  });
+
   it('flags urgency from the caller\'s own words', () => {
     assert.equal(isCallerUrgent({
       structuredUrgency: 'normal',

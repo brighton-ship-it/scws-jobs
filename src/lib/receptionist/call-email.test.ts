@@ -64,6 +64,19 @@ describe('one email per call: outcome and subject', () => {
     assert.equal(em.kind, 'emergency');
   });
 
+  it('a booked lost-pressure call that wanted help today is an emergency, same as no water', () => {
+    const outcome = extractCallOutcome(calls([
+      'c8',
+      'book_job',
+      { callerName: 'Axel King', phone: '7605550102', notes: 'Pressure completely gone. Needs help today.', address: '1 Well Rd', city: 'Ramona' },
+      bookResult,
+    ]));
+    assert.equal(outcome.booked, true);
+    assert.equal(outcome.emergency, true);
+    assert.equal(outcome.kind, 'booked');
+    assert.match(buildCallEmail({ outcome }).subject, /EMERGENCY \(booked/);
+  });
+
   it('weekend emergency result with no flag tool still counts as emergency', () => {
     const outcome = extractCallOutcome(calls(['c5', 'book_job', { callerName: 'Bo', phone: '7605550101' }, { booked: false, weekendEmergency: true }]));
     assert.equal(outcome.kind, 'emergency');
