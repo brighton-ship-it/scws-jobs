@@ -38,6 +38,12 @@ describe('handleLookupCustomer', () => {
     assert.equal(result.addressOnFile?.full, '57174 Highway 371, Anza');
     assert.notEqual(result.city?.toLowerCase(), 'scala');
     assert.match(result.addressRule || '', /never use the caller's name as the town/i);
+    assert.match(result.addressRule || '', /even for an existing customer/i);
+    assert.match(result.addressRule || '', /street address and the city/i);
+    assert.match(result.addressRule || '', /do not assume the city from the line they called/i);
+    assert.match(result.mikeRules || '', /same path as no water/i);
+    assert.match(result.mikeRules || '', /Say only this exact line/);
+    assert.match(result.mikeRules || '', /even for an existing customer/i);
     assert.match(seen[0], /properties/);
     assert.match(seen[0], /billingAddress/);
   });
@@ -64,6 +70,7 @@ describe('handleLookupCustomer', () => {
   it('requires an exact 10-digit phone match', async () => {
     const { result } = await handleLookupCustomer('7605559999', { accessToken: 't', fetchFn: mockClients([brighton]).fetchFn });
     assert.equal(result.found, false);
+    assert.match(result.mikeRules || '', /Spanish speaker \(HARD RULE\)/);
   });
 
   it('returns the property town when the billing city is different (David Garcia, 10/14)', async () => {

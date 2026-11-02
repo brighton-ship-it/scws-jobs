@@ -13,7 +13,14 @@ import { buildCallEmail, extractCallOutcome } from '@/lib/receptionist/call-emai
 import { deliverMikeCallEmail } from '@/lib/phone-calls/missed-alert';
 import { diversionNumbers, jobberClientLine, leadSourceLine, resolveLeadSource, vapiAnsweredNumber, type RecordingHint } from '@/lib/receptionist/lead-source';
 import { formatDurationLabel, resolveCallDurationSec } from '@/lib/receptionist/call-duration';
-import { isCallerUrgent } from '@/lib/receptionist/caller-urgency';
+import { callerUtteranceText, isCallerUrgent } from '@/lib/receptionist/caller-urgency';
+import {
+  callerNeedsSpanish,
+  checkServiceAddressConfirmation,
+  isSameAsNoWaterEmergency,
+  spanishSpeechResult,
+  withSpanishSpeakerFlag,
+} from '@/lib/receptionist/mike-call-fixes';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
 import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
 import { callCustomerPhone, parseVapiServerTools, vapiCallId, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
@@ -299,11 +306,13 @@ export async function POST(request: NextRequest) {
 
     // Urgency keywords come from the caller's lines, not Sarah's questions.
     const rawMessages = artifact.messages || message.messages || call.messages || [];
+    const callerSaid = callerUtteranceText(transcript, rawMessages);
+    const spanishCaller = callerNeedsSpanish(callerSaid);
     const isUrgent = isCallerUrgent({
       structuredUrgency: urgency,
       transcript,
       messages: rawMessages,
-    });
+    }) || isSameAsNoWaterEmergency(callerSaid);
 
     // Log only. Does not text, dial, read the callback flag, or call the callback cron.
     const missedService = buildMissedServiceFlag({
@@ -354,7 +363,12 @@ export async function POST(request: NextRequest) {
       status: 'pending',
       priority: isUrgent ? 'urgent' : 'normal',
       called_at: startedAt || new Date().toISOString(),
-      ...(missedService.flag ? { notes: missedService.notes, needs_callback: true } : {}),
+      ...((missedService.flag || spanishCaller)
+        ? {
+            notes: [missedService.flag ? missedService.notes : '', spanishCaller ? 'Spanish speaker' : ''].filter(Boolean).join('\n'),
+            needs_callback: true,
+          }
+        : {}),
     }, true);
 
     if (callError) {
@@ -370,9 +384,11 @@ export async function POST(request: NextRequest) {
       const notesText = summary 
         ? `📞 Mike: ${summary}` 
         : `📞 Call from ${customerName || formatPhone(phone)} - ${serviceNeeded || 'Phone inquiry'}`;
-      const bookingNotes = missedService.flag
-        ? `${missedService.bookingNotesPrefix}\n${notesText}`
-        : notesText;
+      const bookingNotes = [
+        spanishCaller ? 'Spanish speaker' : '',
+        missedService.flag ? missedService.bookingNotesPrefix : '',
+        notesText,
+      ].filter(Boolean).join('\n');
       
       await supabase.from('booking_requests').insert({
         service_type: missedService.flag ? missedService.serviceType : (serviceNeeded || 'Phone Inquiry'),
@@ -490,6 +506,10 @@ export async function POST(request: NextRequest) {
       } catch (rowErr) {
         console.log('[Receptionist] Tool-row outcome lookup skipped:', rowErr);
       }
+    }
+    if (isSameAsNoWaterEmergency(callerSaid)) {
+      outcome.emergency = true;
+      outcome.kind = outcome.booked ? 'booked' : 'emergency';
     }
     // Where the lead came from: the dialed number (SIP Diversion) plus any Twilio
     // tracking-line recording for this caller just before Mike answered.
@@ -674,9 +694,25 @@ async function handleVapiTools(body: any) {
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
     const params = call.params || {};
+    call.params = params;
+    const callerText = consentTurns.filter((turn) => turn.role === 'user').map((turn) => turn.text).join('\n');
+    const spanish = callerNeedsSpanish(callerText);
     console.log(`[Receptionist] Function call: ${call.name}${testCall ? ' (test call)' : ''}`, JSON.stringify(redactToolLog(params)));
-    // Consent gate runs before test simulation so test calls exercise it too.
+    // Spanish, address, and consent gates run before test simulation so test calls exercise them too.
+    if (spanish && call.name !== 'createCallback') {
+      executed[i] = { id: call.id, body: { result: spanishSpeechResult() } };
+      continue;
+    }
+    if (spanish && call.name === 'createCallback') {
+      Object.assign(params, withSpanishSpeakerFlag(params));
+    }
     if (BOOK_TOOL_NAMES.has(call.name)) {
+      const address = checkServiceAddressConfirmation(params, consentTurns);
+      if (!address.ok) {
+        console.warn(`[Receptionist] book refused (address)${testCall ? ' (test call)' : ''}`);
+        executed[i] = { id: call.id, body: { result: address.result } };
+        continue;
+      }
       const consent = checkBookingConsent(params, consentTurns);
       if (!consent.ok) {
         console.warn(`[Receptionist] book refused (${consent.code})${testCall ? ' (test call)' : ''}`);
@@ -684,9 +720,20 @@ async function handleVapiTools(body: any) {
         continue;
       }
     }
+    if (isSameAsNoWaterEmergency(callerText) || isSameAsNoWaterEmergency(String(params.notes || params.reason || ''))) {
+      params.urgency = 'emergency';
+      params.needNow = true;
+      params.notes = [params.notes, callerText].filter(Boolean).join('\n');
+    }
     // Test line: side-effect tools are simulated (no Jobber, no booking row, no alert).
     const simulated = testCall ? testToolResult(call.name, params) : null;
-    if (simulated) { executed[i] = { id: call.id, body: simulated }; continue; }
+    if (simulated) {
+      if (spanish && call.name === 'createCallback' && simulated.result && typeof simulated.result === 'object') {
+        simulated.result = spanishSpeechResult(simulated.result as Record<string, unknown>);
+      }
+      executed[i] = { id: call.id, body: simulated };
+      continue;
+    }
     if (isOfficeAlertTool(call.name)) officeIndexes.push(i);
   }
 
@@ -711,7 +758,12 @@ async function handleVapiTools(body: any) {
         },
       });
       officeIndexes.forEach((index, offset) => {
-        executed[index] = outcomes[offset];
+        const outcome = outcomes[offset];
+        const officeCall = calls[index];
+        if (officeCall.name === 'createCallback' && officeCall.params?.spanishSpeaker === true && outcome?.body?.result && typeof outcome.body.result === 'object') {
+          outcome.body.result = spanishSpeechResult(outcome.body.result as Record<string, unknown>);
+        }
+        executed[index] = outcome;
       });
     } catch (error: any) {
       console.error('Office alert batch failed:', error);

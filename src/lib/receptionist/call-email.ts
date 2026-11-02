@@ -8,6 +8,7 @@
  * emergency/callback if the end-of-call report never arrives.
  */
 import { formatPhoneDisplay, joinUniqueTexts } from './office-callback.ts';
+import { isSameAsNoWaterEmergency } from './mike-call-fixes.ts';
 
 export type CallOutcomeKind = 'booked' | 'emergency' | 'callback' | 'none';
 
@@ -129,6 +130,7 @@ export function extractCallOutcome(
   const argsById = new Map<string, { name: string; params: AnyRecord }>();
   const issues: string[] = [];
   let bookArgs: AnyRecord | null = null;
+  let bookSameAsNoWater = false;
   const toolName = (message: VapiMessageLike) => String(message.name || '');
 
   const takeParams = (params: AnyRecord) => {
@@ -175,6 +177,13 @@ export function extractCallOutcome(
     } else if (BOOK_TOOLS.has(name)) {
       if (call) bookArgs = call.params;
       if (result.weekendEmergency === true) outcome.emergency = true;
+      const failed = result.success === false || result.lookupStatus === 'error' || Boolean(result.error);
+      const bookText = call
+        ? [call.params.notes, call.params.reason, call.params.urgency, call.params.issue]
+          .filter((value) => typeof value === 'string')
+          .join('\n')
+        : '';
+      if (!failed && isSameAsNoWaterEmergency(bookText)) bookSameAsNoWater = true;
       const visit = asRecord(result.visit);
       if (result.booked === true && visit) {
         outcome.booked = true;
@@ -191,6 +200,7 @@ export function extractCallOutcome(
   }
 
   if (bookArgs && (outcome.booked || !outcome.name)) takeParams(bookArgs);
+  if (bookSameAsNoWater) outcome.emergency = true;
   const joined = joinUniqueTexts(issues);
   if (joined) outcome.issue = joined;
 

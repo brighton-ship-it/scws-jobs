@@ -7,6 +7,7 @@
 
 import { getValidJobberAccessToken } from '../jobber/auth.ts';
 import { decideBookingArea } from './service-area.ts';
+import { isSameAsNoWaterEmergency, sameAsNoWaterBookingSuffix } from './mike-call-fixes.ts';
 import {
   ASSIGNED_USERS_PAGE,
   THROTTLE_MAX_ATTEMPTS,
@@ -77,6 +78,8 @@ export type ScheduleLookupResult = {
   assignedTechId?: string | null;
   allowlistedTechIds?: string[];
   weekendEmergency?: boolean;
+  /** Lost pressure today/ASAP, or no water: offer the earliest slot and flagEmergency. */
+  emergencySameAsNoWater?: boolean;
   /** Upcoming visit on a job created in the last RECENT_BOOKING_DAYS days (duplicate-booking guard). */
   recentBooking?: ScheduleVisit;
   alreadyBooked?: boolean;
@@ -616,6 +619,10 @@ export function withSlotIds<T extends { startAt: string }>(slots: T[]): Array<T 
   return slots.map((slot) => ({ ...slot, slotId: slot.startAt }));
 }
 
+export function scheduleUrgencyText(input: CheckScheduleInput): string {
+  return [input.notes, input.urgency, input.intent].filter(Boolean).join('\n');
+}
+
 export function wantsOpenSlots(input: CheckScheduleInput): boolean {
   const intent = String(input.intent || '').toLowerCase();
   return intent === 'book' || Boolean(input.city || input.address || input.zip || input.postalCode);
@@ -742,9 +749,11 @@ export async function handleCheckSchedule(
         nearerShop: area.nearerShop,
         driveSpoken,
         bookingMessage:
-          slots.openSlots.length > 0
+          (slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.${driveSpoken ? ` ${driveSpoken}` : ''}`
-            : "I don't see an open Jobber slot I can book. I'll have the office call you back.",
+            : "I don't see an open Jobber slot I can book. I'll have the office call you back.")
+          + sameAsNoWaterBookingSuffix(scheduleUrgencyText(input), slots.openSlots),
+        emergencySameAsNoWater: isSameAsNoWaterEmergency(scheduleUrgencyText(input)) || undefined,
         bookingBlockReason: slots.openSlots.length === 0 ? 'no_slots' : undefined,
       },
     };
