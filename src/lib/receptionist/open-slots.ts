@@ -368,7 +368,55 @@ export function isVisitDayAllowed(
   if (!startAt) return false;
   const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
   if (Number.isNaN(date.getTime())) return false;
+  if (techIsOffOn(techName, ptCalendarDate(date), env)) return false;
   return isWeekdayVisitStart(date) || techWorksWeekends(techName, env);
+}
+
+/**
+ * Days off, from RECEPTIONIST_TECH_DAYS_OFF (Oct 30 2026). Jobber's API exposes no
+ * time-off data, so a tech with an empty board on a day off looked bookable (Chris
+ * Glass was offered Fri 10/30 4 PM while off at Glamis). Format, entries split by ";":
+ *   "Chris Glass:2026-10-30..2026-11-01; Haze Tarbell:2026-10-30,2026-10-31"
+ * Dates are PT calendar days (YYYY-MM-DD); "a..b" is an inclusive range. Names match
+ * like the weekend roster (lowercased, either side includes the other).
+ */
+export function techDaysOff(env: NodeJS.ProcessEnv = process.env): Map<string, Set<string>> {
+  const out = new Map<string, Set<string>>();
+  for (const entry of String(env.RECEPTIONIST_TECH_DAYS_OFF || '').split(';')) {
+    const idx = entry.indexOf(':');
+    if (idx < 0) continue;
+    const name = entry.slice(0, idx).trim().toLowerCase();
+    if (!name) continue;
+    const days = out.get(name) ?? new Set<string>();
+    for (const part of entry.slice(idx + 1).split(',')) {
+      const [a, b] = part.split('..').map((x) => x.trim());
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(a || '')) continue;
+      if (b !== undefined) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(b) || b < a) {
+          console.warn(`[Receptionist] RECEPTIONIST_TECH_DAYS_OFF: ignoring bad range "${part.trim()}" for ${name}`);
+          continue;
+        }
+        const cur = new Date(`${a}T12:00:00Z`);
+        for (let n = 0; n < 62 && cur.toISOString().slice(0, 10) <= b; n++) {
+          days.add(cur.toISOString().slice(0, 10));
+          cur.setUTCDate(cur.getUTCDate() + 1);
+        }
+      } else {
+        days.add(a);
+      }
+    }
+    out.set(name, days);
+  }
+  return out;
+}
+
+export function techIsOffOn(techName: string, dateStr: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  const needle = String(techName || '').trim().toLowerCase();
+  if (!needle) return false;
+  for (const [name, days] of Array.from(techDaysOff(env))) {
+    if ((needle.includes(name) || name.includes(needle)) && days.has(dateStr)) return true;
+  }
+  return false;
 }
 
 /**
@@ -439,7 +487,20 @@ function stopWeight(visit: OccupiedVisit): number {
   return classifyVisit(visit) === 'other' ? 2 : 1;
 }
 
+const TIME_OFF_RE = /\b(?:pto|time[- ]off|days?[- ]off|vacation|out of office|ooo|glamis)\b/i;
+
+/**
+ * An ALL-DAY visit titled as time off (PTO, day off, vacation, OOO, Glamis) closes the
+ * whole day. Timed visits never match: "Holiday Ranch well service" or "Pump unavailable"
+ * are real jobs and must keep the rest of the day open.
+ */
+export function isTimeOffVisit(visit: Pick<OccupiedVisit, 'title' | 'jobTitle' | 'allDay'>): boolean {
+  if (!visit.allDay) return false;
+  return [visit.title, visit.jobTitle].some((text) => text && TIME_OFF_RE.test(text));
+}
+
 function allDayVisitBlocksDay(visit: OccupiedVisit): boolean {
+  if (isTimeOffVisit(visit)) return true;
   if (!visit.allDay) return false;
   const kind = classifyVisit(visit);
   if (kind === 'service' || kind === 'assessment' || kind === 'other') {
@@ -512,6 +573,7 @@ export function computeOpenSlots(options: {
     const dateStr = addPtDays(options.now, day);
     const weekdayDate = zonedDate(dateStr, 12, 0);
     if (!dayOk(weekdayDate)) continue;
+    if (techIsOffOn(options.technicianName, dateStr, options.env ?? process.env)) continue;
 
     // Whole-day closers: all-day drill/install (or unidentified all-day) visits.
     if (techOccupied.some((visit) => allDayVisitBlocksDay(visit) && visitCoversPtDay(visit, dateStr))) {
