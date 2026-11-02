@@ -4,7 +4,7 @@
  * must not mark the call urgent.
  */
 
-import { isLostPressureEmergency } from './mike-call-fixes.ts';
+import { isLostPressureEmergency, stripPressureIdiom } from './mike-call-fixes.ts';
 
 const URGENT_PATTERN = /urgent|emergency|no water|no pressure|flooding/i;
 const CALLER_ROLES = /^(user|customer|caller|human)$/i;
@@ -44,6 +44,6 @@ export function isCallerUrgent(input: {
 }): boolean {
   const structured = (input.structuredUrgency || '').trim().toLowerCase();
   if (structured === 'urgent' || structured === 'emergency') return true;
-  const text = callerUtteranceText(input.transcript, input.messages);
+  const text = stripPressureIdiom(callerUtteranceText(input.transcript, input.messages));
   return URGENT_PATTERN.test(text) || isLostPressureEmergency(text);
 }

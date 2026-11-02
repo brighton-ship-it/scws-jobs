@@ -19,6 +19,8 @@ import {
   checkServiceAddressConfirmation,
   isSameAsNoWaterEmergency,
   spanishSpeechResult,
+  spanishToolBlock,
+  withEmergencyNote,
   withSpanishSpeakerFlag,
 } from '@/lib/receptionist/mike-call-fixes';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
@@ -699,8 +701,9 @@ async function handleVapiTools(body: any) {
     const spanish = callerNeedsSpanish(callerText);
     console.log(`[Receptionist] Function call: ${call.name}${testCall ? ' (test call)' : ''}`, JSON.stringify(redactToolLog(params)));
     // Spanish, address, and consent gates run before test simulation so test calls exercise them too.
-    if (spanish && call.name !== 'createCallback') {
-      executed[i] = { id: call.id, body: { result: spanishSpeechResult() } };
+    const spanishBlock = spanishToolBlock(call.name, callerText);
+    if (spanishBlock) {
+      executed[i] = { id: call.id, body: { result: spanishBlock } };
       continue;
     }
     if (spanish && call.name === 'createCallback') {
@@ -720,10 +723,11 @@ async function handleVapiTools(body: any) {
         continue;
       }
     }
-    if (isSameAsNoWaterEmergency(callerText) || isSameAsNoWaterEmergency(String(params.notes || params.reason || ''))) {
+    const problemText = [params.notes, params.reason, callerText].filter((value) => typeof value === 'string' && value.trim()).join('\n');
+    if (isSameAsNoWaterEmergency(problemText)) {
       params.urgency = 'emergency';
       params.needNow = true;
-      params.notes = [params.notes, callerText].filter(Boolean).join('\n');
+      params.notes = withEmergencyNote(params.notes, problemText);
     }
     // Test line: side-effect tools are simulated (no Jobber, no booking row, no alert).
     const simulated = testCall ? testToolResult(call.name, params) : null;

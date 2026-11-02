@@ -12,7 +12,7 @@ describe('booking prompt text', () => {
 
   it('treats lost pressure today the same as no water, and confirms street and city', () => {
     const all = `${BOOK_JOB_TOOL.description}\n${SARAH_AFTER_HOURS_BOOKING}`;
-    assert.match(all, /pressure is completely gone|pressure completely gone/i);
+    assert.match(all, /pressure is completely gone|pressure completely gone|pressure is gone/i);
     assert.match(all, /zero or no pressure/i);
     assert.match(all, /today or ASAP/i);
     assert.match(all, /do not offer only a later weekday/i);

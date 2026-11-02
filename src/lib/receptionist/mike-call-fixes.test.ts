@@ -6,9 +6,11 @@ import { bookingRowForOfficeRequest, officeRequestFromTool } from './office-call
 import { scheduleUrgencyText } from './check-schedule.ts';
 import {
   ADDRESS_CONFIRM_HEADING,
+  ADDRESS_CONFIRM_RETRY_LIMIT,
   ADDRESS_ON_FILE_RULE,
   LOST_PRESSURE_HEADING,
   MIKE_SPANISH_RULE,
+  PRESSURE_EMERGENCY_TAG,
   SPANISH_HEADING,
   SPANISH_ONLY_LINE,
   SPANISH_SPEAKER_FLAG,
@@ -19,8 +21,11 @@ import {
   isSameAsNoWaterEmergency,
   sameAsNoWaterBookingSuffix,
   spanishSpeechResult,
+  spanishToolBlock,
+  withEmergencyNote,
   withSpanishSpeakerFlag,
 } from './mike-call-fixes.ts';
+import { isCallerUrgent } from './caller-urgency.ts';
 
 const PROMPT = `Hey, this is Mike with Southern California Well Service. Just a heads up, this call's recorded. What's going on with your well?
 Voice stays on the current assistant voice. Routing stays on the shop leg, then Mike.
@@ -40,6 +45,19 @@ test('pressure completely gone, or zero/no pressure, plus today or ASAP is the s
   assert.equal(isLostPressureEmergency('The pressure is completely gone but next month is fine'), false);
   assert.equal(isSameAsNoWaterEmergency('Pressure is a little low. Monday is fine.'), false);
   assert.equal(isLostPressureEmergency('low pressure, can you come next week'), false);
+  assert.equal(isLostPressureEmergency('pressure is gone, ASAP'), true);
+  assert.equal(isLostPressureEmergency('calling today... no pressure to rush, next week'), false);
+  assert.equal(isLostPressureEmergency('I am calling today to check in. There is no pressure to rush, next week is fine.'), false);
+  assert.equal(isCallerUrgent({
+    structuredUrgency: 'normal',
+    messages: [{ role: 'user', message: 'calling today... no pressure to rush, next week' }],
+  }), false);
+
+  const transcript = 'The pressure is gone, ASAP. My gate code is 1234 and the dog is friendly. '.repeat(8);
+  const tagged = withEmergencyNote('pump quit', transcript);
+  assert.equal(tagged, `${PRESSURE_EMERGENCY_TAG}. pump quit`);
+  assert.equal(tagged.includes('gate code'), false);
+  assert.equal(tagged.includes(transcript), false);
 
   const suffix = sameAsNoWaterBookingSuffix(axel, [
     { date: 'Sunday, November 1', time: 'between 1:00 PM and 3:00 PM' },
@@ -55,9 +73,16 @@ test('pressure completely gone, or zero/no pressure, plus today or ASAP is the s
 
 test('Spanish callers get one fixed line and a Spanish speaker callback', () => {
   assert.equal(callerNeedsSpanish('Do you speak Spanish?'), true);
+  assert.equal(callerNeedsSpanish('¿Habla español?'), true);
   assert.equal(callerNeedsSpanish('Hola, no tengo agua en el pozo'), true);
   assert.equal(callerNeedsSpanish('The pressure is completely gone'), false);
   assert.equal(callerNeedsSpanish(''), false);
+  assert.equal(callerNeedsSpanish('My name is Jose Peña'), false);
+  assert.equal(callerNeedsSpanish('Hola, I need help, gracias'), false);
+  assert.equal(spanishToolBlock('bookJob', 'My name is Jose Peña'), null);
+  assert.equal(spanishToolBlock('lookupCustomer', 'Hola, I need help, gracias'), null);
+  assert.equal(spanishToolBlock('createCallback', 'Do you speak Spanish?'), null);
+  assert.equal(spanishToolBlock('bookJob', '¿Habla español?')?.message, SPANISH_ONLY_LINE);
 
   const speech = spanishSpeechResult();
   assert.equal(speech.sayExactly, SPANISH_ONLY_LINE);
@@ -135,6 +160,48 @@ test('booking confirms street and city even for an existing customer', () => {
   assert.equal(missing.ok, false);
   const unconfirmed = checkServiceAddressConfirmation({ address: 'S Citrus Ave', city: 'Escondido' }, []);
   assert.equal(unconfirmed.ok, false);
+
+  const highway = checkServiceAddressConfirmation(
+    { address: '14000 Highway 78', city: 'Ramona' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 14000 Hwy 78 in Ramona?' },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  assert.equal(highway.ok, true);
+
+  const streetAbbrev = checkServiceAddressConfirmation(
+    { address: '12 Main Street', city: 'Escondido' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 12 Main St in Escondido?' },
+      { role: 'user', text: 'Yes, that is right.' },
+    ],
+  );
+  assert.equal(streetAbbrev.ok, true);
+
+  const laterTown = checkServiceAddressConfirmation(
+    { address: 'S Citrus Ave', city: 'Escondido' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at S Citrus Ave in Escondido?' },
+      { role: 'user', text: 'Yes.' },
+      { role: 'user', text: 'I called the Ramona line.' },
+    ],
+  );
+  assert.equal(laterTown.ok, true);
+
+  const asks = [
+    { role: 'bot' as const, text: 'Just to confirm, the well is at 12 Main St in Ramona?' },
+    { role: 'user' as const, text: 'What?' },
+    { role: 'bot' as const, text: 'Just to confirm, the well is at 12 Main Street in Ramona?' },
+    { role: 'user' as const, text: 'I called the Escondido line maybe.' },
+  ];
+  assert.equal(ADDRESS_CONFIRM_RETRY_LIMIT, 2);
+  const giveUp = checkServiceAddressConfirmation({ address: '12 Main St', city: 'Ramona' }, asks);
+  assert.equal(giveUp.ok, false);
+  if (!giveUp.ok) {
+    assert.equal(giveUp.result.fallback, 'createCallback');
+    assert.match(String(giveUp.result.message), /Do not call book_job again/);
+  }
 });
 
 test('prompt patch leaves greeting, voice, and routing alone and stays idempotent', () => {
@@ -165,6 +232,8 @@ test('prompt patch leaves greeting, voice, and routing alone and stays idempoten
   assert.equal(src.includes('firstMessage'), false);
   assert.equal(src.includes('api.vapi.ai'), false);
   assert.equal(route.includes('MIKE_CALLBACKS_ENABLED'), false);
+  assert.equal(route.includes('params.notes = [params.notes, callerText]'), false);
+  assert.match(route, /withEmergencyNote/);
   assert.equal(inbound.includes('mike-call-fixes'), false);
   assert.equal(roll.includes('mike-call-fixes'), false);
   assert.equal(inbound.includes('SPANISH_ONLY_LINE'), false);
