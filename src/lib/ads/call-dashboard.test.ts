@@ -328,3 +328,48 @@ test('sales headline totals follow the selected range, weeks unchanged', async (
   assert.equal(r7.weeks[r7.weeks.length - 1].invoiced, 100); // Mon Oct 12 = new week
   assert.equal(rangeTitle('since', '2026-09-18', '2026-10-12'), 'Since Sep 18: Sep 18–Oct 12');
 });
+
+test('a campaign with spend but no calls in the window still appears in by-campaign', () => {
+  const monthNow = new Date('2026-11-03T20:00:00Z'); // noon PT, Tue Nov 3
+  const d = buildDashboard({
+    now: monthNow, range: 'month', paidByJob: null, conversions: [],
+    calls: [
+      call({ started_at: '2026-11-02T18:00:00Z', campaign_name: 'Leads-Search-1', caller_phone: '9515551111', call_source: 'AD' }),
+      call({ started_at: '2026-11-02T19:00:00Z', campaign_name: 'Weekend-Emergency-Search', caller_phone: '9515552222', call_source: 'AD' }),
+      // October call must not create a November row; only November spend should.
+      call({ started_at: '2026-10-31T18:00:00Z', campaign_name: 'Leads-Search-Drilling', caller_phone: '9515553333', call_source: 'AD' }),
+    ],
+    spend: [
+      { date: '2026-10-31', campaign: 'Leads-Search-Drilling', costUsd: 10 },
+      { date: '2026-10-31', campaign: 'Old-Campaign', costUsd: 20 },
+      { date: '2026-11-01', campaign: 'Leads-Search-Drilling', costUsd: 38.4 },
+      { date: '2026-11-02', campaign: 'Leads-Search-Drilling', costUsd: 44.44 },
+      { date: '2026-11-01', campaign: 'Leads-Search-1', costUsd: 10 },
+      { date: '2026-11-02', campaign: 'Weekend-Emergency-Search', costUsd: 5 },
+    ],
+  });
+  const drill = d.byCampaign.find((r) => r.key === 'Leads-Search-Drilling');
+  assert.ok(drill);
+  assert.equal(d.byCampaign.filter((r) => r.key === 'Leads-Search-Drilling').length, 1);
+  assert.deepEqual(
+    { calls: drill.calls, answered: drill.answered, short: drill.short, booked: drill.booked, spend: drill.spend, costPerCall: drill.costPerCall, invoiced: drill.invoiced },
+    { calls: 0, answered: 0, short: 0, booked: 0, spend: 82.84, costPerCall: null, invoiced: 0 },
+  );
+  assert.equal(d.byCampaign.some((r) => r.key === 'Old-Campaign'), false);
+  const search = d.byCampaign.find((r) => r.key === 'Leads-Search-1');
+  const weekend = d.byCampaign.find((r) => r.key === 'Weekend-Emergency-Search');
+  assert.equal(search?.calls, 1);
+  assert.equal(search?.spend, 10);
+  assert.equal(search?.costPerCall, 10);
+  assert.equal(weekend?.calls, 1);
+  assert.equal(weekend?.spend, 5);
+  assert.equal(weekend?.costPerCall, 5);
+  const campSpend = Math.round(d.byCampaign.reduce((s, r) => s + (r.spend ?? 0), 0) * 100) / 100;
+  assert.equal(campSpend, d.totals.spend);
+  assert.equal(d.totals.spend, 97.84);
+  assert.equal(d.totals.calls, 2);
+  assert.equal(d.byKeyword.some((r) => r.key === 'Leads-Search-Drilling'), false);
+  assert.equal(d.byTrackingNumber.some((r) => r.key === 'Leads-Search-Drilling'), false);
+  assert.equal(d.byKeyword.length, 1);
+  assert.equal(d.byTrackingNumber.length, 1);
+});

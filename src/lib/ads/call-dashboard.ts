@@ -483,6 +483,9 @@ function group(
     const r = map.get(key) ?? blank(key);
     r.booked += 1; r.invoiced += b.inv; map.set(key, r);
   }
+  // A campaign can spend in this window with no calls in it (Google may report the call later).
+  // Still emit the row, with 0 calls and a null cost per call, so campaign spend sums to ROAS spend.
+  if (spendByKey) for (const key of Array.from(spendByKey.keys())) if (!map.has(key)) map.set(key, blank(key));
   const rows = Array.from(map.values());
   for (const r of rows) {
     r.invoiced = round(r.invoiced);
