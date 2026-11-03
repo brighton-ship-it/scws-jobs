@@ -301,6 +301,12 @@ export function inboundCallEmailPlan(input: {
    * await-mike. DialBridged is not this flag: Google Voice bridges too.
    */
   shopHuman?: boolean;
+  /**
+   * No AMD result is stored yet for a connected shop leg. AMD can need up to ~15s,
+   * so a short real pickup (9s) often hangs up before amd:human lands. Defer the
+   * missed email instead of sending it on the duration alone.
+   */
+  amdPending?: boolean;
 }): { handoff: boolean; send: 'now' | 'defer' | 'no'; who: AnsweredBy | null } {
   const status = (input.dialStatus || '').trim().toLowerCase();
   if (input.shopMachine) {
@@ -318,6 +324,9 @@ export function inboundCallEmailPlan(input: {
     // DialCallDuration must not turn a conversation into a missed-call email.
     const shopLeg = input.party === 'shop' || !input.mikeInDial;
     if (shopLeg && shopLegCountsAsMissed(input.shopSeconds)) {
+      // Defer: the caller checks Twilio's answered_by, and the sweep sends missed
+      // only when AMD said machine or never arrived.
+      if (input.amdPending) return { handoff: false, send: 'defer', who: 'missed' };
       return { handoff: false, send: 'now', who: 'missed' };
     }
     if (input.party === 'shop') return { handoff: false, send: 'no', who: null };
@@ -331,6 +340,66 @@ export function inboundCallEmailPlan(input: {
     return { handoff: true, send: 'no', who: null };
   }
   return { handoff: false, send: 'now', who: 'missed' };
+}
+
+export type ShopLegLookup = {
+  /** Twilio answered_by on the shop (non-Mike) child leg: human, machine, or null when unknown. */
+  answeredBy: 'human' | 'machine' | null;
+  /** Ring time on the shop leg from Twilio timestamps, or null when unknown. */
+  ringSeconds: number | null;
+};
+
+/**
+ * Read the shop child leg from Twilio's call record. Answered: ring = start_time - date_created.
+ * Not answered: ring = end_time - start_time. Mike's number is ignored.
+ */
+export function shopLegFromTwilio(payload: unknown, mikeNumbers: readonly string[] = []): ShopLegLookup {
+  const calls = payload && typeof payload === 'object' && Array.isArray((payload as any).calls) ? (payload as any).calls : [];
+  const mike = new Set(mikeNumbers.map((n) => String(n).replace(/\D/g, '').slice(-10)));
+  const legs = calls.filter((c: any) => c && !mike.has(String(c.to || '').replace(/\D/g, '').slice(-10)));
+  if (!legs.length) return { answeredBy: null, ringSeconds: null };
+  const leg = legs.find((c: any) => Number(c.duration) > 0) ?? legs[0];
+  const raw = String(leg.answered_by || '').trim().toLowerCase();
+  const answeredBy = raw === 'human' ? 'human' : raw && (raw.startsWith('machine') || raw === 'fax' || raw === 'unknown') ? 'machine' : null;
+  const t = (v: unknown) => (typeof v === 'string' ? Date.parse(v) : NaN);
+  const created = t(leg.date_created); const start = t(leg.start_time); const end = t(leg.end_time);
+  let ring: number | null = null;
+  if (Number(leg.duration) > 0 && Number.isFinite(created) && Number.isFinite(start)) ring = (start - created) / 1000;
+  else if (Number.isFinite(start) && Number.isFinite(end)) ring = (end - start) / 1000;
+  return { answeredBy, ringSeconds: ring != null && ring >= 0 ? Math.round(ring) : null };
+}
+
+/** GET the parent's child legs from Twilio. Null on any failure: the sweep still covers the call. */
+export async function lookupShopLeg(
+  parentCallSid: string,
+  env: NodeJS.ProcessEnv = process.env,
+  fetchImpl: typeof fetch = fetch,
+  mikeNumbers: readonly string[] = [],
+): Promise<ShopLegLookup | null> {
+  const sid = env.TWILIO_ACCOUNT_SID?.trim();
+  const token = env.TWILIO_AUTH_TOKEN?.trim();
+  if (!sid || !token || !/^CA[0-9a-f]{32}$/i.test(parentCallSid)) return null;
+  try {
+    const res = await fetchImpl(
+      `https://api.twilio.com/2010-04-01/Accounts/${encodeURIComponent(sid)}/Calls.json?ParentCallSid=${encodeURIComponent(parentCallSid)}`,
+      { headers: { Authorization: `Basic ${Buffer.from(`${sid}:${token}`).toString('base64')}` } },
+    );
+    if (!res.ok) return null;
+    return shopLegFromTwilio(await res.json(), mikeNumbers);
+  } catch (error) {
+    console.error('[phone-calls] shop leg lookup failed', error instanceof Error ? error.message : error);
+    return null;
+  }
+}
+
+/**
+ * Deferred short shop pickup. human: no email (record amd:human). machine: email missed now.
+ * unknown: leave for the sweep, which emails missed after SWEEP_RETRY_MS unless amd:human lands.
+ */
+export function shortPickupDecision(lookup: ShopLegLookup | null): 'answered' | 'missed' | 'wait' {
+  if (lookup?.answeredBy === 'human') return 'answered';
+  if (lookup?.answeredBy === 'machine') return 'missed';
+  return 'wait';
 }
 
 export function statusCallbackPlan(input: { dialStatus: string | null | undefined; canHandoff: boolean }): { handoff: boolean; alert: boolean } {
