@@ -1164,3 +1164,21 @@ export function CallDashboardTv() {
     </div>
   );
 }
+
+/** Standalone calls list (/ops/calls-live): same data and auth as /ops/calls, only the calls card. */
+export function CallsLivePage() {
+  const params = useSearchParams();
+  const { data, error, loading, reload } = useDashboard('since', 30_000);
+  const recorded = useRecordedCalls();
+  return (
+    <div className="mx-auto max-w-3xl space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
+        <button onClick={reload} className="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">Refresh</button>
+      </div>
+      {error && !data ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}
+      {loading && !data ? <DashboardSkeleton /> : null}
+      {data ? <CallsCard feed={data.callFeed} recorded={recorded} focusSid={params?.get('call')} /> : null}
+    </div>
+  );
+}
