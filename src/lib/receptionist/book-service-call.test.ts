@@ -794,9 +794,40 @@ describe('handleBookServiceCall', () => {
     assert.equal(jobInputs[0]?.propertyId, 'prop-sharon');
     assert.match(jobInputs[0]?.title, /^Service Call — caller Nathan \(951\) 591-3295$/);
     assert.match(jobInputs[0]?.instructions, /address matched existing client Sharon Johnson, caller differs/);
+    assert.deepEqual(result.addressMatchReview, { clientName: 'Sharon Johnson', callerName: 'Nathan', callerPhone: '(951) 591-3295', reason: 'address matched existing client Sharon Johnson, caller differs' });
     assert.equal(flags.length, 1);
     assert.equal(flags[0].kind, 'address_match_review');
     assert.match(flags[0].subject, /address matched existing client Sharon Johnson, caller differs/);
+  });
+
+  it('books (no orphan job) when the caller name contains a forbidden word', async () => {
+    const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
+    const sharon: JobberClientNode = {
+      id: 'client-sharon',
+      name: 'Sharon Johnson',
+      phones: [{ number: '7608451623' }],
+      properties: [{ id: 'prop-sharon', address: { street1: '100 Well Rd', city: 'Ramona' } }],
+    };
+    const jobInputs: any[] = [];
+    const flags: any[] = [];
+    const fetchFn = async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body || '{}')) as GraphqlBody;
+      if ((body.query || '').includes('jobCreate')) jobInputs.push((body as any).variables?.input);
+      return mockJobber({
+        clients: [sharon],
+        createdJob: {
+          id: 'job-sharon',
+          title: `${SERVICE_CALL_TITLE} — caller Dave Crew (951) 591-3295`,
+          visits: { nodes: [{ id: 'v1', startAt: slot.startAt, endAt: slot.endAt, assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] } }] },
+        },
+      })(_url, init);
+    };
+    const { result } = await handleBookServiceCall(
+      { phone: '9515913295', name: 'Dave Crew', address: '100 Well Rd', city: 'Ramona', startAt: slot.startAt },
+      { now: THU_530PM, accessToken: 'test-token', fetchFn, notifyOffice: (f) => { flags.push(f); } }
+    );
+    assert.equal(result.booked, true);
+    assert.equal(result.addressMatchReview?.callerName, 'Dave Crew');
   });
 
   it('only treats address-only matches with a different caller name as differing', () => {
@@ -806,7 +837,13 @@ describe('handleBookServiceCall', () => {
     assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Sharon Johnson' }), false);
     assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Sharon' }), false);
     assert.equal(addressMatchCallerDiffers(c, 'phone', { name: 'Nathan' }), false);
-    assert.equal(addressMatchCallerDiffers(c, 'address', {}), false);
+    assert.equal(addressMatchCallerDiffers(c, 'address', {}), true);
+    assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Unknown' }), true);
+    assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Mrs. Johnson' }), false);
+    assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Mr. Sharon Johnson' }), false);
+    assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Shar' }), true);
+    assert.equal(addressMatchCallerDiffers(c, 'address', { name: 'Ron' }), true);
+    assert.equal(addressMatchCallerDiffers({ id: 'j', name: 'José Núñez', properties: [] }, 'address', { name: 'Jose Nunez' }), false);
     assert.match(callerDiffersDetails(c, { name: 'Nathan', phone: '+19515913295' }).instructions, /Nathan, \(951\) 591-3295/);
   });
 

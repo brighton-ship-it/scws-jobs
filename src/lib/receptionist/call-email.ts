@@ -31,6 +31,8 @@ export type CallOutcome = {
   technician: string;
   jobberUrl: string;
   jobId: string;
+  /** Booking reused another client's property by address; the caller is someone else. */
+  addressMatchReview?: { clientName: string; callerName: string; callerPhone: string; reason: string } | null;
 };
 
 type AnyRecord = Record<string, unknown>;
@@ -195,6 +197,15 @@ export function extractCallOutcome(
         outcome.windowShort = shortWindow(date, time);
         const techs = Array.isArray(visit.technicians) ? visit.technicians.map(String) : [];
         outcome.technician = techs.join(' and ') || String(result.assignedTechName || '');
+        const review = asRecord(result.addressMatchReview);
+        if (review) {
+          outcome.addressMatchReview = {
+            clientName: String(review.clientName || ''),
+            callerName: String(review.callerName || ''),
+            callerPhone: String(review.callerPhone || ''),
+            reason: String(review.reason || `address matched existing client ${String(review.clientName || '')}, caller differs`),
+          };
+        }
       }
     }
   }
@@ -270,6 +281,9 @@ export function buildCallEmail(input: CallEmailInput): { subject: string; text: 
   const text = [
     `Outcome: ${whatMikeDid(outcome)}`,
     input.autoFlagged ? 'Auto-flagged: needs callback' : null,
+    outcome.addressMatchReview
+      ? `⚠️ Office review: ${outcome.addressMatchReview.reason}. Booked under ${outcome.addressMatchReview.clientName || 'that client'}; caller is ${outcome.addressMatchReview.callerName || 'Unknown'} ${outcome.addressMatchReview.callerPhone || ''}. Check the client on this job.`.replace(/ +\./g, '.')
+      : null,
     '',
     `Caller: ${name || 'Unknown'}`,
     `Number: ${phone ? formatPhoneDisplay(phone) : 'Unknown'}`,

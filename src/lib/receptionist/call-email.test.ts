@@ -42,6 +42,15 @@ describe('one email per call: outcome and subject', () => {
     assert.match(mail.text, /Booked a \$200 service call/);
   });
 
+  it('booked under another client by address renders the office review line', () => {
+    const review = { clientName: 'Sharon Johnson', callerName: 'Nathan', callerPhone: '(951) 591-3295', reason: 'address matched existing client Sharon Johnson, caller differs' };
+    const outcome = extractCallOutcome(calls(['c3', 'book_job', { phone: '+19515913295', callerName: 'Nathan', address: '44030 White Mountain Rd', city: 'Aguanga' }, { ...bookResult, addressMatchReview: review }]));
+    assert.deepEqual(outcome.addressMatchReview, review);
+    const mail = buildCallEmail({ outcome });
+    assert.match(mail.text, /⚠️ Office review: address matched existing client Sharon Johnson, caller differs\. Booked under Sharon Johnson; caller is Nathan \(951\) 591-3295\. Check the client on this job\./);
+    assert.doesNotMatch(buildCallEmail({ outcome: extractCallOutcome(calls([...book])) }).text, /Office review/);
+  });
+
   it('booked only', () => {
     const outcome = extractCallOutcome(calls([...book]));
     const mail = buildCallEmail({ outcome });
