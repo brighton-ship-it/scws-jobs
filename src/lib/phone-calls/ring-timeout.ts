@@ -8,8 +8,14 @@
  * PHONE_CALL_RING_TIMEOUT and the voice URL ?timeout= are this same caller-facing
  * number. The live voice URLs pass timeout=15, which used to be copied straight
  * into TwiML and rang about 20 seconds.
+ *
+ * 11/3/2026: Brighton raised the daytime office ring to 30s. Every live voice URL
+ * still carries timeout=15, so the inbound route ignores ?timeout= on live calls
+ * (signed test=1 requests may still pass it). PHONE_CALL_RING_TIMEOUT still overrides.
+ * Google Voice sends an unanswered forward to its own voicemail at ~25s; AMD then
+ * hears a machine, hangs up the shop leg, and the status callback dials Mike.
  */
-export const BUSINESS_HOURS_RING_SECONDS = 15;
+export const BUSINESS_HOURS_RING_SECONDS = 30;
 /** Observed on the 7:29 AM ads call: the recording notice ends and the shop leg starts 5s later. */
 export const RECORDING_NOTICE_SECONDS = 5;
 export const TWILIO_DIAL_TIMEOUT_BUFFER_SECONDS = 5;
