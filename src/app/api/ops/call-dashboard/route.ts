@@ -5,7 +5,8 @@ import { unstable_cache } from 'next/cache';
  */
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { authorizeOps } from '@/lib/ops-auth';
+import { authorizeOpsOrCalls } from '@/lib/ops-auth';
+import { scrubForCallsView } from '@/lib/calls-view-auth';
 import { buildDashboard, buildCallLogView, mergeLiveCalls, attributeAiHandledCalls, type DashCall, type DialedSourceHint, parseRange, ptStartOfDay, rangeStart, ptDateKey, adCategory, ptWeekStart, DASH_FLOOR_ISO } from '@/lib/ads/call-dashboard';
 import { buildWeeklySales, salesWindowStart } from '@/lib/ads/weekly-sales';
 import { isInternalJob } from '@/lib/ads/internal-job';
@@ -34,12 +35,14 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
 export async function GET(request: NextRequest) {
-  const auth = await authorizeOps(request);
+  const auth = await authorizeOpsOrCalls(request);
   if (!auth.ok) return auth.response;
+  // Calls-only key (CALLS_VIEW_KEY): forced to view=calls; payload scrubbed to call fields; no debug.
+  const callsOnly = auth.scope === 'calls' || request.nextUrl.searchParams.get('view') === 'calls';
 
   const range = parseRange(request.nextUrl.searchParams.get('range'));
   // ?debug=sets: read-only verification payload (raw call rows + derived lead/booking/ROAS sets). Same ops auth; no names or call summaries.
-  const debugSets = request.nextUrl.searchParams.get('debug') === 'sets';
+  const debugSets = auth.scope === 'full' && request.nextUrl.searchParams.get('debug') === 'sets';
   let debug: Record<string, unknown> | null = null;
   const finish = (res: NextResponse) => {
     res.headers.set('Cache-Control', 'no-store');
@@ -53,7 +56,7 @@ export async function GET(request: NextRequest) {
     const since = new Date(Date.now() - 95 * 86400_000).toISOString();
     const nowDash = new Date();
     const fromMs = Math.max(rangeStart(range, nowDash).getTime(), Date.parse(DASH_FLOOR_ISO));
-    const textsP = request.nextUrl.searchParams.get('view') === 'tv'
+    const textsP = request.nextUrl.searchParams.get('view') === 'tv' || callsOnly
       ? Promise.resolve(null)
       : loadMissedCallTextView(db, new Date(fromMs).toISOString()).catch((e: unknown) => ({
         view: null,
@@ -378,6 +381,7 @@ export async function GET(request: NextRequest) {
     const ms = await mirrorState();
     const payload = { ...dash, generatedAt: new Date().toISOString(), jobberDataAsOf: ms.ready ? ms.asOf : null, ...(debug ? { debug } : {}) };
     // TV mode may be on a shop screen: no collections or payment info leaves the server.
+    if (callsOnly) return finish(NextResponse.json(scrubForCallsView(payload as unknown as Record<string, unknown>)));
     if (request.nextUrl.searchParams.get('view') === 'tv') return finish(NextResponse.json(scrubForTv(payload as unknown as Record<string, unknown>)));
     return finish(NextResponse.json(payload));
   } catch (error) {

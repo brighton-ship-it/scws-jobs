@@ -15,7 +15,7 @@ export const OPS_TABS = [
 export function OpsNav() {
   const pathname = usePathname() ?? '';
   const params = useSearchParams();
-  if (pathname.startsWith('/ops/calls/tv')) return null;
+  if (pathname.startsWith('/ops/calls/tv') || pathname.startsWith('/ops/calls-live')) return null;
   const range = params?.get('range');
   const active = (t: (typeof OPS_TABS)[number]) => (t.tab === 'today' ? pathname === '/ops/calls' : !t.href.startsWith('/ops/calls') && pathname.startsWith(t.href));
   const withRange = (href: string) => {

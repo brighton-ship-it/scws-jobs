@@ -1,13 +1,13 @@
 /** GET /api/ops/phone-calls — latest recorded inbound calls with transcript + summary. Same auth as call-dashboard. */
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
-import { authorizeOps } from '@/lib/ops-auth';
+import { authorizeOpsOrCalls } from '@/lib/ops-auth';
 import { isTestCallerPhone } from '@/lib/ads/real-leads';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-  const auth = await authorizeOps(request);
+  const auth = await authorizeOpsOrCalls(request);
   if (!auth.ok) return auth.response;
   const finish = (res: NextResponse) => {
     res.headers.set('Cache-Control', 'no-store');
