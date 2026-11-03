@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { callsViewKeyFromPage } from './calls-view-key';
+import { CALLS_VIEW_KEY_HEADER } from '@/lib/calls-view-auth';
 import { SOURCE_LABEL, Transcript, fmtPhone, splitSummary, useRecordedCalls, type RecordedCall } from './PhoneCallTranscripts';
 import { useSearchParams } from 'next/navigation';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
@@ -29,7 +31,7 @@ type Live = { generatedAt?: string; jobberDataAsOf?: string | null };
 /** A dashboard request that has not answered by now is abandoned (server maxDuration is 180 s). */
 const FETCH_TIMEOUT_MS = 60_000;
 
-function useDashboard(range: string, refreshMs: number | null, view?: 'tv') {
+function useDashboard(range: string, refreshMs: number | null, view?: 'tv' | 'calls') {
   // One cached payload per period. A response only ever lands in its own period's slot, and the page shows
   // the selected period's payload only, so switching the toggle never shows the other period's numbers.
   const [byRange, setByRange] = useState<Record<string, Dashboard>>({});
@@ -56,8 +58,12 @@ function useDashboard(range: string, refreshMs: number | null, view?: 'tv') {
       const q = url.searchParams.get(QUOTES_GP_KEY_QUERY);
       if (q) { try { localStorage.setItem(KEY_STORAGE, q); } catch {} }
       let key = q; try { key = key || localStorage.getItem(KEY_STORAGE); } catch {}
+      const ck = callsViewKeyFromPage();
+      const headers: Record<string, string> = {};
+      if (key) headers[QUOTES_GP_KEY_HEADER] = key;
+      if (ck) headers[CALLS_VIEW_KEY_HEADER] = ck;
       const res = await fetch(`/api/ops/call-dashboard?range=${r}${view ? `&view=${view}` : ''}`, {
-        headers: key ? { [QUOTES_GP_KEY_HEADER]: key } : {}, cache: 'no-store', signal: ctrl.signal,
+        headers, cache: 'no-store', signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
       const json = await res.json();
@@ -1168,7 +1174,7 @@ export function CallDashboardTv() {
 /** Standalone calls list (/ops/calls-live): same data and auth as /ops/calls, only the calls card. */
 export function CallsLivePage() {
   const params = useSearchParams();
-  const { data, error, loading, reload } = useDashboard('since', 30_000);
+  const { data, error, loading, reload } = useDashboard('since', 30_000, 'calls');
   const recorded = useRecordedCalls();
   return (
     <div className="mx-auto max-w-3xl space-y-3">
