@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
 import { DirectMailCard } from './DirectMailCard';
+import { matchesCallSearch } from '@/lib/ops/call-search';
 import { MissedCallTextsCard } from './MissedCallTexts';
 const SECTIONS = ['today', 'sales', 'ads', 'collections'] as const;
 import {
@@ -669,7 +670,11 @@ function CallsCard({ feed, recorded, focusSid }: { feed: FeedRow[] | null | unde
   const [open, setOpen] = useState<string | null>(focusSid ?? null);
   const [filter, setFilter] = useState<CallFilter>('all');
   const all = mergeCalls(feed ?? [], recorded);
-  const list = all.filter((c) => matchesFilter(c, filter) || (!!focusSid && c.rec?.call_sid === focusSid));
+  const [query, setQuery] = useState('');
+  const list = all.filter((c) =>
+    (!!focusSid && c.rec?.call_sid === focusSid) ||
+    (matchesFilter(c, filter) &&
+      matchesCallSearch({ name: [c.feed?.name, c.rec?.caller_name].filter(Boolean).join(' '), phones: [c.feed?.phone, c.rec?.caller_number] }, query)));
   useEffect(() => {
     if (!focusSid) return;
     setOpen(focusSid);
@@ -681,6 +686,7 @@ function CallsCard({ feed, recorded, focusSid }: { feed: FeedRow[] | null | unde
       <div className="mb-3 flex flex-wrap gap-1.5" role="tablist" aria-label="Call filter">
         {CALL_FILTERS.map(([v, l]) => <button key={v} role="tab" aria-selected={filter === v} onClick={() => setFilter(v)} className={`inline-flex min-h-11 items-center rounded-full px-3 text-sm font-medium ${filter === v ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{l}</button>)}
       </div>
+      <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search number (any format), last 4, or name" aria-label="Search calls" className="mb-3 min-h-11 w-full rounded-lg border border-slate-200 px-3 text-sm" />
       {feed == null && !recorded.length ? <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">Call feed unavailable</div> : null}
       <ul className={`${SCROLL} -mx-1 divide-y divide-slate-100`} data-scroll="calls">
         {list.length === 0 && (feed != null || recorded.length) ? <li className="px-1 py-8 text-center text-sm text-slate-500">No calls match</li> : null}

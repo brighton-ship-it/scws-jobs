@@ -135,10 +135,14 @@ export type BookServiceCallResult = {
   nearerShop?: 'ramona' | 'anza' | null;
   county?: ServiceAreaResult['county'];
   outOfArea?: boolean;
+  /** Address-only client match where the caller is not that client. Rendered in the end-of-call email. */
+  addressMatchReview?: AddressMatchReview;
 };
 
+export type AddressMatchReview = { clientName: string; callerName: string; callerPhone: string; reason: string };
+
 export type OfficeFlag = {
-  kind: 'weekend_emergency' | 'book_failed';
+  kind: 'weekend_emergency' | 'book_failed' | 'address_match_review';
   subject: string;
   text: string;
 };
@@ -403,6 +407,63 @@ export function pickExistingClient(
   return best;
 }
 
+const HONORIFICS = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'mx', 'sr', 'jr', 'sra', 'srta']);
+
+/** Lowercase, accent-free word tokens without honorifics ("Mrs. José Núñez" -> ["jose", "nunez"]). */
+export function nameTokens(value: string | null | undefined): string[] {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .split(/[^a-z0-9']+/)
+    .map((t) => t.replace(/'/g, ''))
+    .filter((t) => t && !HONORIFICS.has(t));
+}
+
+function callerNameText(input: BookServiceCallInput): string {
+  const raw = String(input.name || '').trim() || [input.firstName, input.lastName].filter(Boolean).join(' ').trim();
+  return /^unknown( caller)?$/i.test(raw) ? '' : raw;
+}
+
+/**
+ * Address-only match where the caller is not the client (tenant, relative, new owner).
+ * Whole-word, accent-insensitive; honorifics ignored. Every caller name word must be in the client name.
+ * A caller with no name on an address-only match is flagged too.
+ */
+export function addressMatchCallerDiffers(
+  client: JobberClientNode,
+  matchedBy: 'phone' | 'email' | 'address' | 'name' | null | undefined,
+  input: BookServiceCallInput
+): boolean {
+  if (matchedBy !== 'address') return false;
+  const caller = nameTokens(callerNameText(input)).filter((t) => t !== 'caller');
+  if (!caller.length) return true;
+  const clientWords = new Set(nameTokens(clientDisplayName(client)));
+  return !caller.every((t) => clientWords.has(t));
+}
+
+function callerLabel(input: BookServiceCallInput): { name: string; phone: string } {
+  const name = callerNameText(input) || 'Unknown caller';
+  const p10 = normalizePhone10(input.phone || '');
+  const phone = p10.length === 10 ? `(${p10.slice(0, 3)}) ${p10.slice(3, 6)}-${p10.slice(6)}` : String(input.phone || 'unknown');
+  return { name, phone };
+}
+
+/** Title suffix, visit instructions, office flag, and email review block when the booking reused another client's property. */
+export function callerDiffersDetails(client: JobberClientNode, input: BookServiceCallInput) {
+  const { name, phone } = callerLabel(input);
+  const clientName = clientDisplayName(client) || 'unknown client';
+  const reason = `address matched existing client ${clientName}, caller differs`;
+  const instructions = `Caller/contact: ${name}, ${phone} — ${reason}. Call ${name === 'Unknown caller' ? 'the caller' : name} for this visit.`;
+  const flag: OfficeFlag = {
+    kind: 'address_match_review',
+    subject: `Mike booking: ${reason} — ${name}`,
+    text: `${instructions}\nAddress: ${[input.address, input.city].filter(Boolean).join(', ')}\nPlease review the client on this job.`,
+  };
+  const review: AddressMatchReview = { clientName, callerName: name, callerPhone: phone, reason };
+  return { titleSuffix: ` — caller ${name} ${phone}`, instructions, flag, review };
+}
+
 export function matchingPropertyId(client: JobberClientNode, address?: string | null, city?: string | null): string | null {
   const properties = jobberClientProperties(client.properties);
   const street = normalizeStreet(address);
@@ -520,7 +581,7 @@ async function findOrCreateClient(
   token: string,
   fetchFn: typeof fetch,
   version: string
-): Promise<{ client: JobberClientNode; created: boolean }> {
+): Promise<{ client: JobberClientNode; created: boolean; matchedBy?: 'phone' | 'email' | 'address' | 'name' }> {
   const seen = new Map<string, JobberClientNode>();
   let searchQuery = SEARCH_CLIENTS_QUERY;
   for (const term of searchTermsFor(input)) {
@@ -543,7 +604,7 @@ async function findOrCreateClient(
 
   const existing = pickExistingClient([...seen.values()], input);
   if (existing) {
-    return { client: existing.client, created: false };
+    return { client: existing.client, created: false, matchedBy: existing.matchedBy };
   }
 
   const { firstName, lastName } = splitCallerName(input);
@@ -779,12 +840,13 @@ export async function bookServiceCall(
     DEFAULT_JOBBER_GRAPHQL_VERSION;
 
   try {
-    const { client, created } = await findOrCreateClient(input, token, fetchFn, version);
+    const { client, created, matchedBy } = await findOrCreateClient(input, token, fetchFn, version);
+    const differs = addressMatchCallerDiffers(client, matchedBy, input) ? callerDiffersDetails(client, input) : null;
     const propertyId = await findOrCreateProperty(client, input, token, fetchFn, version);
     const tech = assignShopTech(location);
 
     const repeatVisit = isRepeatVisitRequest(input);
-    const jobTitle = serviceCallJobTitle(repeatVisit);
+    const jobTitle = serviceCallJobTitle(repeatVisit) + (differs?.titleSuffix ?? '');
     const area = decideBookingArea({
       address: input.address,
       city: input.city,
@@ -792,7 +854,8 @@ export async function bookServiceCall(
     });
     // Drive surcharge is the initial service only. Repeat / warranty visits stay at $0.
     const driveLine = !repeatVisit && area.bookable ? area.driveLine : null;
-    const driveInstructions = driveLine ? area.driveInstructions : null;
+    const driveInstructions =
+      [differs?.instructions, driveLine ? area.driveInstructions : null].filter(Boolean).join('\n') || null;
     const jobData = await jobberGraphql(
       token,
       JOB_CREATE,
@@ -801,7 +864,7 @@ export async function bookServiceCall(
           propertyId,
           title: jobTitle,
           ...(repeatVisit
-            ? { instructions: REPEAT_VISIT_INSTRUCTIONS }
+            ? { instructions: [REPEAT_VISIT_INSTRUCTIONS, differs?.instructions].filter(Boolean).join('\n') }
             : driveInstructions
               ? { instructions: driveInstructions }
               : {}),
@@ -852,7 +915,7 @@ export async function bookServiceCall(
               {
                 title: jobTitle,
                 ...(repeatVisit
-                  ? { instructions: REPEAT_VISIT_INSTRUCTIONS }
+                  ? { instructions: [REPEAT_VISIT_INSTRUCTIONS, differs?.instructions].filter(Boolean).join('\n') }
                   : driveInstructions
                     ? { instructions: driveInstructions }
                     : {}),
@@ -878,7 +941,9 @@ export async function bookServiceCall(
       }
       job = { ...createdJob, visits: { nodes: visitData?.data?.visitCreate?.createdVisits || [] } };
     }
-    if (job?.title && !isSarahServiceCallTitle(job.title)) {
+    // Check the base title only: the caller-name suffix (e.g. "Dave Crew") must not fail a job that already exists.
+    const baseReturnedTitle = differs && job?.title ? String(job.title).replace(differs.titleSuffix, '') : job?.title;
+    if (baseReturnedTitle && !isSarahServiceCallTitle(baseReturnedTitle)) {
       return {
         booked: false,
         canConfirm: false,
@@ -937,6 +1002,13 @@ export async function bookServiceCall(
       };
     }
 
+    if (differs) {
+      try {
+        await deps.notifyOffice?.(differs.flag);
+      } catch {
+        // The job is booked; a failed office email must not undo the confirmation.
+      }
+    }
     const driveNote = driveLine && area.driveSpoken ? ` ${area.driveSpoken}` : '';
     return {
       booked: true,
@@ -956,6 +1028,7 @@ export async function bookServiceCall(
       assignedTechName: chosen.technician || tech.name,
       clientId: client.id,
       clientCreated: created,
+      ...(differs ? { addressMatchReview: differs.review } : {}),
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
