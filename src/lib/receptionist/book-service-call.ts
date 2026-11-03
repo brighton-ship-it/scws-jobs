@@ -138,7 +138,7 @@ export type BookServiceCallResult = {
 };
 
 export type OfficeFlag = {
-  kind: 'weekend_emergency' | 'book_failed';
+  kind: 'weekend_emergency' | 'book_failed' | 'address_match_review';
   subject: string;
   text: string;
 };
@@ -403,6 +403,44 @@ export function pickExistingClient(
   return best;
 }
 
+/** Address-only match where the caller's name is not the client's name (e.g. a tenant or relative). */
+export function addressMatchCallerDiffers(
+  client: JobberClientNode,
+  matchedBy: 'phone' | 'email' | 'address' | 'name' | null | undefined,
+  input: BookServiceCallInput
+): boolean {
+  if (matchedBy !== 'address') return false;
+  const { firstName, lastName } = splitCallerName(input);
+  const first = firstName.toLowerCase().trim();
+  const last = lastName.toLowerCase().trim();
+  if (!first || first === 'unknown') return false;
+  const name = clientDisplayName(client).toLowerCase();
+  const lastOk = !last || last === 'caller' || name.includes(last);
+  return !(name.includes(first) && lastOk);
+}
+
+function callerLabel(input: BookServiceCallInput): { name: string; phone: string } {
+  const { firstName, lastName } = splitCallerName(input);
+  const name = String(input.name || '').trim() || [firstName, lastName === 'Caller' ? '' : lastName].filter(Boolean).join(' ').trim() || 'Unknown caller';
+  const p10 = normalizePhone10(input.phone || '');
+  const phone = p10.length === 10 ? `(${p10.slice(0, 3)}) ${p10.slice(3, 6)}-${p10.slice(6)}` : String(input.phone || 'unknown');
+  return { name, phone };
+}
+
+/** Title suffix, visit instructions, and office flag when the booking reused another client's property. */
+export function callerDiffersDetails(client: JobberClientNode, input: BookServiceCallInput) {
+  const { name, phone } = callerLabel(input);
+  const clientName = clientDisplayName(client) || 'unknown client';
+  const reason = `address matched existing client ${clientName}, caller differs`;
+  const instructions = `Caller/contact: ${name}, ${phone} — ${reason}. Call ${name} for this visit.`;
+  const flag: OfficeFlag = {
+    kind: 'address_match_review',
+    subject: `Mike booking: ${reason} — ${name}`,
+    text: `${instructions}\nAddress: ${[input.address, input.city].filter(Boolean).join(', ')}\nPlease review the client on this job.`,
+  };
+  return { titleSuffix: ` — caller ${name} ${phone}`, instructions, flag };
+}
+
 export function matchingPropertyId(client: JobberClientNode, address?: string | null, city?: string | null): string | null {
   const properties = jobberClientProperties(client.properties);
   const street = normalizeStreet(address);
@@ -520,7 +558,7 @@ async function findOrCreateClient(
   token: string,
   fetchFn: typeof fetch,
   version: string
-): Promise<{ client: JobberClientNode; created: boolean }> {
+): Promise<{ client: JobberClientNode; created: boolean; matchedBy?: 'phone' | 'email' | 'address' | 'name' }> {
   const seen = new Map<string, JobberClientNode>();
   let searchQuery = SEARCH_CLIENTS_QUERY;
   for (const term of searchTermsFor(input)) {
@@ -543,7 +581,7 @@ async function findOrCreateClient(
 
   const existing = pickExistingClient([...seen.values()], input);
   if (existing) {
-    return { client: existing.client, created: false };
+    return { client: existing.client, created: false, matchedBy: existing.matchedBy };
   }
 
   const { firstName, lastName } = splitCallerName(input);
@@ -779,12 +817,13 @@ export async function bookServiceCall(
     DEFAULT_JOBBER_GRAPHQL_VERSION;
 
   try {
-    const { client, created } = await findOrCreateClient(input, token, fetchFn, version);
+    const { client, created, matchedBy } = await findOrCreateClient(input, token, fetchFn, version);
+    const differs = addressMatchCallerDiffers(client, matchedBy, input) ? callerDiffersDetails(client, input) : null;
     const propertyId = await findOrCreateProperty(client, input, token, fetchFn, version);
     const tech = assignShopTech(location);
 
     const repeatVisit = isRepeatVisitRequest(input);
-    const jobTitle = serviceCallJobTitle(repeatVisit);
+    const jobTitle = serviceCallJobTitle(repeatVisit) + (differs?.titleSuffix ?? '');
     const area = decideBookingArea({
       address: input.address,
       city: input.city,
@@ -792,7 +831,8 @@ export async function bookServiceCall(
     });
     // Drive surcharge is the initial service only. Repeat / warranty visits stay at $0.
     const driveLine = !repeatVisit && area.bookable ? area.driveLine : null;
-    const driveInstructions = driveLine ? area.driveInstructions : null;
+    const driveInstructions =
+      [differs?.instructions, driveLine ? area.driveInstructions : null].filter(Boolean).join('\n') || null;
     const jobData = await jobberGraphql(
       token,
       JOB_CREATE,
@@ -801,7 +841,7 @@ export async function bookServiceCall(
           propertyId,
           title: jobTitle,
           ...(repeatVisit
-            ? { instructions: REPEAT_VISIT_INSTRUCTIONS }
+            ? { instructions: [REPEAT_VISIT_INSTRUCTIONS, differs?.instructions].filter(Boolean).join('\n') }
             : driveInstructions
               ? { instructions: driveInstructions }
               : {}),
@@ -852,7 +892,7 @@ export async function bookServiceCall(
               {
                 title: jobTitle,
                 ...(repeatVisit
-                  ? { instructions: REPEAT_VISIT_INSTRUCTIONS }
+                  ? { instructions: [REPEAT_VISIT_INSTRUCTIONS, differs?.instructions].filter(Boolean).join('\n') }
                   : driveInstructions
                     ? { instructions: driveInstructions }
                     : {}),
@@ -937,6 +977,13 @@ export async function bookServiceCall(
       };
     }
 
+    if (differs) {
+      try {
+        await deps.notifyOffice?.(differs.flag);
+      } catch {
+        // The job is booked; a failed office email must not undo the confirmation.
+      }
+    }
     const driveNote = driveLine && area.driveSpoken ? ` ${area.driveSpoken}` : '';
     return {
       booked: true,
