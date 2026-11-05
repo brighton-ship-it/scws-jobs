@@ -6,7 +6,7 @@
  * This file does not call Vapi.
  */
 
-import { matchedTownName, normalizeServicePlace } from './service-area.ts';
+import { isKnownTown, matchedTownName, normalizeServicePlace } from './service-area.ts';
 
 export const SPANISH_ONLY_LINE =
   'Sí, un miembro de nuestro equipo que habla español le devolverá la llamada pronto. ¿Cuál es su nombre y número?';
@@ -291,14 +291,86 @@ const GENERIC_STREET = new Set([
   'boulevard', 'place', 'circle', 'trail', 'way',
 ]);
 
+const STREET_TYPE = new Set(Object.values(STREET_WORD));
+const DIRECTION_CANON = new Set(['north', 'south', 'east', 'west']);
+const VOWELS = new Set(['a', 'e', 'i', 'o', 'u']);
+
+/** Prices Mike quotes. A "yes, the $200" is not a house number. */
+const NOT_A_HOUSE_NUMBER = new Set(['100', '200', '300']);
+
+const DIGIT_WORD: Record<string, string> = {
+  zero: '0', oh: '0',
+  one: '1', two: '2', three: '3', four: '4', five: '5',
+  six: '6', seven: '7', eight: '8', nine: '9',
+};
+
 function canonicalWords(value: string): string[] {
-  return norm(value)
+  const mapped = norm(value)
     .split(' ')
     .filter(Boolean)
     .map((token) => DIRECTION_WORD[token] || STREET_WORD[token] || token);
+  return collapseDigitRuns(mapped);
 }
 
-/** Distinctive street words. Hwy and Highway match. A leading house number is optional. */
+/** "2 4 5 1 0" and "two four five one zero" are the same house number as "24510". */
+function collapseDigitRuns(tokens: string[]): string[] {
+  const out: string[] = [];
+  let run = '';
+  const flush = () => {
+    if (!run) return;
+    out.push(run);
+    run = '';
+  };
+  for (const token of tokens) {
+    const piece = /^\d$/.test(token) ? token : DIGIT_WORD[token];
+    if (piece) {
+      run += piece;
+      continue;
+    }
+    flush();
+    out.push(token);
+  }
+  flush();
+  return out;
+}
+
+function collapseDoubles(token: string): string {
+  return token.replace(/([a-z])\1+/g, '$1');
+}
+
+/** One vowel off after doubled letters collapse. "Tierra" and "Tiara" match. "Maple" and "Apple" do not. */
+function oneVowelApart(a: string, b: string): boolean {
+  if (a.length !== b.length || a.length < 5) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    if (!VOWELS.has(a[i]) || !VOWELS.has(b[i])) return false;
+    diff += 1;
+    if (diff > 1) return false;
+  }
+  return diff === 1;
+}
+
+function tokenNear(a: string, b: string): boolean {
+  if (a === b) return true;
+  if (/^\d+$/.test(a) || /^\d+$/.test(b)) return false;
+  const left = collapseDoubles(a);
+  const right = collapseDoubles(b);
+  if (isKnownTown(a) && isKnownTown(b) && cityKey(a) !== cityKey(b)) return false;
+  if (left === right) return left.length >= 4;
+  return oneVowelApart(left, right);
+}
+
+/** Drop a trailing state or ZIP so "Hemet, CA" matches a read-back of "Hemet". */
+function cityKey(city: string): string {
+  return normalizeServicePlace(city)
+    .replace(/\b\d{5}(?:\d{4})?\b/g, ' ')
+    .replace(/\b(?:california|calif|ca)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** Distinctive street words. Hwy and Highway match. A leading house number is optional unless both sides have one. */
 function significantAddressTokens(address: string): string[] {
   const words = canonicalWords(address);
   const body = words[0] && /^\d+$/.test(words[0]) && words.length > 1 ? words.slice(1) : words;
@@ -306,18 +378,58 @@ function significantAddressTokens(address: string): string[] {
   return significant.length ? significant : body.filter((token) => !DIRECTION_WORD[token]);
 }
 
+function bookedHouseNumber(address: string): string {
+  const words = canonicalWords(address);
+  return words[0] && /^\d+$/.test(words[0]) && words.length > 1 ? words[0] : '';
+}
+
+function houseNumbersBefore(hay: string[], anchor: string): string[] {
+  const found: string[] = [];
+  for (let i = 0; i < hay.length; i++) {
+    if (!tokenNear(hay[i], anchor)) continue;
+    let j = i - 1;
+    while (j >= 0 && DIRECTION_CANON.has(hay[j])) j -= 1;
+    if (j >= 0 && /^\d+$/.test(hay[j])) found.push(hay[j]);
+  }
+  return found;
+}
+
 function mentionsStreet(haystack: string, address: string): boolean {
   const needed = significantAddressTokens(address);
   if (!needed.length) return false;
-  const hay = new Set(canonicalWords(haystack));
-  return needed.every((token) => hay.has(token));
+  const hay = canonicalWords(haystack);
+  const bookedNumber = bookedHouseNumber(address);
+  if (bookedNumber) {
+    const heard = houseNumbersBefore(hay, needed[0]);
+    if (heard.length && !heard.includes(bookedNumber)) return false;
+  }
+  return needed.every((token) => hay.some((item) => tokenNear(item, token)));
+}
+
+function cityNegated(haystack: string, city: string): boolean {
+  const wanted = cityKey(city);
+  if (!wanted) return false;
+  const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b(?:not|no)\\s+(?:in\\s+|the\\s+)?${escaped}\\b`).test(normalizeServicePlace(haystack));
 }
 
 function mentionsCity(haystack: string, city: string): boolean {
-  const wanted = normalizeServicePlace(city);
-  if (!wanted) return false;
+  const wanted = cityKey(city);
+  if (!wanted || cityNegated(haystack, city)) return false;
+  const hay = normalizeServicePlace(haystack);
   const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(normalizeServicePlace(haystack));
+  if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(hay)) return true;
+  const wantWords = wanted.split(' ').filter(Boolean);
+  const hayWords = hay.split(' ').filter(Boolean);
+  if (!wantWords.length || hayWords.length < wantWords.length) return false;
+  for (let i = 0; i <= hayWords.length - wantWords.length; i++) {
+    const slice = hayWords.slice(i, i + wantWords.length);
+    if (!slice.every((word, index) => tokenNear(word, wantWords[index]))) continue;
+    const phrase = slice.join(' ');
+    if (isKnownTown(phrase) && cityKey(phrase) !== wanted) continue;
+    return true;
+  }
+  return false;
 }
 
 function isAffirmative(text: string): boolean {
@@ -328,9 +440,19 @@ function withoutLineMention(text: string): string {
   return text.replace(/\b[\w.'’-]+\s+line\b/gi, ' ');
 }
 
+/**
+ * "Natalie Boulevard" is a street in Hemet, not the town of Boulevard.
+ * "in Boulevard" still is that town.
+ */
+function stripStreetSuffixTowns(text: string): string {
+  return text.replace(/\b([a-z0-9']+)\s+boulevard\b/gi, (full, prev) => (
+    /^(?:in|at|to|the|from|near|of|around)$/i.test(prev) ? full : ' '
+  ));
+}
+
 /** A town the caller gave as the well location. "The Ramona line" is not one. */
 function claimedServiceTown(text: string): string | null {
-  const cleaned = withoutLineMention(text);
+  const cleaned = stripStreetSuffixTowns(withoutLineMention(text));
   const placesWell = /\b(?:well|address|street|live|living|located|property|house|home)\b/i.test(cleaned)
     || /\b(?:i'm|i am|we're|we are)\s+in\b/i.test(cleaned);
   const town = matchedTownName(cleaned);
@@ -342,13 +464,34 @@ function claimedServiceTown(text: string): string | null {
 
 function contradicts(text: string, city: string): boolean {
   const claimed = claimedServiceTown(text);
-  if (claimed && normalizeServicePlace(claimed) !== normalizeServicePlace(city)) return true;
+  if (claimed && cityKey(claimed) !== cityKey(city)) return true;
   if (/\b(?:wrong address|not that address|different address)\b/.test(norm(text))) return true;
   return false;
 }
 
+function looksLikeStatedStreet(text: string, city: string): boolean {
+  const words = canonicalWords(text);
+  const cityWords = new Set(cityKey(city).split(' ').filter(Boolean));
+  if (words.some((word) => STREET_TYPE.has(word) && !cityWords.has(word))) return true;
+  return words.some((word) => /^\d{3,}$/.test(word) && !NOT_A_HOUSE_NUMBER.has(word));
+}
+
+/** A yes that also states a different street or house number is not confirmation. */
+function statesDifferentStreet(text: string, address: string, city: string): boolean {
+  if (!looksLikeStatedStreet(text, city)) return false;
+  if (mentionsStreet(text, address)) return false;
+  const words = canonicalWords(text);
+  const cityWords = new Set(cityKey(city).split(' ').filter(Boolean));
+  const hasType = words.some((word) => STREET_TYPE.has(word) && !cityWords.has(word));
+  const heard = words.filter((word) => /^\d{3,}$/.test(word) && !NOT_A_HOUSE_NUMBER.has(word));
+  const bookedNumber = bookedHouseNumber(address);
+  if (!hasType && bookedNumber && heard.length && heard.every((number) => number === bookedNumber)) return false;
+  return true;
+}
+
 function userConfirms(text: string, address: string, city: string): boolean {
   if (contradicts(text, city)) return false;
+  if (statesDifferentStreet(text, address, city)) return false;
   if (isAffirmative(text)) return true;
   return mentionsStreet(text, address) && mentionsCity(text, city);
 }
@@ -361,7 +504,18 @@ export type AddressDecision =
 
 export const ADDRESS_CONFIRM_RETRY_LIMIT = 2;
 
-function addressReject(why: string): AddressDecision {
+export type AddressConfirmChannel = 'voice' | 'text';
+
+function addressReject(why: string, channel: AddressConfirmChannel): AddressDecision {
+  const voice =
+    `NOT BOOKED (${why}). Before booking, confirm the street address and the city out loud, even for an existing customer. ` +
+    `Ask: "Just to confirm, the well is at [street] in [city]?" Do not assume Ramona, Anza, or the line they called. ` +
+    `Wait for a yes, then call book_job again with that street, that city, and addressConfirmed set to their exact yes. ` +
+    `If they correct the street or city, use what they said.`;
+  const text =
+    `NOT BOOKED (${why}). Text the street and the town and wait for a yes. ` +
+    `Then call book_job again with that street and that town. ` +
+    `If they correct the street or town, use what they said. Do not say there is an issue booking the slot.`;
   return {
     ok: false,
     result: {
@@ -369,16 +523,18 @@ function addressReject(why: string): AddressDecision {
       canConfirm: false,
       mayBook: false,
       addressConfirmationRequired: true,
-      message:
-        `NOT BOOKED (${why}). Before booking, confirm the street address and the city out loud, even for an existing customer. ` +
-        `Ask: "Just to confirm, the well is at [street] in [city]?" Do not assume Ramona, Anza, or the line they called. ` +
-        `Wait for a yes, then call book_job again with that street, that city, and addressConfirmed set to their exact yes. ` +
-        `If they correct the street or city, use what they said.`,
+      message: channel === 'text' ? text : voice,
     },
   };
 }
 
-function addressFallback(): AddressDecision {
+function addressFallback(channel: AddressConfirmChannel): AddressDecision {
+  const voice =
+    `NOT BOOKED. The street and city were not confirmed after ${ADDRESS_CONFIRM_RETRY_LIMIT} tries. ` +
+    'Call createCallback once with their name, number, and the street and city you have. Do not call book_job again.';
+  const text =
+    `NOT BOOKED. The street and town were not confirmed after ${ADDRESS_CONFIRM_RETRY_LIMIT} tries. ` +
+    'Call hand_off_to_office once with their name and the street and town you have. Do not call book_job again.';
   return {
     ok: false,
     result: {
@@ -386,10 +542,8 @@ function addressFallback(): AddressDecision {
       canConfirm: false,
       mayBook: false,
       addressConfirmationRequired: false,
-      fallback: 'createCallback',
-      message:
-        `NOT BOOKED. The street and city were not confirmed after ${ADDRESS_CONFIRM_RETRY_LIMIT} tries. ` +
-        'Call createCallback once with their name, number, and the street and city you have. Do not call book_job again.',
+      fallback: channel === 'text' ? 'hand_off_to_office' : 'createCallback',
+      message: channel === 'text' ? text : voice,
     },
   };
 }
@@ -398,44 +552,96 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+function sentenceChunks(text: string): string[] {
+  const parts = text
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  return parts.length ? parts : [text.trim()].filter(Boolean);
+}
+
+/** A short follow-on ("in Hemet?") after the street was already spoken. */
+function isCityTail(text: string, city: string): boolean {
+  if (!mentionsCity(text, city)) return false;
+  const words = canonicalWords(text);
+  if (!words.length || words.length > 16) return false;
+  const cityWords = new Set(cityKey(city).split(' ').filter(Boolean));
+  if (words.some((word) => STREET_TYPE.has(word) && !cityWords.has(word))) return false;
+  const other = matchedTownName(stripStreetSuffixTowns(text));
+  if (other && cityKey(other) !== cityKey(city)) return false;
+  return true;
+}
+
+/** Street and city in one sentence, or the street sentence plus a short city follow-on. */
+function botReadBack(text: string, address: string, city: string): boolean {
+  const chunks = sentenceChunks(text);
+  for (let i = 0; i < chunks.length; i++) {
+    const here = chunks[i];
+    if (mentionsStreet(here, address) && mentionsCity(here, city)) return true;
+    const next = chunks[i + 1];
+    if (next && mentionsStreet(here, address) && !mentionsCity(here, city) && isCityTail(next, city)) return true;
+  }
+  return false;
+}
+
+function readBackAsks(turns: AddressTurn[], address: string, city: string): { asks: number; agreed: boolean } {
+  let asks = 0;
+  let agreed = false;
+  for (let i = 0; i < turns.length; i++) {
+    if (turns[i].role !== 'bot') continue;
+    let end = i;
+    const parts: string[] = [];
+    while (end < turns.length && turns[end].role === 'bot') {
+      parts.push(turns[end].text);
+      end += 1;
+    }
+    if (botReadBack(parts.join(' '), address, city)) {
+      asks += 1;
+      const reply: string[] = [];
+      let cursor = end;
+      while (cursor < turns.length && turns[cursor].role === 'user') {
+        reply.push(turns[cursor].text);
+        cursor += 1;
+      }
+      if (reply.some((text) => userConfirms(text, address, city))) agreed = true;
+    }
+    i = end - 1;
+  }
+  return { asks, agreed };
+}
+
 /**
  * book_job must have a street and a city the caller confirmed.
  * An address on file, or the city of the line they dialed, is not confirmation.
+ * addressConfirmed is only a fallback when Vapi sent no transcript. It cannot override a mismatch.
  */
 export function checkServiceAddressConfirmation(
   params: Record<string, unknown>,
   turns: AddressTurn[] = [],
+  options: { channel?: AddressConfirmChannel } = {},
 ): AddressDecision {
+  const channel = options.channel === 'text' ? 'text' : 'voice';
   const address = str(params.address) || str(params.serviceAddress) || str(params.street);
   const city = str(params.city) || str(params.town);
-  if (!address || !city) return addressReject('street and city are both required');
+  if (!address || !city) return addressReject('street and city are both required', channel);
 
   const users = turns.filter((turn) => turn.role === 'user').map((turn) => turn.text);
   const hasTranscript = users.length > 0;
-  let asks = 0;
-  let agreed = false;
-  for (let i = 0; i < turns.length; i++) {
-    const turn = turns[i];
-    if (turn.role !== 'bot' || !mentionsStreet(turn.text, address) || !mentionsCity(turn.text, city)) continue;
-    asks += 1;
-    const reply: string[] = [];
-    for (let j = i + 1; j < turns.length && turns[j].role === 'user'; j++) reply.push(turns[j].text);
-    if (reply.some((text) => userConfirms(text, address, city))) agreed = true;
-  }
+  const { asks, agreed } = readBackAsks(turns, address, city);
   if (agreed) return { ok: true };
 
-  const claimed = users.map(claimedServiceTown).find((town) => town && normalizeServicePlace(town) !== normalizeServicePlace(city));
+  const claimed = users.map(claimedServiceTown).find((town) => town && cityKey(town) !== cityKey(city));
   if (claimed && asks < ADDRESS_CONFIRM_RETRY_LIMIT) {
-    return addressReject(`the caller said ${claimed}, not ${city}`);
+    return addressReject(`the caller said ${claimed}, not ${city}`, channel);
   }
-  if (asks >= ADDRESS_CONFIRM_RETRY_LIMIT) return addressFallback();
+  if (asks >= ADDRESS_CONFIRM_RETRY_LIMIT) return addressFallback(channel);
 
   if (!hasTranscript) {
     const confirmed = str(params.addressConfirmed) || str(params.callerAddressYes);
     if (confirmed && isAffirmative(confirmed) && !contradicts(confirmed, city)) return { ok: true };
-    return addressReject('the street and city were not confirmed');
+    return addressReject('the street and city were not confirmed', channel);
   }
 
-  if (!asks) return addressReject('you have not read back the street and the city');
-  return addressReject('the caller has not said yes to that street and city');
+  if (!asks) return addressReject('you have not read back the street and the city', channel);
+  return addressReject('the caller has not said yes to that street and city', channel);
 }
