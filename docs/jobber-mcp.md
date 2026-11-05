@@ -90,7 +90,7 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.15.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.16.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
@@ -241,6 +241,67 @@ curl -sS \
   https://scws-jobs.vercel.app/api/mcp/jobber
 ```
 
+## QuickBooks writes
+
+`qbo_status`, `qbo_report`, and `qbo_query` are still read-only GET/SELECT calls against the production company stored in `quickbooks_connections`.
+
+These tools preview by default and post only to a sandbox company:
+
+| Tool | What a confirm does |
+| --- | --- |
+| `qbo_journal_entry` | Create or update a balanced journal entry. Reverse an entry with another entry. |
+| `qbo_deposit` | Create a deposit, or deposit an existing payment. |
+| `qbo_payment` | Create a payment and apply it to invoices. |
+| `qbo_invoice` | Create or update an invoice (DocNumber backfill). Never sets `EmailStatus`. |
+| `qbo_categorize_purchase` | Change the account on an existing purchase. Does not create one. |
+| `qbo_bill` | Create or update a bill. |
+| `qbo_bill_payment` | Pay a bill by check or credit card. |
+| `qbo_attach_note` | Set `PrivateNote`, an invoice `CustomerMemo`, or an Attachable note (`IncludeOnSend` false). |
+| `qbo_closing_date` | Set `Preferences.AccountingInfoPrefs.BookCloseDate`. |
+| `qbo_void` | Void an Invoice or a Payment (`operation=void`). |
+
+`confirm` defaults to false. A preview returns the POST body when it is known, or the exact field changes when confirm must read a SyncToken first (`qbo_categorize_purchase`, `qbo_closing_date`). `dryRun: false` does not post. Pass `confirm: true`.
+
+`requestId` is sent as Intuit's `requestid` query parameter. Reuse it to retry the same post. If you omit it, the gateway hashes the tool and payload so an identical retry uses the same key. Intuit returns the original response for a repeated request id instead of creating a second transaction.
+
+Every confirm writes `public.qbo_write_audit` (actor, tool, payload, QuickBooks response, ids) before the post and again with the response. Apply `supabase/migrations/20261105_qbo_write_audit.sql` in the Supabase SQL Editor. The app does not run that file. If the insert fails, the post is refused. Preview rows are best-effort.
+
+### Env (leave unset in production)
+
+| Name | Role |
+| --- | --- |
+| `QBO_WRITES_ENABLED` | Must be the string `true`. Anything else, including unset, keeps writes off. |
+| `QBO_WRITE_ENVIRONMENT` | Must be `sandbox` or unset. `production` is refused. |
+| `QBO_WRITE_REALM_ID` | Sandbox company realm. Refused when it equals the production connection's realm. |
+| `QBO_WRITE_REFRESH_TOKEN` | Sandbox refresh token, used only when no sandbox row is stored. Rotated tokens are written to a `quickbooks_connections` row with `environment=sandbox`. The production row is not updated. |
+| `QBO_WRITE_CLIENT_ID` / `QBO_WRITE_CLIENT_SECRET` | Optional. Fall back to `QBO_CLIENT_ID` / `QBO_CLIENT_SECRET`. |
+| `QBO_PRODUCTION_REALM_ID` | Optional extra guard. Confirm also reads the production realm from Supabase and refuses a match. |
+
+There is no flag that enables writes against the real company. Do not set these on the scws-jobs Production deployment for the live realm.
+
+Health (`GET /api/mcp/jobber`) reports `quickbooksWrites: false` until the gate is open. `quickbooksDeletes` stays false.
+
+### Sandbox integration test
+
+`src/lib/quickbooks/durable-write.sandbox.test.ts` skips unless all of the following are set in the environment (values are not committed):
+
+1. An Intuit developer account with a **sandbox** company (not the Southern California Well Service production realm).
+2. `QBO_WRITE_SANDBOX_TEST=true`
+3. `QBO_WRITES_ENABLED=true`
+4. `QBO_WRITE_ENVIRONMENT=sandbox`
+5. `QBO_WRITE_REALM_ID` = that sandbox realm
+6. `QBO_WRITE_REFRESH_TOKEN` for that sandbox company
+7. `QBO_CLIENT_ID` and `QBO_CLIENT_SECRET` (or the `QBO_WRITE_*` pair) for the Intuit app that issued the sandbox token
+8. `QBO_PRODUCTION_REALM_ID` set to the real company realm so the test can prove the guard
+9. `QBO_SANDBOX_DEBIT_ACCOUNT_ID` and `QBO_SANDBOX_CREDIT_ACCOUNT_ID` — two sandbox account ids for a $1.00 balanced journal (the test reverses it)
+10. `NEXT_PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_KEY`, and `public.qbo_write_audit` already applied, so the confirm can store the audit and the rotated refresh token
+
+The test posts a balanced $1.00 journal entry and then the reversing entry, both with explicit request ids. It does not run in CI today: this environment has none of those variables.
+
+### Jobber to QuickBooks sync
+
+This gateway does not enable, disable, or repair Jobber's QuickBooks sync. The app's own `/api/quickbooks/sync/{invoice,payment,customer}` routes push this CRM's Supabase invoices, require a signed-in user, and are not on a cron. Nothing in this change turns that sync back on.
+
 ## Code map
 
 | File | Role |
@@ -249,6 +310,11 @@ curl -sS \
 | `src/lib/mcp/jobber-http.ts` | Auth + Streamable HTTP |
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
+| `src/lib/mcp/qbo-write-tools.ts` | QuickBooks write tool schemas (preview by default) |
+| `src/lib/quickbooks/write-gate.ts` | Sandbox-only write gate |
+| `src/lib/quickbooks/write-payloads.ts` | Exact QuickBooks write bodies |
+| `src/lib/quickbooks/durable-write.ts` | Confirm, requestid, sandbox token, audit |
+| `src/lib/quickbooks/durable-read.ts` | Read-only production QuickBooks (`qbo_query`, `qbo_report`, `qbo_status`) |
 | `src/lib/jobber/products.ts` | product catalog search (`products`, not `productsAndServices`) + local name/description fallback |
 | `src/lib/jobber/mcp-products.ts` | `get_products` and one-product `edit_product` (`productsAndServicesEdit`) |
 | `src/lib/jobber/mcp-quotes.ts` | get/search/update draft helpers |
