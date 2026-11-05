@@ -1,8 +1,9 @@
 /**
  * Missed-call / hang-up text follow-up (CHIIRP-style), pure rules only.
  *
- * One text from SCWS to every inbound caller who did not end up with a real booking,
- * whether or not they reached Mike. A callback or emergency row is not a booking.
+ * One text from SCWS to every inbound caller who did not end up with a real booking
+ * and who does not already have a scheduled Jobber visit, whether or not they reached Mike.
+ * A callback or emergency row is not a booking. An older open job that is not scheduled is not either.
  * Replies go to the AI text conversation (text-agent.ts), which books with Mike's tools and
  * hands off to the office (Liz) when needed.
  *
@@ -14,20 +15,25 @@
  * MISSED_CALL_TEXT_LINES_EXTRA only add numbers; they cannot turn a dial-plan line off.
  */
 import { digits10 } from '../ads/call-dashboard.ts';
+import { isInternalJobTitle } from '../ads/internal-job.ts';
 import { isOwnNumber } from '../ads/real-leads.ts';
 import { staffLines } from '../ads/staff-lines.ts';
 import { type OutreachAttempt } from '../ads/callbacks.ts';
 import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
 import { doNotCallText, zonedParts, DEFAULT_HOLD_PHRASES } from './mike-callback.ts';
 
-/** Brighton's cell. Test calls come from here; it never gets a real follow-up text. */
+/**
+ * Numbers that never get a follow-up text. Checked against the caller, not the line they dialed.
+ * 408-318-1171 is Brighton's cell. 760-331-2502 and 760-463-0493 are SCWS Google Ads and SEO
+ * tracking lines, not personal cells. They stay on this list so a call placed from those lines is not texted.
+ */
 export const OWNER_TEST_NUMBERS = ['4083181171', '7603312502', '7604630493'];
 export const DAY_MS = 86400_000;
 export const SAME_CALL_MS = 3 * 60_000;
 /** Inbound replies route to the AI only this long after our text. */
 export const THREAD_OPEN_MS = 72 * 3600_000;
 
-export type TextTrigger = 'ring_hangup' | 'voicemail' | 'mike_hangup' | 'mike_unfinished';
+export type TextTrigger = 'ring_hangup' | 'voicemail' | 'mike_hangup' | 'mike_unfinished' | 'mike_completed';
 export type WordingOption = 'A' | 'B' | 'C';
 
 export interface TextCandidate {
@@ -170,25 +176,60 @@ export function textAllowedFor(phone: string | null | undefined, config: TextCon
  * unset). B and C stay only as alternates. Each names SCWS, says why
  * we're texting, offers ONE next step, and carries opt-out language. No prices, no links,
  * no phone numbers, nothing about bills or payments.
+ *
+ * missed: ring hang-up or voicemail (Mike never connected).
+ * cutoff: Mike connected, but the leg was short or the caller never spoke.
+ * thanks: Mike connected and the conversation actually ran, and it still did not book.
  */
-export const WORDING: Record<WordingOption, { missed: string; cutoff: string }> = {
+export const WORDING: Record<WordingOption, { missed: string; cutoff: string; thanks: string }> = {
   A: {
     missed: "Hi, this is Mike with Southern California Well Service. Sorry we missed your call. What's going on with your well? Reply here and I can get you on the schedule. Reply STOP to opt out.",
     cutoff: "Hi, this is Mike with Southern California Well Service. Looks like we got cut off. What's going on with your well? Reply here and I can get you on the schedule. Reply STOP to opt out.",
+    thanks: "Hi, this is Mike with Southern California Well Service. Thanks for calling. What's going on with your well? Reply here and I can get you on the schedule. Reply STOP to opt out.",
   },
   B: {
     missed: 'Southern California Well Service here. Sorry we missed you! Text back what town the well is in and what it\'s doing, and we\'ll get a tech out. Reply STOP to opt out.',
     cutoff: 'Southern California Well Service here. Sorry we got cut off! Text back what town the well is in and what it\'s doing, and we\'ll get a tech out. Reply STOP to opt out.',
+    thanks: 'Southern California Well Service here. Thanks for calling! Text back what town the well is in and what it\'s doing, and we\'ll get a tech out. Reply STOP to opt out.',
   },
   C: {
     missed: 'Hi from Southern California Well Service in Ramona and Anza. We saw your call and want to make sure you get help. Want us to set up a visit? Just reply here. Reply STOP to opt out.',
     cutoff: 'Hi from Southern California Well Service in Ramona and Anza. Your call ended before we could finish. Want us to set up a visit? Just reply here. Reply STOP to opt out.',
+    thanks: 'Hi from Southern California Well Service in Ramona and Anza. Thanks for calling. Want us to set up a visit? Just reply here. Reply STOP to opt out.',
   },
 };
 
 export function textBody(trigger: TextTrigger, option: WordingOption): string {
   const w = WORDING[option] || WORDING.A;
-  return trigger === 'mike_hangup' || trigger === 'mike_unfinished' ? w.cutoff : w.missed;
+  if (trigger === 'mike_completed') return w.thanks;
+  if (trigger === 'mike_hangup' || trigger === 'mike_unfinished') return w.cutoff;
+  return w.missed;
+}
+
+/**
+ * A Mike connection shorter than this, or one where the caller never spoke, is a cut-off.
+ * At or above this, with the caller speaking (or with no transcript to check), it is a finished conversation.
+ */
+export const MIKE_COMPLETED_MIN_SECONDS = 20;
+
+/**
+ * Null when there is no transcript to count. Zero when a transcript is stored and the caller never spoke.
+ * A missing transcript must not be treated as a silent caller.
+ */
+export function mikeCallerTurns(transcript: string | null | undefined): number | null {
+  if (transcript == null || !transcript.trim()) return null;
+  return callerTurns(transcript);
+}
+
+/** Which follow-up a connected Mike leg gets. Never used for a ring hang-up or voicemail. */
+export function mikeFollowUpTrigger(input: {
+  durationSeconds: number | null | undefined;
+  callerTurns: number | null | undefined;
+}): 'mike_hangup' | 'mike_completed' {
+  if (input.callerTurns === 0) return 'mike_hangup';
+  const duration = input.durationSeconds;
+  if (duration == null || !Number.isFinite(duration) || duration < MIKE_COMPLETED_MIN_SECONDS) return 'mike_hangup';
+  return 'mike_completed';
 }
 
 /** A booking_requests row, or a Jobber job/request already joined to a phone. */
@@ -206,6 +247,8 @@ export interface TextContext {
   work: Map<string, number[]>;
   /** Open Jobber-job phones. decideText does not skip on this. */
   activeJobPhones: Set<string>;
+  /** Phones that already have an open scheduled Jobber visit or appointment. decideText skips these. */
+  scheduledPhones: Set<string>;
   unpaidPhones: Set<string>;
   holdPhones: Set<string>;
   holdNotes: Array<{ phone: string | null; text: string }>;
@@ -277,6 +320,7 @@ export function decideText(
   if (mikeCallFinished({ vapiCallId: call.vapiCallId ?? null, phone: call.phone, at: call.at }, ctx.bookings ?? [])) {
     return { action: 'skip', reason: 'booked' };
   }
+  if (ctx.scheduledPhones?.has(phone)) return { action: 'skip', reason: 'already_scheduled' };
 
   const to = `+1${phone}`;
   const body = textBody(call.trigger, config.option);
@@ -330,6 +374,7 @@ function bookingCounts(row: BookingRow): boolean {
  * True only for a real booking: a job/assessment booking_requests row, or a Jobber
  * job/request for that phone created after the call. Callback and emergency do not finish the call.
  * Clock skew of two minutes still counts as this call.
+ * An appointment that already existed before the call is not this check. That is scheduledPhones.
  */
 export function mikeCallFinished(
   call: { vapiCallId: string | null; phone: string | null; at: string },
@@ -347,6 +392,80 @@ export function mikeCallFinished(
 
 /** A shop leg is a real answer only at or above this. Shorter pickups are Google Voice or a hang-up. */
 export const SHOP_ANSWERED_MIN_SECONDS = 20;
+
+/** Jobber job statuses that mean a visit is on the calendar (not done, not unscheduled). */
+export const SCHEDULED_JOB_STATUSES = new Set(['upcoming', 'today', 'late', 'active']);
+
+const CLOSED_VISIT = /^(completed|complete|cancelled|canceled|skipped)$/i;
+
+function ptDateValue(date: Date, timeZone: string): number {
+  const p = zonedParts(date, timeZone);
+  return p.year * 10000 + p.month * 100 + p.day;
+}
+
+function visitNodes(source: unknown): Array<Record<string, unknown>> {
+  const root = source && typeof source === 'object' ? source as Record<string, unknown> : null;
+  if (!root) return [];
+  const visits = root.visits;
+  const nodes = Array.isArray(visits)
+    ? visits
+    : visits && typeof visits === 'object' && Array.isArray((visits as { nodes?: unknown[] }).nodes)
+      ? (visits as { nodes: unknown[] }).nodes
+      : [];
+  return nodes.filter((node): node is Record<string, unknown> => !!node && typeof node === 'object');
+}
+
+/** A visit still on the calendar: today or later in Pacific, or started within the last 18 hours. */
+export function visitIsOpenAppointment(node: Record<string, unknown>, now: Date, timeZone = 'America/Los_Angeles'): boolean {
+  const status = String(node.visitStatus ?? node.status ?? node.visit_status ?? '').trim();
+  if (status && CLOSED_VISIT.test(status)) return false;
+  if (isInternalJobTitle(typeof node.title === 'string' ? node.title : null)) return false;
+  const startRaw = node.startAt ?? node.start_at;
+  if (typeof startRaw !== 'string') return false;
+  const start = Date.parse(startRaw);
+  if (!Number.isFinite(start)) return false;
+  if (ptDateValue(new Date(start), timeZone) >= ptDateValue(now, timeZone)) return true;
+  return now.getTime() >= start && now.getTime() - start < 18 * 3600_000;
+}
+
+/**
+ * True when this Jobber job is an open scheduled appointment.
+ * `upcoming` / `today` / `late` / `active` count. Archived, unscheduled, and requires-invoicing do not.
+ * A future visit on the row counts even when status was not stored. Internal titles (shop meeting, training) do not.
+ */
+export function jobHasOpenAppointment(
+  row: { completed_at?: string | null; completedAt?: string | null; title?: string | null; jobStatus?: string | null; data?: unknown; visits?: unknown },
+  now: Date,
+  timeZone = 'America/Los_Angeles',
+): boolean {
+  const data = row.data && typeof row.data === 'object' ? row.data as Record<string, unknown> : {};
+  const completed = row.completed_at ?? row.completedAt ?? (typeof data.completedAt === 'string' ? data.completedAt : null);
+  if (typeof completed === 'string' && completed && Number.isFinite(Date.parse(completed))) return false;
+  const title = row.title ?? (typeof data.title === 'string' ? data.title : null);
+  if (isInternalJobTitle(title)) return false;
+  const status = String(row.jobStatus ?? data.jobStatus ?? '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (SCHEDULED_JOB_STATUSES.has(status)) return true;
+  return [...visitNodes(data), ...visitNodes(row)].some((node) => visitIsOpenAppointment(node, now, timeZone));
+}
+
+/** Phones on clients whose Jobber jobs are still an open scheduled appointment. */
+export function scheduledPhonesFromJobs(
+  jobs: Array<{ client_id?: string | null; title?: string | null; completed_at?: string | null; completedAt?: string | null; jobStatus?: string | null; data?: unknown; visits?: unknown }>,
+  clients: Array<{ id: string; phones_digits?: Array<string | null> | null }>,
+  now: Date,
+): Set<string> {
+  const byId = new Map<string, string[]>();
+  for (const client of clients) {
+    const phones = (client.phones_digits ?? []).map((phone) => digits10(phone)).filter((phone): phone is string => !!phone);
+    byId.set(client.id, phones);
+  }
+  const out = new Set<string>();
+  for (const job of jobs) {
+    if (!job.client_id || !jobHasOpenAppointment(job, now)) continue;
+    for (const phone of byId.get(job.client_id) ?? []) out.add(phone);
+  }
+  return out;
+}
 
 const OPEN_CALL = new Set(['queued', 'ringing', 'in-progress']);
 const MISSED_LEG = new Set(['no-answer', 'busy', 'failed', 'canceled', 'cancelled']);
@@ -426,7 +545,8 @@ export function sameTextEpisode(
 /**
  * Inbound parent calls to SCWS numbers.
  * A shop leg counts as answered only when it connected for at least ~20s.
- * Otherwise the parent is a candidate: ring_hangup when Mike never connected, mike_unfinished when he did.
+ * Otherwise the parent is a candidate: ring_hangup when Mike never connected,
+ * mike_hangup when he connected only briefly, mike_completed when the conversation ran.
  * A still-open parent is left for the next run.
  */
 export function classifyInboundParents(input: {
@@ -454,7 +574,9 @@ export function classifyInboundParents(input: {
     if (input.sinceMs != null && (!Number.isFinite(started) || started < input.sinceMs)) continue;
     const kids = children.get(leg.sid) ?? [];
     const shopAnswered = kids.some((child) => !mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 0) >= SHOP_ANSWERED_MIN_SECONDS);
-    const reachedMike = kids.some((child) => mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 1) > 0);
+    const mikeKids = kids.filter((child) => mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 1) > 0);
+    const reachedMike = mikeKids.length > 0;
+    const mikeSeconds = mikeKids.reduce((max, child) => Math.max(max, child.durationSeconds ?? 0), 0);
     const phone = digits10(leg.from);
     if (shopAnswered) {
       out.push({ sid: leg.sid, at: leg.at, phone: leg.from, shopAnswered: true, candidate: null });
@@ -470,7 +592,7 @@ export function classifyInboundParents(input: {
         at: leg.at,
         phone: phone ? `+1${phone}` : leg.from,
         calledNumber: `+1${line}`,
-        trigger: reachedMike ? 'mike_unfinished' : 'ring_hangup',
+        trigger: reachedMike ? mikeFollowUpTrigger({ durationSeconds: mikeSeconds, callerTurns: null }) : 'ring_hangup',
         name: null,
         summary: null,
         spam: false,

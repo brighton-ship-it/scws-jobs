@@ -55,7 +55,8 @@ Rules:
 - San Diego, Riverside, and San Bernardino counties are bookable, including Santa Ysabel, Quail Springs, and Mesa Grande. Do not hand those off for location and do not refuse because of drive time.
 - Only offer times that check_schedule listed. Never invent a date, time or technician. Never say booked or confirmed until book_job returns booked: true; then confirm the day, window and tech exactly as returned and say "If anything changes, just call or text us."
 - No water at all, livestock without water, flooding, sparks or burning smell: still offer the earliest slot, and also call hand_off_to_office with urgent true. For sparks or burning smell, tell them to turn off the pump breaker only if safe, and call 911 if anyone is in danger.
-- Hand off (hand_off_to_office) and tell them the office will reach out when: they ask for a person, it's about a bill or invoice, a new well or drilling quote, a pump install or other project quote, a complaint, a cancellation or reschedule, they decline the slots, or you're unsure. Never discuss balances, payments or collections.
+- Hand off (hand_off_to_office) and tell them the office will reach out when: they ask for a person, it's about a bill or invoice, a new well or drilling quote, a pump install or other project quote, a complaint, a cancellation or reschedule, they decline the slots, they say they need it now, or you're unsure. Never discuss balances, payments or collections.
+- If your reply says the office will follow up, you must call hand_off_to_office in that same turn. Saying it without the tool does not alert anyone.
 - Pricing: service call $200 for the first hour, then $200 an hour; two-man crew $300 an hour. When a tool result includes a drive surcharge, the first visit also adds that amount ($100 per hour of drive past 1 hour). Never give other prices, discounts or price matching.
 - Hours: open 7 days a week, 7 AM to 5 PM Pacific. Don't give phone numbers unless asked.
 - If they ask whether you're a person or AI, say you're SCWS's virtual assistant and offer to have the office reach out.
@@ -117,6 +118,26 @@ export function scrubReply(text: string): string {
 
 export const FALLBACK_REPLY = "Thanks! I've passed this to our office and someone will reach out to you shortly.";
 
+/** Customer said this cannot wait. Alerts the office even when the reply is still trying to book. */
+const NEEDS_NOW = /\bneed it now\b|\bright now\b|\basap\b|\bemergency\b|\burgent\b|\btonight\b|\bsame[- ]night\b|\bflood(?:ing|ed)?\b|\bburning smell\b|\bsparks?\b|\blivestock\b|\bno water\b(?!\s+pressure)/i;
+/** The reply promised a person at the office. That promise has to actually alert Liz. */
+const OFFICE_PROMISE = /\boffice\b/i;
+
+/**
+ * The texting model sometimes tells the customer the office will follow up and never calls hand_off_to_office.
+ * alert: send that handoff (office SMS). closeThread: the reply was a handoff, so stop the AI thread.
+ * An urgent inbound ("need it now", no water) alerts without closing when the reply is still booking.
+ */
+export function officeAlertFor(inbound: string, reply: string): { alert: boolean; urgent: boolean; closeThread: boolean } {
+  const urgent = NEEDS_NOW.test(inbound || '');
+  const closeThread = OFFICE_PROMISE.test(reply || '');
+  return { alert: urgent || closeThread, urgent, closeThread };
+}
+
+function alreadyAlertedOffice(thread: ThreadMessage[]): boolean {
+  return thread.some((m) => m.role === 'tool' && m.name === 'hand_off_to_office');
+}
+
 export async function runTextAgent(input: {
   phone: string;
   inbound: string;
@@ -128,6 +149,7 @@ export async function runTextAgent(input: {
   const nowIso = input.now.toISOString();
   const thread: ThreadMessage[] = [...input.thread, { role: 'user', content: input.inbound.slice(0, 1000), at: nowIso }];
   let booked = alreadyBooked(thread);
+  let officeAlerted = alreadyAlertedOffice(thread);
   let handedOff = false;
   let urgent = false;
   const messages: any[] = [{ role: 'system', content: textAgentSystemPrompt(input.now, input.phone) }];
@@ -148,6 +170,23 @@ export async function runTextAgent(input: {
       const reply = scrubReply(msg.content || '');
       if (!reply) break;
       thread.push({ role: 'assistant', content: reply, at: nowIso });
+      const alert = officeAlertFor(input.inbound, reply);
+      if (alert.alert && !officeAlerted) {
+        try {
+          const result = unwrap(await input.tools.handOff({
+            phone: input.phone,
+            reason: alert.closeThread ? 'Texting AI told the customer the office would follow up' : 'Customer needs help now',
+            urgent: alert.urgent,
+            summary: `${input.inbound.slice(0, 300)} | ${reply}`.slice(0, 500),
+          }));
+          officeAlerted = true;
+          urgent = urgent || alert.urgent;
+          if (alert.closeThread) handedOff = true;
+          thread.push({ role: 'tool', name: 'hand_off_to_office', content: JSON.stringify(result ?? {}).slice(0, 4000), at: nowIso });
+        } catch { /* customer still gets the reply; the inbound text is also forwarded to the office */ }
+      } else if (alert.closeThread && officeAlerted) {
+        handedOff = true;
+      }
       return { reply, thread, booked, handedOff, urgent };
     }
     messages.push({ role: 'assistant', content: msg.content || null, tool_calls: calls });
@@ -179,11 +218,12 @@ export async function runTextAgent(input: {
             break;
           }
           case 'hand_off_to_office':
-            if (!handedOff) {
+            if (!officeAlerted) {
               result = unwrap(await input.tools.handOff({ phone: input.phone, reason: String(args.reason || ''), urgent: Boolean(args.urgent), summary: String(args.summary || '') }));
-              handedOff = true;
+              officeAlerted = true;
               urgent = urgent || Boolean(args.urgent);
             } else result = { ok: true, note: 'already handed off' };
+            handedOff = true;
             break;
           default:
             result = { error: 'unknown tool' };
@@ -197,7 +237,7 @@ export async function runTextAgent(input: {
     }
   }
   // Model failed or looped: never leave the texter hanging; hand to the office once.
-  if (!handedOff) {
+  if (!handedOff && !officeAlerted) {
     try {
       await input.tools.handOff({ phone: input.phone, reason: 'AI text could not finish', urgent: false, summary: input.inbound.slice(0, 300) });
       handedOff = true;

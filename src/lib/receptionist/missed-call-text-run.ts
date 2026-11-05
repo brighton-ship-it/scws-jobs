@@ -12,12 +12,14 @@ import { isOwnNumber } from '../ads/real-leads.ts';
 import { AI_RECEPTIONIST } from '../phone-calls/config.ts';
 import { loadCallbackSnapshot } from './mike-callback-run.ts';
 import {
-  callerTurns,
   classifyInboundParents,
+  mikeCallerTurns,
   decideText,
+  mikeFollowUpTrigger,
   newestPerPhone,
   parseTwilioLegs,
   sameTextEpisode,
+  scheduledPhonesFromJobs,
   staffPhoneSet,
   textAllowedFor,
   textConfig,
@@ -186,7 +188,11 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
       return [] as any[];
     }
   };
-  const [mike, office, texts, inboundLines, jobs, jobberRequests, twilio] = await Promise.all([
+  const appointmentQuery = (status: string) => read(
+    'jobber appointments',
+    db.from('jobber_jobs').select('id, client_id, title, completed_at, data').is('completed_at', null).filter('data->>jobStatus', 'ilike', status).limit(1000),
+  );
+  const [mike, office, texts, inboundLines, jobs, jobberRequests, upcoming, todayJobs, lateJobs, activeJobs, twilio] = await Promise.all([
     read('mike calls', db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, transcript, duration_sec, called_at').gte('called_at', since).limit(500)),
     read('office requests', db.from('booking_requests').select('vapi_call_id, phone, service_type, created_at').gte('created_at', sinceWide).limit(1000)),
     read('texts', db.from('missed_call_texts').select('missed_call_key, caller_phone, outcome, sent_at').gte('missed_at', new Date(now.getTime() - 3 * 86400_000).toISOString()).limit(2000)),
@@ -195,11 +201,18 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
     read('inbound lines', db.from('inbound_call_recordings').select('call_sid, caller_number, tracking_number, started_at, caller_name, summary, outcome').gte('started_at', new Date(now.getTime() - config.lookbackMs - 10 * 60_000).toISOString()).limit(500)),
     read('jobber jobs', db.from('jobber_jobs').select('id, client_id, created_at').gte('created_at', sinceWide).limit(2000)),
     readRequests(),
+    // Open jobs already on the calendar, including ones created before this call.
+    // One ilike per status (Upcoming and upcoming both match). A failed read blocks the pass.
+    appointmentQuery('upcoming'),
+    appointmentQuery('today'),
+    appointmentQuery('late'),
+    appointmentQuery('active'),
     fetchTwilioCallLegs(since, env, fetchImpl),
   ]);
+  const appointments = [...upcoming, ...todayJobs, ...lateJobs, ...activeJobs];
   if (twilio.note) notes.push(twilio.note);
 
-  const clientIds = Array.from(new Set([...jobs, ...jobberRequests].map((r) => r.client_id).filter(Boolean)));
+  const clientIds = Array.from(new Set([...jobs, ...jobberRequests, ...appointments].map((r) => r.client_id).filter(Boolean)));
   const clients: any[] = [];
   for (let i = 0; i < clientIds.length; i += 150) {
     const chunk = await read('jobber clients', db.from('jobber_clients').select('id, phones_digits').in('id', clientIds.slice(i, i + 150)));
@@ -223,6 +236,11 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
   };
   pushJobber(jobs, 'jobber_job');
   pushJobber(jobberRequests, 'jobber_request');
+  const scheduledPhones = scheduledPhonesFromJobs(
+    appointments,
+    clients.map((client) => ({ id: client.id, phones_digits: phonesOf(client) })),
+    now,
+  );
 
   const calls: TextCandidate[] = [];
   for (const c of base.calls) {
@@ -252,7 +270,9 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
     const f = flags(name, summary, row.candidate.phone, recording?.outcome ?? null);
     return [{
       ...row.candidate,
-      trigger: mikeRow ? 'mike_unfinished' as const : row.candidate.trigger,
+      trigger: mikeRow
+        ? mikeFollowUpTrigger({ durationSeconds: Number(mikeRow.duration_sec) || 0, callerTurns: mikeCallerTurns(mikeRow.transcript) })
+        : row.candidate.trigger,
       vapiCallId: mikeRow?.vapi_call_id ?? null,
       name,
       summary,
@@ -270,13 +290,12 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
     const phone = r.phone ? `+${String(r.phone).replace(/\D/g, '').replace(/^(?!1)(\d{10})$/, '1$1')}` : null;
     if (covered({ phone, at })) continue;
     const f = flags(r.customer_name ?? null, r.summary ?? null, r.phone ?? null, null);
-    const turns = callerTurns(r.transcript);
     kept.push({
       key: `vapi:${r.vapi_call_id || `${r.called_at}:${r.phone}`}`,
       at,
       phone,
       calledNumber: trackingNumberForCaller(r.phone, r.called_at, lineRows),
-      trigger: turns === 0 || (Number(r.duration_sec) || 0) < 20 ? 'mike_hangup' : 'mike_unfinished',
+      trigger: mikeFollowUpTrigger({ durationSeconds: Number(r.duration_sec) || 0, callerTurns: mikeCallerTurns(r.transcript) }),
       vapiCallId: r.vapi_call_id ?? null,
       name: r.customer_name && !/^caller:/i.test(r.customer_name) ? r.customer_name : null,
       summary: r.summary ?? null,
@@ -289,6 +308,7 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
     voiceAttempts: base.ctx.voiceAttempts,
     work: base.ctx.work,
     activeJobPhones: new Set(),
+    scheduledPhones,
     unpaidPhones: base.ctx.unpaidPhones,
     holdPhones: base.ctx.holdPhones,
     holdNotes: base.ctx.holdNotes,
@@ -302,7 +322,7 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
 
 /** A failed exclusion read must not text anyone. Open invoices, holds, and active jobs are not exclusions. */
 export function textPassBlocked(notes: string[]): string | null {
-  return notes.find((n) => /^(mike calls|office requests|texts|opt-outs|jobber jobs|jobber clients|jobber requests):/.test(n)) ?? null;
+  return notes.find((n) => /^(mike calls|office requests|texts|opt-outs|jobber jobs|jobber clients|jobber requests|jobber appointments):/.test(n)) ?? null;
 }
 
 export async function runMissedCallTextPass(db: any, env: NodeJS.ProcessEnv, now: Date, fetchImpl: typeof fetch = fetch): Promise<TextRunSummary> {
