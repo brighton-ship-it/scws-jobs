@@ -8,6 +8,9 @@ const TONE = {
   bad: 'bg-rose-50 text-rose-800',
 } as const;
 
+/** Same cap as the callback queue and call list on this dashboard. */
+const THREAD_SCROLL = 'max-h-[60vh] touch-pan-y overflow-y-auto overscroll-y-contain sm:max-h-[520px]';
+
 function pct(rate: number | null): string {
   return rate == null ? '—' : `${Math.round(rate * 100)}%`;
 }
@@ -81,7 +84,7 @@ export function MissedCallTextsCard({ view, rangeLabel }: { view: MissedCallText
           </div>
           {view.hidden > 0 ? <p className="mt-3 text-xs text-slate-500">Showing the latest {view.rows.length}. {view.hidden} older texts are in this period.</p> : null}
           {view.rows.length === 0 ? <p className="mt-3 text-sm text-slate-500">No missed-call texts in this period.</p> : (
-            <div className="mt-2">
+            <div className={`mt-2 ${THREAD_SCROLL}`} data-scroll="missed-call-texts" role="region" aria-label="Missed-call text threads">
               {view.rows.map((row) => <TextCard key={row.id} row={row} />)}
             </div>
           )}
