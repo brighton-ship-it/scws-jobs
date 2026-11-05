@@ -7,7 +7,7 @@ export interface FeedRow {
   answeredBy: string | null; durationSeconds: number | null; summary: string | null;
   /** Missed, voicemail, and Mike rows: "Called back …" or "No callback yet". */
   callback?: string | null;
-  /** Shop Voice callbacks after this call and before the next call from this number. */
+  /** Shop Voice attempts for this number. Missed, voicemail, and Mike rows for one number share the same line. */
   outreach?: string | null;
   goingCold?: boolean;
   /** Automated Mike callback for this call, e.g. "Mike tried 4:21 PM, voicemail". */

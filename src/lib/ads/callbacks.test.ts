@@ -197,7 +197,7 @@ test('Peter Crotty has four staff dials and one callback on the Oct 19 card', ()
   assert.match(rows[2].outreach ?? '', /Liz/);
 });
 
-test('a callback stops at the next inbound from that number', () => {
+test('the latest callback shows on every earlier row for that number', () => {
   const phone = '(760) 222-3333';
   const attempts = [
     { at: '2026-10-14T17:30:00Z', phone: '7602223333', staff: 'Liz', durationSeconds: 20 },
@@ -215,14 +215,82 @@ test('a callback stops at the next inbound from that number', () => {
     ],
   });
   const rows = annotateFeed(feed, sources, new Date('2026-10-14T22:00:00Z'), { attempts, fromMs });
-  assert.match(rows[0].outreach ?? '', /^1 attempt/);
-  assert.match(rows[0].outreach ?? '', /Liz/);
-  assert.equal(rows[0].callback, 'Called back 10:30 AM PT, 20s');
-  assert.match(rows[1].outreach ?? '', /^1 attempt/);
-  assert.match(rows[1].outreach ?? '', /Shanicey/);
-  assert.equal(rows[1].callback, 'Called back 12:30 PM PT, 40s');
+  const stamp = 'Called back 12:30 PM PT, 40s';
+  const tries = '2 attempts, last today 12:30 PM · Shanicey';
+  assert.equal(rows[0].callback, stamp);
+  assert.equal(rows[1].callback, stamp);
+  assert.equal(rows[0].outreach, tries);
+  assert.equal(rows[1].outreach, tries);
+  assert.equal(rows[0].goingCold, false);
+  assert.equal(rows[1].goingCold, false);
+  // This voicemail is after both dials, so it has not been called back.
   assert.equal(rows[2].outreach, 'No Voice attempts yet');
   assert.equal(rows[2].callback, 'No callback yet');
+});
+
+test('one staff callback is stamped on every earlier row for that phone only', () => {
+  // Three Mike/Ads rows for (619) 587-0568, then Liz calls that number once.
+  // A different number keeps its own callback and does not pick up Liz's dial.
+  const sal = '(619) 587-0568';
+  const ada = '(760) 555-0199';
+  const attempts = [
+    { at: '2026-10-14T18:31:00Z', phone: '+16195870568', staff: 'Liz', durationSeconds: 31 },
+    { at: '2026-10-14T19:05:00Z', phone: '7605550199', staff: 'Shanicey', durationSeconds: 12 },
+  ];
+  const feed: FeedRow[] = [
+    { at: '2026-10-14T17:10:00Z', name: null, phone: sal, line: 'Mike · Ads', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 20, summary: null },
+    { at: '2026-10-14T01:52:00Z', name: null, phone: '6195870568', line: 'Mike · Ads', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 6, summary: null },
+    { at: '2026-10-14T01:37:00Z', name: 'Sal Valenzuela', phone: '+1 (619) 587-0568', line: 'Mike · Ads', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 48, summary: null },
+    { at: '2026-10-14T16:00:00Z', name: 'Ada', phone: ada, line: 'Main', outcome: 'Missed', answeredBy: null, durationSeconds: 0, summary: null },
+    { at: '2026-10-14T17:00:00Z', name: 'Ada', phone: '(760) 555-0199', line: 'Main', outcome: 'Voicemail', answeredBy: null, durationSeconds: 15, summary: null },
+    { at: '2026-10-14T20:00:00Z', name: 'Nobody', phone: '(760) 555-0100', line: 'Main', outcome: 'Missed', answeredBy: null, durationSeconds: 0, summary: null },
+  ];
+  const sources = callbackSources({
+    log: [
+      { direction: 'outbound', started_at: '2026-10-14T18:31:00Z', caller_phone: '+16195870568', duration_seconds: 31, ring_group: 'Liz' },
+      { direction: 'outbound', started_at: '2026-10-14T19:05:00Z', caller_phone: '+17605550199', duration_seconds: 12, ring_group: 'Shanicey' },
+    ],
+  });
+  const rows = annotateFeed(feed, sources, new Date('2026-10-14T22:00:00Z'), { attempts, fromMs });
+  const salStamp = 'Called back 11:31 AM PT, 31s';
+  const salTries = '1 attempt, last today 11:31 AM · Liz';
+  assert.equal(rows[0].callback, salStamp);
+  assert.equal(rows[1].callback, salStamp);
+  assert.equal(rows[2].callback, salStamp);
+  assert.equal(rows[0].outreach, salTries);
+  assert.equal(rows[1].outreach, salTries);
+  assert.equal(rows[2].outreach, salTries);
+  const adaStamp = 'Called back 12:05 PM PT, 12s';
+  const adaTries = '1 attempt, last today 12:05 PM · Shanicey';
+  assert.equal(rows[3].callback, adaStamp);
+  assert.equal(rows[4].callback, adaStamp);
+  assert.equal(rows[3].outreach, adaTries);
+  assert.equal(rows[4].outreach, adaTries);
+  assert.equal(rows[5].callback, 'No callback yet');
+  assert.equal(rows[5].outreach, 'No Voice attempts yet');
+});
+
+test('a missed dial is shared across rows and is not called back', () => {
+  const phone = '(619) 587-0568';
+  const attempts = [
+    { at: '2026-10-14T18:31:00Z', phone: '6195870568', staff: 'Brighton', durationSeconds: 0 },
+  ];
+  const feed: FeedRow[] = [
+    { at: '2026-10-14T16:00:00Z', name: 'Sal', phone, line: 'Mike · Ads', outcome: 'Mike (AI)', answeredBy: null, durationSeconds: 20, summary: null },
+    { at: '2026-10-14T17:00:00Z', name: 'Sal', phone: '6195870568', line: 'Ads', outcome: 'Voicemail', answeredBy: null, durationSeconds: 8, summary: null },
+    { at: '2026-10-14T17:30:00Z', name: 'Other', phone: '(760) 555-0142', line: 'Main', outcome: 'Missed', answeredBy: null, durationSeconds: 0, summary: null },
+  ];
+  const sources = callbackSources({
+    log: [{ direction: 'outbound', started_at: '2026-10-14T18:31:00Z', caller_phone: '+16195870568', duration_seconds: 0, ring_group: 'Brighton' }],
+  });
+  const rows = annotateFeed(feed, sources, new Date('2026-10-14T22:00:00Z'), { attempts, fromMs });
+  const tries = '1 attempt, last today 11:31 AM · Brighton';
+  assert.equal(rows[0].callback, 'No callback yet');
+  assert.equal(rows[1].callback, 'No callback yet');
+  assert.equal(rows[0].outreach, tries);
+  assert.equal(rows[1].outreach, tries);
+  assert.equal(rows[2].callback, 'No callback yet');
+  assert.equal(rows[2].outreach, 'No Voice attempts yet');
 });
 
 test('a blank staff name merges into the named row, and a missing call time counts nothing', () => {
