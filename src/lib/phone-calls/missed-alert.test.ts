@@ -38,9 +38,14 @@ const SHOP = '+17602763468';
 const MIKE = AI_RECEPTIONIST;
 
 describe('business-hours ring timeout', () => {
-  it('defaults to 15 seconds of ringing, and the TwiML attribute is 10 because Twilio adds about 5', () => {
-    assert.equal(BUSINESS_HOURS_RING_SECONDS, 15);
-    assert.equal(desiredRingSeconds(null, {} as NodeJS.ProcessEnv), 15);
+  it('live inbound route ignores the legacy ?timeout=15 on voice URLs', () => {
+    const route = readFileSync(new URL('../../app/api/calls/inbound/route.ts', import.meta.url), 'utf8');
+    assert.match(route, /desiredRingSeconds\(q\.get\('test'\) === '1' \? q\.get\('timeout'\) : null\)/);
+  });
+  it('defaults to 30 seconds of ringing, and the TwiML attribute is 25 because Twilio adds about 5', () => {
+    assert.equal(BUSINESS_HOURS_RING_SECONDS, 30);
+    assert.equal(desiredRingSeconds(null, {} as NodeJS.ProcessEnv), 30);
+    assert.equal(dialTimeoutAttribute(desiredRingSeconds(null, {} as NodeJS.ProcessEnv)), 25);
     assert.equal(dialTimeoutAttribute(15), 10);
     assert.equal(desiredRingSeconds('15', {} as NodeJS.ProcessEnv), 15);
     assert.equal(dialTimeoutAttribute(desiredRingSeconds('15', { PHONE_CALL_RING_TIMEOUT: '60' } as NodeJS.ProcessEnv)), 10);
@@ -50,7 +55,7 @@ describe('business-hours ring timeout', () => {
     assert.equal(dialTimeoutAttribute(20), 15);
     assert.equal(desiredRingSeconds('3', {} as NodeJS.ProcessEnv), 10);
     assert.equal(desiredRingSeconds('999', {} as NodeJS.ProcessEnv), 120);
-    assert.equal(desiredRingSeconds('nope', {} as NodeJS.ProcessEnv), 15);
+    assert.equal(desiredRingSeconds('nope', {} as NodeJS.ProcessEnv), 30);
   });
 });
 
