@@ -11,6 +11,7 @@ import { BACKFILL_FIELDS } from './sync.ts';
  *  which is throttled by the same 10k-point bucket and makes pages hang; a slightly older mirror is far better. */
 const STALE_MS = 2 * 60 * 60_000;
 let tsBlocked = false;
+let customFieldsBlocked: string | null = null;
 let stateMemo: { at: number; v: { ready: boolean; asOf: string | null } } | null = null;
 const db = () => { try { return createServiceClient() as any; } catch { return null; } };
 const digits10 = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
@@ -25,6 +26,8 @@ export async function mirrorState(): Promise<{ ready: boolean; asOf: string | nu
     if (!error) {
       const m = new Map<string, any>((data ?? []).map((r: any) => [r.key, r]));
       tsBlocked = m.get('backfill:timeSheetEntries')?.last_error === 'permission';
+      const customFieldError = m.get('jobs:customFields')?.last_error;
+      customFieldsBlocked = typeof customFieldError === 'string' && customFieldError ? customFieldError : null;
       const asOf = m.get('rolling')?.last_success_at ?? null;
       const ready = BACKFILL_FIELDS.every((f) => m.get(`backfill:${f}`)?.done) && !!asOf && Date.now() - Date.parse(asOf) < STALE_MS;
       v = { ready, asOf };
@@ -123,6 +126,18 @@ export async function mirrorJobs(by: 'created_at' | 'completed_at', from: string
   ]);
   if (!rows || !x) return null;
   return rows.map((r) => attachClient(x, r.data));
+}
+
+/** Jobber rejected Job.customFields on the last jobs sync. Null when the field is loading or already stored. */
+export async function jobCustomFieldsMirrorError(): Promise<string | null> {
+  await mirrorState();
+  return customFieldsBlocked;
+}
+
+/** Set when the mirror recorded that Jobber hid TimeSheetEntry. Metrics should not hit live Jobber again. */
+export async function timesheetMirrorBlock(): Promise<string | null> {
+  await mirrorState();
+  return tsBlocked ? 'An object of type TimeSheetEntry was hidden due to permissions' : null;
 }
 
 export async function mirrorTimesheets(from: string, to: string): Promise<any[] | null> {
