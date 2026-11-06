@@ -361,6 +361,15 @@ export interface TwilioLeg {
   status: string;
   at: string | null;
   durationSeconds: number | null;
+  /** Twilio AMD answered_by on this leg (human, machine_start, ...). Null when AMD did not run. */
+  answeredBy?: string | null;
+}
+
+/** Same rule as the missed-call email: AMD human is an answer even under 20s. */
+export function shopLegAnswered(leg: TwilioLeg): boolean {
+  if (legMissed(leg)) return false;
+  if ((leg.answeredBy || '').trim().toLowerCase() === 'human') return true;
+  return (leg.durationSeconds ?? 0) >= SHOP_ANSWERED_MIN_SECONDS;
 }
 
 export interface ClassifiedParent {
@@ -395,6 +404,7 @@ export function parseTwilioLegs(payload: unknown): TwilioLeg[] {
       status: typeof c.status === 'string' ? c.status : '',
       at: Number.isFinite(t) ? new Date(t).toISOString() : null,
       durationSeconds: duration != null && Number.isFinite(duration) ? Math.round(duration) : null,
+      answeredBy: typeof c.answered_by === 'string' && c.answered_by ? c.answered_by : null,
     });
   }
   return legs;
@@ -425,7 +435,7 @@ export function sameTextEpisode(
 
 /**
  * Inbound parent calls to SCWS numbers.
- * A shop leg counts as answered only when it connected for at least ~20s.
+ * A shop leg counts as answered when AMD heard a person, or it connected for at least ~20s.
  * Otherwise the parent is a candidate: ring_hangup when Mike never connected, mike_unfinished when he did.
  * A still-open parent is left for the next run.
  */
@@ -453,7 +463,7 @@ export function classifyInboundParents(input: {
     const started = Date.parse(leg.at);
     if (input.sinceMs != null && (!Number.isFinite(started) || started < input.sinceMs)) continue;
     const kids = children.get(leg.sid) ?? [];
-    const shopAnswered = kids.some((child) => !mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 0) >= SHOP_ANSWERED_MIN_SECONDS);
+    const shopAnswered = kids.some((child) => !mikeLeg(child, input.mikeNumbers) && shopLegAnswered(child));
     const reachedMike = kids.some((child) => mikeLeg(child, input.mikeNumbers) && !legMissed(child) && (child.durationSeconds ?? 1) > 0);
     const phone = digits10(leg.from);
     if (shopAnswered) {

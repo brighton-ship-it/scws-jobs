@@ -3,7 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { EMPTY_RESPONSE, buildVoicemailTwiml, buildAiHandoffTwiml } from '@/lib/phone-calls/twiml';
 import { publicUrl, PORTED_LINES, aiFallbackNumber } from '@/lib/phone-calls/config';
-import { amdFromProcessing, inboundCallEmailPlan, noteMikeAwaitingReport, notifyMissedInboundCall, partyFromProcessing } from '@/lib/phone-calls/missed-alert';
+import { amdFromProcessing, inboundCallEmailPlan, lookupShopLeg, recordAnsweredParty, shortPickupDecision, noteMikeAwaitingReport, notifyMissedInboundCall, partyFromProcessing } from '@/lib/phone-calls/missed-alert';
+import { recordShopAmd } from '@/lib/phone-calls/shop-amd';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -59,7 +60,34 @@ export async function POST(req: NextRequest) {
     shopSeconds,
     shopMachine,
     shopHuman,
+    amdPending: !mikeOnly && amd === null && !answeredBy,
   });
+  // Short shop pickup with no AMD result yet. AMD may still say human (a 9s real
+  // answer). Ask Twilio for the child leg's answered_by before emailing missed.
+  let ringSeconds: number | null = null;
+  if (plan.send === 'defer' && plan.who === 'missed' && params.CallSid) {
+    const lookup = await lookupShopLeg(params.CallSid, process.env, fetch, ai ? [ai] : []);
+    ringSeconds = lookup?.ringSeconds ?? null;
+    const decision = shortPickupDecision(lookup);
+    if (decision === 'answered' && db) {
+      try {
+        await recordShopAmd(db, params.CallSid, 'human');
+        await recordAnsweredParty(db, params.CallSid, 'shop');
+      } catch (e) { console.error('[phone-calls] short pickup human note failed', e instanceof Error ? e.message : e); }
+    } else if (decision === 'missed') {
+      try {
+        await notifyMissedInboundCall({
+          callSid: params.CallSid, caller: params.From, called: params.To || params.Called,
+          phase: 'dial', noticePlayed: q.get('notice') === '1', who: 'missed',
+          ringSeconds, durationSeconds: null,
+        }, db);
+      } catch (e) { console.error('[phone-calls] call alert failed', e instanceof Error ? e.message : e); }
+    } else if (db) {
+      // AMD unknown: mark the shop leg so the sweep emails missed later unless amd:human lands.
+      try { await recordAnsweredParty(db, params.CallSid, 'shop'); }
+      catch (e) { console.error('[phone-calls] short pickup shop note failed', e instanceof Error ? e.message : e); }
+    }
+  }
   // Mike's email is his end-of-call report. Missed calls, including a short shop
   // voicemail leg, email now. A real shop answer does not.
   if (plan.send === 'now' && plan.who && params.CallSid) {
@@ -71,13 +99,14 @@ export async function POST(req: NextRequest) {
         phase: 'dial',
         noticePlayed: q.get('notice') === '1',
         who: plan.who,
+        ringSeconds: plan.who === 'missed' ? ((await lookupShopLeg(params.CallSid, process.env, fetch, ai ? [ai] : []))?.ringSeconds ?? null) : null,
         durationSeconds: plan.who === 'missed' ? null : shopSeconds,
       }, db);
     } catch (e) { console.error('[phone-calls] call alert failed', e instanceof Error ? e.message : e); }
   }
   // Answered, but the leg callback has not said who. Remember that Mike was in the
   // dial so the sweep can send one missed-call email if his report never arrives.
-  if (plan.send === 'defer' && !party && mikeInDial && db && params.CallSid) {
+  if (plan.send === 'defer' && plan.who !== 'missed' && !party && mikeInDial && db && params.CallSid) {
     try {
       await noteMikeAwaitingReport(db, params.CallSid);
     } catch (e) { console.error('[phone-calls] mike-await note failed', e instanceof Error ? e.message : e); }
