@@ -86,7 +86,24 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('create_products'));
     assert.ok(names.includes('list_products'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.15.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.16.0');
+    for (const qboWrite of [
+      'qbo_journal_entry',
+      'qbo_deposit',
+      'qbo_payment',
+      'qbo_invoice',
+      'qbo_categorize_purchase',
+      'qbo_bill',
+      'qbo_bill_payment',
+      'qbo_attach_note',
+      'qbo_closing_date',
+      'qbo_void',
+    ]) {
+      assert.ok(names.includes(qboWrite), qboWrite);
+    }
+    assert.equal(names.some((name) => name.startsWith('qbo_delete') || name === 'qbo_deactivate'), false);
+    assert.equal(JOBBER_MCP_READONLY_TOOLS.includes('qbo_journal_entry'), false);
+    assert.equal(JOBBER_MCP_READONLY_TOOLS.includes('qbo_void'), false);
     assert.ok(names.includes('delete_quote_draft'));
     assert.equal(names.includes('delete_quote'), false);
     const deleteDraftTool = JOBBER_MCP_TOOLS.find((tool) => tool.name === 'delete_quote_draft');
