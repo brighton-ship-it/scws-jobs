@@ -29,6 +29,17 @@ export const OWN_NUMBERS = new Set<string>([...Array.from(STAFF_PHONES), '760823
   ...[process.env.TWILIO_FROM_NUMBER, process.env.PHONE_CALL_FORWARD_MAIN, process.env.PHONE_CALL_FORWARD_RANSOM, process.env.SCWS_OWN_NUMBERS]
     .flatMap((v) => (v ?? '').split(',')).map((v) => { const d = v.replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; }).filter((d) => d.length === 10)]);
 export const isOwnNumber = (phone: string | null | undefined) => { const d = (phone ?? '').replace(/\D/g, ''); return OWN_NUMBERS.has(d.length === 11 && d.startsWith('1') ? d.slice(1) : d); };
+/** Number Twilio dials for the shop (SCWS Forward). Not a customer. Reads env at call time. */
+export function isShopForwardNumber(phone: string | null | undefined, env: NodeJS.ProcessEnv = process.env): boolean {
+  const d = (phone ?? '').replace(/\D/g, '');
+  const n = d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
+  if (n.length !== 10) return false;
+  const targets = [env.PHONE_CALL_FORWARD_MAIN, env.PHONE_CALL_FORWARD_RANSOM]
+    .flatMap((value) => (value ?? '').split(','))
+    .map((value) => { const x = value.replace(/\D/g, ''); return x.length === 11 && x.startsWith('1') ? x.slice(1) : x; })
+    .filter((value) => value.length === 10);
+  return targets.includes(n);
+}
 /**
  * Owner/test phones: Brighton's cell (408-318-1171) and the Twilio test line (760-823-7963).
  * Their calls are test traffic on dashboards, call lists, metrics, callback tracking and the daily review.

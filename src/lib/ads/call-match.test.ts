@@ -484,3 +484,162 @@ describe('restore phones already nulled by a previous import', () => {
     assert.deepEqual(other, []);
   });
 });
+
+/** SCWS Forward, the number Twilio rings before the AI. Not a customer. */
+const FORWARD = '+17602763468';
+const isForward = (phone: string | null | undefined) => (phone ?? '').replace(/\D/g, '').endsWith('7602763468');
+
+describe('shop-answered ad calls after the Twilio port', () => {
+  // 10:42 AM PT on Oct 28 2026 is 17:42 UTC (PDT).
+  const shopDraft: AdsCallDraft = {
+    ...draft,
+    resourceName: 'customers/1/callViews/shop-1042',
+    startedAt: '2026-10-28 10:42:00',
+    durationSeconds: 287, // 4m47s on the Google clock, including notice + ring
+    campaignName: 'Leads-Search-1',
+    callerAreaCode: '619',
+  };
+  // 1:21 PM and 1:24 PM PT on Oct 29.
+  const earlier: AdsCallDraft = {
+    ...draft,
+    resourceName: 'customers/1/callViews/shop-1321',
+    startedAt: '2026-10-29 13:21:00',
+    durationSeconds: 62,
+    campaignName: 'Leads-Search-1',
+    callerAreaCode: '858',
+  };
+  const later: AdsCallDraft = {
+    ...draft,
+    resourceName: 'customers/1/callViews/ai-1324',
+    startedAt: '2026-10-29 13:24:00',
+    durationSeconds: 55,
+    campaignName: 'Leads-Search-1',
+    callerAreaCode: '858',
+  };
+
+  it('keeps the customer when a closer event is the SCWS Forward number', async () => {
+    const saved: StoredAdsCall[] = [];
+    await importAdsCalls({
+      drafts: [shopDraft],
+      voiceCalls: [
+        {
+          id: 'forward-leg',
+          startedAt: '2026-10-28T17:42:02.000Z',
+          durationSeconds: 287,
+          callerPhone: FORWARD,
+        },
+        {
+          id: 'ring-group',
+          startedAt: '2026-10-28T17:42:20.000Z',
+          durationSeconds: 262,
+          callerPhone: '+16193160492',
+        },
+      ],
+      parties: [],
+      existing: [{
+        call_view_resource: shopDraft.resourceName,
+        caller_phone: '7602763468',
+        voice_call_id: 'forward-leg',
+        customer_id: null,
+        jobber_client_id: null,
+        match_method: 'voice_time',
+      }],
+      ownCaller: isForward,
+      discardCaller: isForward,
+      save: async (row) => { saved.push(row); },
+    });
+    assert.equal(saved[0].caller_phone, '6193160492');
+    assert.equal(saved[0].voice_call_id, 'ring-group');
+    assert.equal(saved[0].campaign_name, 'Leads-Search-1');
+  });
+
+  it('does not let the 1:21 shop call take the 1:24 call that already matched', () => {
+    const assigned = assignAdsVoices(
+      [earlier, later],
+      [
+        { id: 'fwd', startedAt: '2026-10-29T20:21:02.000Z', durationSeconds: 62, callerPhone: FORWARD },
+        { id: 'shop', startedAt: '2026-10-29T20:21:18.000Z', durationSeconds: 40, callerPhone: '+18585312478' },
+        { id: 'later', startedAt: '2026-10-29T20:24:06.000Z', durationSeconds: 52, callerPhone: '+18585312478' },
+      ],
+      { ownCaller: isForward, discardCaller: isForward },
+    );
+    assert.equal(assigned.get(earlier.resourceName)?.id, 'shop');
+    assert.equal(assigned.get(later.resourceName)?.id, 'later');
+  });
+
+  it('clears a stored forward number when no external caller matches', () => {
+    const incoming = storedAdsCall({ ...shopDraft, startedAt: '2026-10-28 10:42:00' }, null, null);
+    const kept = preserveResolvedAdsCall(incoming, {
+      call_view_resource: shopDraft.resourceName,
+      caller_phone: '7602763468',
+      voice_call_id: 'forward-leg',
+      customer_id: 'cust-shop',
+      jobber_client_id: null,
+      match_method: 'voice_time',
+    }, isForward);
+    assert.equal(kept.caller_phone, null);
+    assert.equal(kept.customer_id, null);
+    assert.equal(kept.match_method, 'unmatched');
+  });
+
+  it('keeps a staff caller when that is the only match, and drops a forward-only match', async () => {
+    const staff = (phone: string | null | undefined) => (phone ?? '').replace(/\D/g, '').endsWith('6193208264');
+    const saved: StoredAdsCall[] = [];
+    await importAdsCalls({
+      drafts: [
+        { ...draft, resourceName: 'customers/1/callViews/staff', durationSeconds: 40 },
+        { ...shopDraft, resourceName: 'customers/1/callViews/forward-only' },
+      ],
+      voiceCalls: [
+        { id: 'liz', startedAt: draft.startedAt!, durationSeconds: 40, callerPhone: '+16193208264' },
+        { id: 'only-forward', startedAt: '2026-10-28T17:42:01.000Z', durationSeconds: 287, callerPhone: FORWARD },
+      ],
+      parties: [],
+      existing: [{
+        call_view_resource: 'customers/1/callViews/forward-only',
+        caller_phone: '7602763468',
+        voice_call_id: 'only-forward',
+        customer_id: null,
+        jobber_client_id: null,
+        match_method: 'voice_time',
+      }],
+      ownCaller: (phone) => staff(phone) || isForward(phone),
+      discardCaller: isForward,
+      save: async (row) => { saved.push(row); },
+    });
+    const byId = Object.fromEntries(saved.map((row) => [row.call_view_resource, row]));
+    assert.equal(byId['customers/1/callViews/staff'].caller_phone, '6193208264');
+    assert.equal(byId['customers/1/callViews/forward-only'].caller_phone, null);
+  });
+
+  it('still stores a test caller that is not one of our lines', async () => {
+    const saved: StoredAdsCall[] = [];
+    await importAdsCalls({
+      drafts: [{ ...draft, resourceName: 'customers/1/callViews/test', durationSeconds: 40 }],
+      voiceCalls: [{ id: 'brighton', startedAt: draft.startedAt!, durationSeconds: 40, callerPhone: '+14083181171' }],
+      parties: [],
+      ownCaller: isForward,
+      save: async (row) => { saved.push(row); },
+    });
+    assert.equal(saved[0].caller_phone, '4083181171');
+  });
+
+  it('keeps a strict match ahead of a closer shop-window leg', () => {
+    const assigned = assignAdsVoices(
+      [shopDraft],
+      [
+        { id: 'other-caller', startedAt: '2026-10-28T17:42:08.000Z', durationSeconds: 250, callerPhone: '+17605550199' },
+        { id: 'same-call', startedAt: '2026-10-28T17:42:24.000Z', durationSeconds: 280, callerPhone: '+16193160492' },
+      ],
+      { ownCaller: isForward, discardCaller: isForward },
+    );
+    assert.equal(assigned.get(shopDraft.resourceName)?.id, 'same-call');
+  });
+
+  it('does not treat a missing Voice duration as the same call', () => {
+    const match = matchAdsCallToVoice(shopDraft, [
+      { id: 'no-duration', startedAt: '2026-10-28T17:42:01.000Z', durationSeconds: null, callerPhone: '+16193160492' },
+    ]);
+    assert.equal(match, null);
+  });
+});
