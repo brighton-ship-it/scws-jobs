@@ -1,7 +1,8 @@
 /**
  * Callback matching for missed, voicemail, and AI-answered inbound calls.
- * Pure: no network. A callback is the first later outbound call to that number,
+ * Pure: no network. A callback is a later outbound call to that number,
  * or a later inbound call from that number that a staff member answered.
+ * On the call list, the latest connected callback shows on every earlier row for that number.
  */
 import { digits10 } from './call-dashboard.ts';
 import { isDismissed, type LeadDismissal } from './lead-dismissals.ts';
@@ -13,7 +14,7 @@ export const COLD_ATTEMPTS = 3;
 export const COLD_DAYS = 3;
 /** Shop Google Voice lines only. Personal cells are not in the audit log. */
 export const OUTREACH_TOOLTIP =
-  'Counts shop Voice callbacks after this call and before the next call from that number (Liz, Shanicey, Brighton) and Mike\'s automated callbacks. The same dial logged twice within 15 seconds counts once. Personal cell calls are not in this log, so a callback from a cell does not show here.';
+  'The latest shop Voice callback for a number (Liz, Shanicey, Brighton) shows on every earlier call from that number, along with Mike\'s automated callbacks. The same dial logged twice within 15 seconds counts once. Personal cell calls are not in this log, so a callback from a cell does not show here.';
 /** Same number, this close together: one dial written twice, not two attempts. A blank staff name matches a named row. */
 export const ATTEMPT_DEDUPE_MS = 15_000;
 export const COLD_TOOLTIP =
@@ -299,6 +300,22 @@ export function handlingCallback(phone: string | null, afterIso: string, sources
     const connected = s.kind === 'staff_answered' || (s.durationSeconds ?? 0) > 0;
     if (!connected) continue;
     if (!best || t < Date.parse(best.at)) best = s;
+  }
+  return best;
+}
+
+/** Latest connected callback for this number, outbound talk time or an inbound a person answered. */
+export function latestConnectedCallback(phone: string | null, sources: CallbackSource[]): CallbackSource | null {
+  const p = digits10(phone);
+  if (!p) return null;
+  let best: CallbackSource | null = null;
+  for (const s of sources) {
+    if (digits10(s.phone) !== p) continue;
+    const t = Date.parse(s.at);
+    if (!Number.isFinite(t)) continue;
+    const connected = s.kind === 'staff_answered' || (s.durationSeconds ?? 0) > 0;
+    if (!connected) continue;
+    if (!best || t > Date.parse(best.at)) best = s;
   }
   return best;
 }
@@ -949,8 +966,13 @@ export function callbackSources(input: {
  * Attempt text belongs on calls that still need a callback: missed, voicemail, or Mike/Sarah,
  * and not a booking. A live answer shows attempt text only when someone actually dialed out.
  * Booked outcome, or a quote/request/job after the call, shows nothing.
+ *
+ * Missed, voicemail, and Mike/Sarah rows for one number share the latest connected callback
+ * that happened after them, and the same attempt count. A row that starts after that callback
+ * still says "No callback yet". Answered rows still count dials only until the next call
+ * from that number.
  */
-/** Earliest later feed row for the same number. That call owns any dial from then on. */
+/** Earliest later feed row for the same number. Answered rows use this so a later call owns later dials. */
 function nextInboundAt(rows: FeedRow[], index: number): string | null {
   const phone = digits10(rows[index]?.phone);
   const at = Date.parse(rows[index]?.at ?? '');
@@ -965,6 +987,64 @@ function nextInboundAt(rows: FeedRow[], index: number): string | null {
   return best == null ? null : new Date(best).toISOString();
 }
 
+interface PhoneCallbackStamp {
+  /** Latest connected callback, when at least one needs-callback row is earlier than it. */
+  match: CallbackSource | null;
+  /** Same attempt line for every row in `coveredAt`. */
+  outreach: OutreachView;
+  coveredAt: number[];
+}
+
+/**
+ * One stamp per number.
+ * Rows before the latest connected callback share that callback and every Voice attempt
+ * since the earliest of those rows. With no connected callback, every needs-callback row
+ * for the number still shares one attempt line and "No callback yet".
+ */
+function phoneCallbackStamps(
+  rows: FeedRow[],
+  needs: boolean[],
+  sources: CallbackSource[],
+  attempts: OutreachAttempt[],
+  fromMs: number,
+  now: Date,
+): Map<string, PhoneCallbackStamp> {
+  const byPhone = new Map<string, number[]>();
+  rows.forEach((row, index) => {
+    if (!needs[index]) return;
+    const phone = digits10(row.phone);
+    const atMs = Date.parse(row.at);
+    if (!phone || !Number.isFinite(atMs)) return;
+    const list = byPhone.get(phone) ?? [];
+    list.push(atMs);
+    byPhone.set(phone, list);
+  });
+  const stamps = new Map<string, PhoneCallbackStamp>();
+  for (const [phone, times] of Array.from(byPhone.entries())) {
+    const match = latestConnectedCallback(phone, sources);
+    const matchMs = match ? Date.parse(match.at) : NaN;
+    const beforeMatch = !!match && Number.isFinite(matchMs) ? times.filter((t) => t < matchMs) : [];
+    const coveredAt = beforeMatch.length ? beforeMatch : (match ? [] : times);
+    if (!coveredAt.length) continue;
+    const anchorMs = Math.min(...coveredAt);
+    stamps.set(phone, {
+      match: beforeMatch.length ? match : null,
+      coveredAt,
+      outreach: summarizeOutreach({
+        phone,
+        attempts,
+        fromMs,
+        now,
+        anchorAt: new Date(anchorMs).toISOString(),
+        connected: beforeMatch.length > 0,
+        booked: false,
+        trackCold: beforeMatch.length === 0,
+      }),
+    });
+  }
+  return stamps;
+}
+
 export function annotateFeed(
   rows: FeedRow[],
   sources: CallbackSource[],
@@ -974,12 +1054,45 @@ export function annotateFeed(
   const attempts = extra?.attempts ?? [];
   const fromMs = extra?.fromMs ?? 0;
   const work = extra?.work ?? new Map<string, number[]>();
-  return rows.map((row, index) => {
+  const needs = rows.map((row) => {
     const needsOutcome = feedNeedsCallback(row.outcome);
     const resolved = row.outcome === 'Booked' || (needsOutcome && hasWorkOnOrAfter(row.phone, row.at, work));
-    const needs = needsOutcome && !resolved;
+    return needsOutcome && !resolved;
+  });
+  const stamps = phoneCallbackStamps(rows, needs, sources, attempts, fromMs, now);
+  return rows.map((row, index) => {
+    const phone = digits10(row.phone);
+    const atMs = Date.parse(row.at);
+    const stamp = phone ? stamps.get(phone) : undefined;
+    if (needs[index] && stamp && Number.isFinite(atMs) && stamp.coveredAt.includes(atMs)) {
+      return {
+        ...row,
+        callback: formatCallbackStatus(stamp.match, true, now),
+        outreach: stamp.outreach.label,
+        goingCold: stamp.match ? false : stamp.outreach.goingCold,
+      };
+    }
+    if (needs[index]) {
+      const outreach = summarizeOutreach({
+        phone: row.phone,
+        attempts,
+        fromMs,
+        now,
+        anchorAt: row.at,
+        connected: false,
+        booked: false,
+        trackCold: true,
+      });
+      return {
+        ...row,
+        callback: 'No callback yet',
+        outreach: outreach.label,
+        goingCold: outreach.goingCold,
+      };
+    }
     const untilAt = nextInboundAt(rows, index);
-    const match = needs ? handlingCallback(row.phone, row.at, sources, untilAt) : null;
+    const needsOutcome = feedNeedsCallback(row.outcome);
+    const resolved = row.outcome === 'Booked' || (needsOutcome && hasWorkOnOrAfter(row.phone, row.at, work));
     const outreach = summarizeOutreach({
       phone: row.phone,
       attempts,
@@ -987,17 +1100,16 @@ export function annotateFeed(
       now,
       anchorAt: row.at,
       untilAt,
-      connected: !!match || row.outcome === 'Answered' || row.outcome.startsWith('Answered'),
+      connected: row.outcome === 'Answered' || row.outcome.startsWith('Answered'),
       booked: resolved || row.outcome === 'Booked',
-      trackCold: needs && !match,
+      trackCold: false,
     });
     const answeredWithAttempts = (row.outcome === 'Answered' || row.outcome.startsWith('Answered ·')) && outreach.attempts > 0;
-    const showOutreach = needs || answeredWithAttempts;
     return {
       ...row,
-      callback: formatCallbackStatus(match, needs, now),
-      outreach: showOutreach ? outreach.label : null,
-      goingCold: needs ? outreach.goingCold : false,
+      callback: null,
+      outreach: answeredWithAttempts ? outreach.label : null,
+      goingCold: false,
     };
   });
 }
