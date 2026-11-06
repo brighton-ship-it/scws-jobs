@@ -38,10 +38,69 @@ describe('runTextAgent', () => {
       { tool_calls: [tc('2', 'book_job', { name: 'A B', address: '1 Main', town: 'Ramona', startAt: SLOT, problem: 'no water' }), tc('3', 'book_job', { name: 'A B', address: '1 Main', town: 'Ramona', startAt: SLOT, problem: 'again' })] },
       { content: "You're all set for Tuesday 8–10 AM with Brian. That's the $200 service call." },
     ]);
-    const r = await runTextAgent({ phone: '+16195550142', inbound: 'yes tuesday works', thread: [], now: NOW, model, tools: tools(log) });
+    const thread = [{ role: 'assistant' as const, content: 'Just to confirm, the well is at 1 Main in Ramona?', at: '' }];
+    const r = await runTextAgent({ phone: '+16195550142', inbound: 'yes tuesday works', thread, now: NOW, model, tools: tools(log) });
     assert.equal(r.booked, true);
     assert.equal(log.filter((l) => l.startsWith('book:')).length, 1);
     assert.match(r.reply, /\$200/);
+  });
+  it('books a confirmed read-back and refuses a mismatch or a bare yes', async () => {
+    const confirmedLog: string[] = [];
+    const confirmed = await runTextAgent({
+      phone: '+16195550142',
+      inbound: 'Yes',
+      thread: [
+        { role: 'assistant', content: 'Just to confirm, the well is at 2 4 5 1 0 Tiara Lane in Hemet?', at: '' },
+        { role: 'tool', name: 'check_schedule', content: JSON.stringify({ openSlots: [{ startAt: SLOT }] }), at: '' },
+      ],
+      now: NOW,
+      model: scripted([
+        { tool_calls: [tc('9', 'book_job', { name: 'Natalie', address: '24510 Tierra Ln', town: 'Hemet', startAt: SLOT, problem: 'no water' })] },
+        { content: 'You are booked Tuesday 8-10. That is the $200 service call.' },
+      ]),
+      tools: tools(confirmedLog),
+    });
+    assert.equal(confirmed.booked, true);
+    assert.deepEqual(confirmedLog.filter((line) => line.startsWith('book:')), [`book:${SLOT}`]);
+
+    const bareLog: string[] = [];
+    const bare = await runTextAgent({
+      phone: '+16195550142',
+      inbound: 'Yes',
+      thread: [
+        { role: 'assistant', content: 'Tuesday 8-10 works. Want that?', at: '' },
+        { role: 'tool', name: 'check_schedule', content: JSON.stringify({ openSlots: [{ startAt: SLOT }] }), at: '' },
+      ],
+      now: NOW,
+      model: scripted([
+        { tool_calls: [tc('8', 'book_job', { name: 'Josh', address: '24510 Tierra Ln', town: 'Hemet', startAt: SLOT, problem: 'no water' })] },
+        { content: 'Let me confirm the address first.' },
+      ]),
+      tools: tools(bareLog),
+    });
+    assert.equal(bare.booked, false);
+    assert.deepEqual(bareLog.filter((line) => line.startsWith('book:')), []);
+    assert.match(bare.thread.find((m) => m.name === 'book_job')!.content, /NOT BOOKED/);
+    assert.match(bare.thread.find((m) => m.name === 'book_job')!.content, /issue booking the slot/);
+
+    const wrongLog: string[] = [];
+    const wrong = await runTextAgent({
+      phone: '+16195550142',
+      inbound: 'Yes',
+      thread: [
+        { role: 'assistant', content: 'Just to confirm, the well is at 10 Oak Street in Hemet?', at: '' },
+        { role: 'tool', name: 'check_schedule', content: JSON.stringify({ openSlots: [{ startAt: SLOT }] }), at: '' },
+      ],
+      now: NOW,
+      model: scripted([
+        { tool_calls: [tc('7', 'book_job', { name: 'Salvador', address: '10 Main St', town: 'Hemet', startAt: SLOT, problem: 'no water' })] },
+        { content: 'That address does not match.' },
+      ]),
+      tools: tools(wrongLog),
+    });
+    assert.equal(wrong.booked, false);
+    assert.deepEqual(wrongLog.filter((line) => line.startsWith('book:')), []);
+    assert.match(wrong.thread.find((m) => m.name === 'book_job')!.content, /NOT BOOKED/);
   });
   it('falls back to the office when the model fails', async () => {
     const log: string[] = [];
