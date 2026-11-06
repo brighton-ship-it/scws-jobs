@@ -1,11 +1,13 @@
 /**
  * Office email for a missed inbound call, and for a call Mike answers.
- * A call the shop answers does not email. A shop leg that stays connected for
- * under SHOP_ANSWER_MIN_SECONDS is the handset or the carrier's voicemail
- * when AMD did not hear a person: Twilio still says completed.
- * answered_by=human is a person even when that bridge is short. It does not
- * email missed, and an await-mike note must not turn it into one later.
- * DialBridged alone is not a person: Google Voice bridges too.
+ * A call the shop answers does not email. The child leg (`leg:shop`) or AMD
+ * `answered_by=human` is that answer, including a 1–3 second spam hangup.
+ * Duration is not a reason to email missed once the office leg is recorded.
+ * The parent dial action often runs before that child callback. A short
+ * completed dial with no party yet waits; it does not email on the duration
+ * alone. No-answer, busy, failed, and a caller who hangs up while it is
+ * still ringing still email. DialBridged alone is not a person: Google Voice
+ * bridges too. AMD machine/unknown still rolls to Mike.
  * Mike's email waits for his end-of-call report. If that report never comes
  * and the answered party was never recorded, the sweep sends one missed-call
  * email after SWEEP_UNKNOWN_MIKE_MS. His voice, greeting, and callback flag
@@ -27,6 +29,11 @@ export const LEG_PREFIX = 'leg:';
  * The sweep uses this to send one missed-call email if his report never claims the row.
  */
 export const AWAIT_MIKE_MARKER = 'await-mike';
+/**
+ * The dial completed, Mike was not in it, and the child leg had not named the
+ * shop yet. The sweep sends one missed email if that evidence never arrives.
+ */
+export const AWAIT_LEG_MARKER = 'await-leg';
 /** AMD heard a person on the shop leg. Do not dial Mike. */
 export const AMD_HUMAN = 'amd:human';
 /** AMD heard a machine, fax, or nothing it could call a person. The shop leg is not a human answer. */
@@ -65,7 +72,7 @@ export function withAmd(current: string | null | undefined, kind: 'human' | 'mac
 
 /** Keep the alert claim and the answered-party token; append a recording note. */
 export function mergeProcessingError(current: string | null | undefined, note: string | null | undefined): string | null {
-  const kept = processingParts(current).filter((part) => part === CALL_ALERT_MARKER || part === MISSED_ALERT_MARKER || part === AWAIT_MIKE_MARKER || part.startsWith(LEG_PREFIX) || part.startsWith('amd:'));
+  const kept = processingParts(current).filter((part) => part === CALL_ALERT_MARKER || part === MISSED_ALERT_MARKER || part === AWAIT_MIKE_MARKER || part === AWAIT_LEG_MARKER || part.startsWith(LEG_PREFIX) || part.startsWith('amd:'));
   if (note && !kept.includes(note)) kept.push(note);
   return kept.length ? kept.join('|') : null;
 }
@@ -88,6 +95,22 @@ export function withAwaitMike(current: string | null | undefined): string {
 
 export function awaitingMikeReport(value: string | null | undefined): boolean {
   return processingParts(value).includes(AWAIT_MIKE_MARKER);
+}
+
+export function withAwaitLeg(current: string | null | undefined): string {
+  const parts = processingParts(current);
+  if (parts.includes(AWAIT_LEG_MARKER)) return parts.join('|');
+  return [...parts, AWAIT_LEG_MARKER].join('|');
+}
+
+export function awaitingLegEvidence(value: string | null | undefined): boolean {
+  return processingParts(value).includes(AWAIT_LEG_MARKER);
+}
+
+/** Shop child completed, or AMD heard a person. Duration is not part of this. */
+export function officeAnswerRecorded(value: string | null | undefined): boolean {
+  if (partyFromProcessing(value) === 'shop') return true;
+  return amdFromProcessing(value) === 'human';
 }
 
 const BRIGHTON = 'brighton@scwellservice.com';
@@ -254,18 +277,17 @@ export function missedAlertCopy(input: {
 const ANSWERED = new Set(['completed', 'answered']);
 
 /**
- * Connected time on the shop leg, in seconds, below which the pickup is treated
- * as voicemail when AMD did not hear a person. Twilio reports the handset's
- * or the carrier's voicemail as `completed`. A person who actually takes the
- * call is at or above this, or AMD said human. This does not change who is
+ * Connected time below which a completed dial with no child result yet might
+ * still be voicemail. It does not reclassify a recorded shop leg or AMD human.
+ * A 1–3 second office answer is still an answer. This does not change who is
  * dialed or when the caller is bridged.
  */
 export const SHOP_ANSWER_MIN_SECONDS = 20;
 
 /**
- * True when this connected shop leg is short enough to be voicemail, not a person.
- * `humanAnswer` is Twilio AMD `answered_by=human`. A short real conversation
- * (shop talk of 17s after Google Voice picks up) is not voicemail.
+ * True when this duration is short and nothing has confirmed a person.
+ * `humanAnswer` is Twilio AMD `answered_by=human`. Callers that already have
+ * `leg:shop` must not use this to send a missed email.
  */
 export function shopLegCountsAsMissed(seconds: number | null | undefined, humanAnswer = false): boolean {
   if (humanAnswer) return false;
@@ -310,20 +332,15 @@ export function inboundCallEmailPlan(input: {
   }
   if (ANSWERED.has(status)) {
     if (input.party === 'mike' || input.mikeOnly) return { handoff: false, send: 'defer', who: 'mike' };
-    // The shop number was a person. 17s of talk after Google Voice is still a person.
-    // Mike was listed on the sequential dial but was not the party who connected.
-    if (input.shopHuman) return { handoff: false, send: 'no', who: null };
-    // The shop number is the one that connected, or Mike was not in this dial at all.
-    // A short connection is voicemail. Unknown duration stays a real answer: a missing
-    // DialCallDuration must not turn a conversation into a missed-call email.
-    const shopLeg = input.party === 'shop' || !input.mikeInDial;
-    if (shopLeg && shopLegCountsAsMissed(input.shopSeconds)) {
-      return { handoff: false, send: 'now', who: 'missed' };
-    }
-    if (input.party === 'shop') return { handoff: false, send: 'no', who: null };
-    // Both numbers were dialed and the leg callback has not arrived. Wait for Mike's
-    // report if it was him. If Mike was not in the dial, the shop answered: no email.
+    // AMD heard a person, or the shop child already completed. A couple of seconds
+    // of talk is still the office (spam hangups). Do not email missed for that.
+    if (input.shopHuman || input.party === 'shop') return { handoff: false, send: 'no', who: null };
+    // Both numbers were in the dial and the child callback has not said who.
+    // Mike may have answered. His report is the email. A short duration is not.
     if (input.mikeInDial) return { handoff: false, send: 'defer', who: 'mike' };
+    // Shop-only dial, child evidence not in yet. The parent action often wins
+    // that race on a 1–3s call. Wait. A missing DialCallDuration is not a miss.
+    if (shopLegCountsAsMissed(input.shopSeconds)) return { handoff: false, send: 'defer', who: null };
     return { handoff: false, send: 'no', who: null };
   }
   if (status === 'canceled' || status === 'cancelled') return { handoff: false, send: 'now', who: 'missed' };
@@ -341,11 +358,13 @@ export function statusCallbackPlan(input: { dialStatus: string | null | undefine
 /** Final status for a call that never reached <Dial>. Rows that already have a dial result are left to the status callback. */
 export function abandonAlertDecision(input: {
   params: Record<string, string>;
-  row: { dial_status: string | null; processing_status: string } | null;
+  row: { dial_status: string | null; processing_status: string; processing_error?: string | null } | null;
 }): { closeOut: boolean; alert: boolean } {
   const patch = finalStatusPatch(input.params);
   if (!patch || !input.row) return { closeOut: false, alert: false };
   if (input.row.dial_status != null || input.row.processing_status !== 'pending') return { closeOut: false, alert: false };
+  // The shop child can record the answer before the parent dial action writes dial_status.
+  if (officeAnswerRecorded(input.row.processing_error)) return { closeOut: false, alert: false };
   return { closeOut: true, alert: true };
 }
 
@@ -379,7 +398,7 @@ export function abandonSummary(timing: { phase: 'before_dial' | 'dial'; ringSeco
   return `Caller hung up after ${total}. The phone rang about ${ring} and nobody answered. It never reached Mike.`;
 }
 
-type DialSnapshot = { dial_status: string | null; processing_status: string; started_at?: string | null };
+type DialSnapshot = { dial_status: string | null; processing_status: string; started_at?: string | null; processing_error?: string | null };
 
 /** Close and email only if the dial action never recorded a result. An answered call shows up during the wait. */
 export async function confirmedAbandon(input: {
@@ -400,7 +419,7 @@ export async function confirmedAbandon(input: {
     await (input.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))))(DIAL_RESULT_WAIT_MS);
     try {
       const again = await input.reread();
-      if (again && (again.dial_status != null || again.processing_status !== 'pending')) {
+      if (again && (again.dial_status != null || again.processing_status !== 'pending' || officeAnswerRecorded(again.processing_error))) {
         return { ...none, reason: 'dial-arrived' };
       }
     } catch (error) {
@@ -585,8 +604,23 @@ export async function noteMikeAwaitingReport(db: any, callSid: string): Promise<
     if (!row) return 'missing';
     const current = row.processing_error ?? null;
     // AMD already heard a person. Mike was listed on the dial but did not take the call.
-    if (hasAlertMarker(current) || partyFromProcessing(current) || awaitingMikeReport(current) || amdFromProcessing(current) === 'human') return 'already';
+    if (hasAlertMarker(current) || partyFromProcessing(current) || awaitingMikeReport(current) || officeAnswerRecorded(current)) return 'already';
     const result = await claimProcessingError(db, callSid, current, withAwaitMike(current), new Date());
+    if (result === 'ok') return 'noted';
+    if (result === 'error') return 'missing';
+  }
+  return 'already';
+}
+
+/** Shop-only dial completed before the child leg callback. One missed email later if the shop never claims it. */
+export async function noteAwaitLegEvidence(db: any, callSid: string): Promise<'noted' | 'already' | 'missing'> {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const loaded = await db.from('inbound_call_recordings').select('call_sid, processing_error').eq('call_sid', callSid).maybeSingle();
+    const row = loaded?.data;
+    if (!row) return 'missing';
+    const current = row.processing_error ?? null;
+    if (hasAlertMarker(current) || partyFromProcessing(current) || officeAnswerRecorded(current) || awaitingMikeReport(current) || awaitingLegEvidence(current)) return 'already';
+    const result = await claimProcessingError(db, callSid, current, withAwaitLeg(current), new Date());
     if (result === 'ok') return 'noted';
     if (result === 'error') return 'missing';
   }
@@ -781,18 +815,18 @@ export function sweepInboundEmail(row: {
   const human = amdFromProcessing(row.processing_error) === 'human';
   const answered = row.answered === true || ANSWERED.has(dial);
   if (answered && party === 'mike') return age >= SWEEP_MIKE_WAIT_MS ? 'mike' : null;
-  // Shop voicemail: Twilio said completed and AMD did not hear a person.
-  // A long connection, or answered_by=human, was a person — even under 20s.
-  if (answered && party === 'shop') {
-    return shopLegCountsAsMissed(row.duration_seconds, human) && age >= SWEEP_RETRY_MS ? 'missed' : null;
-  }
-  // Human on the shop leg, but leg:shop lost the race with await-mike.
-  // Do not email missed while waiting for a Mike report that will never come.
-  if (answered && human) return null;
+  // The shop child completed, or AMD heard a person. 1–3 seconds is still the
+  // office. await-mike must not turn that into a missed email later.
+  if (answered && (party === 'shop' || human)) return null;
   // Leg token still missing. Mike was in the dial, and neither his report nor
   // another email has claimed the row. One missed-call email, not a shop email.
   if (answered && awaitingMikeReport(row.processing_error)) {
     return age >= SWEEP_UNKNOWN_MIKE_MS ? 'missed' : null;
+  }
+  // Shop-only dial: the child callback had not arrived. If it never does, one
+  // missed email. If leg:shop landed, the branch above already returned.
+  if (answered && awaitingLegEvidence(row.processing_error)) {
+    return age >= SWEEP_RETRY_MS ? 'missed' : null;
   }
   if (answered) return null;
   return age >= SWEEP_RETRY_MS ? 'missed' : null;

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { parseTwilio } from '@/lib/phone-calls/auth';
 import { EMPTY_RESPONSE, buildVoicemailTwiml, buildAiHandoffTwiml } from '@/lib/phone-calls/twiml';
 import { publicUrl, PORTED_LINES, aiFallbackNumber } from '@/lib/phone-calls/config';
-import { amdFromProcessing, inboundCallEmailPlan, noteMikeAwaitingReport, notifyMissedInboundCall, partyFromProcessing } from '@/lib/phone-calls/missed-alert';
+import { amdFromProcessing, inboundCallEmailPlan, noteAwaitLegEvidence, noteMikeAwaitingReport, notifyMissedInboundCall, partyFromProcessing } from '@/lib/phone-calls/missed-alert';
 import { optionalServiceClient } from '@/lib/supabase/service';
 
 export const dynamic = 'force-dynamic';
@@ -60,8 +60,8 @@ export async function POST(req: NextRequest) {
     shopMachine,
     shopHuman,
   });
-  // Mike's email is his end-of-call report. Missed calls, including a short shop
-  // voicemail leg, email now. A real shop answer does not.
+  // Mike's email is his end-of-call report. Nobody answered: email now.
+  // A recorded shop leg, including a couple of seconds, does not.
   if (plan.send === 'now' && plan.who && params.CallSid) {
     try {
       await notifyMissedInboundCall({
@@ -75,12 +75,14 @@ export async function POST(req: NextRequest) {
       }, db);
     } catch (e) { console.error('[phone-calls] call alert failed', e instanceof Error ? e.message : e); }
   }
-  // Answered, but the leg callback has not said who. Remember that Mike was in the
-  // dial so the sweep can send one missed-call email if his report never arrives.
-  if (plan.send === 'defer' && !party && mikeInDial && db && params.CallSid) {
+  // Answered, but the child callback has not said who.
+  // Mike in the dial: his report is the email, or one missed email if it never comes.
+  // Shop-only: wait for the shop child. A 1–3s answer often finishes the parent first.
+  if (plan.send === 'defer' && !party && db && params.CallSid) {
     try {
-      await noteMikeAwaitingReport(db, params.CallSid);
-    } catch (e) { console.error('[phone-calls] mike-await note failed', e instanceof Error ? e.message : e); }
+      if (mikeInDial && plan.who === 'mike') await noteMikeAwaitingReport(db, params.CallSid);
+      else if (!mikeInDial) await noteAwaitLegEvidence(db, params.CallSid);
+    } catch (e) { console.error('[phone-calls] answer-wait note failed', e instanceof Error ? e.message : e); }
   }
   // Caller still here and Mike has not been dialed: shop no-answer, or AMD hung up a machine.
   if (plan.handoff && ai) {
