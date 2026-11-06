@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, newestPerPhone, callerTurns, trackingNumberForCaller, classifyInboundParents, parseTwilioLegs, WORDING, STOP_WORDS, type TextCandidate, type TextContext, type TwilioLeg } from './missed-call-text.ts';
+import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, mikeCallerTurns, mikeFollowUpTrigger, newestPerPhone, callerTurns, trackingNumberForCaller, classifyInboundParents, parseTwilioLegs, scheduledPhonesFromJobs, WORDING, STOP_WORDS, type TextCandidate, type TextContext, type TwilioLeg } from './missed-call-text.ts';
 import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
-import { sendTextMessage, TextNotAllowedError, handleTextReply } from './missed-call-text-run.ts';
+import { sendTextMessage, TextNotAllowedError, handleTextReply, textPassBlocked } from './missed-call-text-run.ts';
 
 const NOW = new Date('2026-10-19T17:00:00Z'); // Mon 10:00 AM PT
 const call = (over: Partial<TextCandidate> = {}): TextCandidate => ({
@@ -10,7 +10,7 @@ const call = (over: Partial<TextCandidate> = {}): TextCandidate => ({
   name: null, summary: 'Caller hung up after the greeting.', spam: false, vendor: false, ...over,
 });
 const ctx = (over: Partial<TextContext> = {}): TextContext => ({
-  laterInbound: [], voiceAttempts: [], work: new Map(), activeJobPhones: new Set(), unpaidPhones: new Set(),
+  laterInbound: [], voiceAttempts: [], work: new Map(), activeJobPhones: new Set(), scheduledPhones: new Set(), unpaidPhones: new Set(),
   holdPhones: new Set(), holdNotes: [], dncPhones: new Set(), texts: [], staffPhones: new Set(), bookings: [], ...over,
 });
 const FULL = { MISSED_CALL_TEXT_ENABLED: 'true' } as NodeJS.ProcessEnv;
@@ -30,6 +30,15 @@ describe('missed-call text config', () => {
     const f = textConfig(FULL);
     assert.equal(textAllowedFor('+14083181171', f), false);
     assert.equal(decideText(call({ phone: '+14083181171' }), ctx(), f, NOW, 'mobile').action, 'skip');
+    // Ads (331-2502) and SEO (463-0493) tracking lines stay blocked. They are not personal cells.
+    assert.equal(textAllowedFor('+17603312502', f), false);
+    assert.equal(textAllowedFor('+17604630493', f), false);
+    assert.equal(decideText(call({ phone: '+17603312502' }), ctx(), f, NOW, 'mobile').action, 'skip');
+    assert.equal(decideText(call({ phone: '+17604630493' }), ctx(), f, NOW, 'mobile').action, 'skip');
+  });
+  it('a failed Jobber appointment read blocks the text pass', () => {
+    assert.equal(textPassBlocked(['jobber appointments: column data does not exist']), 'jobber appointments: column data does not exist');
+    assert.equal(textPassBlocked(['twilio calls: not_configured']), null);
   });
   it('send refuses when the flag is off (no fetch)', async () => {
     let called = false;
@@ -100,14 +109,37 @@ describe('decideText', () => {
 
 describe('wording and helpers', () => {
   it('every option names SCWS, has STOP language, no money, links or phone numbers, and stays one segment-ish', () => {
-    for (const opt of Object.values(WORDING)) for (const body of [opt.missed, opt.cutoff]) {
+    for (const opt of Object.values(WORDING)) for (const body of [opt.missed, opt.cutoff, opt.thanks]) {
       assert.match(body, /Southern California Well Service/);
       assert.match(body, /Reply STOP to opt out\.$/);
       assert.doesNotMatch(body, /\$|https?:|\d{3}[-.)\s]\d{3}|invoice|bill|pay/i);
-      assert.ok(body.length <= 200, `${body.length}`);
+      assert.ok(body.length <= 200, `${body.length} ${body}`);
     }
     assert.equal(textBody('ring_hangup', 'A'), WORDING.A.missed);
+    assert.equal(textBody('voicemail', 'A'), WORDING.A.missed);
+    assert.equal(textBody('mike_hangup', 'A'), WORDING.A.cutoff);
     assert.equal(textBody('mike_unfinished', 'B'), WORDING.B.cutoff);
+    assert.equal(textBody('mike_completed', 'A'), WORDING.A.thanks);
+    assert.match(WORDING.A.thanks, /Thanks for calling/);
+    assert.doesNotMatch(WORDING.A.thanks, /cut off|missed your call/);
+  });
+  it('a finished Mike conversation thanks them; a short or silent Mike leg says we got cut off', () => {
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: 210, callerTurns: 4 }), 'mike_completed');
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: 70, callerTurns: null }), 'mike_completed');
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: 8, callerTurns: 1 }), 'mike_hangup');
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: 245, callerTurns: 0 }), 'mike_hangup');
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: null, callerTurns: null }), 'mike_hangup');
+    assert.equal(mikeCallerTurns(null), null);
+    assert.equal(mikeCallerTurns('   '), null);
+    assert.equal(mikeCallerTurns('AI: Hi there'), 0);
+    assert.equal(mikeCallerTurns('AI: Hi\nUser: no water'), 1);
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: 210, callerTurns: mikeCallerTurns(null) }), 'mike_completed');
+    assert.equal(mikeFollowUpTrigger({ durationSeconds: 210, callerTurns: mikeCallerTurns('AI: Hi there') }), 'mike_hangup');
+    const thanks = decideText(call({ trigger: 'mike_completed' }), ctx(), textConfig(FULL), NOW, 'mobile');
+    assert.equal(thanks.action, 'send');
+    if (thanks.action === 'send') assert.equal(thanks.body, WORDING.A.thanks);
+    const cut = decideText(call({ trigger: 'mike_hangup' }), ctx(), textConfig(FULL), NOW, 'mobile');
+    if (cut.action === 'send') assert.match(cut.body, /got cut off/);
   });
   it('callback and emergency rows do not finish a Mike call; a job or assessment does', () => {
     const callback = { vapiCallId: 'v1', phone: '16195550142', at: '2026-10-19T16:56:00Z', serviceType: 'Callback' };
@@ -192,12 +224,21 @@ describe('Brighton 10/29: text unless there was a real booking', () => {
 
   it('texts a Mike call that only filed a callback request', () => {
     const row = one([parent('CAm', 90), child('CAmike', 'CAm', MIKE, 70)]);
-    assert.equal(row.candidate?.trigger, 'mike_unfinished');
+    assert.equal(row.candidate?.trigger, 'mike_completed');
     const callback = { vapiCallId: 'v-cb', phone: CALLER, at: '2026-10-19T16:56:00Z', serviceType: 'Callback', kind: 'booking_request' as const };
     assert.equal(mikeCallFinished({ vapiCallId: 'v-cb', phone: CALLER, at }, [callback]), false);
     const sent = decideText({ ...row.candidate!, vapiCallId: 'v-cb' }, ctx({ bookings: [callback] }), f, NOW, 'mobile');
     assert.equal(sent.action, 'send');
-    if (sent.action === 'send') assert.match(sent.body, /cut off/);
+    if (sent.action === 'send') assert.match(sent.body, /Thanks for calling/);
+    assert.doesNotMatch(sent.action === 'send' ? sent.body : '', /cut off/);
+  });
+
+  it('keeps got-cut-off when Mike connected for only a few seconds', () => {
+    const row = one([parent('CAshort', 12), child('CAshortMike', 'CAshort', MIKE, 8)]);
+    assert.equal(row.candidate?.trigger, 'mike_hangup');
+    const sent = decideText(row.candidate!, ctx(), f, NOW, 'mobile');
+    assert.equal(sent.action, 'send');
+    if (sent.action === 'send') assert.match(sent.body, /got cut off/);
   });
 
   it('skips a Mike call that ended in a real booking', () => {
@@ -213,6 +254,57 @@ describe('Brighton 10/29: text unless there was a real booking', () => {
     assert.equal(mikeCallFinished({ vapiCallId: null, phone: CALLER, at }, [{ ...jobberJob, at: '2026-10-19T12:00:00Z' }]), false);
     const skipped = decideText(call({ vapiCallId: 'v-job' }), ctx({ bookings: [job] }), f, NOW, 'mobile');
     assert.deepEqual(skipped, { action: 'skip', reason: 'booked' });
+  });
+
+  it('skips when Jobber already has a scheduled visit for that caller, even if the job is older than the call', () => {
+    const client = [{ id: 'c1', phones_digits: ['6195550142'] }];
+    const upcoming = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: null, data: { jobStatus: 'upcoming', title: 'Service Call' } }],
+      client,
+      NOW,
+    );
+    assert.equal(upcoming.has('6195550142'), true);
+    const skipped = decideText(call({ trigger: 'ring_hangup' }), ctx({ scheduledPhones: upcoming }), f, NOW, 'mobile');
+    assert.deepEqual(skipped, { action: 'skip', reason: 'already_scheduled' });
+
+    const tomorrow = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: null, title: 'Service Call', data: { visits: { nodes: [{ startAt: '2026-10-20T15:00:00Z', title: 'Thu window' }] } } }],
+      client,
+      NOW,
+    );
+    assert.equal(decideText(call(), ctx({ scheduledPhones: tomorrow }), f, NOW, 'mobile').reason, 'already_scheduled');
+
+    const invoiced = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: null, data: { jobStatus: 'requires_invoicing', title: 'Service Call' } }],
+      client,
+      NOW,
+    );
+    assert.equal(invoiced.size, 0);
+    const unscheduled = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: null, data: { jobStatus: 'unscheduled', title: 'Service Call' } }],
+      client,
+      NOW,
+    );
+    assert.equal(unscheduled.size, 0);
+    const done = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: '2026-10-18T17:00:00Z', data: { jobStatus: 'upcoming', title: 'Service Call' } }],
+      client,
+      NOW,
+    );
+    assert.equal(done.size, 0);
+    const meeting = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: null, data: { jobStatus: 'upcoming', title: 'Shop meeting - Anza' } }],
+      client,
+      NOW,
+    );
+    assert.equal(meeting.size, 0);
+    const yesterday = scheduledPhonesFromJobs(
+      [{ client_id: 'c1', completed_at: null, data: { title: 'Service Call', visits: { nodes: [{ startAt: '2026-10-18T15:00:00Z' }] } } }],
+      client,
+      NOW,
+    );
+    assert.equal(yesterday.size, 0);
+    assert.equal(decideText(call(), ctx({ scheduledPhones: invoiced, activeJobPhones: new Set(['6195550142']) }), f, NOW, 'mobile').action, 'send');
   });
 
   it('skips a shop leg that was answered for 99 seconds', () => {

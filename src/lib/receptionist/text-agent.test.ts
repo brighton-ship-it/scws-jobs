@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { runTextAgent, scrubReply, offeredStarts, FALLBACK_REPLY, type ChatModel } from './text-agent.ts';
+import { runTextAgent, scrubReply, offeredStarts, officeAlertFor, FALLBACK_REPLY, type ChatModel } from './text-agent.ts';
 
 const NOW = new Date('2026-10-19T17:00:00Z');
 function scripted(steps: Array<any>): ChatModel {
@@ -42,6 +42,33 @@ describe('runTextAgent', () => {
     assert.equal(r.booked, true);
     assert.equal(log.filter((l) => l.startsWith('book:')).length, 1);
     assert.match(r.reply, /\$200/);
+  });
+  it('alerts the office when the reply promises a handoff and the model never called the tool', async () => {
+    const log: string[] = [];
+    const model = scripted([{ content: "I'll have the office reach out about that quote." }]);
+    const r = await runTextAgent({ phone: '+16195550142', inbound: 'can I get a quote for a new pump', thread: [], now: NOW, model, tools: tools(log) });
+    assert.equal(r.handedOff, true);
+    assert.deepEqual(log, ['handoff:false']);
+    assert.match(r.reply, /office/);
+  });
+  it('alerts the office as urgent for need-it-now and keeps the booking thread open', async () => {
+    const log: string[] = [];
+    const model = scripted([{ content: 'I can get you on the schedule. What town is the well in?' }]);
+    const r = await runTextAgent({ phone: '+16195550142', inbound: 'need it now, no water', thread: [], now: NOW, model, tools: tools(log) });
+    assert.equal(r.handedOff, false);
+    assert.equal(r.urgent, true);
+    assert.deepEqual(log, ['handoff:true']);
+    assert.equal(officeAlertFor('need it now', 'What town is the well in?').alert, true);
+    assert.equal(officeAlertFor('the pump is loud', 'What town is the well in?').alert, false);
+    assert.equal(officeAlertFor('no water pressure', 'What town is the well in?').alert, false);
+  });
+  it('does not alert the office twice for the same thread', async () => {
+    const log: string[] = [];
+    const model = scripted([{ content: 'What town is the well in?' }]);
+    const prior = [{ role: 'tool' as const, name: 'hand_off_to_office', content: '{"ok":true}', at: NOW.toISOString() }];
+    const r = await runTextAgent({ phone: '+16195550142', inbound: 'need it now', thread: prior, now: NOW, model, tools: tools(log) });
+    assert.deepEqual(log, []);
+    assert.equal(r.handedOff, false);
   });
   it('falls back to the office when the model fails', async () => {
     const log: string[] = [];
