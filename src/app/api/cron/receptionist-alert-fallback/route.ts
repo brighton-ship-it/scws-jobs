@@ -95,10 +95,11 @@ export async function POST(request: NextRequest) {
   }
 
   // Inbound backup, same cron (vercel.json: every 10 minutes). No extra env.
-  // A short shop leg is voicemail and retries as missed, unless AMD heard a person.
-  // An answered call that still does not name a party, and was not a shop human,
-  // waits SWEEP_UNKNOWN_MIKE_MS (10 minutes from the row's last update), then one
-  // missed-call email, if Mike was in the dial and nothing has claimed the row.
+  // A recorded shop leg is an office answer at any length, including a couple of
+  // seconds, so it is not emailed as missed. An answered call that still does not
+  // name a party, and was not a shop human, waits SWEEP_UNKNOWN_MIKE_MS (10 minutes
+  // from the row's last update) when Mike was in the dial, or the shorter leg wait
+  // when only the shop was dialed, then one missed-call email if nothing claims it.
   // A known Mike call still waits SWEEP_MIKE_WAIT_MS so this does not claim the
   // row before his end-of-call report.
   const sweepSince = new Date(now - 3 * 60 * 60 * 1000).toISOString();

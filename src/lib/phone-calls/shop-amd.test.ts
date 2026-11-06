@@ -72,6 +72,10 @@ describe('shop answering-machine decision', () => {
     assert.equal(shopLegRecordsAnswer({ party: 'shop', params: { CallStatus: 'answered' } }), false);
     assert.equal(shopLegRecordsAnswer({ party: 'shop', params: { CallStatus: 'completed', CallDuration: '208' }, processingError: 'amd:machine' }), false);
     assert.equal(shopLegRecordsAnswer({ party: 'shop', params: { CallStatus: 'completed', CallDuration: '95' } }), true);
+    for (const CallDuration of ['1', '2', '3']) {
+      assert.equal(shopLegRecordsAnswer({ party: 'shop', params: { CallStatus: 'completed', CallDuration } }), true, CallDuration);
+    }
+    assert.equal(shopLegRecordsAnswer({ party: 'shop', params: { CallStatus: 'completed', CallDuration: '0' } }), false);
     assert.equal(shopLegRecordsAnswer({ party: 'shop', params: { CallStatus: 'completed', CallDuration: '95' }, processingError: 'amd:human' }), true);
     assert.equal(shopLegRecordsAnswer({ party: 'mike', params: { CallStatus: 'in-progress' } }), true);
     assert.equal(shopLegRecordsAnswer({ party: 'mike', params: { CallStatus: 'completed', CallDuration: '40' } }), true);
