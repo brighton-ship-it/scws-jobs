@@ -6,6 +6,7 @@ import {
   SERVICE_TECH_ROSTER,
   TECH_BRIAN_EADS,
   TECH_COWIN,
+  TECH_DAVID_TUCKER,
   allowedTechSpokenName,
   allowedTechsForLocation,
   assignShopTech,
@@ -65,13 +66,14 @@ const DOUG = {
 };
 
 describe('assignShopTerritory / allowed techs', () => {
-  it('sends Anza / high-desert to Cowin only (Doug Pollack deactivated)', () => {
+  it('sends Anza / high-desert to Cowin, then David Tucker (Doug Pollack deactivated)', () => {
     assert.equal(assignShopTerritory({ city: 'Anza' }), 'anza');
-    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((tech) => tech.name), [TECH_COWIN]);
+    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((tech) => tech.name), [TECH_COWIN, TECH_DAVID_TUCKER]);
     for (const loc of [{ city: 'Anza' }, { city: 'Aguanga' }, { address: '12 Well Rd', zip: '92539' }, { city: 'Hemet' }]) {
       assert.equal(assignShopTech(loc).name, TECH_COWIN);
+      assert.deepEqual(allowedTechsForLocation(loc).map((tech) => tech.name), [TECH_COWIN, TECH_DAVID_TUCKER]);
     }
-    assert.equal(allowedTechSpokenName({ city: 'Anza' }), 'Cowin');
+    assert.equal(allowedTechSpokenName({ city: 'Anza' }), 'Cowin or David Tucker');
     assert.equal('doug' in SERVICE_TECH_ROSTER, false);
   });
 
@@ -147,17 +149,17 @@ describe('service tech identity — roster emails / Brighton name, not guesses',
 });
 
 describe('Anza-side desert towns (Borrego Springs)', () => {
-  it('assigns Cowin and Brian so the earliest slot wins across both', () => {
+  it('assigns Cowin, David, and Brian so the earliest slot wins across all three', () => {
     for (const city of ['Borrego Springs', 'Ocotillo Wells', 'Shelter Valley']) {
       assert.equal(assignShopTerritory({ city }), 'desert');
-      assert.deepEqual(allowedTechsForLocation({ city }).map((t) => t.name), [TECH_COWIN, TECH_BRIAN_EADS]);
+      assert.deepEqual(allowedTechsForLocation({ city }).map((t) => t.name), [TECH_COWIN, TECH_DAVID_TUCKER, TECH_BRIAN_EADS]);
     }
     assert.equal(assignShopTerritory({ zip: '92004' }), 'desert');
   });
 
-  it('leaves Ramona and Anza territories unchanged', () => {
+  it('leaves Ramona as Brian only and Anza as the Anza shop techs', () => {
     assert.deepEqual(allowedTechsForLocation({ city: 'Ramona' }).map((t) => t.name), [TECH_BRIAN_EADS]);
-    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), [TECH_COWIN]);
+    assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), [TECH_COWIN, TECH_DAVID_TUCKER]);
   });
 
   it('resolves Cowin and Brian for the desert, never Doug or Travis', () => {
@@ -238,7 +240,8 @@ describe('Jeremiah Biliunas — Wed–Fri extra, not a Mon/Tue primary', () => {
     }
     assert.equal(fallbackTechs().some((tech) => tech.key === 'jeremiah'), false);
     assert.equal(allowedTechSpokenName({ city: 'Ramona' }), TECH_BRIAN_EADS);
-    assert.equal(allowedTechSpokenName({ city: 'Anza' }), TECH_COWIN);
+    assert.equal(allowedTechSpokenName({ city: 'Anza' }), 'Cowin or David Tucker');
+    assert.equal(allowedTechsForLocation({ city: 'Ramona' }).some((tech) => tech.key === 'david'), false);
   });
 });
 
@@ -247,5 +250,58 @@ it('Doug Pollack (let go Oct 2026) is never an allowed tech in any territory', (
     const names = allowedTechsForLocation({ city }).map((tech) => tech.name);
     assert.ok(!names.some((name) => /pollack|doug/i.test(name)), `${city}: ${names.join(', ')}`);
   }
-  assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), ['Cowin']);
+  assert.deepEqual(allowedTechsForLocation({ city: 'Anza' }).map((t) => t.name), ['Cowin', 'David Tucker']);
+});
+
+describe('David Tucker — Anza Monday–Friday, not a weekend or Ramona tech', () => {
+  const DAVID_ID = 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQ1ODAxNQ==';
+  const DAVID = {
+    id: DAVID_ID,
+    name: { full: 'David Tucker ' },
+    email: { raw: 'david@scwellservice.com' },
+  };
+  const roster = [TRAVIS, BRIGHTON, HAZE, CHRIS, SCHROEDER, BRIAN, COWIN, DOUG, DAVID];
+
+  it('resolves the trailing-space Jobber name by email and by trimmed full name', () => {
+    assert.equal(SERVICE_TECH_ROSTER.david.email, 'david@scwellservice.com');
+    assert.equal(SERVICE_TECH_ROSTER.david.envIdKey, 'JOBBER_TECH_DAVID_TUCKER_ID');
+    assert.deepEqual(resolveTechUserId(SERVICE_TECH_ROSTER.david, roster, {}), {
+      id: DAVID_ID,
+      name: 'David Tucker',
+    });
+    assert.deepEqual(
+      resolveTechUserId(SERVICE_TECH_ROSTER.david, [{ id: DAVID_ID, name: { full: 'David Tucker ' } }], {}),
+      { id: DAVID_ID, name: 'David Tucker' }
+    );
+    assert.equal(
+      resolveTechUserId(SERVICE_TECH_ROSTER.david, roster, { JOBBER_TECH_DAVID_TUCKER_ID: DAVID_ID })?.id,
+      DAVID_ID
+    );
+    assert.equal(
+      resolveTechUserId(SERVICE_TECH_ROSTER.david, roster, { JOBBER_TECH_DAVID_TUCKER_ID: TRAVIS.id }),
+      null
+    );
+  });
+
+  it('does not match a first name, Travis, or a blocked user', () => {
+    const tech = SERVICE_TECH_ROSTER.david;
+    assert.equal(userMatchesTech({ id: 'x', name: { full: 'David' }, email: { raw: '' } }, tech), false);
+    assert.equal(userMatchesTech(TRAVIS, tech), false);
+    assert.equal(userMatchesTech(DOUG, tech), false);
+    assert.equal(userMatchesTech(COWIN, tech), false);
+  });
+
+  it('joins the Anza and desert pools and stays out of Ramona, fallback, and weekend-extra', () => {
+    assert.deepEqual(resolveTechsForLocation({ city: 'Anza' }, roster, {}).map((tech) => tech.id), ['user-cowin', DAVID_ID]);
+    assert.deepEqual(resolveTechsForLocation({ city: 'Murrieta' }, roster, {}).map((tech) => tech.id), ['user-cowin', DAVID_ID]);
+    assert.deepEqual(resolveTechsForLocation({ city: 'Borrego Springs' }, roster, {}).map((tech) => tech.id), [
+      'user-cowin',
+      DAVID_ID,
+      'user-brian',
+    ]);
+    assert.deepEqual(resolveTechsForLocation({ city: 'Ramona' }, roster, {}).map((tech) => tech.id), ['user-brian']);
+    assert.equal(fallbackTechs().some((tech) => tech.key === 'david'), false);
+    assert.equal(weekendExtraTechs().some((tech) => tech.key === 'david'), false);
+    assert.equal(WEEKEND_EXTRA_TECH_ROSTER.jeremiah.weekdayPool.join(','), '3,4,5');
+  });
 });

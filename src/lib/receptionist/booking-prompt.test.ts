@@ -21,6 +21,13 @@ describe('booking prompt text', () => {
     assert.match(all, /do not assume the city from the line they called/i);
   });
 
+  it('offers David Tucker on Anza weekdays and not as a weekend tech', () => {
+    const all = `${BOOK_JOB_TOOL.description}\n${SARAH_AFTER_HOURS_BOOKING}`;
+    assert.match(all, /Cowin or David Tucker/);
+    assert.match(all, /David Tucker is Monday–Friday only and is not a weekend tech/);
+    assert.match(all, /Brian Eads only/);
+  });
+
   it('tells Mike how to handle a declined slot', () => {
     assert.match(SARAH_AFTER_HOURS_BOOKING, /too far out/i);
     assert.match(SARAH_AFTER_HOURS_BOOKING, /hold that spot/i);
