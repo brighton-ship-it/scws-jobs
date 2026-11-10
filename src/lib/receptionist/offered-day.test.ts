@@ -1,10 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { checkOfferedDay, slotDay, type SlotDay } from './offered-day.ts';
+import { checkOfferedDay, DAY_MISMATCH_RETRY_LIMIT, slotDay, type SlotDay } from './offered-day.ts';
 
 const MONDAY = new Date('2026-11-09T19:40:00.000Z');
+const TUESDAY_9AM = new Date('2026-11-10T17:00:00.000Z');
 const WED_10 = '2026-11-11T18:00:00.000Z';
+const WED_8 = '2026-11-11T16:00:00.000Z';
 
 const spiegel = [
   { role: 'bot' as const, text: 'I can get someone out today Monday between 1 PM and 3 PM or Monday between 4 PM and 6 PM. Which works better for you?' },
@@ -82,9 +84,94 @@ test('tomorrow is the next calendar day, and a bare yes with no spoken day is no
   assert.match(String(november10.message), /November 10/);
 });
 
+test('QA probes: same-hour days, time before day, at-10, noon, today, and a missing start time', () => {
+  const bothHours = checkOfferedDay(
+    { startAt: WED_8 },
+    [{ role: 'bot', text: 'Wednesday, November 11, between 8 AM and 10 AM, or Thursday, November 12, between 8 AM and 10 AM.' }],
+    TUESDAY_9AM,
+  );
+  assert.equal(bothHours.ok, true);
+  const shorthand = checkOfferedDay(
+    { startAt: WED_8 },
+    [{ role: 'bot', text: 'Wed 11/11 8–10 AM, or Thu 11/12 8–10 AM.' }],
+    TUESDAY_9AM,
+  );
+  assert.equal(shorthand.ok, true);
+  const reread = checkOfferedDay(
+    { startAt: WED_8 },
+    [{ role: 'bot', text: 'Wednesday between 8 AM and 10 AM, or Thursday between 8 AM and 10 AM.' }],
+    TUESDAY_9AM,
+    1,
+  );
+  assert.equal(reread.ok, true);
+
+  const timeFirst = checkOfferedDay(
+    { startAt: WED_10 },
+    [{ role: 'bot', text: 'Nothing Tuesday. I can do between 10 AM and 12 PM on Wednesday, Nov 11.' }],
+    TUESDAY_9AM,
+  );
+  assert.equal(timeFirst.ok, true);
+
+  const atTen = checkOfferedDay(
+    { startAt: WED_10 },
+    [{ role: 'bot', text: 'Wednesday at 10. Call before Monday.' }],
+    TUESDAY_9AM,
+  );
+  assert.equal(atTen.ok, true);
+  const noon = checkOfferedDay(
+    { startAt: WED_10 },
+    [{ role: 'bot', text: 'Wednesday from 10 to noon, or Thursday 8 to 10.' }],
+    TUESDAY_9AM,
+  );
+  assert.equal(noon.ok, true);
+
+  const today = checkOfferedDay(
+    { startAt: WED_10 },
+    [{ role: 'bot', text: 'I can do today between 10 AM and 12 PM.' }],
+    TUESDAY_9AM,
+  );
+  assert.equal(today.ok, false);
+
+  const noStart = checkOfferedDay(
+    { startAt: WED_10 },
+    [{ role: 'bot', text: 'I can do tomorrow between 10 AM and 12 PM.' }],
+    null,
+  );
+  assert.equal(noStart.ok, true);
+});
+
+test('a day mismatch is re-offered twice, then the call goes to createCallback', () => {
+  const turns = [{ role: 'bot' as const, text: 'Tuesday between 10 AM and 12 PM.' }];
+  assert.equal(DAY_MISMATCH_RETRY_LIMIT, 2);
+  const first = checkOfferedDay({ startAt: WED_10 }, turns, MONDAY, 0);
+  assert.equal(first.ok, false);
+  if (!first.ok) {
+    assert.equal(first.result.fallback, undefined);
+    assert.match(String(first.result.message), /Say that label verbatim/);
+  }
+  const second = checkOfferedDay({ startAt: WED_10 }, turns, MONDAY, 1);
+  assert.equal(second.ok, false);
+  if (!second.ok) assert.equal(second.result.fallback, undefined);
+  const third = checkOfferedDay({ startAt: WED_10 }, turns, MONDAY, 2);
+  assert.equal(third.ok, false);
+  if (!third.ok) {
+    assert.equal(third.result.fallback, 'createCallback');
+    assert.match(String(third.result.message), /Do not call book_job again/);
+    assert.match(String(third.result.message), /createCallback once/);
+  }
+  const corrected = checkOfferedDay(
+    { startAt: WED_10 },
+    [{ role: 'bot', text: 'Wednesday, November 11, between 10:00 AM and 12:00 PM.' }],
+    MONDAY,
+    2,
+  );
+  assert.equal(corrected.ok, true);
+});
+
 test('the book path checks the spoken day and does not turn callbacks on', () => {
   const route = readFileSync(new URL('../../app/api/receptionist/webhook/route.ts', import.meta.url), 'utf8');
   assert.match(route, /checkOfferedDay/);
+  assert.match(route, /dayRefusalsFromBody/);
   assert.equal(route.includes('MIKE_CALLBACKS_ENABLED'), false);
   const src = readFileSync(new URL('./offered-day.ts', import.meta.url), 'utf8');
   assert.equal(src.includes('api.vapi.ai'), false);

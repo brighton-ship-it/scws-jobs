@@ -41,7 +41,7 @@ import {
   resolveOfficeToolBatch,
 } from '@/lib/receptionist/office-callback';
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
-import { checkOfferedDay } from '@/lib/receptionist/offered-day';
+import { checkOfferedDay, dayRefusalsFromBody } from '@/lib/receptionist/offered-day';
 import { applyQuietLeadOutcome, quietLeadBeforeHangup } from '@/lib/receptionist/quiet-lead';
 import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
 import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
@@ -660,11 +660,12 @@ export async function GET() {
   });
 }
 
-function toolCallNow(body: any): Date {
+function toolCallNow(body: any): Date | null {
   const message = body?.message || {};
-  const raw = message.call?.startedAt || message.startedAt || body?.call?.startedAt || message.timestamp;
-  const date = new Date(raw || Date.now());
-  return Number.isNaN(date.getTime()) ? new Date() : date;
+  const raw = message.call?.startedAt || message.startedAt || body?.call?.startedAt;
+  if (!raw) return null;
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function redactToolLog(params: Record<string, unknown>): Record<string, unknown> {
@@ -730,7 +731,7 @@ async function handleVapiTools(body: any) {
         executed[i] = { id: call.id, body: { result: address.result } };
         continue;
       }
-      const offered = checkOfferedDay(params, consentTurns, toolCallNow(body));
+      const offered = checkOfferedDay(params, consentTurns, toolCallNow(body), dayRefusalsFromBody(body));
       if (!offered.ok) {
         console.warn(`[Receptionist] book refused (day mismatch)${testCall ? ' (test call)' : ''}`);
         executed[i] = { id: call.id, body: { result: offered.result } };

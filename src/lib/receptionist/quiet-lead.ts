@@ -10,10 +10,11 @@ import { toolOutcomes } from './missed-service-flag.ts';
 
 const NAME_STOP = new Set([
   'a', 'an', 'the', 'about', 'for', 'my', 'not', 'just', 'going', 'still', 'ok', 'okay', 'here', 'fine',
+  'calling', 'checking', 'wondering',
 ]);
 
 const DRILLING = /\b(?:new well|need a well(?!\s+pump)|needs a well(?!\s+pump)|drill(?:ing)?(?:\s+a)?\s+well|well drilled|well drilling)\b/i;
-const NEED = /\b(?:no water|pump|pressure|leak|tank|motor|well|drill\w*|quote|estimate|inspection|certification|install)\b/i;
+const NEED = /\b(?:no water|pump|pressure|leak|tank|motor|(?:my|the|our)\s+well|drill\w*|quote|estimate|inspection|certification|install)\b/i;
 
 export type QuietLead = { note: string; drilling: boolean };
 

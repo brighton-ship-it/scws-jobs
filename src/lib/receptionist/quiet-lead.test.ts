@@ -28,6 +28,10 @@ test('Moore is a drilling lead and Tim is a lead that is not drilling', () => {
   assert.equal(callerGaveLead('Hello?').lead, false);
   assert.equal(callerGaveLead('I need a well pump').drilling, false);
   assert.equal(callerGaveLead('').lead, false);
+  assert.equal(callerGaveLead("I'm calling from Ferguson about a delivery").lead, false);
+  assert.equal(callerGaveLead('Well, I was just calling to check on my invoice').lead, false);
+  assert.equal(callerGaveLead('Just checking on the status of my appointment').lead, false);
+  assert.equal(callerGaveLead('The well is dry and we have no water').lead, true);
 });
 
 test('a quiet drilling lead becomes a Damian callback, and a saved callback or booking does not', () => {
