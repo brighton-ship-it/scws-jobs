@@ -29,6 +29,7 @@ import {
   normalizePhone10,
   resolveReceptionistJobberToken,
 } from './check-schedule.ts';
+import { slotSayLabel } from './slot-say.ts';
 import {
   isVisitDayAllowed,
   isWeekdayVisitStart,
@@ -108,6 +109,8 @@ export type BookedVisit = {
   endAt: string | null;
   date: string;
   time: string;
+  /** Weekday + date + window. Mike confirms with this verbatim. */
+  say: string;
   technicians: string[];
   title: string;
 };
@@ -557,13 +560,16 @@ function visitFromJob(job: any, fallbackStart: string, fallbackEnd: string, tech
     .map((user: { name?: { full?: string } }) => user?.name?.full)
     .filter(Boolean);
 
+  const date = formatPtDate(new Date(visit.startAt));
+  const time = formatVisitTime(visit.startAt, visit.endAt || fallbackEnd || null, false);
   return {
     id: visit.id || null,
     jobId: job.id || null,
     startAt: visit.startAt,
     endAt: visit.endAt || fallbackEnd || null,
-    date: formatPtDate(new Date(visit.startAt)),
-    time: formatVisitTime(visit.startAt, visit.endAt || fallbackEnd || null, false),
+    date,
+    time,
+    say: slotSayLabel(date, time),
     technicians: technicians.length ? technicians : [techName],
     title: job.title || SERVICE_CALL_TITLE,
   };
@@ -1016,14 +1022,14 @@ export async function bookServiceCall(
       mayBook: true,
       lookupStatus: 'ok',
       weekendEmergency: false,
-      message: `You're scheduled for a ${SERVICE_CALL_TITLE} on ${visit.date}, ${visit.time}. ${visit.technicians.join(' and ')} will handle the visit.${driveNote}`,
+      message: `You're scheduled for a ${SERVICE_CALL_TITLE} on ${visit.say}. ${visit.technicians.join(' and ')} will handle the visit.${driveNote}`,
       driveSurchargeUsd: driveLine ? area.driveSurchargeUsd : 0,
       driveHours: area.driveHours,
       nearerShop: area.nearerShop,
       county: area.county,
       outOfArea: false,
       confirmationRule:
-        'You may confirm only this visit (date, time, technician) from the book response. Do not invent another time.',
+        'You may confirm only this visit. Say visit.say verbatim (weekday and date). Do not invent another time or another weekday.',
       visit,
       assignedTechName: chosen.technician || tech.name,
       clientId: client.id,

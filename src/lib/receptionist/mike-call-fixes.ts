@@ -16,6 +16,9 @@ export const SPANISH_SPEAKER_FLAG = 'Spanish speaker';
 export const LOST_PRESSURE_HEADING = '## Lost pressure emergency (HARD RULE)';
 export const SPANISH_HEADING = '## Spanish speaker (HARD RULE)';
 export const ADDRESS_CONFIRM_HEADING = '## Confirm street and city (HARD RULE)';
+export const SLOT_DAY_HEADING = '## Say the slot day (HARD RULE)';
+export const QUIET_LEAD_HEADING = '## Save the lead before you hang up (HARD RULE)';
+export const LONG_TURN_HEADING = '## Cut in on a long turn (HARD RULE)';
 
 export const MIKE_LOST_PRESSURE_RULE = `${LOST_PRESSURE_HEADING}
 Treat this the same as no water. If the caller says the pressure is gone (including completely gone), or they have zero pressure or no pressure, AND they want help today or as soon as possible (today, tonight, right now, ASAP, immediately):
@@ -34,15 +37,39 @@ If the caller speaks Spanish, or asks whether you speak Spanish (including "do y
 export const MIKE_ADDRESS_CONFIRM_RULE = `${ADDRESS_CONFIRM_HEADING}
 Before bookJob, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called (Ramona, Anza, or any other). An address on file is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said.`;
 
+export const MIKE_SLOT_DAY_RULE = `${SLOT_DAY_HEADING}
+When you offer or confirm a time, say that slot's say label verbatim. It already has the weekday and the date. Do not say today, tomorrow, or a different weekday than the label. If they ask for a day that is not in openSlots, say that day is not open and read the earliest say label. If book_job says the day does not match, read the label it gives you and ask again. Do not say they are booked.`;
+
+export const MIKE_QUIET_LEAD_RULE = `${QUIET_LEAD_HEADING}
+If the caller has given a name, a need, or a phone number, and then goes quiet or you are about to end the call, call createCallback once before you say goodbye. Pass the name, the number, and the need you already have. A missing or garbled town is not a reason to hang up without that callback. Do not end with only "please call back" or "I'll let you go."
+A new well or drilling request still follows the existing rule: do not book a visit, and the callback still goes to Damian. Call that same createCallback before you hang up.`;
+
+export const MIKE_LONG_TURN_RULE = `${LONG_TURN_HEADING}
+If the caller keeps talking the way someone leaves a voicemail, cut in by about fifteen seconds. Do not wait for them to finish. Say the name and the need back, then ask one question. If you already have a name, a need, or a number, call createCallback before the call ends.`;
+
 export const ADDRESS_ON_FILE_RULE =
   'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. Never use the caller\'s name as the town.';
 
 const INSERT_BEFORE = '## NEVER GO SILENT (hard rule)';
 
 /** Returned on lookupCustomer so the live assistant sees the rules before booking. */
-export const MIKE_CALL_RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE].join('\n\n');
+export const MIKE_CALL_RULES = [
+  MIKE_LOST_PRESSURE_RULE,
+  MIKE_SPANISH_RULE,
+  MIKE_ADDRESS_CONFIRM_RULE,
+  MIKE_SLOT_DAY_RULE,
+  MIKE_QUIET_LEAD_RULE,
+  MIKE_LONG_TURN_RULE,
+].join('\n\n');
 
-const RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE] as const;
+const RULES = [
+  MIKE_LOST_PRESSURE_RULE,
+  MIKE_SPANISH_RULE,
+  MIKE_ADDRESS_CONFIRM_RULE,
+  MIKE_SLOT_DAY_RULE,
+  MIKE_QUIET_LEAD_RULE,
+  MIKE_LONG_TURN_RULE,
+] as const;
 
 function headingOf(section: string): string {
   return section.split('\n')[0];

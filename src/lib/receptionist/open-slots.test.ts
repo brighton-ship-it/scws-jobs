@@ -719,6 +719,8 @@ describe('board-aware availability', () => {
     const times = slots.map((s) => s.time);
     assert.equal(slots.some((s) => s.startAt === pt(13, 8)), false);
     assert.ok(times.some((t) => /10:00 AM and 12:00 PM/.test(t)));
+    const ten = slots.find((slot) => /10:00 AM and 12:00 PM/.test(slot.time));
+    assert.equal(ten?.say, 'Tuesday, October 13, between 10:00 AM and 12:00 PM');
     assert.ok(times.some((t) => /1:00 PM and 3:00 PM/.test(t)));
     assert.ok(times.some((t) => /4:00 PM and 6:00 PM/.test(t)));
   });

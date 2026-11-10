@@ -41,6 +41,8 @@ import {
   resolveOfficeToolBatch,
 } from '@/lib/receptionist/office-callback';
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
+import { checkOfferedDay } from '@/lib/receptionist/offered-day';
+import { applyQuietLeadOutcome, quietLeadBeforeHangup } from '@/lib/receptionist/quiet-lead';
 import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
 import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
 
@@ -327,6 +329,9 @@ export async function POST(request: NextRequest) {
       vapiCallId: call.id,
       phone,
     });
+    const quietLead = callbackAttempt
+      ? null
+      : quietLeadBeforeHangup({ callerText: callerSaid, messages: rawMessages });
     if (missedService.flag) {
       console.log('[Receptionist] auto-flag needs-callback', missedService.log);
     }
@@ -389,6 +394,7 @@ export async function POST(request: NextRequest) {
       const bookingNotes = [
         spanishCaller ? 'Spanish speaker' : '',
         missedService.flag ? missedService.bookingNotesPrefix : '',
+        quietLead ? quietLead.note : '',
         notesText,
       ].filter(Boolean).join('\n');
       
@@ -509,6 +515,7 @@ export async function POST(request: NextRequest) {
         console.log('[Receptionist] Tool-row outcome lookup skipped:', rowErr);
       }
     }
+    applyQuietLeadOutcome(outcome, quietLead);
     if (isSameAsNoWaterEmergency(callerSaid)) {
       outcome.emergency = true;
       outcome.kind = outcome.booked ? 'booked' : 'emergency';
@@ -653,6 +660,13 @@ export async function GET() {
   });
 }
 
+function toolCallNow(body: any): Date {
+  const message = body?.message || {};
+  const raw = message.call?.startedAt || message.startedAt || body?.call?.startedAt || message.timestamp;
+  const date = new Date(raw || Date.now());
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+}
+
 function redactToolLog(params: Record<string, unknown>): Record<string, unknown> {
   const logParams = { ...params };
   if (logParams.paymentUrl) {
@@ -714,6 +728,12 @@ async function handleVapiTools(body: any) {
       if (!address.ok) {
         console.warn(`[Receptionist] book refused (address)${testCall ? ' (test call)' : ''}`);
         executed[i] = { id: call.id, body: { result: address.result } };
+        continue;
+      }
+      const offered = checkOfferedDay(params, consentTurns, toolCallNow(body));
+      if (!offered.ok) {
+        console.warn(`[Receptionist] book refused (day mismatch)${testCall ? ' (test call)' : ''}`);
+        executed[i] = { id: call.id, body: { result: offered.result } };
         continue;
       }
       const consent = checkBookingConsent(params, consentTurns);
