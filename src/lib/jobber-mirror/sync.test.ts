@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { confirmedDeletes, goneVerdict, idsMissingFromSweep, jobPruneSpec, jobWindowId, parseProgress, pruneMirrorRows, pruneSpec, readyJobIds, rollingTasks, rowsFor, withSweepIds } from './sync.ts';
+import { readFileSync } from 'node:fs';
+import { changedMirrorRows, clearMirrorFingerprintCache, confirmedDeletes, goneVerdict, idsMissingFromSweep, jobPruneSpec, jobWindowId, parseProgress, pruneMirrorRows, pruneSpec, readyJobIds, rollingTasks, rowsFor, withSweepIds, writeMirrorRows } from './sync.ts';
 
 test('invoice rows strip nested client to id and collect client + job ids', () => {
   const r = rowsFor('invoices', [{ id: 'I1', invoiceNumber: '5806', invoiceStatus: 'paid', issuedDate: '2026-10-01T00:00:00Z', dueDate: '2026-10-15T00:00:00Z', subject: 'Pump', amounts: { subtotal: 100 }, jobs: { nodes: [{ id: 'J1', title: 'Pump repair' }] }, client: { id: 'C1', name: 'A', createdAt: '2025-02-01T00:00:00Z', phones: [{ number: '+1 (760) 555-1212' }], emails: [{ address: 'Nancy@Example.com' }, { address: 'nancy@example.com' }] } }]);
@@ -18,6 +19,92 @@ test('quote rows keep client phones for callback exclusion', () => {
   assert.equal(r.rows[0].data.client.phones[0].number, '+1 (760) 555-0199');
   assert.deepEqual(r.clients[0].phones_digits, ['7605550199']);
 });
+test('jobber mirror cron is hourly', () => {
+  const vercel = JSON.parse(readFileSync(new URL('../../../vercel.json', import.meta.url), 'utf8'));
+  const cron = vercel.crons.find((entry: { path: string }) => entry.path === '/api/cron/jobber-mirror');
+  assert.equal(cron.schedule, '0 * * * *');
+});
+
+test('unchanged mirror rows are skipped, including timestamp format and jsonb key order', () => {
+  const built = rowsFor('invoices', [{
+    id: 'I1', invoiceNumber: '5806', invoiceStatus: 'paid', issuedDate: '2026-10-01T00:00:00.000Z', dueDate: '2026-10-15T00:00:00.000Z',
+    subject: 'Pump', amounts: { subtotal: 100 }, jobs: { nodes: [{ id: 'J1', title: 'Pump repair' }] },
+    client: { id: 'C1', name: 'A', createdAt: '2025-02-01T00:00:00.000Z', phones: [{ number: '+1 (760) 555-1212' }], emails: [{ address: 'a@example.com' }] },
+  }]);
+  const row = built.rows[0];
+  const flipped: Record<string, unknown> = {};
+  for (const key of Object.keys(row.data).reverse()) flipped[key] = row.data[key];
+  const stored = {
+    ...row,
+    synced_at: '2020-01-01T00:00:00.000Z',
+    issued_date: '2026-10-01T00:00:00+00:00',
+    data: flipped,
+  };
+  assert.equal(changedMirrorRows([stored], [row]).skipped, 1);
+  assert.equal(changedMirrorRows([stored], [row]).write.length, 0);
+  assert.equal(changedMirrorRows([stored], [{ ...row, invoice_status: 'past_due' }]).write.length, 1);
+  assert.equal(changedMirrorRows([], [row]).write.length, 1);
+  const client = built.clients[0];
+  assert.equal(changedMirrorRows([{ ...client, synced_at: '1999-01-01T00:00:00.000Z' }], [client]).skipped, 1);
+});
+
+test('writeMirrorRows does not upsert an unchanged page and still writes a real edit', async () => {
+  clearMirrorFingerprintCache();
+  const incoming = rowsFor('jobs', [{
+    id: 'J1', jobNumber: 3570, jobStatus: 'active', title: 'Pump', createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z',
+    client: { id: 'C1', name: 'A', phones: [{ number: '7605551212' }] },
+  }]).rows;
+  const stored = incoming.map((row) => ({
+    ...row,
+    synced_at: '2020-01-01T00:00:00.000Z',
+    created_at: String(row.created_at).replace('Z', '+00:00'),
+  }));
+  let selects = 0;
+  const upserts: unknown[][] = [];
+  const db = {
+    from() {
+      const api: any = {
+        select() { selects += 1; return api; },
+        order() { return api; },
+        range(from: number, to: number) {
+          return Promise.resolve({ data: stored.slice(from, to + 1), error: null });
+        },
+        upsert(rows: unknown[]) { upserts.push(rows); return Promise.resolve({ error: null }); },
+      };
+      return api;
+    },
+  };
+  const same = await writeMirrorRows(db, 'jobber_jobs', incoming);
+  assert.equal(same.written, 0);
+  assert.equal(same.skipped, 1);
+  assert.equal(upserts.length, 0);
+  const again = await writeMirrorRows(db, 'jobber_jobs', incoming);
+  assert.equal(again.written, 0);
+  assert.equal(selects, 1);
+  const edited = await writeMirrorRows(db, 'jobber_jobs', [{ ...incoming[0], title: 'Edited' }]);
+  assert.equal(edited.written, 1);
+  assert.equal(edited.skipped, 0);
+  assert.equal(upserts.length, 1);
+
+  clearMirrorFingerprintCache();
+  selects = 0;
+  const broken = {
+    from() {
+      const api: any = {
+        select() { selects += 1; return api; },
+        order() { return api; },
+        range() { return Promise.resolve({ data: null, error: { message: 'timeout' } }); },
+        upsert(rows: unknown[]) { upserts.push(rows); return Promise.resolve({ error: null }); },
+      };
+      return api;
+    },
+  };
+  const fallback = await writeMirrorRows(broken, 'jobber_jobs', incoming);
+  assert.equal(fallback.written, incoming.length);
+  assert.equal(fallback.skipped, 0);
+  assert.equal(selects, 1);
+});
+
 test('rolling windows: wide covers 200d quotes', () => {
   const t = rollingTasks(new Date('2026-10-12T00:00:00Z'), true).find((x) => x.field === 'quotes')!;
   assert.equal((t.filter.createdAt as any).after.slice(0, 10), '2026-03-26');

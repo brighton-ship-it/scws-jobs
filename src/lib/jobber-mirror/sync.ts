@@ -1,8 +1,9 @@
 /**
  * Jobber -> Supabase read mirror for the /ops dashboards. Uses the shared jobberGraphql client
  * (durable single-writer OAuth; no separate refresh path). Resumable: backfill cursors and the
- * run lock live in jobber_sync_state. Each run: finish backfills (all history), then re-pull rolling
- * windows (short every run, wide once an hour) so status/payment changes on recent records land.
+ * run lock live in jobber_sync_state. The cron is hourly. Each run: finish backfills (all history),
+ * then re-pull rolling windows (short every run, wide once an hour) so status/payment changes on
+ * recent records land. Unchanged rows are not upserted.
  * A finished window also drops mirror rows Jobber no longer returns (deleted jobs/invoices/quotes/
  * payments). A partial, throttled, or failed sweep never deletes, and a short pass still marks the
  * mirror fresh before any wide or full-history work.
@@ -67,7 +68,7 @@ export function rollingTasks(now: Date, wide: boolean): Array<{ field: Field; fi
     { field: 'invoices', filter: { issuedDate: w(21) } },
     { field: 'paymentRecords', filter: { entryDate: w(7) } },
     { field: 'quotes', filter: { createdAt: w(30) } },
-    // Old quotes approved today (e.g. #3726, created Jul, approved Oct 12) land within one 10-min run.
+    // Old quotes approved today (e.g. #3726, created Jul, approved Oct 12) land on the next hourly run.
     { field: 'quotes', filter: { status: 'approved' } },
     { field: 'jobs', filter: { createdAt: w(14) } },
     { field: 'jobs', filter: { status: 'archived', createdAt: w(14) } },
@@ -155,11 +156,119 @@ export function rowsFor(field: Field, nodes: any[]) {
   return { table: table!, rows: rows!.filter((r) => r.id), clients: Array.from(clients.values()) };
 }
 
+/**
+ * Stable identity of a mirror row. `synced_at` is ignored so a row that did not
+ * change in Jobber is not rewritten. Dates compare as instants and object keys
+ * are sorted so Postgres jsonb key order does not look like an edit.
+ */
+export function mirrorContentKey(row: Record<string, unknown>): string {
+  return JSON.stringify(canonicalizeMirrorValue(row));
+}
+
+function canonicalizeMirrorValue(value: unknown): unknown {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/.test(value)) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+    }
+    return value;
+  }
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'boolean') return value;
+  if (Array.isArray(value)) return value.map(canonicalizeMirrorValue);
+  if (typeof value === 'object') {
+    const src = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(src).sort()) {
+      if (key === 'synced_at') continue;
+      out[key] = canonicalizeMirrorValue(src[key]);
+    }
+    return out;
+  }
+  return null;
+}
+
+/** Rows whose content differs from `existing`. Missing ids are writes. */
+export function changedMirrorRows<T extends { id: string }>(
+  existing: Array<Record<string, unknown>>,
+  incoming: T[],
+): { write: T[]; skipped: number } {
+  const keys = new Map<string, string>();
+  for (const row of existing) {
+    if (row && row.id != null) keys.set(String(row.id), mirrorContentKey(row));
+  }
+  const write: T[] = [];
+  let skipped = 0;
+  for (const row of incoming) {
+    const prev = keys.get(String(row.id));
+    if (prev != null && prev === mirrorContentKey(row as unknown as Record<string, unknown>)) skipped += 1;
+    else write.push(row);
+  }
+  return { write, skipped };
+}
+
+const fingerprintCache = new Map<string, Map<string, string>>();
+const fingerprintFailed = new Set<string>();
+let unchangedRows = 0;
+
+export function clearMirrorFingerprintCache(): void {
+  fingerprintCache.clear();
+  fingerprintFailed.clear();
+}
+
+async function tableFingerprints(db: Db, table: string): Promise<Map<string, string> | null> {
+  const cached = fingerprintCache.get(table);
+  if (cached) return cached;
+  if (fingerprintFailed.has(table)) return null;
+  const map = new Map<string, string>();
+  for (let from = 0; ; from += 1000) {
+    const res = await db.from(table).select('*').order('id').range(from, from + 999);
+    if (res.error) {
+      fingerprintFailed.add(table);
+      console.warn(`[jobber-mirror] unchanged check skipped for ${table}: ${res.error.message}`);
+      return null;
+    }
+    for (const row of res.data ?? []) {
+      if (row?.id != null) map.set(String(row.id), mirrorContentKey(row));
+    }
+    if ((res.data ?? []).length < 1000) break;
+  }
+  fingerprintCache.set(table, map);
+  return map;
+}
+
+function rememberMirrorRows(table: string, rows: Array<{ id: string }>): void {
+  let map = fingerprintCache.get(table);
+  if (!map) {
+    map = new Map();
+    fingerprintCache.set(table, map);
+  }
+  for (const row of rows) map.set(String(row.id), mirrorContentKey(row as unknown as Record<string, unknown>));
+}
+
+/** Upsert only rows that differ. A failed read falls back to writing the page. Exported for tests. */
+export async function writeMirrorRows(db: Db, table: string, rows: Array<{ id: string }>): Promise<{ written: number; skipped: number }> {
+  if (!rows.length) return { written: 0, skipped: 0 };
+  const known = await tableFingerprints(db, table);
+  const write = known
+    ? rows.filter((row) => known.get(String(row.id)) !== mirrorContentKey(row as unknown as Record<string, unknown>))
+    : rows;
+  const skipped = rows.length - write.length;
+  if (write.length) {
+    const saved = await db.from(table).upsert(write, { onConflict: 'id' });
+    if (saved.error) throw new Error(`${table}: ${saved.error.message}`);
+    rememberMirrorRows(table, write);
+  }
+  unchangedRows += skipped;
+  return { written: write.length, skipped };
+}
+
 async function store(db: Db, field: Field, nodes: any[]) {
   const { table, rows, clients } = rowsFor(field, nodes);
-  if (clients.length) { const r = await db.from('jobber_clients').upsert(clients, { onConflict: 'id' }); if (r.error) throw new Error(`jobber_clients: ${r.error.message}`); }
-  if (rows.length) { const r = await db.from(table).upsert(rows, { onConflict: 'id' }); if (r.error) throw new Error(`${table}: ${r.error.message}`); }
-  return rows.length;
+  await writeMirrorRows(db, 'jobber_clients', clients);
+  const saved = await writeMirrorRows(db, table, rows);
+  return saved.written;
 }
 
 async function setState(db: Db, key: string, patch: Record<string, unknown>) {
@@ -422,6 +531,8 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
     .eq('key', 'lock').lt('locked_until', new Date().toISOString()).select('key');
   if (claim.error) throw new Error(`lock: ${claim.error.message}`);
   if (!claim.data?.length) return { skipped: 'locked' };
+  clearMirrorFingerprintCache();
+  unchangedRows = 0;
   const report: Record<string, unknown> = {};
   try {
     const { data: states } = await db.from('jobber_sync_state').select('key, cursor, done, last_success_at, last_error, meta');
@@ -638,6 +749,7 @@ export async function runMirrorSync(db: Db, opts: { budgetMs?: number; forceWide
     await setState(db, 'rolling', { last_error: msg }).catch(() => {});
     throw e;
   } finally {
+    report.unchanged = unchangedRows;
     await db.from('jobber_sync_state').update({ locked_until: new Date(Date.now() - 1000).toISOString() }).eq('key', 'lock');
   }
 }

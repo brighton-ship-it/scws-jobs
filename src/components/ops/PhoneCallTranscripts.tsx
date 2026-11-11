@@ -2,6 +2,7 @@
 import { callsViewKeyFromPage } from './calls-view-key';
 import { CALLS_VIEW_KEY_HEADER } from '@/lib/calls-view-auth';
 import { Fragment, useEffect, useState } from 'react';
+import { pollDelayMs } from '@/lib/db-backoff';
 import { QUOTES_GP_KEY_HEADER, QUOTES_GP_KEY_QUERY } from '@/lib/quotes-gp-auth';
 
 export type RecordedCall = { call_sid: string; started_at: string; caller_number: string | null; source: string | null; dial_status: string | null; answered: boolean | null; duration_seconds: number | null; processing_status: string; transcript: string | null; summary: string | null; outcome: string | null; caller_name: string | null; needs_followup: boolean | null; jobber_client_id?: string | null; processing_error?: string | null };
@@ -94,11 +95,38 @@ export function useRecordedCalls(): RecordedCall[] {
     try { key = new URL(window.location.href).searchParams.get(QUOTES_GP_KEY_QUERY) || localStorage.getItem('quotes_gp_key'); } catch {}
     const ck = callsViewKeyFromPage();
     const focus = new URL(window.location.href).searchParams.get('call');
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
     const load = () => fetch(`/api/ops/phone-calls${focus ? `?call=${encodeURIComponent(focus)}` : ''}`, { headers: { ...(key ? { [QUOTES_GP_KEY_HEADER]: key } : {}), ...(ck ? { [CALLS_VIEW_KEY_HEADER]: ck } : {}) }, cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : { calls: [] })).then((j) => setRows(j.calls ?? [])).catch(() => {});
-    load();
-    const t = setInterval(load, 60_000);
-    return () => clearInterval(t);
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((j) => { setRows(j.calls ?? []); return true; })
+      .catch(() => false);
+    const arm = (ms: number) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { void run(); }, ms);
+    };
+    const run = async () => {
+      if (stopped || document.visibilityState === 'hidden') return;
+      const ok = await load();
+      if (stopped) return;
+      failures = ok ? 0 : Math.min(failures + 1, 8);
+      arm(pollDelayMs(failures, 60_000));
+    };
+    const onVisible = () => {
+      if (stopped || document.visibilityState !== 'visible') return;
+      if (timer) clearTimeout(timer);
+      void run();
+    };
+    void run();
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('pageshow', onVisible);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+    };
   }, []);
   return rows;
 }

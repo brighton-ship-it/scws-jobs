@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useState, useCallback, useEffect, ReactNode } from 'react';
 import { createClient } from '@/lib/supabase/client';
+import { useVisiblePoll } from '@/hooks/useVisiblePoll';
 
 interface Notification {
   id: string;
@@ -39,13 +40,14 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   const fetchNotifications = useCallback(async () => {
     try {
       const response = await fetch('/api/notifications?limit=50');
-      if (response.ok) {
-        const data = await response.json();
-        setNotifications(data.notifications || []);
-        setUnreadCount(data.unreadCount || 0);
-      }
+      if (!response.ok) return false;
+      const data = await response.json();
+      setNotifications(data.notifications || []);
+      setUnreadCount(data.unreadCount || 0);
+      return true;
     } catch (error) {
       console.error('[Notifications] Error fetching:', error);
+      return false;
     } finally {
       setLoading(false);
     }
@@ -120,10 +122,8 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     }
   }, [notifications, fetchNotifications]);
 
-  // Initial fetch
-  useEffect(() => {
-    fetchNotifications();
-  }, [fetchNotifications]);
+  // Poll while the tab is visible. Failures back off so a database stall is not hammered.
+  useVisiblePoll(fetchNotifications, 30_000);
 
   // Realtime subscription
   useEffect(() => {
@@ -153,12 +153,6 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     };
   }, [supabase]);
 
-  // Poll every 30 seconds as backup
-  useEffect(() => {
-    const interval = setInterval(fetchNotifications, 30000);
-    return () => clearInterval(interval);
-  }, [fetchNotifications]);
-
   return (
     <NotificationContext.Provider
       value={{
@@ -168,7 +162,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         markAsRead,
         markAllAsRead,
         deleteNotification,
-        refresh: fetchNotifications,
+        refresh: async () => { await fetchNotifications(); },
       }}
     >
       {children}

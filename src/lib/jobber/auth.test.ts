@@ -496,6 +496,92 @@ describe('getValidJobberAccessToken', () => {
     assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-1');
   });
 
+  it('reuses an unexpired in-memory access token when the database is unreachable and does not rotate', async () => {
+    const env = oauthEnv({ VERCEL_ENV: 'production', JOBBER_TOKEN_ENCRYPTION_KEY: 'dedicated-key' });
+    persistJobberTokens({
+      accessToken: 'access-warm',
+      refreshToken: 'refresh-warm',
+      expiresAtMs: NOW_MS + 30_000,
+    }, env);
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth must not run during a database outage');
+    }) as typeof fetch;
+
+    const token = await getValidJobberAccessToken({
+      env,
+      fetchImpl,
+      nowMs: NOW_MS,
+      durableStore: {
+        async load() { throw new Error('fetch failed'); },
+        async save() { throw new Error('persist should not run'); },
+      },
+    });
+    assert.equal(token, 'access-warm');
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-warm');
+  });
+
+  it('does not refresh from env when the memory token is expired and the database is unreachable', async () => {
+    const env = oauthEnv();
+    persistJobberTokens({
+      accessToken: 'access-old',
+      refreshToken: 'refresh-old',
+      expiresAtMs: NOW_MS - 1000,
+    }, env);
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth must not run during a database outage');
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => getValidJobberAccessToken({
+        env,
+        fetchImpl,
+        nowMs: NOW_MS,
+        durableStore: {
+          async load() { throw new Error('connect ETIMEDOUT'); },
+          async save() { throw new Error('persist should not run'); },
+        },
+      }),
+      /durable token load failed/,
+    );
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-old');
+  });
+
+  it('does not reuse or rotate when a forced refresh cannot reach the database', async () => {
+    const env = oauthEnv();
+    persistJobberTokens({
+      accessToken: 'access-warm',
+      refreshToken: 'refresh-warm',
+      expiresAtMs: NOW_MS + 3_600_000,
+    }, env);
+    let calls = 0;
+    const fetchImpl = (async () => {
+      calls += 1;
+      throw new Error('OAuth must not run during a database outage');
+    }) as typeof fetch;
+
+    await assert.rejects(
+      () => getValidJobberAccessToken({
+        env,
+        fetchImpl,
+        nowMs: NOW_MS,
+        forceRefresh: true,
+        durableStore: {
+          async load() { throw new Error('fetch failed'); },
+          async save() { throw new Error('persist should not run'); },
+        },
+      }),
+      /durable token load failed/,
+    );
+    assert.equal(calls, 0);
+    assert.equal(env.JOBBER_REFRESH_TOKEN, 'refresh-warm');
+  });
+
   it('seeds an empty durable row once and then ignores the stale env refresh token', async () => {
     const env = oauthEnv();
     const durableStore = memoryDurableStore(null);
