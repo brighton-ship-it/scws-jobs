@@ -34,8 +34,13 @@ export async function GET(request: NextRequest) {
     const debug = request.nextUrl.searchParams.get('debug') === '1';
     let payload: any;
     const ms = await mirrorState();
-    if (debug || ms.ready) payload = await computeMetrics(debug); // Supabase mirror: fast, no cache needed
-    else {
+    if (debug) payload = await computeMetrics(true);
+    else if (ms.ready) {
+      // The mirror moves on the hourly sync. Cache the full read so opening this page
+      // does not scan jobber_clients / jobber_jobs on every request.
+      try { payload = await cachedMirrorMetrics(); }
+      catch { payload = lastPartial ?? await computeMetrics(false); }
+    } else {
       try { payload = await cachedMetrics(); }
       catch { payload = lastPartial ?? await computeMetrics(false); } // a load failed: serve the partial result uncached
     }
@@ -47,6 +52,8 @@ export async function GET(request: NextRequest) {
 }
 
 let lastPartial: any = null;
+/** Mirror-backed metrics. The sync is hourly, so 10 minutes is enough to stop repeated full reads. */
+const cachedMirrorMetrics = unstable_cache(async () => computeMetrics(false), ['ops-metrics-mirror-v1'], { revalidate: 600 });
 /** Jobber pulls take ~1 min cold; results are kept in Vercel's shared Data Cache (stale-while-revalidate, 30 min) so every instance answers fast. */
 const cachedMetrics = unstable_cache(async () => {
   const p = await computeMetrics(false);

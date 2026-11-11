@@ -10,6 +10,7 @@ import type { Dashboard, GroupRow } from '@/lib/ads/call-dashboard';
 import { DirectMailCard } from './DirectMailCard';
 import { matchesCallSearch } from '@/lib/ops/call-search';
 import { MissedCallTextsCard } from './MissedCallTexts';
+import { CALL_POLL_MS, JOBBER_POLL_MS, TV_POLL_MS, pollDelayMs } from '@/lib/db-backoff';
 const SECTIONS = ['today', 'sales', 'ads', 'collections'] as const;
 import {
   CallsSpendChart, Funnel, Gauge, Sparkline, WeeklyBars, WeeklyCashBars, compactUsd, mult, palette, usd,
@@ -31,7 +32,7 @@ type Live = { generatedAt?: string; jobberDataAsOf?: string | null };
 /** A dashboard request that has not answered by now is abandoned (server maxDuration is 180 s). */
 const FETCH_TIMEOUT_MS = 60_000;
 
-function useDashboard(range: string, refreshMs: number | null, view?: 'tv' | 'calls') {
+function useDashboard(range: string, refreshMs: number | null, view?: 'tv' | 'calls', parts?: 'live') {
   // One cached payload per period. A response only ever lands in its own period's slot, and the page shows
   // the selected period's payload only, so switching the toggle never shows the other period's numbers.
   const [byRange, setByRange] = useState<Record<string, Dashboard>>({});
@@ -44,15 +45,16 @@ function useDashboard(range: string, refreshMs: number | null, view?: 'tv' | 'ca
   // page sat on skeletons with "Connecting…". Each request now aborts after FETCH_TIMEOUT_MS, Refresh aborts a
   // stuck request and starts over, and coming back to the tab reloads.
   const inFlight = useRef<Record<string, { ctrl: AbortController; at: number } | undefined>>({});
-  const loadWith = useCallback(async (force: boolean) => {
+  const loadWith = useCallback(async (force: boolean): Promise<boolean> => {
     const r = range;
     const busy = inFlight.current[r];
-    if (busy && !force && Date.now() - busy.at < FETCH_TIMEOUT_MS) return; // keeps Jobber load flat while a cold load runs
+    if (busy && !force && Date.now() - busy.at < FETCH_TIMEOUT_MS) return true; // keeps Jobber load flat while a cold load runs
     busy?.ctrl.abort();
     const ctrl = new AbortController();
     const mine = { ctrl, at: Date.now() };
     inFlight.current[r] = mine;
     const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+    let ok = false;
     try {
       const url = new URL(window.location.href);
       const q = url.searchParams.get(QUOTES_GP_KEY_QUERY);
@@ -62,37 +64,59 @@ function useDashboard(range: string, refreshMs: number | null, view?: 'tv' | 'ca
       const headers: Record<string, string> = {};
       if (key) headers[QUOTES_GP_KEY_HEADER] = key;
       if (ck) headers[CALLS_VIEW_KEY_HEADER] = ck;
-      const res = await fetch(`/api/ops/call-dashboard?range=${r}${view ? `&view=${view}` : ''}`, {
+      const res = await fetch(`/api/ops/call-dashboard?range=${r}${view ? `&view=${view}` : ''}${parts ? `&parts=${parts}` : ''}`, {
         headers, cache: 'no-store', signal: ctrl.signal,
       });
       if (!res.ok) throw new Error(res.status === 401 ? 'Not signed in. Log in to the CRM or open this page with your office key.' : `Error ${res.status}`);
       const json = await res.json();
       setByRange((m) => ({ ...m, [r]: json }));
       if (current.current === r) setError(null);
+      ok = true;
     } catch (e) {
-      if (inFlight.current[r] !== mine) return; // replaced by a newer request (Refresh / tab return)
+      if (inFlight.current[r] !== mine) return true; // replaced by a newer request (Refresh / tab return)
       const msg = ctrl.signal.aborted ? 'Taking too long to load. Tap Refresh to try again.' : e instanceof Error ? e.message : 'Failed to load';
       if (current.current === r) setError(msg);
+      ok = false;
     } finally {
       clearTimeout(timer);
       if (inFlight.current[r] === mine) { inFlight.current[r] = undefined; if (current.current === r) setLoading(false); }
     }
-  }, [range, view]);
-  const load = useCallback(() => loadWith(false), [loadWith]);
-  const reload = useCallback(() => loadWith(true), [loadWith]);
+    return ok;
+  }, [range, view, parts]);
+  const reload = useCallback(() => { void loadWith(true); }, [loadWith]);
   useEffect(() => {
+    let failures = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let stopped = false;
     setLoading(true); setError(null);
-    load();
-    const onVisible = () => { if (document.visibilityState === 'visible') load(); };
+    const arm = (ms: number) => {
+      if (stopped || refreshMs == null) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => { void tick(false); }, ms);
+    };
+    const tick = async (force: boolean) => {
+      if (stopped) return;
+      if (!force && document.visibilityState === 'hidden') return;
+      const ok = await loadWith(force);
+      if (stopped) return;
+      failures = ok ? 0 : Math.min(failures + 1, 8);
+      arm(pollDelayMs(failures, refreshMs ?? CALL_POLL_MS));
+    };
+    const onVisible = () => {
+      if (stopped || document.visibilityState !== 'visible') return;
+      if (timer) clearTimeout(timer);
+      void tick(false);
+    };
+    void tick(false);
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('pageshow', onVisible);
-    const t = refreshMs ? setInterval(load, refreshMs) : null;
     return () => {
-      if (t) clearInterval(t);
+      stopped = true;
+      if (timer) clearTimeout(timer);
       document.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('pageshow', onVisible);
     };
-  }, [load, refreshMs]);
+  }, [loadWith, refreshMs]);
   return { data: byRange[range] ?? null, error, loading, reload };
 }
 
@@ -943,6 +967,28 @@ function DataNotes({ gaps }: { gaps: string[] }) {
   return <details className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-xs text-slate-500"><summary className="cursor-pointer font-medium text-slate-600">How it&apos;s counted / data notes</summary><ul className="mt-2 list-disc space-y-1 pl-5">{gaps.map((g, i) => <li key={i}>{g}</li>)}</ul></details>;
 }
 
+/** Call sections from the fast poll, sales and ads from the slow poll. */
+function mergeLiveDashboard(full: Dashboard | null, live: Dashboard | null): (Dashboard & Live) | null {
+  if (!full) return null;
+  const base = full as Dashboard & Live;
+  if (!live) return base;
+  const next = live as Dashboard & Live;
+  return {
+    ...base,
+    callFeed: next.callFeed ?? base.callFeed,
+    callLog: next.callLog ?? base.callLog,
+    needsCallback: next.needsCallback ?? base.needsCallback,
+    missedCallTexts: next.missedCallTexts ?? base.missedCallTexts,
+    generatedAt: next.generatedAt ?? base.generatedAt,
+    totals: base.totals && next.totals ? {
+      ...base.totals,
+      calls: next.totals.calls,
+      answered: next.totals.answered,
+      missedOrShort: next.totals.missedOrShort,
+    } : base.totals,
+  };
+}
+
 export function CallDashboardPage() {
   const params = useSearchParams();
   const [range, setRangeState] = useState<string>('since');
@@ -954,7 +1000,12 @@ export function CallDashboardPage() {
     setRangeState(v);
     try { const u = new URL(window.location.href); u.searchParams.set('range', v); window.history.replaceState(window.history.state, '', u.toString()); } catch {}
   };
-  const { data, error, loading, reload } = useDashboard(range, 30_000);
+  const fullDash = useDashboard(range, JOBBER_POLL_MS);
+  const liveDash = useDashboard(range, CALL_POLL_MS, undefined, 'live');
+  const data = mergeLiveDashboard(fullDash.data, liveDash.data);
+  const error = fullDash.data ? liveDash.error : (fullDash.error ?? liveDash.error);
+  const loading = fullDash.loading;
+  const reload = () => { fullDash.reload(); liveDash.reload(); };
   const recorded = useRecordedCalls();
   // Old ?tab= links jump to that section of the single page.
   const tabParam = params?.get('tab');
@@ -983,7 +1034,7 @@ export function CallDashboardPage() {
           <p className="mt-0.5 text-sm text-slate-600">{rangeLabel}{moneyLabel !== rangeLabel ? ` · money ${moneyLabel}` : ''} · Pacific time</p>
           <div className="mt-2"><Freshness mirrorAsOf={live?.jobberDataAsOf} generatedAt={live?.generatedAt} /></div>
         </div>
-        <LiveBadge at={live?.generatedAt} refreshMs={30_000} error={error} />
+        <LiveBadge at={live?.generatedAt} refreshMs={CALL_POLL_MS} error={error} />
         <div className="flex w-full flex-wrap gap-1 rounded-2xl border border-slate-200 bg-white p-1 shadow-sm sm:w-auto" role="tablist" aria-label="Date range">
           {RANGES.map((r) => (
             <button key={r.v} role="tab" aria-selected={range === r.v} onClick={() => setRange(r.v)}
@@ -1068,7 +1119,7 @@ function BigTile({ label, range, value, sub, accent, spark, delta, delay }: { la
 export function CallDashboardTv() {
   const [view, setView] = useState<'since' | 'month'>('since');
   // view=tv: the API strips collections and payment figures server-side (TV can be on a shop screen).
-  const { data, error } = useDashboard(view, 60_000, 'tv');
+  const { data, error } = useDashboard(view, TV_POLL_MS, 'tv');
   const tv = data?.tv;
   const tt = data?.totals;
   const s = data?.series ?? [];
@@ -1103,7 +1154,7 @@ export function CallDashboardTv() {
             ))}
           </div>
           </div>
-          <LiveBadge dark large at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={60_000} error={error} />
+          <LiveBadge dark large at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={TV_POLL_MS} error={error} />
           <p className="order-first shrink-0 text-2xl font-bold tabular-nums sm:order-last xl:text-5xl">{clockStr}</p>
         </div>
       </div>
@@ -1174,12 +1225,12 @@ export function CallDashboardTv() {
 /** Standalone calls list (/ops/calls-live): same data and auth as /ops/calls, only the calls card. */
 export function CallsLivePage() {
   const params = useSearchParams();
-  const { data, error, loading, reload } = useDashboard('since', 30_000, 'calls');
+  const { data, error, loading, reload } = useDashboard('since', CALL_POLL_MS, 'calls');
   const recorded = useRecordedCalls();
   return (
     <div className="mx-auto max-w-3xl space-y-3">
       <div className="flex items-center justify-between gap-2">
-        <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={30_000} error={error} />
+        <LiveBadge at={(data as (Dashboard & Live) | null)?.generatedAt} refreshMs={CALL_POLL_MS} error={error} />
         <button onClick={reload} className="inline-flex min-h-11 items-center rounded-full bg-white px-4 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">Refresh</button>
       </div>
       {error && !data ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div> : null}

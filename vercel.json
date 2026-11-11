@@ -34,7 +34,7 @@
     },
     {
       "path": "/api/cron/jobber-mirror",
-      "schedule": "*/10 * * * *"
+      "schedule": "0 * * * *"
     },
     {
       "path": "/api/cron/qbo-refresh",

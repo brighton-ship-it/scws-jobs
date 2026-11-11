@@ -1,4 +1,4 @@
-/** Vercel cron (every 10 min): incremental Jobber -> Supabase mirror for the /ops dashboards. See src/lib/jobber-mirror/sync.ts. */
+/** Vercel cron (hourly): incremental Jobber -> Supabase mirror for the /ops dashboards. See src/lib/jobber-mirror/sync.ts. */
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { authorizeCronRequest, cronUnauthorizedLog } from '@/lib/cron-auth';

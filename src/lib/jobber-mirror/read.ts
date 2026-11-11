@@ -1,62 +1,98 @@
 /**
  * Readers over the Jobber mirror (see sync.ts). Each returns the exact node shape the old live Jobber
  * loaders returned, so dashboard / metrics calculations are unchanged. Every reader returns null when the
- * mirror is not ready (backfill unfinished, or last good sync > 2 h old); callers then fall back to live Jobber.
+ * mirror is not ready (backfill unfinished, or last good sync older than MIRROR_STALE_MS); callers then
+ * fall back to live Jobber.
  */
 import { createServiceClient } from '../supabase/service.ts';
 import { isInternalJob } from '../ads/internal-job.ts';
+import { breakerOpen, initialBreaker, MIRROR_READ_TTL_MS, noteFailure, noteSuccess, type BreakerState } from '../db-backoff.ts';
 import { BACKFILL_FIELDS } from './sync.ts';
 
-/** Mirror is used while its last good sync is < 2 h old. A stale mirror sends every dashboard load to live Jobber,
- *  which is throttled by the same 10k-point bucket and makes pages hang; a slightly older mirror is far better. */
-const STALE_MS = 2 * 60 * 60_000;
+/**
+ * Mirror stays in use for 3 hours after the last good sync. The cron is hourly, so one missed run
+ * still serves the mirror. A stale mirror sends every dashboard load to live Jobber, which shares
+ * the 10k-point bucket and makes pages hang.
+ */
+export const MIRROR_STALE_MS = 3 * 60 * 60_000;
+const STATE_TTL_MS = 60_000;
+/** Serve the last client/job map for this long when the database read is failing. */
+const CTX_STALE_MS = 60 * 60_000;
 let tsBlocked = false;
 let stateMemo: { at: number; v: { ready: boolean; asOf: string | null } } | null = null;
+let stateBreaker: BreakerState = initialBreaker();
+let readBreaker: BreakerState = initialBreaker();
 const db = () => { try { return createServiceClient() as any; } catch { return null; } };
 const digits10 = (s: unknown) => { const d = String(s ?? '').replace(/\D/g, ''); return d.length === 11 && d.startsWith('1') ? d.slice(1) : d; };
 
 export async function mirrorState(): Promise<{ ready: boolean; asOf: string | null }> {
   if (process.env.JOBBER_MIRROR_DISABLED === '1') return { ready: false, asOf: null };
-  if (stateMemo && Date.now() - stateMemo.at < 20_000) return stateMemo.v;
+  const now = Date.now();
+  if (stateMemo && now - stateMemo.at < STATE_TTL_MS) return stateMemo.v;
+  if (breakerOpen(stateBreaker, now)) return stateMemo?.v ?? { ready: false, asOf: null };
   let v = { ready: false, asOf: null as string | null };
   try {
-    const c = db(); if (!c) return v;
+    const c = db(); if (!c) return stateMemo?.v ?? v;
     const { data, error } = await c.from('jobber_sync_state').select('key, done, last_success_at, last_error');
-    if (!error) {
-      const m = new Map<string, any>((data ?? []).map((r: any) => [r.key, r]));
-      tsBlocked = m.get('backfill:timeSheetEntries')?.last_error === 'permission';
-      const asOf = m.get('rolling')?.last_success_at ?? null;
-      const ready = BACKFILL_FIELDS.every((f) => m.get(`backfill:${f}`)?.done) && !!asOf && Date.now() - Date.parse(asOf) < STALE_MS;
-      v = { ready, asOf };
+    if (error) {
+      stateBreaker = noteFailure(stateBreaker, Date.now());
+      console.warn('[jobber-mirror] state read failed:', error.message);
+      return stateMemo?.v ?? v;
     }
-  } catch { /* table missing => not ready */ }
+    stateBreaker = noteSuccess();
+    const m = new Map<string, any>((data ?? []).map((r: any) => [r.key, r]));
+    tsBlocked = m.get('backfill:timeSheetEntries')?.last_error === 'permission';
+    const asOf = m.get('rolling')?.last_success_at ?? null;
+    const ready = BACKFILL_FIELDS.every((f) => m.get(`backfill:${f}`)?.done) && !!asOf && Date.now() - Date.parse(asOf) < MIRROR_STALE_MS;
+    v = { ready, asOf };
+  } catch {
+    stateBreaker = noteFailure(stateBreaker, Date.now());
+    return stateMemo?.v ?? v;
+  }
   stateMemo = { at: Date.now(), v };
   return v;
 }
 
-/** All rows of a PostgREST query, 1000 at a time. */
+/** All rows of a PostgREST query, 1000 at a time. An open circuit does not hit the database. */
 async function all(build: (c: any) => any): Promise<any[] | null> {
+  if (breakerOpen(readBreaker, Date.now())) {
+    console.warn('[jobber-mirror] read skipped: database circuit open');
+    return null;
+  }
   const c = db(); if (!c) return null;
   const out: any[] = [];
   for (let from = 0; ; from += 1000) {
     const { data, error } = await build(c).range(from, from + 999);
-    if (error) { console.warn('[jobber-mirror] read failed:', error.message); return null; }
+    if (error) {
+      readBreaker = noteFailure(readBreaker, Date.now());
+      console.warn('[jobber-mirror] read failed:', error.message);
+      return null;
+    }
     out.push(...(data ?? []));
-    if ((data ?? []).length < 1000) return out;
+    if ((data ?? []).length < 1000) {
+      readBreaker = noteSuccess();
+      return out;
+    }
   }
 }
 
-/** Clients + every job time per client (memoized briefly; shared by all readers in one request). */
+/** Clients + every job time per client. Cached for the mirror read TTL; the sync is hourly. */
 let ctxMemo: { at: number; p: Promise<Ctx | null> } | null = null;
+let lastCtx: { at: number; v: Ctx } | null = null;
 interface Ctx { clients: Map<string, any>; jobsByClient: Map<string, Array<{ id: string; createdAt: string }>>; byPhone: Map<string, string[]>; internalJobIds: Set<string> }
 function ctx(): Promise<Ctx | null> {
-  if (ctxMemo && Date.now() - ctxMemo.at < 30_000) return ctxMemo.p;
+  const now = Date.now();
+  if (ctxMemo && now - ctxMemo.at < MIRROR_READ_TTL_MS) return ctxMemo.p;
+  if (breakerOpen(readBreaker, now) && lastCtx && now - lastCtx.at < CTX_STALE_MS) return Promise.resolve(lastCtx.v);
   const p = (async () => {
     const [cl, jb] = await Promise.all([
       all((c) => c.from('jobber_clients').select('id, phones_digits, data').order('id')),
       all((c) => c.from('jobber_jobs').select('id, client_id, title, created_at').order('id')),
     ]);
-    if (!cl || !jb) return null;
+    if (!cl || !jb) {
+      if (lastCtx && Date.now() - lastCtx.at < CTX_STALE_MS) return lastCtx.v;
+      return null;
+    }
     const clients = new Map<string, any>(); const byPhone = new Map<string, string[]>();
     for (const r of cl) { clients.set(r.id, r.data); for (const p of r.phones_digits ?? []) (byPhone.get(p) ?? byPhone.set(p, []).get(p)!).push(r.id); }
     const jobsByClient = new Map<string, Array<{ id: string; createdAt: string }>>();
@@ -67,9 +103,11 @@ function ctx(): Promise<Ctx | null> {
       if (isInternalJob({ title: j.title, clientName: client?.name, companyName: client?.companyName })) internalJobIds.add(j.id);
     }
     for (const v of Array.from(jobsByClient.values())) v.sort((a: { createdAt: string }, b: { createdAt: string }) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
-    return { clients, jobsByClient, byPhone, internalJobIds };
+    const value = { clients, jobsByClient, byPhone, internalJobIds };
+    lastCtx = { at: Date.now(), v: value };
+    return value;
   })();
-  ctxMemo = { at: Date.now(), p };
+  ctxMemo = { at: now, p };
   p.then((v) => { if (!v) ctxMemo = null; });
   return p;
 }

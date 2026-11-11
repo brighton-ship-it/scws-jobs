@@ -28,9 +28,13 @@ import { loadRecentAttempts } from '@/lib/receptionist/mike-callback-run';
 import { loadLiveOutbound } from '@/lib/ads/outbound-live';
 import { buildSourceCards, type SourceKey } from '@/lib/ads/source-cards';
 import { loadMissedCallTextView } from '@/lib/ads/missed-call-text-data';
+import { createGuardedCache, MIRROR_READ_TTL_MS } from '@/lib/db-backoff';
 
 /** Calls kept in the feed: enough for ~14 days so older tracking-line calls show who answered. */
 const FEED_ROWS = 500;
+const EMPTY_PAST_DUE = { clients: [] as PastDueClient[], invoices: [] as Array<Record<string, unknown>>, clientRows: [] as Array<{ id: string; name: string | null; phones_digits: string[] | null; emails?: string[] }>, hasBalanceColumn: false, note: 'database busy' };
+const pastDueReads = createGuardedCache<Awaited<ReturnType<typeof loadPastDueClients>>>({ ttlMs: MIRROR_READ_TTL_MS });
+const workReads = createGuardedCache<Awaited<ReturnType<typeof loadWorkRows>>>({ ttlMs: MIRROR_READ_TTL_MS });
 export const dynamic = 'force-dynamic';
 export const maxDuration = 180;
 
@@ -39,6 +43,9 @@ export async function GET(request: NextRequest) {
   if (!auth.ok) return auth.response;
   // Calls-only key (CALLS_VIEW_KEY): forced to view=calls; payload scrubbed to call fields; no debug.
   const callsOnly = auth.scope === 'calls' || request.nextUrl.searchParams.get('view') === 'calls';
+  // Fast call poll and the calls-only view skip Jobber sales reads. Callbacks still
+  // use the cached mirror so a new missed call shows up without a full-table scan.
+  const liveParts = callsOnly || request.nextUrl.searchParams.get('parts') === 'live';
 
   const range = parseRange(request.nextUrl.searchParams.get('range'));
   // ?debug=sets: read-only verification payload (raw call rows + derived lead/booking/ROAS sets). Same ops auth; no names or call summaries.
@@ -84,7 +91,7 @@ export async function GET(request: NextRequest) {
     if (calls.error) notes.push(`calls: ${calls.error.message}`);
     if (convs.error) notes.push(`conversions: ${convs.error.message}`);
     const conversions = convs.data ?? [];
-    const jobMoney = await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
+    const jobMoney = liveParts ? null : await loadJobMoney(conversions.map((c: { jobber_job_id: string }) => c.jobber_job_id)).catch(() => null);
     if (live.error) notes.push(`live calls: ${live.error.message}`);
     const mikeCallbacksRaw = await loadRecentAttempts(db, new Date(Date.now() - 14 * 86400_000).toISOString());
     if (mikeCallbacksRaw.note) notes.push(mikeCallbacksRaw.note);
@@ -143,7 +150,7 @@ export async function GET(request: NextRequest) {
     // Booked today / this week (TV + header): the offline-conversion table refreshes only nightly (2:15 AM PT cron),
     // so today's bookings were always 0. Add Jobber jobs created this week, credited with the same rules:
     // a call (ad or Mike) from the client's phone before the job, and no Jobber job before their first call.
-    if (dash.tv) {
+    if (dash.tv && !liveParts) {
       const nowB = new Date(); const wkB = ptWeekStart(nowB); const todayB = ptStartOfDay(nowB).getTime();
       const live = await loadJobsCreatedSince(wkB.toISOString());
       if (!live) notes.push('Booked today/this week: live Jobber job pull failed, showing nightly-uploaded bookings only.');
@@ -186,12 +193,20 @@ export async function GET(request: NextRequest) {
       const outboundAll = Array.from(outboundByKey.values());
       const sources = sourcesWithoutMikeLegs(callbackSources({ log: [...inboundLog, ...outboundAll], recordings: recs.data ?? [] }), mikeCallbacks.attempts);
       const attempts = [...voiceAttempts(outboundAll), ...mikeOutreachAttempts(mikeCallbacks.attempts)];
-      const past = await loadPastDueClients(db);
+      const past = await pastDueReads.read('all', async () => {
+        const value = await loadPastDueClients(db);
+        const failed = Boolean(value.note && /invoices:|invoice clients:/i.test(value.note));
+        return { ok: !failed, value };
+      }, EMPTY_PAST_DUE);
       if (past.note) notes.push(past.note);
       const pastDuePhones = new Set(past.clients.flatMap((c) => c.phones));
       try {
         const sinceIso = new Date(fromMs).toISOString();
-        const loaded = await loadWorkRows(db, sinceIso);
+        const loaded = await workReads.read(sinceIso, async () => {
+          const value = await loadWorkRows(db, sinceIso);
+          const failed = Boolean(value.note && /callback (clients|jobs|quotes|invoices):/i.test(value.note));
+          return { ok: !failed, value };
+        }, { rows: [], note: 'database busy' });
         if (loaded.note) notes.push(loaded.note);
         const texts = await loadCollectionTexts(db);
         if (texts.note) notes.push(texts.note);
@@ -277,9 +292,14 @@ export async function GET(request: NextRequest) {
       // Main page header and TV "today" tiles share this one count across every line.
       if (dash.callLog) dash.callLog.today = feedToday(merged, ptStartOfDay(new Date()).getTime());
     } catch (e) { notes.push(`call feed: ${e instanceof Error ? e.message : 'error'}`); }
-    try {
+    // Call log, callbacks, and missed-call texts are above. Sales, ROAS, and source
+    // cards are Jobber-derived and are omitted on the fast call poll (parts=live)
+    // and on the calls-only view, which scrubs them anyway.
+    const jobberPanels = !liveParts;
+    if (jobberPanels) try {
       dash.sourceCards = await loadSourceCards(db, Math.max(rangeStart(range, new Date()).getTime(), Date.parse(DASH_FLOOR_ISO)));
     } catch (e) { notes.push(`source cards: ${e instanceof Error ? e.message : 'error'}`); }
+    if (jobberPanels) {
     try {
       const nowD = new Date();
       const rStart = rangeStart(range, nowD);
@@ -371,6 +391,7 @@ export async function GET(request: NextRequest) {
     if (!dash.roas && dash.adSplit) blankSplitMoney(dash);
     strictMoneyOnly(dash);
     dropStaleFields(dash);
+    }
     dash.gaps.push('Invoice follow-up calls are outbound Google Voice calls from Liz (619-320-8264), Shanicey (442-227-2898), and Brighton (619-259-0410), matched to the customer phone or Jobber client after the invoice was issued. The Voice audit log starts in early October 2026, so earlier calls are not in it.');
     dash.gaps.push(...notes);
     const texts = await textsP;

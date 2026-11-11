@@ -1,5 +1,9 @@
 # Supabase migrations
 
+## `20261111_read_path_indexes.sql`
+
+Adds `idx_customers_phone` on `customers (phone)` where phone is present, and `idx_notifications_user_created` on `notifications (user_id, created_at DESC)`. Both were missing in production: phone lookups and the notification poll were sequential scans. The statements are `CREATE INDEX CONCURRENTLY` and must be run outside a transaction. Paste the file into the Supabase SQL Editor. The app does not run it, and this change does not apply it. Undo with `20261111_read_path_indexes_rollback.sql`, also outside a transaction.
+
 ## `20261029_missed_call_text_delivery.sql`
 
 Adds `delivery_status`, `delivery_error`, and `delivery_updated_at` on `missed_call_texts`, plus an index on `twilio_message_sid`. `/api/sms/status` (Twilio delivery receipt) and the call dashboard write them. Inbound replies are stored on the existing `thread` column by `/api/sms/forward` and `/api/sms/inbound`; that does not need this migration. Until the columns exist, the office dashboard still lists texts and replies, and delivery shows as Sent. Apply it in the SQL Editor. Undo with `20261029_missed_call_text_delivery_rollback.sql`.
@@ -26,7 +30,7 @@ Callbacks stay off until `MIKE_CALLBACKS_ENABLED=true`. `MIKE_CALLBACK_TEST_NUMB
 
 ## `20261012_jobber_mirror.sql`
 
-Adds the Jobber read mirror (`jobber_clients`, `jobber_jobs`, `jobber_invoices`, `jobber_quotes`, `jobber_payments`, `jobber_timesheets`, `jobber_sync_state`). RLS on with no policies (service role only). Filled by the `/api/cron/jobber-mirror` cron every 10 min (backfill since Jan 2025 first, then rolling windows). `/ops/calls`, the TV page and `/ops/metrics` read the mirror once every backfill is done and the last sync is < 40 min old; otherwise they fall back to live Jobber. Kill switch: `JOBBER_MIRROR_DISABLED=1`. Undo with `20261012_jobber_mirror_rollback.sql`.
+Adds the Jobber read mirror (`jobber_clients`, `jobber_jobs`, `jobber_invoices`, `jobber_quotes`, `jobber_payments`, `jobber_timesheets`, `jobber_sync_state`). RLS on with no policies (service role only). Filled by the `/api/cron/jobber-mirror` cron hourly (backfill since Jan 2025 first, then rolling windows). Unchanged rows are not rewritten. `/ops/calls`, the TV page and `/ops/metrics` read the mirror once every backfill is done and the last sync is under 3 hours old; otherwise they fall back to live Jobber. Kill switch: `JOBBER_MIRROR_DISABLED=1`. Undo with `20261012_jobber_mirror_rollback.sql`.
 
 ## `20261010_paid_ads_attribution.sql`
 

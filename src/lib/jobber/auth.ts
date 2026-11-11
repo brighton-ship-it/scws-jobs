@@ -7,7 +7,8 @@
  * after a successful read proves it is empty. They are never refreshed on
  * their own once a durable pair exists, and a failed durable read does not
  * fall through to env — that fall-through is what desynced the box file
- * and Vercel.
+ * and Vercel. If this isolate already holds an unexpired access token and
+ * the database cannot be reached, that token is reused and not rotated.
  *
  * Refreshes take a lease and compare-and-swap the generation before the
  * Jobber call, so two cold starts cannot exchange the same refresh token.
@@ -263,6 +264,19 @@ async function readLockedRecord(
   }
 }
 
+/**
+ * Access token already loaded in this isolate. Used only when the durable
+ * read cannot reach Supabase. The env refresh token is not exchanged: Jobber
+ * would rotate it and the new pair could not be stored.
+ */
+function cachedAccessDuringOutage(nowMs: number, rejected: string | null): string | null {
+  const tokens = memory.tokens;
+  if (!tokens?.accessToken) return null;
+  if (rejected && tokens.accessToken === rejected) return null;
+  if (tokens.expiresAtMs <= nowMs) return null;
+  return tokens.accessToken;
+}
+
 function reuseFreshDurable(
   record: JobberOAuthRecord | null,
   deps: JobberAuthDeps,
@@ -464,7 +478,20 @@ export async function getValidJobberAccessToken(
     return accessTokenFromEnvOnly(deps);
   }
 
-  const record = await readLockedRecord(store);
+  let record: Awaited<ReturnType<typeof readLockedRecord>>;
+  try {
+    record = await readLockedRecord(store);
+  } catch (error) {
+    const loadError = asDurableLoadError(error);
+    if (loadError.reason === 'unreachable' && !deps.forceRefresh) {
+      const cached = cachedAccessDuringOutage(nowMs, deps.rejectedAccessToken?.trim() || null);
+      if (cached) {
+        logAuth('durable', 'use_memory', 'reason=unreachable');
+        return cached;
+      }
+    }
+    throw loadError;
+  }
   if (record?.tokens && !deps.forceRefresh && isJobberAccessTokenFresh(record.tokens, nowMs)) {
     const cold = !memory.tokens;
     persistJobberTokens(record.tokens, env);
