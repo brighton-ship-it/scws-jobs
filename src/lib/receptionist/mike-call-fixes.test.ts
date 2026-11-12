@@ -8,9 +8,14 @@ import {
   ADDRESS_CONFIRM_HEADING,
   ADDRESS_CONFIRM_RETRY_LIMIT,
   ADDRESS_ON_FILE_RULE,
+  LONG_TURN_HEADING,
   LOST_PRESSURE_HEADING,
+  MIKE_QUIET_LEAD_RULE,
+  MIKE_SLOT_DAY_RULE,
   MIKE_SPANISH_RULE,
   PRESSURE_EMERGENCY_TAG,
+  QUIET_LEAD_HEADING,
+  SLOT_DAY_HEADING,
   SPANISH_HEADING,
   SPANISH_ONLY_LINE,
   SPANISH_SPEAKER_FLAG,
@@ -211,6 +216,13 @@ test('prompt patch leaves greeting, voice, and routing alone and stays idempoten
   assert.match(once, new RegExp(LOST_PRESSURE_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(once, new RegExp(SPANISH_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(once, new RegExp(ADDRESS_CONFIRM_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(SLOT_DAY_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(QUIET_LEAD_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(LONG_TURN_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(MIKE_SLOT_DAY_RULE, /say label verbatim/);
+  assert.match(MIKE_QUIET_LEAD_RULE, /createCallback once before you say goodbye/);
+  assert.match(MIKE_QUIET_LEAD_RULE, /still goes to Damian/);
+  assert.match(MIKE_QUIET_LEAD_RULE, /do not book a visit/);
   assert.equal(once.includes(SPANISH_ONLY_LINE), true);
   assert.match(once, /Hey, this is Mike with Southern California Well Service\. Just a heads up, this call's recorded\./);
   assert.match(once, /Routing stays on the shop leg, then Mike\./);

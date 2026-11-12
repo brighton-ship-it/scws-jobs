@@ -31,6 +31,7 @@ import {
   ptCalendarDate,
   resolveReceptionistJobberToken,
 } from './check-schedule.ts';
+import { slotSayLabel } from './slot-say.ts';
 import {
   JobberQueryOverCostError,
   isJobberThrottled,
@@ -130,6 +131,8 @@ export type OpenSlot = {
   endAt: string;
   date: string;
   time: string;
+  /** Weekday + date + window. Mike says this verbatim. */
+  say: string;
   technician: string;
   technicianId: string;
 };
@@ -605,11 +608,14 @@ export function computeOpenSlots(options: {
       });
       if (blocked) continue;
 
+      const date = formatPtDate(start);
+      const time = formatVisitTime(start.toISOString(), end.toISOString(), false);
       slots.push({
         startAt: start.toISOString(),
         endAt: end.toISOString(),
-        date: formatPtDate(start),
-        time: formatVisitTime(start.toISOString(), end.toISOString(), false),
+        date,
+        time,
+        say: slotSayLabel(date, time),
         technician: options.technicianName,
         technicianId: options.technicianId,
       });

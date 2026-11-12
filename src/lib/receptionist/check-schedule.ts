@@ -8,6 +8,7 @@
 import { getValidJobberAccessToken } from '../jobber/auth.ts';
 import { decideBookingArea } from './service-area.ts';
 import { isSameAsNoWaterEmergency, sameAsNoWaterBookingSuffix } from './mike-call-fixes.ts';
+import { appendSlotOffer, slotSayLabel } from './slot-say.ts';
 import {
   ASSIGNED_USERS_PAGE,
   THROTTLE_MAX_ATTEMPTS,
@@ -50,6 +51,8 @@ export type OpenSlotSummary = {
   endAt: string;
   date: string;
   time: string;
+  /** Weekday + date + window. Mike says this verbatim. */
+  say?: string;
   technician: string;
   technicianId: string;
   slotId?: string;
@@ -615,8 +618,14 @@ function asCheckScheduleInput(phoneOrInput: string | CheckScheduleInput): CheckS
 }
 
 /** Add slotId (= startAt) so prompts that say slotId can copy it back to book_job. */
-export function withSlotIds<T extends { startAt: string }>(slots: T[]): Array<T & { slotId: string }> {
-  return slots.map((slot) => ({ ...slot, slotId: slot.startAt }));
+export function withSlotIds<T extends { startAt: string; date?: string; time?: string; say?: string }>(
+  slots: T[],
+): Array<T & { slotId: string; say?: string }> {
+  return slots.map((slot) => ({
+    ...slot,
+    slotId: slot.startAt,
+    say: slot.say || (slot.date && slot.time ? slotSayLabel(slot.date, slot.time) : slot.say),
+  }));
 }
 
 export function scheduleUrgencyText(input: CheckScheduleInput): string {
@@ -748,11 +757,13 @@ export async function handleCheckSchedule(
         driveSurchargeUsd: area.bookable ? area.driveSurchargeUsd : 0,
         nearerShop: area.nearerShop,
         driveSpoken,
-        bookingMessage:
+        bookingMessage: appendSlotOffer(
           (slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.${driveSpoken ? ` ${driveSpoken}` : ''}`
             : "I don't see an open Jobber slot I can book. I'll have the office call you back.")
           + sameAsNoWaterBookingSuffix(scheduleUrgencyText(input), slots.openSlots),
+          slots.openSlots,
+        ),
         emergencySameAsNoWater: isSameAsNoWaterEmergency(scheduleUrgencyText(input)) || undefined,
         bookingBlockReason: slots.openSlots.length === 0 ? 'no_slots' : undefined,
       },
