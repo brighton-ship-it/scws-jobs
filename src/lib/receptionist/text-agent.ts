@@ -6,6 +6,12 @@
  * Code guards (not just prompt): book_job only with a startAt that a check_schedule result in
  * this same thread listed, at most one booking per thread, and every reply is capped and
  * scrubbed of prices other than the $200 service call, the $300 two-man rate, and the $100 drive surcharge.
+ *
+ * check_schedule is stored as a compact valid slot list (startAt, date, time, technician).
+ * Slicing the raw schedule JSON at a character cap produced invalid JSON, the offered-slot
+ * set came back empty, and a yes to a time Mike had just offered never reached Jobber.
+ * If book_job still does not book, the office is handed the thread. The attempted startAt
+ * and the reason are logged.
  */
 
 export type ThreadMessage = {
@@ -86,6 +92,95 @@ function unwrap(value: unknown): any {
   return value && typeof value === 'object' && 'result' in (value as any) ? (value as any).result : value;
 }
 
+const MAX_STORED_TOOL_JSON = 4000;
+
+function textField(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/\s+/g, ' ').trim();
+  return text ? text.slice(0, max) : undefined;
+}
+
+function asSlots(value: unknown): any[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function compactSlot(slot: any): { startAt: string; date?: string; time?: string; technician?: string } | null {
+  const startAt = slot?.startAt ? String(slot.startAt) : '';
+  if (!startAt) return null;
+  const date = textField(slot.date, 80);
+  const time = textField(slot.time, 80);
+  const technician = textField(slot.technician, 80);
+  return {
+    startAt,
+    ...(date ? { date } : {}),
+    ...(time ? { time } : {}),
+    ...(technician ? { technician } : {}),
+  };
+}
+
+function uniqueSlots(slots: any[]): Array<{ startAt: string; date?: string; time?: string; technician?: string }> {
+  const seen = new Set<string>();
+  const out: Array<{ startAt: string; date?: string; time?: string; technician?: string }> = [];
+  for (const slot of slots) {
+    const compact = compactSlot(slot);
+    if (!compact || seen.has(compact.startAt)) continue;
+    seen.add(compact.startAt);
+    out.push(compact);
+  }
+  return out;
+}
+
+/**
+ * What the text thread keeps from check_schedule. Every offered slot, as valid JSON,
+ * without the visit history and duplicated fields that made the raw payload exceed the old cap.
+ */
+function compactScheduleContent(result: unknown): string {
+  const r = result && typeof result === 'object' ? result as any : {};
+  const openSlots = uniqueSlots([...asSlots(r.openSlots), ...asSlots(r.availableSlots)]);
+  const offered = new Set(openSlots.map((slot) => slot.startAt));
+  const earlierSlots = uniqueSlots(asSlots(r.earlierSlots)).filter((slot) => !offered.has(slot.startAt));
+  return JSON.stringify({
+    openSlots,
+    ...(earlierSlots.length ? { earlierSlots } : {}),
+    mayBook: typeof r.mayBook === 'boolean' ? r.mayBook : undefined,
+    alreadyBooked: r.alreadyBooked === true ? true : undefined,
+    bookingBlockReason: textField(r.bookingBlockReason, 80),
+    bookingMessage: textField(r.bookingMessage, 240),
+    driveSurchargeUsd: typeof r.driveSurchargeUsd === 'number' && r.driveSurchargeUsd > 0 ? r.driveSurchargeUsd : undefined,
+    driveSpoken: textField(r.driveSpoken, 240),
+  });
+}
+
+function storedToolContent(name: string, result: unknown): string {
+  if (name === 'check_schedule') return compactScheduleContent(result);
+  return JSON.stringify(result ?? {}).slice(0, MAX_STORED_TOOL_JSON);
+}
+
+const STALE_SCHEDULE = '{"openSlots":[],"bookingMessage":"Previous schedule result was incomplete. Call check_schedule again before offering or booking a time."}';
+
+/** Replay a prior tool result into the model context. Schedule slots stay whole. */
+function modelToolContext(message: ThreadMessage): string {
+  if (message.name === 'check_schedule') {
+    try {
+      JSON.parse(message.content);
+      return message.content;
+    } catch {
+      // Old threads stored a sliced schedule. It cannot authorize a booking, so don't
+      // spend the context on it. A new check_schedule replaces it with a real slot list.
+      return STALE_SCHEDULE;
+    }
+  }
+  return message.content.slice(0, 1500);
+}
+
+function rememberStarts(out: Set<string>, slots: unknown) {
+  if (!Array.isArray(slots)) return;
+  for (const slot of slots) {
+    const startAt = slot?.startAt || slot?.slotId;
+    if (startAt) out.add(String(startAt));
+  }
+}
+
 /** startAt values listed by any check_schedule result already in the thread. */
 export function offeredStarts(thread: ThreadMessage[]): Set<string> {
   const out = new Set<string>();
@@ -93,8 +188,10 @@ export function offeredStarts(thread: ThreadMessage[]): Set<string> {
     if (m.role !== 'tool' || m.name !== 'check_schedule') continue;
     try {
       const r = JSON.parse(m.content);
-      for (const s of [...(r?.openSlots || []), ...(r?.availableSlots || [])]) if (s?.startAt) out.add(String(s.startAt));
-    } catch { /* ignore */ }
+      rememberStarts(out, r?.openSlots);
+      rememberStarts(out, r?.availableSlots);
+      rememberStarts(out, r?.earlierSlots);
+    } catch { /* truncated historical payload: do not guess a time from a broken string */ }
   }
   return out;
 }
@@ -130,9 +227,33 @@ export async function runTextAgent(input: {
   let booked = alreadyBooked(thread);
   let handedOff = false;
   let urgent = false;
+  let bookingFailure: { startAt: string; reason: string } | null = null;
+  const noteBookingFailure = (startAt: string, reason: string) => {
+    const shownStart = startAt.slice(0, 80);
+    const shownReason = reason.replace(/\s+/g, ' ').trim().slice(0, 300) || 'book_failed';
+    const last4 = input.phone.replace(/\D/g, '').slice(-4);
+    console.error(`[text-agent] book_job rejected startAt=${shownStart} reason=${shownReason} phoneLast4=${last4}`);
+    if (!bookingFailure) bookingFailure = { startAt: shownStart, reason: shownReason };
+  };
+  const handOffBookingFailure = async () => {
+    const failure = bookingFailure;
+    if (booked || handedOff || !failure) return;
+    const { startAt, reason } = failure;
+    try {
+      await input.tools.handOff({
+        phone: input.phone,
+        reason: 'SMS booking failed',
+        urgent: false,
+        summary: `Attempted startAt ${startAt || '(none)'}. ${reason}`.slice(0, 500),
+      });
+      handedOff = true;
+    } catch (e) {
+      console.error('[text-agent] book_job handoff failed', e instanceof Error ? e.message : e);
+    }
+  };
   const messages: any[] = [{ role: 'system', content: textAgentSystemPrompt(input.now, input.phone) }];
   for (const m of thread.slice(-30)) {
-    if (m.role === 'tool') messages.push({ role: 'system', content: `Earlier ${m.name} result: ${m.content.slice(0, 1500)}` });
+    if (m.role === 'tool') messages.push({ role: 'system', content: `Earlier ${m.name} result: ${modelToolContext(m)}` });
     else messages.push({ role: m.role, content: m.content });
   }
 
@@ -147,6 +268,7 @@ export async function runTextAgent(input: {
     if (!calls.length) {
       const reply = scrubReply(msg.content || '');
       if (!reply) break;
+      await handOffBookingFailure();
       thread.push({ role: 'assistant', content: reply, at: nowIso });
       return { reply, thread, booked, handedOff, urgent };
     }
@@ -174,7 +296,14 @@ export async function runTextAgent(input: {
                 phone: input.phone, name: String(args.name || ''), address: String(args.address || ''), city: String(args.town || ''),
                 startAt, notes: `Booked by text (missed-call follow-up). ${String(args.problem || '').slice(0, 300)}`,
               }));
-              if ((result as any)?.booked === true) booked = true;
+              if ((result as any)?.booked === true) {
+                booked = true;
+                bookingFailure = null;
+              }
+            }
+            if (!booked && (result as any)?.error !== 'already_booked_in_this_thread') {
+              const reason = String((result as any)?.error || (result as any)?.bookingBlockReason || 'book_failed');
+              noteBookingFailure(startAt, reason);
             }
             break;
           }
@@ -190,12 +319,15 @@ export async function runTextAgent(input: {
         }
       } catch (e) {
         result = { error: e instanceof Error ? e.message.slice(0, 200) : 'tool_failed' };
+        if (call.function.name === 'book_job' && !booked) noteBookingFailure(String(args.startAt || ''), String((result as any).error));
       }
-      const content = JSON.stringify(result ?? {}).slice(0, 4000);
+      const content = storedToolContent(call.function.name, result);
       thread.push({ role: 'tool', name: call.function.name, content, at: nowIso });
       messages.push({ role: 'tool', tool_call_id: call.id, content });
     }
   }
+  // A booking that never landed is an office follow-up, even if the model only said so.
+  await handOffBookingFailure();
   // Model failed or looped: never leave the texter hanging; hand to the office once.
   if (!handedOff) {
     try {
