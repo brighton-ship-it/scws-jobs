@@ -7,7 +7,8 @@
  * working-days data and the service techs historically have no weekend visits, so an
  * empty board on a weekend must not be read as "available". A slot is returned
  * only when it does not overlap a Jobber visit for an allowlisted tech
- * (Ramona: Brian Eads; Anza: Cowin; desert: both). Jeremiah Biliunas is bookable
+ * (Ramona: Brian Eads; Anza: Cowin and David Tucker, weekdays; desert: both Anza
+ * techs and Brian). Jeremiah Biliunas is bookable
  * in every territory on Wednesday–Friday, and on Saturday/Sunday only when his
  * name is in RECEPTIONIST_WEEKEND_TECHS. Monday/Tuesday stay with the territory
  * primary. Fallback techs Chris/Haze/Colton/Sergio are offered only when strictly

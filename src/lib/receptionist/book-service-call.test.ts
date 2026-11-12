@@ -688,6 +688,102 @@ describe('handleBookServiceCall', () => {
     assert.equal(result.assignedTechName, 'Cowin');
   });
 
+  it('books an Anza weekday for David Tucker when Cowin is already on that window', async () => {
+    const davidId = 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQ1ODAxNQ==';
+    const david = {
+      id: davidId,
+      name: { full: 'David Tucker ' },
+      email: { raw: 'david@scwellservice.com' },
+    };
+    const slot = firstOpenSlot(THU_530PM, davidId, 'David Tucker');
+    const visitCreates: Array<Record<string, unknown>> = [];
+    const fetchFn = mockJobber({
+      users: [BRIAN, COWIN, DOUG, TRAVIS, david],
+      occupied: [
+        {
+          startAt: slot.startAt,
+          endAt: slot.endAt,
+          assignedUsers: { nodes: [{ id: 'user-cowin', name: { full: 'Cowin' } }] },
+        },
+      ],
+      createdJob: {
+        id: 'job-anza-david',
+        title: SERVICE_CALL_TITLE,
+        visits: {
+          nodes: [
+            {
+              id: 'visit-anza-david',
+              startAt: slot.startAt,
+              endAt: slot.endAt,
+              assignedUsers: { nodes: [{ id: davidId, name: { full: 'David Tucker ' } }] },
+            },
+          ],
+        },
+      },
+    });
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550188',
+        name: 'Alex Highdesert',
+        address: '10 CA-371',
+        city: 'Anza',
+        zip: '92539',
+        startAt: slot.startAt,
+      },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        fetchFn: async (url, init) => {
+          const body = JSON.parse(String(init?.body || '{}')) as { query?: string; variables?: Record<string, unknown> };
+          if ((body.query || '').includes('VisitCreate') && body.variables) visitCreates.push(body.variables);
+          return fetchFn(url, init);
+        },
+      }
+    );
+
+    assert.equal(result.booked, true);
+    assert.equal(result.canConfirm, true);
+    assert.deepEqual(result.visit?.technicians.map((name) => name.trim()), ['David Tucker']);
+    assert.equal(result.assignedTechName, 'David Tucker');
+    const schedule = (visitCreates[0]?.input as { visits?: Array<{ schedule?: { teamMemberIdsToAssign?: string[] } }> })
+      ?.visits?.[0]?.schedule;
+    assert.deepEqual(schedule?.teamMemberIdsToAssign, [davidId]);
+  });
+
+  it('does not book David Tucker on Saturday when the weekend roster is Jeremiah', async () => {
+    const davidId = 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQ1ODAxNQ==';
+    const { result } = await handleBookServiceCall(
+      {
+        phone: '7605550188',
+        name: 'Alex Highdesert',
+        address: '10 CA-371',
+        city: 'Anza',
+        zip: '92539',
+        startAt: SAT_8AM_START,
+      },
+      {
+        now: FRI_6PM,
+        accessToken: 'test-token',
+        env: { ...process.env, RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas' } as NodeJS.ProcessEnv,
+        fetchFn: mockJobber({
+          users: [
+            BRIAN,
+            COWIN,
+            {
+              id: davidId,
+              name: { full: 'David Tucker ' },
+              email: { raw: 'david@scwellservice.com' },
+            },
+          ],
+        }),
+      }
+    );
+
+    assert.equal(result.booked, false);
+    assert.equal(result.canConfirm, false);
+    assert.equal(result.bookingBlockReason, 'slot_not_open');
+  });
+
   it('refuses to confirm when jobCreate returns no visit', async () => {
     const slot = firstOpenSlot(THU_530PM, 'user-brian', 'Brian Eads');
     const { result } = await handleBookServiceCall(

@@ -3,12 +3,17 @@
  *
  * Territories (Brighton, authoritative):
  *   Ramona / west / central SD → Brian Eads only
- *   Anza / high-desert         → Cowin
- *   Borrego / Anza-side desert → Cowin AND Brian (earliest open slot across both)
+ *   Anza / high-desert         → Cowin, then David Tucker (Monday–Friday)
+ *   Borrego / Anza-side desert → Cowin, David Tucker, and Brian (earliest open slot)
  *
- * Brian and Cowin are identified from this repo's team roster emails
- * (scripts/seed-team.ts), then the Jobber users query id. Never guess Travis.
- * Doug Pollack is deactivated in Jobber (Oct 2026) and is blocked by name and user id.
+ * Cowin stays first, so a window both Anza techs have open still goes to him.
+ * David Tucker (Nov 9 2026) works out of the Anza shop on Monday–Friday only.
+ * Saturday and Sunday stay on RECEPTIONIST_WEEKEND_TECHS. He is not a fallback
+ * and not a weekend-extra tech.
+ *
+ * Brian, Cowin, and David are identified from roster emails, then the Jobber
+ * users query id. Never guess Travis. Doug Pollack is deactivated in Jobber
+ * (Oct 2026) and is blocked by name and user id.
  *
  * Fallback service techs (Oct 10 2026, Brighton): Chris Glass, Haze Tarbell, Colton
  * Hagler, Sergio Valdovinos Mendez. They are offered only when their Jobber calendar is
@@ -17,7 +22,7 @@
  *
  * Jeremiah Biliunas (Oct 24 2026, Brighton) is bookable in every territory on
  * Wednesday–Friday, and on Saturday/Sunday when RECEPTIONIST_WEEKEND_TECHS lists his
- * exact Jobber name. Monday and Tuesday stay with the territory primary (Brian/Cowin).
+ * exact Jobber name. Monday and Tuesday stay with the territory primary (Brian, or Cowin and David).
  * He is not a fallback and he is not selected by setting the weekend roster to "all".
  *
  * Never assign Travis, Brighton, Doug Pollack, a drill crew, or anyone else outside
@@ -28,6 +33,7 @@ import { getCountyByCity } from '../tax-rates.ts';
 
 export const TECH_COWIN = 'Cowin';
 export const TECH_BRIAN_EADS = 'Brian Eads';
+export const TECH_DAVID_TUCKER = 'David Tucker';
 
 export type ShopTerritory = 'ramona' | 'anza' | 'desert';
 
@@ -46,6 +52,13 @@ export const SERVICE_TECH_ROSTER = {
     email: 'cowin@scwellservice.com',
     altNames: [] as string[],
     envIdKey: 'JOBBER_TECH_COWIN_ID' as const,
+  },
+  david: {
+    key: 'david' as const,
+    name: TECH_DAVID_TUCKER,
+    email: 'david@scwellservice.com',
+    altNames: [] as string[],
+    envIdKey: 'JOBBER_TECH_DAVID_TUCKER_ID' as const,
   },
 };
 
@@ -141,7 +154,7 @@ export const WEEKEND_EXTRA_TECH_ROSTER = {
 };
 
 export type ShopTech = {
-  key: 'cowin' | 'brian' | 'chris' | 'haze' | 'colton' | 'sergio' | 'jeremiah';
+  key: 'cowin' | 'brian' | 'david' | 'chris' | 'haze' | 'colton' | 'sergio' | 'jeremiah';
   name: string;
   email: string;
   altNames: string[];
@@ -204,7 +217,7 @@ const DESERT_ZIPS = new Set([
 
 /**
  * Southwest Riverside County (Oct 12 2026): Murrieta / Temecula area is closer to the
- * Anza shop than to Ramona, so it goes to the Anza pool (Cowin), not Brian.
+ * Anza shop than to Ramona, so it goes to the Anza pool (Cowin and David Tucker), not Brian.
  * Before this, Murrieta matched no list and silently defaulted to Ramona.
  */
 const RIVERSIDE_WEST_CITIES = [
@@ -360,6 +373,11 @@ export function fallbackHomeZones(env: NodeJS.ProcessEnv = process.env): Map<str
   return out;
 }
 
+/** Anza shop techs, Cowin first so a shared window still goes to him. */
+function anzaServiceTechs(): ShopTech[] {
+  return [{ ...SERVICE_TECH_ROSTER.cowin }, { ...SERVICE_TECH_ROSTER.david }];
+}
+
 /** Allowed Sarah assignees for this job location. */
 export function allowedTechsForLocation(input: {
   city?: string | null;
@@ -368,11 +386,11 @@ export function allowedTechsForLocation(input: {
 }): ShopTech[] {
   const territory = assignShopTerritory(input);
   if (territory === 'desert') {
-    // Anza tech first so ties go to Cowin; Brian is merged in so the earliest slot wins.
-    return [{ ...SERVICE_TECH_ROSTER.cowin }, { ...SERVICE_TECH_ROSTER.brian }];
+    // Anza techs first so ties go to Cowin, then David; Brian is merged in so the earliest slot wins.
+    return [...anzaServiceTechs(), { ...SERVICE_TECH_ROSTER.brian }];
   }
   if (territory === 'anza') {
-    return [{ ...SERVICE_TECH_ROSTER.cowin }];
+    return anzaServiceTechs();
   }
   return [{ ...SERVICE_TECH_ROSTER.brian }];
 }

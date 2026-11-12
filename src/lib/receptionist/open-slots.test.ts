@@ -1110,3 +1110,149 @@ describe('time-off visits (QA #261)', () => {
     assert.equal(days.get('chris glass')?.size ?? 0, 0);
   });
 });
+
+describe('David Tucker — Anza weekday pool', () => {
+  const DAVID_ID = 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQ1ODAxNQ==';
+  const DAVID = {
+    id: DAVID_ID,
+    name: { full: 'David Tucker ' },
+    email: { raw: 'david@scwellservice.com' },
+  };
+  const JEREMIAH = {
+    id: 'Z2lkOi8vSm9iYmVyL1VzZXIvNDQzODgyOQ==',
+    name: { full: 'Jeremiah Biliunas' },
+    email: { raw: 'jeremiah@scwellservice.com' },
+  };
+  const FRI_6PM = new Date('2026-09-05T01:00:00.000Z'); // Fri Sep 4, 6 PM PT
+  const weekendEnv = envOf({ RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas' });
+  const users = [BRIAN, COWIN, DAVID, TRAVIS, DOUG, JEREMIAH];
+
+  function bookAll(now: Date, id: string, name: string) {
+    return computeOpenSlots({
+      occupied: [],
+      now,
+      technicianId: id,
+      technicianName: name,
+      maxSlots: 60,
+      allowWeekend: true,
+      env: weekendEnv,
+    }).map((slot) => visitFor(slot, id, name));
+  }
+
+  it('keeps a shared Anza window on Cowin and gives David the window Cowin is booked', async () => {
+    const friday = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-cowin',
+      technicianName: 'Cowin',
+      maxSlots: 1,
+    })[0];
+    const open = await lookupOpenSlots(
+      { city: 'Anza' },
+      { now: THU_530PM, accessToken: 'test-token', env: weekendEnv, fetchFn: mockUsersAndVisits(users) }
+    );
+    assert.equal(open.assignedTechName, 'Cowin or David Tucker');
+    assert.equal(open.openSlots[0].technicianId, 'user-cowin');
+    assert.equal(open.openSlots.some((slot) => slot.technicianId === DAVID_ID), false);
+
+    const gap = await lookupOpenSlots(
+      { city: 'Anza' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        env: weekendEnv,
+        fetchFn: mockUsersAndVisits(users, [visitFor(friday, 'user-cowin', 'Cowin')]),
+      }
+    );
+    const atFriday = gap.openSlots.find((slot) => slot.startAt === friday.startAt);
+    assert.equal(atFriday?.technicianId, DAVID_ID);
+    assert.equal(atFriday?.technician, 'David Tucker');
+    assert.equal(gap.openSlots.some((slot) => slot.technicianId === 'user-cowin'), true);
+  });
+
+  it('stays off Ramona and off Saturday when the weekend roster is Jeremiah', async () => {
+    const ramona = await lookupOpenSlots(
+      { city: 'Ramona' },
+      { now: THU_530PM, accessToken: 'test-token', env: weekendEnv, fetchFn: mockUsersAndVisits(users) }
+    );
+    assert.equal(ramona.assignedTechName, 'Brian Eads');
+    assert.ok(
+      ramona.openSlots.filter((slot) => /monday|tuesday|wednesday|thursday|friday/i.test(slot.date)).every((slot) => slot.technicianId === 'user-brian')
+    );
+    assert.ok(
+      ramona.openSlots.filter((slot) => /saturday|sunday/i.test(slot.date)).every((slot) => slot.technicianId === JEREMIAH.id)
+    );
+    assert.equal(ramona.openSlots.some((slot) => slot.technicianId === DAVID_ID), false);
+    assert.equal(ramona.allowlistedTechIds.includes(DAVID_ID), false);
+
+    const anza = await lookupOpenSlots(
+      { city: 'Anza' },
+      { now: FRI_6PM, accessToken: 'test-token', env: weekendEnv, fetchFn: mockUsersAndVisits(users) }
+    );
+    assert.ok(anza.openSlots.some((slot) => /saturday|sunday/i.test(slot.date)));
+    assert.ok(
+      anza.openSlots.filter((slot) => /saturday|sunday/i.test(slot.date)).every((slot) => slot.technicianId === JEREMIAH.id)
+    );
+    assert.equal(anza.openSlots.some((slot) => slot.technicianId === DAVID_ID && /saturday|sunday/i.test(slot.date)), false);
+  });
+
+  it('covers Anza Monday–Friday when Cowin is booked, and desert before Brian', async () => {
+    const sun6pm = new Date('2026-09-07T01:00:00.000Z'); // Sun Sep 6, 6 PM PT
+    const occupied = bookAll(sun6pm, 'user-cowin', 'Cowin');
+    const anza = await lookupOpenSlots(
+      { city: 'Anza' },
+      { now: sun6pm, accessToken: 'test-token', env: weekendEnv, fetchFn: mockUsersAndVisits(users, occupied) }
+    );
+    const weekdays = anza.openSlots.filter((slot) => /monday|tuesday|wednesday|thursday|friday/i.test(slot.date));
+    assert.ok(weekdays.length > 0);
+    assert.ok(weekdays.every((slot) => slot.technicianId === DAVID_ID));
+    assert.equal(anza.openSlots.some((slot) => slot.technicianId === DAVID_ID && /saturday|sunday/i.test(slot.date)), false);
+    assert.equal(anza.openSlots.some((slot) => slot.technicianId === JEREMIAH.id && /monday|tuesday/i.test(slot.date)), false);
+
+    const friday = computeOpenSlots({
+      occupied: [],
+      now: THU_530PM,
+      technicianId: 'user-cowin',
+      technicianName: 'Cowin',
+      maxSlots: 1,
+    })[0];
+    const desert = await lookupOpenSlots(
+      { city: 'Borrego Springs' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        env: weekendEnv,
+        fetchFn: mockUsersAndVisits(users, [visitFor(friday, 'user-cowin', 'Cowin')]),
+      }
+    );
+    assert.equal(desert.assignedTechName, 'Cowin, David Tucker, or Brian Eads');
+    assert.equal(desert.openSlots.find((slot) => slot.startAt === friday.startAt)?.technicianId, DAVID_ID);
+
+    const bothBooked = [...bookAll(THU_530PM, 'user-cowin', 'Cowin'), ...bookAll(THU_530PM, DAVID_ID, 'David Tucker')];
+    const brian = await lookupOpenSlots(
+      { city: 'Borrego Springs' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        env: weekendEnv,
+        fetchFn: mockUsersAndVisits([BRIAN, COWIN, DAVID], bothBooked),
+      }
+    );
+    assert.equal(brian.openSlots[0].technicianId, 'user-brian');
+  });
+
+  it('a wrong Jobber id pin drops David and leaves Cowin on Anza', async () => {
+    const result = await lookupOpenSlots(
+      { city: 'Anza' },
+      {
+        now: THU_530PM,
+        accessToken: 'test-token',
+        env: envOf({ JOBBER_TECH_DAVID_TUCKER_ID: TRAVIS.id }),
+        fetchFn: mockUsersAndVisits(users),
+      }
+    );
+    assert.equal(result.assignedTechName, 'Cowin');
+    assert.equal(result.allowlistedTechIds.includes(DAVID_ID), false);
+    assert.ok(result.openSlots.every((slot) => slot.technicianId === 'user-cowin'));
+  });
+});

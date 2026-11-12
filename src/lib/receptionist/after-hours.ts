@@ -9,7 +9,8 @@
  *   Any day (Oct 18 2026: open 7 days). Saturday/Sunday slots exist only for techs in
  *   RECEPTIONIST_WEEKEND_TECHS (see open-slots.ts); otherwise callers land on the next weekday.
  *   Jeremiah Biliunas is also in the Wednesday–Friday pool for every territory.
- *   Monday/Tuesday stay with Brian/Cowin. Do not set the weekend roster to "all".
+ *   Monday/Tuesday stay with the territory primary (Brian, or Cowin and David at Anza).
+ *   Do not set the weekend roster to "all". David Tucker is not a weekend tech.
  *
  * Daytime weekday service calls stay with Liz — Sarah takes a message.
  * A caller who needs someone NOW this weekend is not a Monday $200 visit.
