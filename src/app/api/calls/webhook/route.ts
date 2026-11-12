@@ -43,13 +43,13 @@ export async function POST(request: NextRequest) {
       if (db) {
         try {
           const { data: existing } = await db.from('inbound_call_recordings')
-            .select('call_sid, caller_number, tracking_number, source, started_at, dial_status, processing_status')
+            .select('call_sid, caller_number, tracking_number, source, started_at, dial_status, processing_status, processing_error')
             .eq('call_sid', callSid).maybeSingle();
           const decision = await confirmedAbandon({
             params,
             row: existing ?? null,
             reread: async () => {
-              const again = await db.from('inbound_call_recordings').select('dial_status, processing_status').eq('call_sid', callSid).maybeSingle();
+              const again = await db.from('inbound_call_recordings').select('dial_status, processing_status, processing_error').eq('call_sid', callSid).maybeSingle();
               return again?.data ?? null;
             },
           });
