@@ -17,6 +17,11 @@ export const BOOK_JOB_TOOL = {
       email: { type: 'string', description: "The caller's email if they give one" },
       address: { type: 'string', description: 'Service street address' },
       city: { type: 'string', description: 'City (Ramona, Anza, Escondido, …)' },
+      addressConfirmed: {
+        type: 'string',
+        description:
+          "The caller's exact yes after you read the street and city back. Optional. A live transcript still has to contain that read-back; this does not override a mismatch.",
+      },
       zip: { type: 'string', description: 'ZIP if known' },
       startAt: {
         type: 'string',

@@ -4,9 +4,12 @@
  * (Liz). The model and tools are injected so this is testable and sends nothing itself.
  *
  * Code guards (not just prompt): book_job only with a startAt that a check_schedule result in
- * this same thread listed, at most one booking per thread, and every reply is capped and
+ * this same thread listed, at most one booking per thread, the same street-and-town
+ * confirmation as Mike's voice book_job, and every reply is capped and
  * scrubbed of prices other than the $200 service call, the $300 two-man rate, and the $100 drive surcharge.
  */
+
+import { checkServiceAddressConfirmation, type AddressTurn } from './mike-call-fixes.ts';
 
 export type ThreadMessage = {
   role: 'user' | 'assistant' | 'tool';
@@ -51,7 +54,7 @@ Rules:
 - Texts are short: 1 to 2 sentences, under 300 characters, no lists, no emojis, no links.
 - First tool call is lookup_customer with their number. If found, use their name and address on file (confirm it once). If not found, don't say so; just ask.
 - Ask one thing at a time: the problem, then name, then street address and town of the well.
-- For a service problem (no water, pump not working, low pressure, leak, tank, cycling, water quality) in the service area: call check_service_area with the town, then check_schedule. Offer the earliest listed slot (or two). Say "That's a $200 service call, which covers the first hour." If check_service_area includes a drive surcharge, still book and say the first visit adds that charge ($100 per hour of drive past 1 hour from the nearer shop). Wait for a clear yes before book_job, and pass that slot's startAt exactly.
+- For a service problem (no water, pump not working, low pressure, leak, tank, cycling, water quality) in the service area: call check_service_area with the town, then check_schedule. Offer the earliest listed slot (or two). Say "That's a $200 service call, which covers the first hour." If check_service_area includes a drive surcharge, still book and say the first visit adds that charge ($100 per hour of drive past 1 hour from the nearer shop). Text the street and the town and wait for a yes to that address before book_job. Wait for a clear yes to the slot, and pass that slot's startAt exactly. If book_job says the address is not confirmed, ask for the street and town and try again. Do not say there is an issue booking the slot.
 - San Diego, Riverside, and San Bernardino counties are bookable, including Santa Ysabel, Quail Springs, and Mesa Grande. Do not hand those off for location and do not refuse because of drive time.
 - Only offer times that check_schedule listed. Never invent a date, time or technician. Never say booked or confirmed until book_job returns booked: true; then confirm the day, window and tech exactly as returned and say "If anything changes, just call or text us."
 - No water at all, livestock without water, flooding, sparks or burning smell: still offer the earliest slot, and also call hand_off_to_office with urgent true. For sparks or burning smell, tell them to turn off the pump breaker only if safe, and call 911 if anyone is in danger.
@@ -69,7 +72,7 @@ export const TEXT_AGENT_TOOLS = [
   { type: 'function', function: { name: 'lookup_customer', description: 'Find the texter in Jobber by phone. Returns name, address on file and recent jobs.', parameters: { type: 'object', properties: {}, required: [] } } },
   { type: 'function', function: { name: 'check_service_area', description: 'Check whether a town is bookable. San Diego, Riverside, and San Bernardino counties are bookable. A drive surcharge means still book and say the $100 per hour charge past 1 hour.', parameters: { type: 'object', properties: { town: { type: 'string' } }, required: ['town'] } } },
   { type: 'function', function: { name: 'check_schedule', description: 'Get real open service-call slots (openSlots with startAt) for the address. Call before offering any time.', parameters: { type: 'object', properties: { address: { type: 'string' }, town: { type: 'string' } }, required: ['address', 'town'] } } },
-  { type: 'function', function: { name: 'book_job', description: 'Book the $200 service call into a slot the texter said yes to. startAt must be copied from check_schedule openSlots.', parameters: { type: 'object', properties: { name: { type: 'string' }, address: { type: 'string' }, town: { type: 'string' }, startAt: { type: 'string' }, problem: { type: 'string' } }, required: ['name', 'address', 'town', 'startAt', 'problem'] } } },
+  { type: 'function', function: { name: 'book_job', description: 'Book the $200 service call into a slot the texter said yes to, after they confirmed the street and town. startAt must be copied from check_schedule openSlots.', parameters: { type: 'object', properties: { name: { type: 'string' }, address: { type: 'string' }, town: { type: 'string' }, startAt: { type: 'string' }, problem: { type: 'string' } }, required: ['name', 'address', 'town', 'startAt', 'problem'] } } },
   { type: 'function', function: { name: 'hand_off_to_office', description: 'Send this conversation to the office (Liz) to follow up by phone or text.', parameters: { type: 'object', properties: { reason: { type: 'string' }, urgent: { type: 'boolean' }, summary: { type: 'string', description: 'Name, address, town, problem, what was offered.' } }, required: ['reason', 'urgent', 'summary'] } } },
 ];
 
@@ -97,6 +100,15 @@ export function offeredStarts(thread: ThreadMessage[]): Set<string> {
     } catch { /* ignore */ }
   }
   return out;
+}
+
+function addressTurns(thread: ThreadMessage[]): AddressTurn[] {
+  const turns: AddressTurn[] = [];
+  for (const message of thread) {
+    if (message.role === 'user') turns.push({ role: 'user', text: message.content });
+    else if (message.role === 'assistant') turns.push({ role: 'bot', text: message.content });
+  }
+  return turns;
 }
 
 export function alreadyBooked(thread: ThreadMessage[]): boolean {
@@ -170,11 +182,19 @@ export async function runTextAgent(input: {
             if (booked) result = { booked: false, error: 'already_booked_in_this_thread' };
             else if (!offeredStarts(thread).has(startAt)) result = { booked: false, error: 'slot_not_offered: call check_schedule and offer a listed slot first' };
             else {
-              result = unwrap(await input.tools.bookJob({
-                phone: input.phone, name: String(args.name || ''), address: String(args.address || ''), city: String(args.town || ''),
-                startAt, notes: `Booked by text (missed-call follow-up). ${String(args.problem || '').slice(0, 300)}`,
-              }));
-              if ((result as any)?.booked === true) booked = true;
+              const address = checkServiceAddressConfirmation(
+                { address: String(args.address || ''), city: String(args.town || args.city || ''), addressConfirmed: args.addressConfirmed },
+                addressTurns(thread),
+                { channel: 'text' },
+              );
+              if (!address.ok) result = address.result;
+              else {
+                result = unwrap(await input.tools.bookJob({
+                  phone: input.phone, name: String(args.name || ''), address: String(args.address || ''), city: String(args.town || ''),
+                  startAt, notes: `Booked by text (missed-call follow-up). ${String(args.problem || '').slice(0, 300)}`,
+                }));
+                if ((result as any)?.booked === true) booked = true;
+              }
             }
             break;
           }
