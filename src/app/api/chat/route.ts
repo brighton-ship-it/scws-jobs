@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase/service';
 import OpenAI from 'openai';
+import { sendEmail, textToHtml } from '@/lib/messaging/email';
+import {
+  CHAT_OFFICE_EMAILS,
+  buildLeadEmail,
+  isUrgentMessage,
+  priorHistory,
+  shouldSendLeadEmail,
+  type ChatTurn,
+  type VisitorInfo,
+} from '@/lib/chat/lead-email';
 
 // CORS headers for cross-origin requests (widget on scwellservice.com)
 const corsHeaders = {
@@ -49,14 +58,35 @@ PRICING GUIDANCE (estimates only, actual quotes require site visit):
 
 Always be helpful and try to convert inquiries into scheduled appointments or callbacks.`;
 
-interface ChatMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
+async function emailOfficeLead(options: {
+  sessionId: string;
+  visitorInfo?: VisitorInfo;
+  history: ChatTurn[];
+  userMessage: string;
+  assistantReply: string;
+  urgent: boolean;
+}) {
+  const { subject, text } = buildLeadEmail(options);
+  const html = textToHtml(text);
+
+  for (const email of CHAT_OFFICE_EMAILS) {
+    const result = await sendEmail({
+      to: email,
+      subject,
+      html,
+      text,
+    });
+    console.log(`[Chat] Lead email to ${email}:`, result.success ? 'sent' : result.error);
+  }
 }
 
 export async function POST(request: NextRequest) {
   try {
-    const { message, sessionId, visitorInfo } = await request.json();
+    const body = await request.json();
+    const message = typeof body?.message === 'string' ? body.message.trim() : '';
+    const sessionId = typeof body?.sessionId === 'string' ? body.sessionId.trim() : '';
+    const visitorInfo: VisitorInfo | undefined = body?.visitorInfo;
+    const history = priorHistory(body?.history, message);
 
     if (!message || !sessionId) {
       return NextResponse.json(
@@ -65,134 +95,63 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const supabase = createServiceClient();
-
-    // Get or create chat session
-    let { data: session } = await supabase
-      .from('chat_sessions')
-      .select('*')
-      .eq('session_id', sessionId)
-      .single();
-
-    if (!session) {
-      // Create new session
-      const { data: newSession, error: sessionError } = await supabase
-        .from('chat_sessions')
-        .insert({
-          session_id: sessionId,
-          visitor_name: visitorInfo?.name || null,
-          visitor_email: visitorInfo?.email || null,
-          visitor_phone: visitorInfo?.phone || null,
-          visitor_ip: request.headers.get('x-forwarded-for')?.split(',')[0] || null,
-          page_url: visitorInfo?.pageUrl || null,
-          status: 'active',
-        })
-        .select()
-        .single();
-
-      if (sessionError) {
-        console.error('Error creating session:', sessionError);
-      }
-      session = newSession;
-    }
-
-    // Get chat history for this session
-    const { data: history } = await supabase
-      .from('chat_messages')
-      .select('role, content')
-      .eq('session_id', sessionId)
-      .order('created_at', { ascending: true })
-      .limit(20);
-
-    // Build messages array for OpenAI
-    const messages: ChatMessage[] = [
+    const openaiMessages: ChatTurn[] = [
       { role: 'system', content: SCWS_CONTEXT },
-      ...(history || []).map((m: any) => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-      })),
+      ...history,
       { role: 'user', content: message },
     ];
 
-    // Store user message
-    await supabase.from('chat_messages').insert({
-      session_id: sessionId,
-      role: 'user',
-      content: message,
-    });
-
-    // Get AI response
-    const completion = await getOpenAI().chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: messages,
-      max_tokens: 500,
-      temperature: 0.7,
-    });
-
-    const aiResponse = completion.choices[0]?.message?.content || 
+    let aiResponse =
       "I'm sorry, I'm having trouble responding right now. Please call us at (760) 440-8520.";
 
-    // Store AI response
-    await supabase.from('chat_messages').insert({
-      session_id: sessionId,
-      role: 'assistant',
-      content: aiResponse,
-    });
+    try {
+      const completion = await getOpenAI().chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: openaiMessages,
+        max_tokens: 500,
+        temperature: 0.7,
+      });
+      aiResponse =
+        completion.choices[0]?.message?.content || aiResponse;
+    } catch (openaiError: unknown) {
+      const err = openaiError as { message?: string };
+      console.error('Chat OpenAI error:', err?.message || openaiError);
+    }
 
-    // Check for urgent keywords or lead info
-    const isUrgent = /no water|emergency|flood|urgent/i.test(message);
-    const hasContactInfo = /\d{3}[-.\s]?\d{3}[-.\s]?\d{4}|@/.test(message);
-
-    if (isUrgent || hasContactInfo) {
-      // Update session with flags
-      await supabase
-        .from('chat_sessions')
-        .update({
-          is_urgent: isUrgent || undefined,
-          has_contact_info: hasContactInfo || undefined,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('session_id', sessionId);
-
-      // TODO: Send alert to Brighton for urgent/hot leads
+    if (shouldSendLeadEmail(history, message)) {
+      try {
+        await emailOfficeLead({
+          sessionId,
+          visitorInfo,
+          history,
+          userMessage: message,
+          assistantReply: aiResponse,
+          urgent: isUrgentMessage(message),
+        });
+      } catch (emailError: unknown) {
+        const err = emailError as { message?: string };
+        console.error('Chat lead email error:', err?.message || emailError);
+      }
     }
 
     return NextResponse.json({
       response: aiResponse,
       sessionId,
     }, { headers: corsHeaders });
-  } catch (error: any) {
-    console.error('Chat API error:', error?.message || error);
+  } catch (error: unknown) {
+    const err = error as { message?: string };
+    console.error('Chat API error:', err?.message || error);
     return NextResponse.json(
-      { 
+      {
         response: "I'm sorry, I'm having trouble right now. Please call us at (760) 440-8520 for immediate assistance.",
         error: 'Internal error',
-        debug: error?.message || String(error)
       },
       { status: 500, headers: corsHeaders }
     );
   }
 }
 
-// GET endpoint to fetch chat history
-export async function GET(request: NextRequest) {
-  const sessionId = request.nextUrl.searchParams.get('sessionId');
-  
-  if (!sessionId) {
-    return NextResponse.json({ error: 'Missing sessionId' }, { status: 400, headers: corsHeaders });
-  }
-
-  const supabase = createServiceClient();
-  
-  const { data: messages, error } = await supabase
-    .from('chat_messages')
-    .select('role, content, created_at')
-    .eq('session_id', sessionId)
-    .order('created_at', { ascending: true });
-
-  if (error) {
-    return NextResponse.json({ error: 'Failed to fetch messages' }, { status: 500, headers: corsHeaders });
-  }
-
-  return NextResponse.json({ messages: messages || [] }, { headers: corsHeaders });
+// History lives in the widget; this stays for CORS/preflight compatibility.
+export async function GET() {
+  return NextResponse.json({ messages: [] }, { headers: corsHeaders });
 }
