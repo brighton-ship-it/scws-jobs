@@ -73,6 +73,28 @@ describe('county bookable rule', () => {
     }
   });
 
+  it('hears Palma Valley and Palomar Valley as Pauma Valley, and leaves Palomar Mountain alone', () => {
+    for (const heard of ['Palma Valley', 'Palomar Valley', 'Palomar Valley, CA']) {
+      const { result } = checkServiceArea(heard);
+      assert.equal(result.bookable, true, heard);
+      assert.equal(result.outOfArea, false, heard);
+      assert.equal(result.county, 'San Diego', heard);
+      assert.match(result.message, /Pauma Valley/, heard);
+      assert.doesNotMatch(result.message, /outside|out of area|can't help|referr/i, heard);
+      const town = townGuardResult('checkServiceArea', { city: heard }, {});
+      assert.equal(town, null, heard);
+    }
+    const mountain = checkServiceArea('Palomar Mountain').result;
+    assert.equal(mountain.bookable, true);
+    assert.equal(mountain.county, 'San Diego');
+    assert.match(mountain.message, /Palomar Mountain/);
+    assert.doesNotMatch(mountain.message, /Pauma/);
+    const schedule = townGuardResult('checkSchedule', { city: 'Palomar Mountain' }, {});
+    assert.equal(schedule, null);
+    const palmaSchedule = townGuardResult('bookJob', { city: 'Palma Valley' }, {});
+    assert.equal(palmaSchedule, null);
+  });
+
   it('still asks the office to confirm a place outside those counties', () => {
     const { result } = checkServiceArea('Phoenix');
     assert.equal(result.inServiceArea, null);

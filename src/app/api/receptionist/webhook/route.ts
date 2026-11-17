@@ -39,9 +39,11 @@ import {
   isOfficeAlertTool,
   omitOfficeDedupeColumns,
   resolveOfficeToolBatch,
+  saveSarahOfficeRequest,
 } from '@/lib/receptionist/office-callback';
+import { ownerPersonCallback } from '@/lib/receptionist/owner-request';
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
-import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
+import { buildMissedServiceFlag, isMissingNeedsCallbackColumn, toolOutcomes } from '@/lib/receptionist/missed-service-flag';
 import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
 
 interface VapiMessage {
@@ -310,6 +312,17 @@ export async function POST(request: NextRequest) {
     const rawMessages = artifact.messages || message.messages || call.messages || [];
     const callerSaid = callerUtteranceText(transcript, rawMessages);
     const spanishCaller = callerNeedsSpanish(callerSaid);
+    let ownerLogged = false;
+    if (!isReceptionistTestCaller(phone)) {
+      ownerLogged = await logOwnerPersonCallback({
+        callId: call.id,
+        phone,
+        name: customerName,
+        callerText: callerSaid,
+        callbackLogged: toolOutcomes(rawMessages).callbackLogged,
+        toolCallId: 'owner-request-end',
+      });
+    }
     const isUrgent = isCallerUrgent({
       structuredUrgency: urgency,
       transcript,
@@ -324,6 +337,7 @@ export async function POST(request: NextRequest) {
       transcript,
       isTestCall: isReceptionistTestCaller(phone),
       callbackAttempt: Boolean(callbackAttempt),
+      callbackAlreadyLogged: ownerLogged,
       vapiCallId: call.id,
       phone,
     });
@@ -692,6 +706,26 @@ async function handleVapiTools(body: any) {
   const executed: Array<{ id: string | null; body: { result: unknown } } | undefined> = new Array(calls.length);
   const consentTurns = consentTurnsFromVapiBody(body);
   const officeIndexes: number[] = [];
+  if (!testCall) {
+    const callerText = consentTurns.filter((turn) => turn.role === 'user').map((turn) => turn.text).join('\n');
+    const nameFromTools = calls.map((call) => {
+      const params = call.params || {};
+      for (const key of ['name', 'callerName', 'customerName']) {
+        const value = params[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      return '';
+    }).find(Boolean) || '';
+    // Before any other tool, so a hang-up after this turn still has the callback.
+    await logOwnerPersonCallback({
+      callId,
+      phone: callPhone,
+      name: nameFromTools,
+      callerText,
+      callbackLogged: false,
+      toolCallId: 'owner-request',
+    });
+  }
 
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
@@ -989,6 +1023,37 @@ async function loadOfficeAlertCandidates(identity: OfficeRequestIdentity): Promi
   }
 
   return [...found.values()];
+}
+
+/**
+ * Save a callback when the caller asked for the owner or a real person and Mike
+ * had not already logged one. Does not email, text, or dial. sendAlert is a no-op;
+ * the end-of-call report is the one email.
+ */
+async function logOwnerPersonCallback(input: {
+  callId: string | null;
+  phone: string;
+  name: string;
+  callerText: string;
+  callbackLogged: boolean;
+  toolCallId: string;
+}): Promise<boolean> {
+  if (!input.callId) return false;
+  const request = ownerPersonCallback(input);
+  if (!request) return false;
+  try {
+    const saved = await saveSarahOfficeRequest(request, {
+      insertBooking: insertOfficeBooking,
+      updateBooking: updateOfficeBooking,
+      loadCandidates: () => loadOfficeAlertCandidates({ vapiCallId: input.callId, toolCallId: input.toolCallId }),
+      // Not an email. success:true would count a failed insert as logged.
+      sendAlert: async () => ({ success: false }),
+    }, { vapiCallId: input.callId, toolCallId: input.toolCallId });
+    return saved.success;
+  } catch (error) {
+    console.error('[Receptionist] owner callback failed', error instanceof Error ? error.message : error);
+    return false;
+  }
 }
 
 async function insertOfficeBooking(row: {

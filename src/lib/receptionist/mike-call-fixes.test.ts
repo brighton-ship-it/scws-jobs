@@ -9,6 +9,8 @@ import {
   ADDRESS_CONFIRM_RETRY_LIMIT,
   ADDRESS_ON_FILE_RULE,
   LOST_PRESSURE_HEADING,
+  OWNER_CALLBACK_REASON,
+  OWNER_PERSON_HEADING,
   MIKE_SPANISH_RULE,
   PRESSURE_EMERGENCY_TAG,
   SPANISH_HEADING,
@@ -202,6 +204,63 @@ test('booking confirms street and city even for an existing customer', () => {
     assert.equal(giveUp.result.fallback, 'createCallback');
     assert.match(String(giveUp.result.message), /Do not call book_job again/);
   }
+
+  // Mark Hanson, 11/16: "Right" to the Yerba read-back, then "That's correct" after ASR wrote Yuba.
+  const markRight = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside' },
+    [
+      { role: 'bot', text: "You're in Lakeside at 1 2 4 5 3. Yerba Valley Road. Right?" },
+      { role: 'user', text: 'Right.' },
+    ],
+  );
+  assert.equal(markRight.ok, true);
+  const markYuba = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 1 2 4 5 3 Yuba Valley Road out in Lakeside. Is that correct?' },
+      { role: 'user', text: "That's correct." },
+    ],
+  );
+  assert.equal(markYuba.ok, true);
+
+  const flagOnly = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside', addressConfirmed: true },
+    [],
+  );
+  assert.equal(flagOnly.ok, true);
+  const flagWithoutReadBack = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'I can do Monday between 1 and 3.' },
+      { role: 'user', text: 'Yes, book it.' },
+    ],
+  );
+  assert.equal(flagWithoutReadBack.ok, false);
+  const flagAfterReadBack = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 12453 Yerba Valley Road in Lakeside?' },
+      { role: 'user', text: 'mm-hmm' },
+    ],
+  );
+  assert.equal(flagAfterReadBack.ok, true);
+  const wrongStreet = checkServiceAddressConfirmation(
+    { address: '12 Maple Street', city: 'Escondido', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 12 Apple Street in Escondido?' },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  assert.equal(wrongStreet.ok, false);
+
+  const corino = checkServiceAddressConfirmation(
+    { address: '24445 Fern Valley Road', city: 'Idyllwild' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 2 4 4 4 5 Fern Valley Road in Edelwild. Is that right?' },
+      { role: 'user', text: 'Idyllwild. Idyllwild pine cone. Yes.' },
+    ],
+  );
+  assert.equal(corino.ok, true);
 });
 
 test('prompt patch leaves greeting, voice, and routing alone and stays idempotent', () => {
@@ -211,6 +270,10 @@ test('prompt patch leaves greeting, voice, and routing alone and stays idempoten
   assert.match(once, new RegExp(LOST_PRESSURE_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(once, new RegExp(SPANISH_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(once, new RegExp(ADDRESS_CONFIRM_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(OWNER_PERSON_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(OWNER_CALLBACK_REASON));
+  assert.match(once, /addressConfirmed/);
+  assert.match(once, /Do not place an outbound call/);
   assert.equal(once.includes(SPANISH_ONLY_LINE), true);
   assert.match(once, /Hey, this is Mike with Southern California Well Service\. Just a heads up, this call's recorded\./);
   assert.match(once, /Routing stays on the shop leg, then Mike\./);

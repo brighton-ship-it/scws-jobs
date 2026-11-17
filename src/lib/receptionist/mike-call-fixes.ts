@@ -1,5 +1,5 @@
 /**
- * Three Mike call fixes. Speech rules are pasted into the SCWS Receptionist
+ * Mike call fixes. Speech rules are pasted into the SCWS Receptionist
  * system prompt (applyMikeCallFixes). Tool results enforce the same rules.
  *
  * Does not change the greeting, voice, call routing, or MIKE_CALLBACKS_ENABLED.
@@ -16,6 +16,8 @@ export const SPANISH_SPEAKER_FLAG = 'Spanish speaker';
 export const LOST_PRESSURE_HEADING = '## Lost pressure emergency (HARD RULE)';
 export const SPANISH_HEADING = '## Spanish speaker (HARD RULE)';
 export const ADDRESS_CONFIRM_HEADING = '## Confirm street and city (HARD RULE)';
+export const OWNER_PERSON_HEADING = '## Owner or a real person (HARD RULE)';
+export const OWNER_CALLBACK_REASON = 'asked for owner/person';
 
 export const MIKE_LOST_PRESSURE_RULE = `${LOST_PRESSURE_HEADING}
 Treat this the same as no water. If the caller says the pressure is gone (including completely gone), or they have zero pressure or no pressure, AND they want help today or as soon as possible (today, tonight, right now, ASAP, immediately):
@@ -32,23 +34,30 @@ If the caller speaks Spanish, or asks whether you speak Spanish (including "do y
 - After they give a name and a number, call createCallback once. The reason must start with "${SPANISH_SPEAKER_FLAG}". Do not book a visit on this call.`;
 
 export const MIKE_ADDRESS_CONFIRM_RULE = `${ADDRESS_CONFIRM_HEADING}
-Before bookJob, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called (Ramona, Anza, or any other). An address on file is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said.`;
+Before bookJob, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes (yes, that's correct, or right). Do not assume the city from the line they called (Ramona, Anza, or any other). An address on file is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. After that yes, call bookJob with addressConfirmed set to true. If they have not said yes to that street and city, set addressConfirmed to false and do not book.`;
+
+export const MIKE_OWNER_PERSON_RULE = `${OWNER_PERSON_HEADING}
+If the caller asks for the owner, the boss, a manager, a real person, or a human (including "speak to a person", "actual human", or "get in touch with the owner"):
+- Call createCallback immediately, before any other tool and before you ask another question.
+- Name is the name they gave, or "Caller" if they have not given one. Phone is the number they are calling from.
+- The reason must be exactly "${OWNER_CALLBACK_REASON}".
+- Then say you have passed it to the office and someone will call them back. Do not try to connect them on this call. Do not place an outbound call.`;
 
 export const ADDRESS_ON_FILE_RULE =
-  'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. Never use the caller\'s name as the town.';
+  'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes (yes, that\'s correct, or right). Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. After that yes, call book_job with addressConfirmed true. Never use the caller\'s name as the town.';
 
 const INSERT_BEFORE = '## NEVER GO SILENT (hard rule)';
 
 /** Returned on lookupCustomer so the live assistant sees the rules before booking. */
-export const MIKE_CALL_RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE].join('\n\n');
+export const MIKE_CALL_RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE, MIKE_OWNER_PERSON_RULE].join('\n\n');
 
-const RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE] as const;
+const RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE, MIKE_OWNER_PERSON_RULE] as const;
 
 function headingOf(section: string): string {
   return section.split('\n')[0];
 }
 
-/** Insert the three hard rules. Idempotent. Leaves every other line as it was. */
+/** Insert the hard rules. Idempotent. Leaves every other line as it was. */
 export function applyMikeCallFixes(prompt: string): string {
   let next = prompt;
   for (let i = RULES.length - 1; i >= 0; i--) {
@@ -306,11 +315,38 @@ function significantAddressTokens(address: string): string[] {
   return significant.length ? significant : body.filter((token) => !DIRECTION_WORD[token]);
 }
 
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = Array.from({ length: n + 1 }, (_, index) => index);
+  for (let i = 1; i <= m; i++) {
+    const cur = [i];
+    for (let j = 1; j <= n; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      cur[j] = Math.min(cur[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    prev = cur;
+  }
+  return prev[n];
+}
+
+/** Same word, or one ASR slip (Yerba/Yuba). A different first letter (Maple/Apple) does not match. */
+function tokenNear(wanted: string, heard: string): boolean {
+  if (wanted === heard) return true;
+  if (!wanted || !heard || wanted[0] !== heard[0]) return false;
+  if (wanted.length < 4 || heard.length < 4) return false;
+  if (Math.abs(wanted.length - heard.length) > 2) return false;
+  return editDistance(wanted, heard) <= 2;
+}
+
 function mentionsStreet(haystack: string, address: string): boolean {
   const needed = significantAddressTokens(address);
   if (!needed.length) return false;
-  const hay = new Set(canonicalWords(haystack));
-  return needed.every((token) => hay.has(token));
+  const hay = canonicalWords(haystack);
+  return needed.every((token) => hay.some((heard) => tokenNear(token, heard)));
 }
 
 function mentionsCity(haystack: string, city: string): boolean {
@@ -321,7 +357,12 @@ function mentionsCity(haystack: string, city: string): boolean {
 }
 
 function isAffirmative(text: string): boolean {
-  return /\b(?:yes|yeah|yep|yup|correct|that'?s right|that is right|that'?s the one|sure|ok|okay)\b/.test(norm(text));
+  const said = norm(text);
+  if (!said) return false;
+  // A bare "right" or "correct" is a yes to the read-back. "Right now" is not.
+  if (/^(?:right|correct)$/.test(said)) return true;
+  if (/^that(?:'s| is) (?:right|correct)$/.test(said)) return true;
+  return /\b(?:yes|yeah|yep|yup|correct|that'?s right|that is right|that'?s correct|that is correct|that'?s the one|sure|ok|okay)\b/.test(said);
 }
 
 function withoutLineMention(text: string): string {
@@ -372,7 +413,7 @@ function addressReject(why: string): AddressDecision {
       message:
         `NOT BOOKED (${why}). Before booking, confirm the street address and the city out loud, even for an existing customer. ` +
         `Ask: "Just to confirm, the well is at [street] in [city]?" Do not assume Ramona, Anza, or the line they called. ` +
-        `Wait for a yes, then call book_job again with that street, that city, and addressConfirmed set to their exact yes. ` +
+        `Wait for a yes, then call book_job again with that street, that city, and addressConfirmed set to true. ` +
         `If they correct the street or city, use what they said.`,
     },
   };
@@ -398,9 +439,60 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** True when book_job says the caller agreed to the read-back. A boolean true counts. A missing field does not. */
+function addressConfirmedFlag(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value == null) return false;
+  if (typeof value !== 'string') return false;
+  const said = value.trim();
+  if (!said || /^(false|no|0)$/i.test(said)) return false;
+  if (/^(true|yes|1)$/i.test(said)) return true;
+  return isAffirmative(said);
+}
+
+function wordCount(text: string): number {
+  return canonicalWords(text).length;
+}
+
+/**
+ * A read-back of this street. The city can be in the same bot turn, the next short
+ * bot turn, or (when the bot misheard the town) the caller's reply.
+ */
+function findReadBack(
+  turns: AddressTurn[],
+  index: number,
+  address: string,
+  city: string,
+): { end: number; callerMustNameCity: boolean } | null {
+  const turn = turns[index];
+  if (!turn || turn.role !== 'bot' || !mentionsStreet(turn.text, address)) return null;
+  if (mentionsCity(turn.text, city)) return { end: index, callerMustNameCity: false };
+  const next = turns[index + 1];
+  if (next?.role === 'bot' && wordCount(next.text) <= 14 && mentionsCity(next.text, city)) {
+    return { end: index + 1, callerMustNameCity: false };
+  }
+  return { end: index, callerMustNameCity: true };
+}
+
+function repliesConfirm(
+  replies: string[],
+  address: string,
+  city: string,
+  callerMustNameCity: boolean,
+): boolean {
+  if (replies.some((text) => contradicts(text, city))) return false;
+  if (callerMustNameCity) {
+    return replies.some((text) => (isAffirmative(text) && mentionsCity(text, city)) || (mentionsStreet(text, address) && mentionsCity(text, city)));
+  }
+  return replies.some((text) => userConfirms(text, address, city));
+}
+
 /**
  * book_job must have a street and a city the caller confirmed.
  * An address on file, or the city of the line they dialed, is not confirmation.
+ * addressConfirmed true is accepted when there is no transcript, or when a read-back
+ * of this street and city already happened and the caller did not correct it.
+ * It does not skip a missing read-back, a contradicted town, an out-of-area check, or the open-slot check.
  */
 export function checkServiceAddressConfirmation(
   params: Record<string, unknown>,
@@ -412,15 +504,26 @@ export function checkServiceAddressConfirmation(
 
   const users = turns.filter((turn) => turn.role === 'user').map((turn) => turn.text);
   const hasTranscript = users.length > 0;
+  const flagSource = params.addressConfirmed !== undefined && params.addressConfirmed !== null && params.addressConfirmed !== ''
+    ? params.addressConfirmed
+    : params.callerAddressYes;
+  const confirmedFlag = addressConfirmedFlag(flagSource);
   let asks = 0;
   let agreed = false;
   for (let i = 0; i < turns.length; i++) {
-    const turn = turns[i];
-    if (turn.role !== 'bot' || !mentionsStreet(turn.text, address) || !mentionsCity(turn.text, city)) continue;
-    asks += 1;
+    const read = findReadBack(turns, i, address, city);
+    if (!read) continue;
     const reply: string[] = [];
-    for (let j = i + 1; j < turns.length && turns[j].role === 'user'; j++) reply.push(turns[j].text);
-    if (reply.some((text) => userConfirms(text, address, city))) agreed = true;
+    for (let j = read.end + 1; j < turns.length && turns[j].role === 'user'; j++) reply.push(turns[j].text);
+    if (read.callerMustNameCity) {
+      if (!repliesConfirm(reply, address, city, true)) continue;
+      asks += 1;
+      agreed = true;
+    } else {
+      asks += 1;
+      if (repliesConfirm(reply, address, city, false)) agreed = true;
+    }
+    if (read.end > i) i = read.end;
   }
   if (agreed) return { ok: true };
 
@@ -430,11 +533,16 @@ export function checkServiceAddressConfirmation(
   }
   if (asks >= ADDRESS_CONFIRM_RETRY_LIMIT) return addressFallback();
 
+  const contradicted = users.some((text) => contradicts(text, city));
   if (!hasTranscript) {
-    const confirmed = str(params.addressConfirmed) || str(params.callerAddressYes);
-    if (confirmed && isAffirmative(confirmed) && !contradicts(confirmed, city)) return { ok: true };
+    if (confirmedFlag && !(typeof flagSource === 'string' && contradicts(flagSource, city))) {
+      return { ok: true };
+    }
     return addressReject('the street and city were not confirmed');
   }
+
+  // The model heard the yes and set the flag, and a read-back of this street and city is in the transcript.
+  if (confirmedFlag && asks > 0 && !contradicted) return { ok: true };
 
   if (!asks) return addressReject('you have not read back the street and the city');
   return addressReject('the caller has not said yes to that street and city');
