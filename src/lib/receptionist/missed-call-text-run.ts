@@ -2,6 +2,7 @@
  * Missed-call text follow-up: load calls, decide, send at most one text per caller per 24h,
  * and run the AI text conversation for replies. I/O lives here; rules live in missed-call-text.ts.
  * Flag off (MISSED_CALL_TEXT_ENABLED unset and no MISSED_CALL_TEXT_TEST_NUMBERS) = nothing runs.
+ * When a pass does run, every skip it decides is written to missed_call_texts.
  *
  * Candidates come from Twilio inbound parent calls on every SCWS number, plus the callback
  * snapshot for anything that list missed. A shop leg counts only when it lasted ~20s.
@@ -189,7 +190,7 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
   const [mike, office, texts, inboundLines, jobs, jobberRequests, twilio] = await Promise.all([
     read('mike calls', db.from('receptionist_calls').select('vapi_call_id, phone, customer_name, summary, transcript, duration_sec, called_at').gte('called_at', since).limit(500)),
     read('office requests', db.from('booking_requests').select('vapi_call_id, phone, service_type, created_at').gte('created_at', sinceWide).limit(1000)),
-    read('texts', db.from('missed_call_texts').select('missed_call_key, caller_phone, outcome, sent_at').gte('missed_at', new Date(now.getTime() - 3 * 86400_000).toISOString()).limit(2000)),
+    read('texts', db.from('missed_call_texts').select('missed_call_key, caller_phone, outcome, reason, sent_at').gte('missed_at', new Date(now.getTime() - 3 * 86400_000).toISOString()).limit(2000)),
     // Mike rows have no called number. Match the inbound recording so a hang-up on Main
     // is the same line as a ring hang-up. A miss here must not block texts that already know the line.
     read('inbound lines', db.from('inbound_call_recordings').select('call_sid, caller_number, tracking_number, started_at, caller_name, summary, outcome').gte('started_at', new Date(now.getTime() - config.lookbackMs - 10 * 60_000).toISOString()).limit(500)),
@@ -293,7 +294,7 @@ export async function loadTextSnapshot(db: any, env: NodeJS.ProcessEnv, now: Dat
     holdPhones: base.ctx.holdPhones,
     holdNotes: base.ctx.holdNotes,
     dncPhones: base.ctx.dncPhones,
-    texts: texts.map((t) => ({ key: t.missed_call_key, phone: t.caller_phone, outcome: t.outcome, sentAt: t.sent_at })),
+    texts: texts.map((t) => ({ key: t.missed_call_key, phone: t.caller_phone, outcome: t.outcome, sentAt: t.sent_at, reason: t.reason ?? null })),
     staffPhones: staffPhoneSet(env),
     bookings,
   };
@@ -313,42 +314,82 @@ export async function runMissedCallTextPass(db: any, env: NodeJS.ProcessEnv, now
   summary.notes = snap.notes;
   const blocked = textPassBlocked(snap.notes);
   if (blocked) { summary.errors.push(blocked); return summary; }
+  const applied = await applyMissedCallTextDecisions({ db, calls: snap.calls, ctx: snap.ctx, env, now, fetchImpl });
+  return { ...applied, notes: snap.notes };
+}
 
+/**
+ * Decide each candidate and write the outcome. A skip always inserts (or updates)
+ * a missed_call_texts row: missed_call_key, caller_phone, called_number, reason, missed_at.
+ * `already_handled` is not written again; that call already has its row.
+ * Waiting out the minute or quiet hours does not write a row, so the next pass can still text.
+ */
+export async function applyMissedCallTextDecisions(input: {
+  db: any;
+  calls: TextCandidate[];
+  ctx: TextContext;
+  env: NodeJS.ProcessEnv;
+  now: Date;
+  fetchImpl?: typeof fetch;
+}): Promise<TextRunSummary> {
+  const fetchImpl = input.fetchImpl ?? fetch;
+  const config = textConfig(input.env);
+  const summary: TextRunSummary = { mode: config.mode, sent: 0, queued: 0, skipped: 0, errors: [], notes: [] };
   let budget = config.maxPerRun;
-  for (const call of snap.calls) {
-    let decision: TextDecision = decideText(call, snap.ctx, config, now, null);
+  for (const call of input.calls) {
+    let decision: TextDecision = decideText(call, input.ctx, config, input.now, null);
     if (decision.action === 'skip') {
-      if (!['flag_off', 'not_allowlisted', 'stale', 'already_handled', 'test_number', 'own_number', 'line_not_enabled'].includes(decision.reason)) {
-        summary.skipped += 1;
-        await saveRow(db, call, { outcome: 'skipped', reason: decision.reason });
-      }
+      await persistSkip(input.db, input.ctx, call, decision.reason, summary);
       continue;
     }
     if (decision.action === 'queue' && decision.reason !== 'too_soon') { summary.queued += 1; continue; }
-    if (decision.action === 'queue' && Date.parse(decision.notBefore) > now.getTime()) { summary.queued += 1; continue; }
+    if (decision.action === 'queue' && Date.parse(decision.notBefore) > input.now.getTime()) { summary.queued += 1; continue; }
     if (budget <= 0) { summary.queued += 1; continue; }
     const to = decision.to;
-    const lineType = await lookupLineType(to, env, fetchImpl);
-    decision = decideText(call, snap.ctx, config, now, lineType ?? 'unknown');
+    const lineType = await lookupLineType(to, input.env, fetchImpl);
+    decision = decideText(call, input.ctx, config, input.now, lineType ?? 'unknown');
     if (decision.action !== 'send') {
-      if (decision.action === 'skip') { summary.skipped += 1; await saveRow(db, call, { outcome: 'skipped', reason: decision.reason, line_type: lineType }); }
+      if (decision.action === 'skip') await persistSkip(input.db, input.ctx, call, decision.reason, summary, lineType);
+      else summary.queued += 1;
       continue;
     }
-    const claimed = await saveRow(db, call, { outcome: 'sending', body: decision.body, variant: config.option, line_type: lineType }, true);
-    if (!claimed) continue;
+    const claimed = await saveRow(input.db, call, { outcome: 'sending', body: decision.body, variant: config.option, line_type: lineType }, true);
+    if (!claimed.id) continue;
     budget -= 1;
     try {
-      const sent = await sendTextMessage({ to: decision.to, body: decision.body }, env, fetchImpl);
-      await markTextSent(db, claimed, sent, decision.body);
+      const sent = await sendTextMessage({ to: decision.to, body: decision.body }, input.env, fetchImpl);
+      await markTextSent(input.db, claimed.id, sent, decision.body);
       summary.sent += 1;
-      snap.ctx.texts.push({ key: call.key, phone: decision.to, outcome: 'sent', sentAt: now.toISOString() });
+      input.ctx.texts.push({ key: call.key, phone: decision.to, outcome: 'sent', sentAt: input.now.toISOString(), reason: null });
     } catch (e) {
       const msg = e instanceof Error ? e.message.slice(0, 180) : 'send_failed';
-      await db.from('missed_call_texts').update({ outcome: e instanceof TextNotAllowedError ? 'skipped' : 'failed', reason: msg, updated_at: new Date().toISOString() }).eq('id', claimed);
+      await input.db.from('missed_call_texts').update({ outcome: e instanceof TextNotAllowedError ? 'skipped' : 'failed', reason: msg, updated_at: new Date().toISOString() }).eq('id', claimed.id);
       summary.errors.push(msg);
     }
   }
   return summary;
+}
+
+/** Write the skip. A row that already explains this call (already_handled) is left as it is. */
+async function persistSkip(
+  db: any,
+  ctx: TextContext,
+  call: TextCandidate,
+  reason: string,
+  summary: TextRunSummary,
+  lineType?: string | null,
+): Promise<void> {
+  if (reason === 'already_handled') return;
+  summary.skipped += 1;
+  const patch: Record<string, unknown> = { outcome: 'skipped', reason };
+  if (lineType !== undefined) patch.line_type = lineType;
+  const saved = await saveRow(db, call, patch, false);
+  if (saved.error) summary.errors.push(saved.error);
+  if (!saved.id) return;
+  const next = { key: call.key, phone: digits10(call.phone), outcome: 'skipped', sentAt: null as string | null, reason };
+  const idx = ctx.texts.findIndex((row) => row.key === call.key);
+  if (idx >= 0) ctx.texts[idx] = { ...ctx.texts[idx], ...next };
+  else ctx.texts.push(next);
 }
 
 /** Record the Twilio accept. Falls back if the delivery columns are not in this database yet. */
@@ -366,22 +407,68 @@ async function markTextSent(db: any, id: string, sent: { sid: string; status: st
   }
 }
 
-async function saveRow(db: any, call: TextCandidate, patch: Record<string, unknown>, claim = false): Promise<string | null> {
+function callerPhone(phone: string | null): string {
+  return digits10(phone) || String(phone || '').trim() || 'unknown';
+}
+
+/**
+ * Insert the call row. A unique miss updates a skipped row in place (so a later
+ * pass can correct the reason, or claim the same row to send). Sent, sending,
+ * and failed rows are left alone.
+ */
+async function saveRow(db: any, call: TextCandidate, patch: Record<string, unknown>, claim = false): Promise<{ id: string | null; error: string | null }> {
+  const nowIso = new Date().toISOString();
   const row = {
     missed_call_key: call.key,
-    caller_phone: digits10(call.phone),
+    caller_phone: callerPhone(call.phone),
     called_number: call.calledNumber,
     trigger: call.trigger,
     customer_name: call.name,
     missed_at: call.at,
-    updated_at: new Date().toISOString(),
+    updated_at: nowIso,
     ...patch,
   };
   const ins = await db.from('missed_call_texts').insert(row).select('id').single();
-  if (!ins.error) return ins.data?.id ?? null;
-  if (/duplicate|unique/i.test(ins.error.message)) return null; // already handled (or another run claimed it)
-  if (claim) throw new Error(ins.error.message);
-  return null;
+  if (!ins?.error) return { id: ins?.data?.id ?? null, error: null };
+  const message = String(ins.error.message || ins.error || 'insert_failed');
+  const code = String(ins.error.code || '');
+  if (!/duplicate|unique/i.test(message) && code !== '23505') {
+    if (claim) throw new Error(message);
+    return { id: null, error: message.slice(0, 180) };
+  }
+  const existing = await db.from('missed_call_texts').select('id, outcome').eq('missed_call_key', call.key).limit(1);
+  if (existing?.error) {
+    const readError = String(existing.error.message || 'read_failed').slice(0, 180);
+    if (claim) throw new Error(readError);
+    return { id: null, error: readError };
+  }
+  const prev = existing?.data?.[0];
+  if (!prev?.id) return { id: null, error: null };
+  if (prev.outcome === 'sent' || prev.outcome === 'sending' || prev.outcome === 'failed') return { id: null, error: null };
+  const next: Record<string, unknown> = claim
+    ? {
+      outcome: 'sending',
+      reason: null,
+      body: patch.body ?? null,
+      variant: patch.variant ?? null,
+      line_type: patch.line_type ?? null,
+      updated_at: nowIso,
+    }
+    : {
+      outcome: 'skipped',
+      reason: patch.reason ?? null,
+      caller_phone: row.caller_phone,
+      called_number: call.calledNumber,
+      updated_at: nowIso,
+    };
+  if (!claim && 'line_type' in patch) next.line_type = patch.line_type;
+  const upd = await db.from('missed_call_texts').update(next).eq('id', prev.id);
+  if (upd?.error) {
+    const writeError = String(upd.error.message || 'update_failed').slice(0, 180);
+    if (claim) throw new Error(writeError);
+    return { id: null, error: writeError };
+  }
+  return { id: prev.id, error: null };
 }
 
 // ---------- replies ----------

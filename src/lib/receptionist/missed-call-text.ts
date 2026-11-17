@@ -210,8 +210,8 @@ export interface TextContext {
   holdPhones: Set<string>;
   holdNotes: Array<{ phone: string | null; text: string }>;
   dncPhones: Set<string>;
-  /** Earlier text rows (any outcome). */
-  texts: Array<{ key: string; phone: string | null; outcome: string; sentAt: string | null }>;
+  /** Earlier text rows (any outcome). `reason` is the skip code when outcome is skipped. */
+  texts: Array<{ key: string; phone: string | null; outcome: string; sentAt: string | null; reason?: string | null }>;
   staffPhones: Set<string>;
   /** Real-booking evidence. Callback and emergency rows are ignored. */
   bookings: BookingRow[];
@@ -221,6 +221,19 @@ export type TextDecision =
   | { action: 'send'; to: string; body: string }
   | { action: 'queue'; reason: 'too_soon' | 'quiet_hours'; to: string; body: string; notBefore: string }
   | { action: 'skip'; reason: string };
+
+/**
+ * A skipped row with one of these reasons may be decided again (the flag, the
+ * test allowlist, the dial-plan line, or the lookback can change). Any other
+ * stored row for this call is final: sent, sending, failed, or a terminal skip.
+ */
+export const RETRYABLE_SKIP_REASONS = new Set(['flag_off', 'not_allowlisted', 'stale', 'line_not_enabled']);
+
+export function textRowSettled(row: { outcome: string; reason?: string | null }): boolean {
+  if (row.outcome === 'sent' || row.outcome === 'sending' || row.outcome === 'failed') return true;
+  if (row.outcome === 'skipped') return !RETRYABLE_SKIP_REASONS.has(row.reason || '');
+  return false;
+}
 
 const NON_CUSTOMER = /wrong number|misdial|robocall|recorded message|automated (message|call)|press \d|this message is intended|survey|telemarket|solicit|job (application|opening)|looking for work|applying/i;
 
@@ -265,7 +278,7 @@ export function decideText(
   if (now.getTime() - at > config.lookbackMs) return { action: 'skip', reason: 'stale' };
   if (call.spam || NON_CUSTOMER.test(call.summary || '')) return { action: 'skip', reason: 'spam' };
   if (call.vendor) return { action: 'skip', reason: 'vendor' };
-  if (ctx.texts.some((row) => row.key === call.key)) return { action: 'skip', reason: 'already_handled' };
+  if (ctx.texts.some((row) => row.key === call.key && textRowSettled(row))) return { action: 'skip', reason: 'already_handled' };
   const recent = ctx.texts.some((row) => {
     if (digits10(row.phone) !== phone) return false;
     if (row.outcome !== 'sent' && row.outcome !== 'sending') return false;

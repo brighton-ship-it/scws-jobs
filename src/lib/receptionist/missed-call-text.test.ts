@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { decideText, textConfig, textAllowedFor, textBody, mikeCallFinished, newestPerPhone, callerTurns, trackingNumberForCaller, classifyInboundParents, parseTwilioLegs, WORDING, STOP_WORDS, type TextCandidate, type TextContext, type TwilioLeg } from './missed-call-text.ts';
 import { PORTED_LINES, TRACKING_SOURCES } from '../phone-calls/config.ts';
-import { sendTextMessage, TextNotAllowedError, handleTextReply } from './missed-call-text-run.ts';
+import { applyMissedCallTextDecisions, runMissedCallTextPass, sendTextMessage, TextNotAllowedError, handleTextReply } from './missed-call-text-run.ts';
 
 const NOW = new Date('2026-10-19T17:00:00Z'); // Mon 10:00 AM PT
 const call = (over: Partial<TextCandidate> = {}): TextCandidate => ({
@@ -95,6 +95,12 @@ describe('decideText', () => {
   });
   it('stale calls are not texted', () => {
     assert.equal((decideText(call({ at: '2026-10-18T17:00:00Z' }), ctx(), f, NOW, 'mobile') as any).reason, 'stale');
+  });
+  it('a terminal skip row blocks another text; a retryable skip row does not', () => {
+    const landline = decideText(call(), ctx({ texts: [{ key: 'vapi:abc', phone: '6195550142', outcome: 'skipped', sentAt: null, reason: 'not_mobile:landline' }] }), f, NOW, 'mobile');
+    assert.deepEqual(landline, { action: 'skip', reason: 'already_handled' });
+    const line = decideText(call(), ctx({ texts: [{ key: 'vapi:abc', phone: '6195550142', outcome: 'skipped', sentAt: null, reason: 'line_not_enabled' }] }), f, NOW, 'mobile');
+    assert.equal(line.action, 'send');
   });
 });
 
@@ -251,6 +257,299 @@ it('MISSED_CALL_TEXT_LINES_EXTRA adds a number that is not already on the dial p
   const c = textConfig({ MISSED_CALL_TEXT_LINES_EXTRA: '+17605550199' } as unknown as NodeJS.ProcessEnv);
   assert.equal(c.lines.has('7605550199'), true);
   assert.equal(c.lines.has('7604408520'), true);
+});
+
+function memoryTexts() {
+  const rows: Array<Record<string, any>> = [];
+  let seq = 0;
+  return {
+    rows,
+    from(table: string) {
+      if (table !== 'missed_call_texts') throw new Error(`unexpected table ${table}`);
+      return {
+        insert(row: Record<string, unknown>) {
+          return {
+            select() {
+              return {
+                single: async () => {
+                  if (rows.some((existing) => existing.missed_call_key === row.missed_call_key)) {
+                    return { data: null, error: { message: 'duplicate key value violates unique constraint "missed_call_texts_key"', code: '23505' } };
+                  }
+                  const id = `id-${++seq}`;
+                  rows.push({ ...row, id });
+                  return { data: { id }, error: null };
+                },
+              };
+            },
+          };
+        },
+        select() {
+          const filters: Record<string, unknown> = {};
+          const api = {
+            eq(col: string, val: unknown) { filters[col] = val; return api; },
+            limit: async () => ({
+              data: rows.filter((row) => Object.entries(filters).every(([col, val]) => row[col] === val)).map((row) => ({ ...row })),
+              error: null,
+            }),
+          };
+          return api;
+        },
+        update(patch: Record<string, unknown>) {
+          return {
+            eq: async (col: string, val: unknown) => {
+              const row = rows.find((item) => item[col] === val);
+              if (row) Object.assign(row, patch);
+              return { error: null };
+            },
+          };
+        },
+      };
+    },
+  };
+}
+
+const TWILIO = { ...FULL, TWILIO_ACCOUNT_SID: 'AC', TWILIO_AUTH_TOKEN: 'tok' } as NodeJS.ProcessEnv;
+
+describe('skip reasons are stored on missed_call_texts', () => {
+  const booking = { vapiCallId: 'v-job', phone: '+16195550142', at: '2026-10-19T16:56:00Z', serviceType: 'Job', kind: 'booking_request' as const };
+  const cases: Array<{ reason: string; call?: Partial<TextCandidate>; ctx?: Partial<TextContext>; env?: NodeJS.ProcessEnv; from: string; line: string | null }> = [
+    { reason: 'flag_off', env: {} as NodeJS.ProcessEnv, from: '6195550142', line: '+17604408520' },
+    { reason: 'not_allowlisted', env: { MISSED_CALL_TEXT_TEST_NUMBERS: '+17605550199' } as NodeJS.ProcessEnv, from: '6195550142', line: '+17604408520' },
+    { reason: 'toll_free', call: { phone: '+18005551212', key: 'twilio:CA_TOLL' }, from: '8005551212', line: '+17604408520' },
+    { reason: 'own_number', ctx: { staffPhones: new Set(['6195550142']) }, call: { key: 'twilio:CA_STAFF' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'test_number', call: { phone: '+14083181171', key: 'twilio:CA_TEST' }, from: '4083181171', line: '+17604408520' },
+    { reason: 'opted_out', ctx: { dncPhones: new Set(['6195550142']) }, call: { key: 'twilio:CA_DNC' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'booked', ctx: { bookings: [booking] }, call: { key: 'twilio:CA_BOOKED', vapiCallId: 'v-job' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'texted_24h', ctx: { texts: [{ key: 'twilio:CA_OLD', phone: '6195550142', outcome: 'sent', sentAt: '2026-10-19T16:00:00Z' }] }, call: { key: 'twilio:CA_AGAIN' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'line_not_enabled', call: { calledNumber: '+17602763468', key: 'twilio:CA_LINE' }, from: '6195550142', line: '+17602763468' },
+    { reason: 'stale', call: { at: '2026-10-18T17:00:00Z', key: 'twilio:CA_STALE' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'spam', call: { spam: true, key: 'twilio:CA_SPAM' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'vendor', call: { vendor: true, key: 'twilio:CA_VENDOR' }, from: '6195550142', line: '+17604408520' },
+    { reason: 'no_phone', call: { phone: null, key: 'twilio:CA_NONE' }, from: 'unknown', line: '+17604408520' },
+  ];
+
+  it('writes CallSid, from, line, skip reason, and time for every skip, and does not text', async () => {
+    for (const spec of cases) {
+      const db = memoryTexts();
+      const hits: string[] = [];
+      const fetchImpl = (async (url: string, init?: RequestInit) => {
+        hits.push(`${init?.method || 'GET'} ${url}`);
+        return new Response('{}', { status: 500 });
+      }) as unknown as typeof fetch;
+      const candidate = call({ key: `twilio:${spec.reason}`, ...spec.call });
+      const summary = await applyMissedCallTextDecisions({
+        db,
+        calls: [candidate],
+        ctx: ctx(spec.ctx),
+        env: spec.env ?? FULL,
+        now: NOW,
+        fetchImpl,
+      });
+      assert.equal(summary.sent, 0, spec.reason);
+      assert.equal(summary.skipped, 1, spec.reason);
+      assert.equal(summary.errors.length, 0, spec.reason);
+      assert.equal(db.rows.length, 1, spec.reason);
+      assert.equal(db.rows[0].outcome, 'skipped', spec.reason);
+      assert.equal(db.rows[0].reason, spec.reason);
+      assert.equal(db.rows[0].missed_call_key, candidate.key, spec.reason);
+      assert.equal(db.rows[0].caller_phone, spec.from, spec.reason);
+      assert.equal(db.rows[0].called_number, spec.line, spec.reason);
+      assert.equal(db.rows[0].missed_at, candidate.at, spec.reason);
+      assert.equal(typeof db.rows[0].updated_at, 'string', spec.reason);
+      assert.equal(hits.some((hit) => hit.includes('Messages.json')), false, spec.reason);
+    }
+  });
+
+  it('stores not_mobile from Twilio Lookup and does not send', async () => {
+    const db = memoryTexts();
+    const hits: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      hits.push(`${init?.method || 'GET'} ${url}`);
+      return new Response(JSON.stringify({ line_type_intelligence: { type: 'landline' } }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const summary = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ key: 'twilio:CA_LAND', trigger: 'ring_hangup' })],
+      ctx: ctx(),
+      env: TWILIO,
+      now: NOW,
+      fetchImpl,
+    });
+    assert.equal(summary.sent, 0);
+    assert.equal(summary.skipped, 1);
+    assert.equal(db.rows.length, 1);
+    assert.equal(db.rows[0].reason, 'not_mobile:landline');
+    assert.equal(db.rows[0].line_type, 'landline');
+    assert.equal(db.rows[0].missed_call_key, 'twilio:CA_LAND');
+    assert.equal(db.rows[0].caller_phone, '6195550142');
+    assert.equal(db.rows[0].called_number, '+17604408520');
+    assert.equal(hits.length, 1);
+    assert.match(hits[0], /GET https:\/\/lookups\.twilio\.com\//);
+    assert.equal(hits.some((hit) => hit.includes('Messages.json')), false);
+  });
+
+  it('leaves a stored not_mobile row in place on the next pass', async () => {
+    const db = memoryTexts();
+    const candidate = call({ key: 'twilio:CA_LAND' });
+    const lookup = (async () => new Response(JSON.stringify({ line_type_intelligence: { type: 'landline' } }), { status: 200 })) as unknown as typeof fetch;
+    await applyMissedCallTextDecisions({ db, calls: [candidate], ctx: ctx(), env: TWILIO, now: NOW, fetchImpl: lookup });
+    const againCtx = ctx({ texts: [{ key: candidate.key, phone: '6195550142', outcome: 'skipped', sentAt: null, reason: 'not_mobile:landline' }] });
+    let fetches = 0;
+    const summary = await applyMissedCallTextDecisions({
+      db,
+      calls: [candidate],
+      ctx: againCtx,
+      env: TWILIO,
+      now: NOW,
+      fetchImpl: (async () => { fetches += 1; return new Response('{}', { status: 500 }); }) as unknown as typeof fetch,
+    });
+    assert.equal(summary.skipped, 0);
+    assert.equal(summary.sent, 0);
+    assert.equal(fetches, 0);
+    assert.equal(db.rows.length, 1);
+    assert.equal(db.rows[0].reason, 'not_mobile:landline');
+  });
+
+  it('updates a line_not_enabled row in place, and texts that caller once the line is known', async () => {
+    const db = memoryTexts();
+    db.rows.push({
+      id: 'row-1',
+      missed_call_key: 'twilio:CA_LATER',
+      caller_phone: '6195550142',
+      called_number: null,
+      outcome: 'skipped',
+      reason: 'line_not_enabled',
+      trigger: 'ring_hangup',
+      missed_at: '2026-10-19T16:55:00Z',
+    });
+    const still = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ key: 'twilio:CA_LATER', calledNumber: null, trigger: 'ring_hangup' })],
+      ctx: ctx({ texts: [{ key: 'twilio:CA_LATER', phone: '6195550142', outcome: 'skipped', sentAt: null, reason: 'line_not_enabled' }] }),
+      env: TWILIO,
+      now: NOW,
+    });
+    assert.equal(still.skipped, 1);
+    assert.equal(still.sent, 0);
+    assert.equal(db.rows.length, 1);
+    assert.equal(db.rows[0].id, 'row-1');
+    assert.equal(db.rows[0].reason, 'line_not_enabled');
+
+    const hits: Array<{ method: string; url: string; body: string }> = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      hits.push({ method: init?.method || 'GET', url: String(url), body: String(init?.body || '') });
+      if (String(url).includes('lookups.twilio.com')) {
+        return new Response(JSON.stringify({ line_type_intelligence: { type: 'mobile' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sid: 'SM_LATER', status: 'queued' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const sent = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ key: 'twilio:CA_LATER', calledNumber: '+17604408520', trigger: 'ring_hangup' })],
+      ctx: ctx({ texts: [{ key: 'twilio:CA_LATER', phone: '6195550142', outcome: 'skipped', sentAt: null, reason: db.rows[0].reason }] }),
+      env: TWILIO,
+      now: NOW,
+      fetchImpl,
+    });
+    assert.equal(sent.sent, 1);
+    assert.equal(db.rows.length, 1);
+    assert.equal(db.rows[0].id, 'row-1');
+    assert.equal(db.rows[0].outcome, 'sent');
+    assert.equal(db.rows[0].twilio_message_sid, 'SM_LATER');
+    const post = hits.find((hit) => hit.url.includes('Messages.json'));
+    assert.ok(post);
+    assert.equal(post?.method, 'POST');
+    const params = new URLSearchParams(post?.body || '');
+    assert.equal(params.get('To'), '+16195550142');
+    assert.match(params.get('Body') || '', /Sorry we missed your call/);
+    assert.equal(params.has('StatusCallback'), false);
+  });
+
+  it('does not store a row while the call is still inside the wait or quiet hours', async () => {
+    const db = memoryTexts();
+    const soon = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ at: '2026-10-19T16:59:30Z', key: 'twilio:CA_SOON' })],
+      ctx: ctx(),
+      env: FULL,
+      now: NOW,
+    });
+    assert.equal(soon.queued, 1);
+    assert.equal(soon.skipped, 0);
+    assert.equal(db.rows.length, 0);
+    const night = new Date('2026-10-19T05:30:00Z');
+    const quiet = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ at: '2026-10-19T05:20:00Z', key: 'twilio:CA_NIGHT' })],
+      ctx: ctx(),
+      env: FULL,
+      now: night,
+    });
+    assert.equal(quiet.queued, 1);
+    assert.equal(db.rows.length, 0);
+  });
+
+  it('reports a skip that failed to save and does not text', async () => {
+    const hits: string[] = [];
+    const db = {
+      from() {
+        return {
+          insert() {
+            return { select: () => ({ single: async () => ({ data: null, error: { message: 'permission denied' } }) }) };
+          },
+        };
+      },
+    };
+    const summary = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ key: 'twilio:CA_FAIL', phone: '+18005551212' })],
+      ctx: ctx(),
+      env: TWILIO,
+      now: NOW,
+      fetchImpl: (async (url: string) => { hits.push(String(url)); return new Response('{}'); }) as unknown as typeof fetch,
+    });
+    assert.equal(summary.sent, 0);
+    assert.equal(summary.skipped, 1);
+    assert.deepEqual(summary.errors, ['permission denied']);
+    assert.equal(hits.length, 0);
+  });
+
+  it('still stores a sent row when the caller is mobile', async () => {
+    const db = memoryTexts();
+    const hits: string[] = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      hits.push(`${init?.method || 'GET'} ${url}`);
+      if (String(url).includes('lookups.twilio.com')) {
+        return new Response(JSON.stringify({ line_type_intelligence: { type: 'mobile' } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ sid: 'SM_OK', status: 'queued' }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const summary = await applyMissedCallTextDecisions({
+      db,
+      calls: [call({ key: 'twilio:CA_SEND', trigger: 'ring_hangup' })],
+      ctx: ctx(),
+      env: TWILIO,
+      now: NOW,
+      fetchImpl,
+    });
+    assert.equal(summary.sent, 1);
+    assert.equal(summary.skipped, 0);
+    assert.equal(db.rows.length, 1);
+    assert.equal(db.rows[0].outcome, 'sent');
+    assert.equal(db.rows[0].twilio_message_sid, 'SM_OK');
+    assert.equal(db.rows[0].missed_call_key, 'twilio:CA_SEND');
+    assert.equal(hits.filter((hit) => hit.includes('Messages.json')).length, 1);
+  });
+
+  it('the cron pass still reads nothing when the flag is off', async () => {
+    let touched = false;
+    const db = { from() { touched = true; return {}; } };
+    const summary = await runMissedCallTextPass(db, {} as NodeJS.ProcessEnv, NOW, (async () => { touched = true; return new Response('{}'); }) as unknown as typeof fetch);
+    assert.equal(summary.mode, 'off');
+    assert.equal(summary.sent, 0);
+    assert.equal(summary.skipped, 0);
+    assert.equal(touched, false);
+  });
 });
 
 it('a Mike hang-up keeps the inbound tracking number from the matching recording', () => {
