@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { confirmedDeletes, goneVerdict, idsMissingFromSweep, jobPruneSpec, jobWindowId, parseProgress, pruneMirrorRows, pruneSpec, readyJobIds, rollingTasks, rowsFor, withSweepIds } from './sync.ts';
+import { customFieldSelectionRejected } from '../jobber/job-custom-fields.ts';
+import { confirmedDeletes, goneVerdict, idsMissingFromSweep, jobPruneSpec, jobWindowId, jobsMirrorQuery, parseProgress, pruneMirrorRows, pruneSpec, Q, readyJobIds, rollingTasks, rowsFor, withSweepIds } from './sync.ts';
 
 test('invoice rows strip nested client to id and collect client + job ids', () => {
   const r = rowsFor('invoices', [{ id: 'I1', invoiceNumber: '5806', invoiceStatus: 'paid', issuedDate: '2026-10-01T00:00:00Z', dueDate: '2026-10-15T00:00:00Z', subject: 'Pump', amounts: { subtotal: 100 }, jobs: { nodes: [{ id: 'J1', title: 'Pump repair' }] }, client: { id: 'C1', name: 'A', createdAt: '2025-02-01T00:00:00Z', phones: [{ number: '+1 (760) 555-1212' }], emails: [{ address: 'Nancy@Example.com' }, { address: 'nancy@example.com' }] } }]);
@@ -12,6 +13,29 @@ test('invoice rows strip nested client to id and collect client + job ids', () =
   assert.deepEqual(r.clients[0].phones_digits, ['7605551212']);
   assert.deepEqual(r.clients[0].data.emails, ['nancy@example.com']);
 });
+test('job rows keep costing and the Callback custom field', () => {
+  const r = rowsFor('jobs', [{ id: 'J2923', jobNumber: 2923, title: 'Service Call - no water', createdAt: '2026-10-01T00:00:00Z', completedAt: '2026-10-02T00:00:00Z', updatedAt: '2026-10-02T00:00:00Z', jobCosting: { totalRevenue: 8001, totalCost: 139251 }, customFields: [{ __typename: 'CustomFieldTrueFalse', label: 'Callback', valueTrueFalse: false }], client: { id: 'C1', name: 'Pat', companyName: null, createdAt: '2025-02-01T00:00:00Z', phones: [], emails: [] } }]);
+  assert.equal(r.table, 'jobber_jobs');
+  assert.equal(r.rows[0].job_number, 2923);
+  assert.equal(r.rows[0].data.jobCosting.totalCost, 139251);
+  assert.equal(r.rows[0].data.customFields[0].label, 'Callback');
+  assert.equal(r.rows[0].data.customFields[0].valueTrueFalse, false);
+  assert.equal(r.rows[0].data.client.id, 'C1');
+});
+
+test('job mirror query reads Callback and can omit it when Jobber rejects the field', () => {
+  const rich = jobsMirrorQuery(true);
+  const plain = jobsMirrorQuery(false);
+  assert.equal(Q.jobs, rich);
+  assert.match(rich, /CustomFieldTrueFalse/);
+  assert.match(rich, /valueTrueFalse/);
+  assert.match(rich, /\blabel\b/);
+  assert.equal(/customFields/.test(plain), false);
+  assert.equal(customFieldSelectionRejected('An object of type CustomFieldTrueFalse was hidden due to permissions'), true);
+  assert.equal(customFieldSelectionRejected("Field 'label' doesn't exist on type 'CustomFieldTrueFalse'"), true);
+  assert.equal(customFieldSelectionRejected('Throttled'), false);
+});
+
 test('quote rows keep client phones for callback exclusion', () => {
   const r = rowsFor('quotes', [{ id: 'Q1', quoteStatus: 'awaiting_response', createdAt: '2026-10-14T18:00:00Z', updatedAt: '2026-10-14T18:00:00Z', client: { id: 'C9', name: 'Pat', phones: [{ number: '+1 (760) 555-0199' }] } }]);
   assert.equal(r.table, 'jobber_quotes');
