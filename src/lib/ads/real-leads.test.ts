@@ -35,3 +35,12 @@ test('owner/test caller exclusion: flags Brighton cell and the Twilio test line 
   // Mike/callback paths still see Brighton's cell as a normal caller.
   assert.equal(isOwnNumber('+14083181171'), false);
 });
+
+test('shop forward number is the dial target, not a staff cell', async () => {
+  const { isShopForwardNumber } = await import('./real-leads.ts');
+  const env = { PHONE_CALL_FORWARD_MAIN: '+17602763468, +17605550100', PHONE_CALL_FORWARD_RANSOM: '' } as NodeJS.ProcessEnv;
+  assert.equal(isShopForwardNumber('+1 (760) 276-3468', env), true);
+  assert.equal(isShopForwardNumber('7605550100', env), true);
+  assert.equal(isShopForwardNumber('+16193208264', env), false);
+  assert.equal(isShopForwardNumber('+14083181171', env), false);
+});

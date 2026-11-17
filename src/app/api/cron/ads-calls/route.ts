@@ -30,6 +30,7 @@ import { fetchVoiceActivityPayload, voiceLogConfig } from '@/lib/ads/voice-log';
 import { ADS_CALL_PHONE_BACKFILL_20261014 } from '@/lib/ads/ads-call-phone-backfill-20261014';
 import { findExistingClient, searchClientsByPhone } from '@/lib/jobber/quotes';
 import { normalizePhone } from '@/lib/ads/book-job';
+import { isOwnNumber, isShopForwardNumber } from '@/lib/ads/real-leads';
 
 export const dynamic = 'force-dynamic';
 
@@ -439,6 +440,10 @@ export async function POST(request: NextRequest) {
       existing,
       lookupCustomer,
       lookupJobber,
+      // Prefer a real caller over staff. Never keep the shop forward number:
+      // the dashboard treats that line as internal and drops the ad call.
+      ownCaller: isOwnNumber,
+      discardCaller: isShopForwardNumber,
       save: async (row) => {
         const payload = hasUtcColumn ? { ...row, started_at_utc: true } : row;
         let { error } = await db.from('ads_calls').upsert(payload, { onConflict: 'call_view_resource' });
@@ -474,6 +479,8 @@ export async function POST(request: NextRequest) {
       const restores = planNullPhoneRestores(candidates, voiceError ? [] : voiceCalls, {
         usedVoiceIds: savedVoiceIds,
         snapshots: ADS_CALL_PHONE_BACKFILL_20261014,
+        ownCaller: isOwnNumber,
+        discardCaller: isShopForwardNumber,
       });
       for (const patch of restores) {
         const { data, error } = await db
@@ -505,7 +512,9 @@ export async function POST(request: NextRequest) {
             voice_call_id: row.voice_call_id,
           })),
           voiceCalls,
-          savedVoiceIds
+          savedVoiceIds,
+          isOwnNumber,
+          isShopForwardNumber,
         );
         for (const fill of voiceFills) {
           const { error } = await db

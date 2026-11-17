@@ -9,6 +9,59 @@ import type { AdsCallDraft } from './google-ads-api.ts';
 
 export const CALL_TIME_WINDOW_MS = 30_000;
 export const CALL_DURATION_TOLERANCE_SEC = 15;
+/**
+ * After the Twilio port the shop leg starts late: recording notice, then up to
+ * a 15s ring, then talk. Google Ads' clock includes that wait. Voice
+ * PARAM_DURATION is talk time only. A second event in the same window often
+ * has the SCWS Forward number (+1 760-276-3468) as its caller. That number is
+ * one of our own lines, so the dashboard drops the ad call.
+ */
+export const SHOP_ANSWER_LATE_MS = 60_000;
+/** Ring time that can sit in Google's duration after Voice has already started. */
+export const SHOP_RING_SLACK_SEC = 15;
+
+export interface AdsVoiceMatchOptions {
+  /** Staff and our other lines. Used only when no external caller is in the window. */
+  ownCaller?: (phone: string | null | undefined) => boolean;
+  /** Shop forward number. Never stored as the customer; the dashboard would drop the call. */
+  discardCaller?: (phone: string | null | undefined) => boolean;
+}
+
+function voiceWindow(
+  adStart: number,
+  voiceStart: number,
+  adDuration: number | null,
+  voiceDuration: number | null,
+): { delta: number; durationDelta: number; strict: boolean } | null {
+  if (!Number.isFinite(adStart) || !Number.isFinite(voiceStart)) return null;
+  // A missing duration used to count as a perfect match and could steal the
+  // call from the ring-group event that actually has the customer.
+  if (adDuration == null || voiceDuration == null) return null;
+  const delta = Math.abs(voiceStart - adStart);
+  const lateMs = voiceStart - adStart;
+  const rawDurationDelta = Math.abs(adDuration - voiceDuration);
+  if (delta <= CALL_TIME_WINDOW_MS && rawDurationDelta <= CALL_DURATION_TOLERANCE_SEC) {
+    return { delta, durationDelta: rawDurationDelta, strict: true };
+  }
+  // Shop answered. Voice starts after Google, and its talk time is shorter
+  // by about that delay plus the ring that followed. Strict matches stay ahead
+  // of this wider window so a nearby call keeps the log row it already fit.
+  if (lateMs <= 0 || lateMs > SHOP_ANSWER_LATE_MS) return null;
+  const shortfall = adDuration - voiceDuration;
+  const unexplained = shortfall - lateMs / 1000;
+  if (shortfall < -CALL_DURATION_TOLERANCE_SEC) return null;
+  if (unexplained < -CALL_DURATION_TOLERANCE_SEC || unexplained > CALL_DURATION_TOLERANCE_SEC + SHOP_RING_SLACK_SEC) {
+    return null;
+  }
+  return { delta, durationDelta: Math.abs(unexplained), strict: false };
+}
+
+function byVoiceFit(
+  a: { delta: number; durationDelta: number; strict: boolean },
+  b: { delta: number; durationDelta: number; strict: boolean },
+): number {
+  return Number(b.strict) - Number(a.strict) || a.delta - b.delta || a.durationDelta - b.durationDelta;
+}
 
 export interface VoiceCall {
   id: string;
@@ -60,26 +113,23 @@ export function parseAdsDateTime(value: string | null | undefined, timeZone = AD
 export function matchAdsCallToVoice(
   call: AdsCallDraft,
   voiceCalls: VoiceCall[],
-  excludeIds?: ReadonlySet<string>
+  excludeIds?: ReadonlySet<string>,
+  options?: AdsVoiceMatchOptions,
 ): VoiceCall | null {
   const start = parseAdsDateTime(call.startedAt);
   if (!Number.isFinite(start)) return null;
 
   const ranked = voiceCalls
-    .filter((voice) => !excludeIds?.has(voice.id))
+    .filter((voice) => !excludeIds?.has(voice.id) && !options?.discardCaller?.(voice.callerPhone))
     .map((voice) => {
-      const voiceStart = Date.parse(voice.startedAt);
-      const delta = Number.isFinite(voiceStart) ? Math.abs(voiceStart - start) : Number.POSITIVE_INFINITY;
-      const durationDelta =
-        call.durationSeconds == null || voice.durationSeconds == null
-          ? 0
-          : Math.abs(call.durationSeconds - voice.durationSeconds);
-      return { voice, delta, durationDelta };
+      const window = voiceWindow(start, Date.parse(voice.startedAt), call.durationSeconds, voice.durationSeconds);
+      return window ? { voice, ...window } : null;
     })
-    .filter((row) => row.delta <= CALL_TIME_WINDOW_MS && row.durationDelta <= CALL_DURATION_TOLERANCE_SEC)
-    .sort((a, b) => a.delta - b.delta || a.durationDelta - b.durationDelta);
-
-  return ranked[0]?.voice ?? null;
+    .filter((row): row is { voice: VoiceCall; delta: number; durationDelta: number; strict: boolean } => row != null);
+  const external = ranked.filter((row) => !options?.ownCaller?.(row.voice.callerPhone));
+  const pool = external.length ? external : ranked;
+  pool.sort(byVoiceFit);
+  return pool[0]?.voice ?? null;
 }
 
 /**
@@ -87,24 +137,25 @@ export function matchAdsCallToVoice(
  * Assign the closest unused voice to each ad call so a single Voice log
  * row is not written onto two ads_calls rows.
  */
-export function assignAdsVoices(drafts: AdsCallDraft[], voiceCalls: VoiceCall[]): Map<string, VoiceCall> {
-  const candidates: Array<{ resource: string; voice: VoiceCall; delta: number; durationDelta: number }> = [];
+export function assignAdsVoices(
+  drafts: AdsCallDraft[],
+  voiceCalls: VoiceCall[],
+  options?: AdsVoiceMatchOptions,
+): Map<string, VoiceCall> {
+  const candidates: Array<{ resource: string; voice: VoiceCall; delta: number; durationDelta: number; strict: boolean }> = [];
   for (const call of drafts) {
     const start = parseAdsDateTime(call.startedAt);
     if (!Number.isFinite(start)) continue;
+    const rows: Array<{ resource: string; voice: VoiceCall; delta: number; durationDelta: number; strict: boolean }> = [];
     for (const voice of voiceCalls) {
-      const voiceStart = Date.parse(voice.startedAt);
-      const delta = Number.isFinite(voiceStart) ? Math.abs(voiceStart - start) : Number.POSITIVE_INFINITY;
-      const durationDelta =
-        call.durationSeconds == null || voice.durationSeconds == null
-          ? 0
-          : Math.abs(call.durationSeconds - voice.durationSeconds);
-      if (delta <= CALL_TIME_WINDOW_MS && durationDelta <= CALL_DURATION_TOLERANCE_SEC) {
-        candidates.push({ resource: call.resourceName, voice, delta, durationDelta });
-      }
+      if (options?.discardCaller?.(voice.callerPhone)) continue;
+      const window = voiceWindow(start, Date.parse(voice.startedAt), call.durationSeconds, voice.durationSeconds);
+      if (window) rows.push({ resource: call.resourceName, voice, ...window });
     }
+    const external = rows.filter((row) => !options?.ownCaller?.(row.voice.callerPhone));
+    candidates.push(...(external.length ? external : rows));
   }
-  candidates.sort((a, b) => a.delta - b.delta || a.durationDelta - b.durationDelta);
+  candidates.sort(byVoiceFit);
   const usedVoice = new Set<string>();
   const usedDraft = new Set<string>();
   const assigned = new Map<string, VoiceCall>();
@@ -330,9 +381,23 @@ function phonesMatch(a: string | null | undefined, b: string | null | undefined)
  */
 export function preserveResolvedAdsCall(
   incoming: StoredAdsCall,
-  existing: AdsCallResolution | null | undefined
+  existing: AdsCallResolution | null | undefined,
+  discardCaller?: (phone: string | null | undefined) => boolean,
 ): StoredAdsCall {
   if (!existing) return incoming;
+  // The forward number was stored as the customer. Do not keep it: the
+  // dashboard treats that line as internal and drops the ad call.
+  if (discardCaller?.(existing.caller_phone)) {
+    if (incoming.caller_phone && !discardCaller(incoming.caller_phone)) return incoming;
+    return {
+      ...incoming,
+      caller_phone: null,
+      voice_call_id: null,
+      customer_id: null,
+      jobber_client_id: null,
+      match_method: 'unmatched',
+    };
+  }
   const existingResolved =
     Boolean(existing.caller_phone) ||
     Boolean(existing.voice_call_id) ||
@@ -441,11 +506,18 @@ export async function importAdsCalls(input: {
   existing?: readonly AdsCallResolution[];
   lookupCustomer?: (phone: string) => Promise<PhoneParty | null>;
   lookupJobber?: (phone: string) => Promise<PhoneParty | null>;
+  /** Staff and our lines. Kept only when no external caller matches. */
+  ownCaller?: (phone: string | null | undefined) => boolean;
+  /** Shop forward number. Never kept as the caller. */
+  discardCaller?: (phone: string | null | undefined) => boolean;
   save: (row: StoredAdsCall) => Promise<void>;
 }): Promise<{ seen: number; matchedVoice: number; matchedCustomer: number; matchedJobber: number }> {
   const result = { seen: 0, matchedVoice: 0, matchedCustomer: 0, matchedJobber: 0 };
   const prior = new Map((input.existing ?? []).map((row) => [row.call_view_resource, row]));
-  const voices = assignAdsVoices(input.drafts, input.voiceCalls);
+  const voices = assignAdsVoices(input.drafts, input.voiceCalls, {
+    ownCaller: input.ownCaller,
+    discardCaller: input.discardCaller,
+  });
   for (const draft of input.drafts) {
     result.seen += 1;
     const voice = voices.get(draft.resourceName) ?? null;
@@ -459,7 +531,7 @@ export async function importAdsCalls(input: {
     }
     if (party?.kind === 'customer') result.matchedCustomer += 1;
     if (party?.kind === 'jobber_client') result.matchedJobber += 1;
-    await input.save(preserveResolvedAdsCall(storedAdsCall(draft, voice, party), prior.get(draft.resourceName)));
+    await input.save(preserveResolvedAdsCall(storedAdsCall(draft, voice, party), prior.get(draft.resourceName), input.discardCaller));
   }
   return result;
 }
@@ -516,6 +588,8 @@ export function planNullPhoneRestores(
   options?: {
     usedVoiceIds?: ReadonlySet<string>;
     snapshots?: readonly AdCallPhoneSnapshot[];
+    ownCaller?: (phone: string | null | undefined) => boolean;
+    discardCaller?: (phone: string | null | undefined) => boolean;
   }
 ): AdsCallPhoneRestore[] {
   const used = options?.usedVoiceIds;
@@ -533,7 +607,10 @@ export function planNullPhoneRestores(
     callSource: null,
   }));
   const voices = used ? voiceCalls.filter((voice) => !used.has(voice.id)) : voiceCalls;
-  const assigned = assignAdsVoices(drafts, voices as VoiceCall[]);
+  const assigned = assignAdsVoices(drafts, voices as VoiceCall[], {
+    ownCaller: options?.ownCaller,
+    discardCaller: options?.discardCaller,
+  });
   const restores: AdsCallPhoneRestore[] = [];
   const restored = new Set<string>();
   for (const row of open) {
@@ -594,7 +671,9 @@ export function planNullPhoneRestores(
 export function planVoiceIdFills(
   rows: readonly AdsCallPhoneRow[],
   voiceCalls: readonly VoiceCall[],
-  usedVoiceIds?: ReadonlySet<string>
+  usedVoiceIds?: ReadonlySet<string>,
+  ownCaller?: (phone: string | null | undefined) => boolean,
+  discardCaller?: (phone: string | null | undefined) => boolean,
 ): Array<{ call_view_resource: string; voice_call_id: string; match_method: 'voice_time' }> {
   const open = rows.filter(
     (row) => row.call_view_resource && row.started_at && normalizePhone(row.caller_phone) && !row.voice_call_id
@@ -612,7 +691,7 @@ export function planVoiceIdFills(
     callSource: null,
   }));
   const voices = usedVoiceIds ? voiceCalls.filter((voice) => !usedVoiceIds.has(voice.id)) : voiceCalls;
-  const assigned = assignAdsVoices(drafts, voices as VoiceCall[]);
+  const assigned = assignAdsVoices(drafts, voices as VoiceCall[], { ownCaller, discardCaller });
   const fills: Array<{ call_view_resource: string; voice_call_id: string; match_method: 'voice_time' }> = [];
   for (const row of open) {
     const voice = assigned.get(row.call_view_resource);
