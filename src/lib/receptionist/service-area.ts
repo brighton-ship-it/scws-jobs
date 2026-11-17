@@ -361,6 +361,22 @@ export function isCountyPhrase(value: string | null | undefined): boolean {
   return Boolean(key) && COUNTY_PHRASES.some((phrase) => phrase === key || placeContains(key, phrase));
 }
 
+/**
+ * City to store on a job. "Palma Valley" and "Palomar Valley" become Pauma Valley.
+ * A real town such as Palomar Mountain is unchanged.
+ */
+export function canonicalServiceCity(value: string | null | undefined): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const key = normalizePlace(raw)
+    .replace(/\b(?:california|calif|ca)\b/g, ' ')
+    .replace(/\b\d{5}(?:\d{4})?\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (TOWN_ALIASES[key]) return TOWN_ALIASES[key];
+  return raw;
+}
+
 /** Longest known town contained in the text, or null. "Ramona, CA" → "Ramona". Aliases return the town we serve. */
 export function matchedTownName(value: string | null | undefined): string | null {
   const loc = normalizePlace(value || '');

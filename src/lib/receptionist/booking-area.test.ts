@@ -7,7 +7,7 @@ import {
   nearerShopDrive,
   placeDrivePoint,
 } from './drive-surcharge.ts';
-import { checkServiceArea, decideBookingArea } from './service-area.ts';
+import { canonicalServiceCity, checkServiceArea, decideBookingArea } from './service-area.ts';
 import { townGuardResult } from './town-guard.ts';
 
 const BOOKABLE = ['San Diego', 'Riverside', 'San Bernardino'];
@@ -84,6 +84,9 @@ describe('county bookable rule', () => {
       const town = townGuardResult('checkServiceArea', { city: heard }, {});
       assert.equal(town, null, heard);
     }
+    assert.equal(canonicalServiceCity('Palma Valley'), 'Pauma Valley');
+    assert.equal(canonicalServiceCity('Palomar Valley, CA'), 'Pauma Valley');
+    assert.equal(canonicalServiceCity('Palomar Mountain'), 'Palomar Mountain');
     const mountain = checkServiceArea('Palomar Mountain').result;
     assert.equal(mountain.bookable, true);
     assert.equal(mountain.county, 'San Diego');

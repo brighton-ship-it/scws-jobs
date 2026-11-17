@@ -6,27 +6,41 @@
 import { OWNER_CALLBACK_REASON } from './mike-call-fixes.ts';
 import type { OfficeRequest } from './office-callback.ts';
 
-const PERSON =
-  'the owner|your owner|an owner|the boss|a manager|the manager|a real person|an actual person|a real human|an actual human|a human|a live person|a live human|somebody real|someone real';
+const ASK_TARGET =
+  'the owner|your owner|an owner|the boss|a manager|the manager|a real person|an actual person|a real human|an actual human|a human|a live person|a live human|a person|somebody|someone|brighton';
 
+/** A request to be connected. "I am the owner" and "the owner is out of town" do not match. */
 const ASK = new RegExp(
-  `\\b(?:speak(?:\\s+with|\\s+to)?|talk(?:\\s+with|\\s+to)?|get in touch(?:\\s+with)?|reach|connect(?:\\s+me)?(?:\\s+(?:with|to))?|transfer(?:\\s+me)?(?:\\s+to)?|put me (?:through|on)(?:\\s+with)?|ask for|get me|let me talk to)\\b[^.\n]{0,60}\\b(?:${PERSON})\\b`,
+  `\\b(?:speak(?:\\s+with|\\s+to)?|talk(?:\\s+with|\\s+to)?|get in touch(?:\\s+with)?|reach|connect(?:\\s+me)?(?:\\s+(?:with|to))?|transfer(?:\\s+me)?(?:\\s+to)?|put me (?:through|on)(?:\\s+with)?|get me)\\b[^.\n]{0,50}\\b(?:${ASK_TARGET})\\b`,
   'i',
 );
 
-const WANT = new RegExp(
-  `\\b(?:want|need|like|hoping|trying)\\b[^.\n]{0,50}\\b(?:the owner|your owner|an owner|the boss|a manager|the manager|a real person|an actual person|a real human|an actual human|a live person)\\b`,
-  'i',
-);
-
-/** Caller lines only. "I am the owner" is not a request to speak to one. */
+/** Caller lines only. Saying they are the owner is not a request to speak to one. */
 export function callerAskedForOwnerOrPerson(text: string): boolean {
   return String(text || '')
     .split(/\n+/)
     .some((line) => {
       const said = line.trim();
-      return Boolean(said) && (ASK.test(said) || WANT.test(said));
+      return Boolean(said) && ASK.test(said);
     });
+}
+
+export type OwnerCallbackLookup = 'yes' | 'no' | 'unknown';
+
+/**
+ * One callback row per call. 'done' means a row is already there.
+ * 'skip' means a lookup failure already produced an attempt, so do not insert again.
+ * 'insert' is the first write, including the one try allowed when lookup is down.
+ */
+export function ownerCallbackAction(input: {
+  succeeded: boolean;
+  attempted: boolean;
+  lookup: OwnerCallbackLookup;
+}): 'done' | 'skip' | 'insert' {
+  if (input.succeeded) return 'done';
+  if (input.attempted) return 'skip';
+  if (input.lookup === 'yes') return 'done';
+  return 'insert';
 }
 
 /**

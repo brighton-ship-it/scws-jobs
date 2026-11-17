@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { bookingRowForOfficeRequest } from './office-callback.ts';
 import { OWNER_CALLBACK_REASON } from './mike-call-fixes.ts';
 import { buildMissedServiceFlag } from './missed-service-flag.ts';
-import { callerAskedForOwnerOrPerson, ownerPersonCallback } from './owner-request.ts';
+import { callerAskedForOwnerOrPerson, ownerCallbackAction, ownerPersonCallback } from './owner-request.ts';
 
 const MAGGIE = 'Hi. Maggie, this White.\nI would like to get in touch with the owner.';
 
@@ -12,7 +12,11 @@ test('Maggie asking for the owner logs a callback from caller ID, and a property
   assert.equal(callerAskedForOwnerOrPerson(MAGGIE), true);
   assert.equal(callerAskedForOwnerOrPerson('Can I please speak with an actual human individual?'), true);
   assert.equal(callerAskedForOwnerOrPerson("I'm the owner of the property. The pump is out."), false);
+  assert.equal(callerAskedForOwnerOrPerson("I need my pump fixed, I'm the owner"), false);
+  assert.equal(callerAskedForOwnerOrPerson('the owner is out of town'), false);
   assert.equal(callerAskedForOwnerOrPerson('I need someone to look at the well.'), false);
+  assert.equal(callerAskedForOwnerOrPerson('transfer me to a person'), true);
+  assert.equal(callerAskedForOwnerOrPerson('Can I speak with Brighton'), true);
 
   const logged = ownerPersonCallback({
     callerText: MAGGIE,
@@ -44,6 +48,14 @@ test('Maggie asking for the owner logs a callback from caller ID, and a property
 
   const noPhone = ownerPersonCallback({ callerText: MAGGIE, name: 'Maggie White', phone: '', callbackLogged: false });
   assert.equal(noPhone, null);
+});
+
+test('a failed lookup does not insert another owner callback on the next tool call', () => {
+  assert.equal(ownerCallbackAction({ succeeded: false, attempted: false, lookup: 'unknown' }), 'insert');
+  assert.equal(ownerCallbackAction({ succeeded: false, attempted: true, lookup: 'unknown' }), 'skip');
+  assert.equal(ownerCallbackAction({ succeeded: true, attempted: true, lookup: 'unknown' }), 'done');
+  assert.equal(ownerCallbackAction({ succeeded: false, attempted: false, lookup: 'yes' }), 'done');
+  assert.equal(ownerCallbackAction({ succeeded: false, attempted: false, lookup: 'no' }), 'insert');
 });
 
 test('an owner request is not also auto-flagged, and the webhook does not dial', () => {
