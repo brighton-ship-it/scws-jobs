@@ -111,6 +111,45 @@ test('skips do not assign Brian or Damian', () => {
   }
 });
 
+test('bill resend and send-invoice asks skip as billing-only and do not create a task', async () => {
+  const phrases = [
+    'resend my bill',
+    'send my bill',
+    'bill resent',
+    'bill re-sent',
+    'resend bill',
+    'send the bill',
+    'send me the bill',
+    'my bill again',
+    'please resend the invoice',
+    'send my invoice',
+    'resent my bill',
+    'Please resend my bill. How can I help?',
+  ];
+  let writes = 0;
+  for (const callerText of phrases) {
+    const input = call({ name: 'Brian Mitchell', callerText, summary: callerText });
+    const decision = decideFollowUp(input, [], NOW);
+    assert.equal(decision.action, 'skip', callerText);
+    if (decision.action === 'skip') assert.equal(decision.reason, 'billing-only', callerText);
+    const result = await assignReceptionistFollowUp(input, {
+      now: NOW,
+      listRecentTasks: async () => [],
+      createTask: (async () => {
+        writes += 1;
+        throw new Error('should not create');
+      }) as never,
+    });
+    assert.equal(result.created, false, callerText);
+    assert.equal(result.reason, 'billing-only', callerText);
+    assert.equal(result.customerNotified, false, callerText);
+  }
+  assert.equal(writes, 0);
+  const withPump = decideFollowUp(call({ callerText: 'The pump is broken. Please resend my bill.' }), [], NOW);
+  assert.equal(withPump.action, 'create');
+  if (withPump.action === 'create') assert.equal(withPump.lane, 'pump');
+});
+
 test('urgent no-water stays with Brian when a new well is also mentioned', () => {
   const decision = decideFollowUp(
     call({ callerText: 'We have no water. If you cannot fix the pump we may need a new well.' }),

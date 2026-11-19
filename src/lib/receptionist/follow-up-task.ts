@@ -100,8 +100,21 @@ const WELL_CERT =
   /\b(?:well\s+certif\w*|certif\w*\s+(?:of\s+)?(?:the\s+)?well|water\s+well\s+certif\w*)\b/i;
 const WATER_TEST =
   /\b(?:water\s+tests?|test(?:ing)?\s+(?:the\s+|my\s+|our\s+)?water|water\s+quality\s+(?:test|sample)|bacteriological)\b/i;
-const BILLING =
-  /\b(?:invoices?|billing|payments?|balance\s+due|pay\s+(?:my|the)\s+bill|past\s+due|how\s+much\s+(?:do\s+)?(?:i|we)\s+owe)\b/i;
+const BILL_NOUN = 'bills?|invoices?';
+const BILLING = new RegExp(
+  [
+    String.raw`\b(?:invoices?|billing|payments?|balance\s+due|pay\s+(?:my|the)\s+bill|past\s+due|how\s+much\s+(?:do\s+)?(?:i|we)\s+owe)\b`,
+    // resend my bill, send the bill, send me the invoice, resend bill
+    String.raw`\b(?:re)?send(?:\s+me|\s+us)?(?:\s+(?:my|the|our|a))?\s+(?:${BILL_NOUN})\b`,
+    // resent my bill, bill resent, bill re-sent
+    String.raw`\bre-?sent(?:\s+(?:my|the|our))?\s+(?:${BILL_NOUN})\b`,
+    String.raw`\b(?:${BILL_NOUN})\s+re-?sent\b`,
+    // my bill again, the invoice again
+    String.raw`\b(?:my|the|our)\s+(?:${BILL_NOUN})\s+again\b`,
+    String.raw`\b(?:${BILL_NOUN})\s+again\b`,
+  ].join('|'),
+  'i',
+);
 const GENERIC_SERVICE = /^(?:phone(?:\s+inquiry)?|inquiry|unknown|n\/a|none|call)?$/i;
 const USELESS_NAME = /^(?:unknown(?:\s+client)?|caller|customer|phone inquiry)$/i;
 const FILLER = /^(?:hi|hello|hey|um+|uh+|yeah|yes|no|ok(?:ay)?)[.!?\s]*$/i;
@@ -290,7 +303,9 @@ export function decideFollowUp(
   if (isOasisLiamLead(text)) return { action: 'skip', reason: 'oasis-liam' };
   const drill = hasDrillAsk(text);
   const pump = hasPumpOrServiceAsk(text);
-  if (BILLING.test(text) && !drill && !pump && !hasAmbiguousAsk(text)) {
+  // A bill or invoice ask is not a pump task. "help" / "well" / "service" in the
+  // same transcript must not send it to Brian. A real pump or drill symptom still does.
+  if (BILLING.test(text) && !drill && !pump) {
     return { action: 'skip', reason: 'billing-only' };
   }
   if (WELL_CERT.test(text) && !drill && !pump) return { action: 'skip', reason: 'well-certification' };
