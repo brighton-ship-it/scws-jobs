@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { BRIGHTON_SALESPERSON_ID } from '../jobber/quotes.ts';
 import {
   FORBIDDEN_JOBBER_MCP_TOOLS,
+  JOBBER_MCP_INSTRUCTIONS,
   JOBBER_MCP_SERVER_VERSION,
   JOBBER_MCP_TOOLS,
   callJobberMcpTool,
@@ -1628,6 +1629,33 @@ describe('handleJobberMcpRequest auth gate', () => {
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_invoices'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_invoice'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_jobs'));
+    for (const name of [
+      'qbo_query',
+      'qbo_report',
+      'qbo_status',
+      'qbo_journal_entry',
+      'qbo_deposit',
+      'qbo_payment',
+      'qbo_invoice',
+      'qbo_categorize_purchase',
+      'qbo_bill',
+      'qbo_bill_payment',
+      'qbo_attach_note',
+      'qbo_closing_date',
+      'qbo_void',
+      'qbo_import_jobber_invoices',
+      'qbo_revert_batch',
+    ]) {
+      assert.ok(rpc.result.tools.some((tool) => tool.name === name), name);
+    }
+    for (const name of [
+      'qbo_journal_entry',
+      'qbo_import_jobber_invoices',
+      'qbo_revert_batch',
+    ]) {
+      assert.match(JOBBER_MCP_INSTRUCTIONS, new RegExp(name));
+    }
+    assert.ok(healthBody.tools.includes('qbo_import_jobber_invoices'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'get_job'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'list_tax_rates'));
     assert.ok(rpc.result.tools.some((tool) => tool.name === 'search_products'));
