@@ -6,7 +6,7 @@ import {
 } from '@/lib/mcp/jobber-http';
 
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 300;
 
 /**
  * POST /api/mcp/jobber — Streamable HTTP MCP (JSON-RPC).
@@ -15,7 +15,9 @@ export const maxDuration = 60;
  * Auth: Authorization: Bearer <JOBBER_MCP_API_KEYS entry>
  * Jobber OAuth stays on this app (durable Supabase store). Draft quotes only.
  * Invoice and job tools do not send or email. QuickBooks writes stay off unless
- * QBO_WRITES_ENABLED=true and the target realm is a sandbox company.
+ * QBO_WRITES_ENABLED=true. Production also needs QBO_WRITE_ENVIRONMENT=production
+ * and QBO_WRITE_PRODUCTION_REALM_ID equal to the connected realm. maxDuration
+ * is 300s so a chunked invoice preview can finish.
  */
 export async function GET(request: NextRequest) {
   return handleJobberMcpRequest(request);

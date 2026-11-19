@@ -6,7 +6,8 @@
  * - CustomerRef is the QBO customer whose DisplayName equals the Jobber client name
  * - Each line's ItemRef is the QBO item whose Name equals the Jobber line name
  *   (those items post to the income account already on the item, 4010 Sales for 1MS and MISC)
- * - TaxCodeRef is TAX or NON. The header TxnTaxCodeRef is CA-San Diego-San Diego
+ * - TaxCodeRef is TAX or NON. The header TxnTaxCodeRef is a TaxCode id
+ *   (San Diego County 3, Menifee 30). Ids are not looked up by display name.
  * - TxnDate is the issue timestamp's America/Los_Angeles date. DueDate is the due date
  * - CustomerMemo is the Jobber client message
  * - EmailStatus is never set
@@ -16,6 +17,7 @@
  * one of those deposits records the invoice income as well. The preview says so.
  */
 import { runQboPlan, writeRealmQuery, type QboWriteDeps } from './durable-write.ts';
+import { taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
 import { describeQboWriteGate } from './write-gate.ts';
 import { parseBatchId, type QboPlan } from './write-payloads.ts';
 
@@ -25,6 +27,7 @@ export type JobberInvoiceForQbo = {
   dueDate: string | null;
   message: string | null;
   clientName: string;
+  city: string | null;
   lines: Array<{ name: string; description: string | null; quantity: number; unitPrice: number; taxable: boolean }>;
   total: number;
   taxAmount: number;
@@ -54,6 +57,33 @@ export function pacificDate(iso: string): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date);
 }
 
+export const IMPORT_CHUNK_DEFAULT = 8;
+export const IMPORT_CHUNK_MAX = 10;
+
+export function importChunkLimit(value: unknown): number {
+  if (value === undefined || value === null || value === '') return IMPORT_CHUNK_DEFAULT;
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1) throw new Error('limit must be a positive integer.');
+  return Math.min(limit, IMPORT_CHUNK_MAX);
+}
+
+/** Inclusive cursor. The next call passes nextCursor back as cursor. */
+export function sliceInvoiceChunk(numbers: string[], cursor: unknown, limit: number): { chunk: string[]; nextCursor: string | null } {
+  let start = 0;
+  if (cursor !== undefined && cursor !== null && String(cursor).trim()) {
+    const token = String(cursor).trim();
+    const exact = numbers.indexOf(token);
+    if (exact >= 0) start = exact;
+    else {
+      const asNumber = Number(token);
+      start = numbers.findIndex((number) => Number(number) >= asNumber);
+      if (start < 0) start = numbers.length;
+    }
+  }
+  const chunk = numbers.slice(start, start + limit);
+  return { chunk, nextCursor: numbers[start + limit] || null };
+}
+
 export function invoiceNumbersFromArgs(args: Record<string, unknown>): string[] {
   const numbers: string[] = [];
   if (Array.isArray(args.invoiceNumbers)) {
@@ -69,12 +99,11 @@ export function invoiceNumbersFromArgs(args: Record<string, unknown>): string[] 
     if (!Number.isInteger(from) || !Number.isInteger(to) || from <= 0 || to < from) {
       throw new Error('fromInvoice and toInvoice must be a positive inclusive range.');
     }
-    if (to - from + 1 > 40) throw new Error('Import at most 40 invoices per call.');
+    if (to - from + 1 > 500) throw new Error('Range is too wide. Pass at most 500 invoice numbers; each call returns nextCursor.');
     for (let n = from; n <= to; n += 1) numbers.push(String(n));
   }
   const unique = [...new Set(numbers)];
   if (!unique.length) throw new Error('Pass invoiceNumbers or fromInvoice and toInvoice.');
-  if (unique.length > 40) throw new Error('Import at most 40 invoices per call.');
   return unique;
 }
 
@@ -120,7 +149,8 @@ export function classifyJobberInvoice(
   existingDocNumbers: Set<string>,
   customerId: string | null,
   itemsByName: Record<string, string>,
-  txnTaxCodeId: string | null
+  txnTaxCodeId: string | null,
+  taxReason?: string
 ): ImportInvoicePlan {
   const base = {
     invoiceNumber: invoice.invoiceNumber,
@@ -136,7 +166,7 @@ export function classifyJobberInvoice(
     return { ...base, status: 'blocked', reason: `No QuickBooks customer with DisplayName "${invoice.clientName}"`, body: null, payment: null };
   }
   if (!txnTaxCodeId) {
-    return { ...base, status: 'blocked', reason: 'TxnTaxCodeRef was not found', body: null, payment: null };
+    return { ...base, status: 'blocked', reason: taxReason || taxCodeMissingReason(invoice.city), body: null, payment: null };
   }
   const built = buildJobberSyncedInvoice(invoice, customerId, itemsByName, txnTaxCodeId);
   if (!built.body) {
@@ -171,13 +201,18 @@ export async function runJobberInvoiceImport(
   }
   const depositId = args.depositId === undefined || args.depositId === '' ? null : String(args.depositId).trim();
   if (payments === 'deposit' && !depositId) throw new Error('depositId is required when payments is deposit.');
+  const limit = importChunkLimit(args.limit);
+  const { chunk, nextCursor } = sliceInvoiceChunk(numbers, args.cursor, limit);
   const query = deps.qboQuery || ((sql: string) => writeRealmQuery(sql, deps));
   const load = deps.loadJobberInvoices || ((nums: string[]) => loadJobberInvoices(nums, deps));
-  const invoices = await load(numbers);
+  const invoices = await load(chunk);
   const byNumber = new Map(invoices.map((invoice) => [invoice.invoiceNumber, invoice]));
-  const txnTaxCodeId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : await findTaxCode(query);
+  const cityOverrides = cityOverrideMap(args.taxCodeByCity);
+  const overrideId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : null;
+  const overrideExists = overrideId ? await taxCodeIdExists(overrideId, query) : false;
+  const customerTax = new Map<string, string | null>();
   const plans: ImportInvoicePlan[] = [];
-  for (const number of numbers) {
+  for (const number of chunk) {
     const invoice = byNumber.get(number);
     if (!invoice) {
       plans.push({ invoiceNumber: number, status: 'blocked', reason: 'Jobber invoice was not found', customerName: '', total: 0, taxAmount: 0, paymentsTotal: 0, body: null, payment: null });
@@ -191,7 +226,9 @@ export async function runJobberInvoiceImport(
       const id = found[0]?.Id;
       if (id != null) items[name] = String(id);
     }
-    plans.push(classifyJobberInvoice(invoice, new Set(existing.map((row) => String(row.DocNumber))), customers[0]?.Id != null ? String(customers[0].Id) : null, items, txnTaxCodeId));
+    const customerId = customers[0]?.Id != null ? String(customers[0].Id) : null;
+    const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, query);
+    plans.push(classifyJobberInvoice(invoice, new Set(existing.map((row) => String(row.DocNumber))), customerId, items, tax.id, tax.reason));
   }
   const creates = plans.filter((row) => row.status === 'create');
   const summary = {
@@ -206,6 +243,10 @@ export async function runJobberInvoiceImport(
     payments,
     depositId,
     warning: payments === 'deposit' ? DEPOSIT_WARNING : null,
+    cursor: args.cursor ? String(args.cursor) : null,
+    nextCursor,
+    done: nextCursor == null,
+    limit,
   };
   if (!confirm) {
     return { ok: true, dryRun: true, wrote: false, ...summary, invoices: plans };
@@ -247,18 +288,88 @@ export async function runJobberInvoiceImport(
     }
     posted.push(entry);
   }
-  return { ok: posted.every((row) => (row.invoice as { wrote: boolean }).wrote), dryRun: false, wrote: posted.some((row) => (row.invoice as { wrote: boolean }).wrote), ...summary, invoices: plans, posted };
+  return {
+    ok: posted.every((row) => (row.invoice as { wrote: boolean }).wrote) && plans.every((row) => row.status !== 'blocked'),
+    dryRun: false,
+    wrote: posted.some((row) => (row.invoice as { wrote: boolean }).wrote),
+    ...summary,
+    invoices: plans,
+    posted,
+  };
+}
+
+function cityOverrideMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, id] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof id === 'string' && id.trim()) out[key] = id.trim();
+  }
+  return out;
+}
+
+async function taxCodeIdExists(id: string, query: (sql: string) => Promise<unknown>): Promise<boolean> {
+  if (!/^\d{1,10}$/.test(id)) return false;
+  try {
+    const found = rowsOf(await query(`select Id from TaxCode where Id = '${id}'`), 'TaxCode');
+    return found.some((row) => String(row.Id) === id);
+  } catch {
+    return false;
+  }
+}
+
+async function taxForInvoice(
+  invoice: JobberInvoiceForQbo,
+  customerId: string | null,
+  overrideId: string | null,
+  overrideExists: boolean,
+  cityOverrides: Record<string, string>,
+  customerTax: Map<string, string | null>,
+  query: (sql: string) => Promise<unknown>
+): Promise<{ id: string | null; reason: string }> {
+  if (overrideId) {
+    return overrideExists
+      ? { id: overrideId, reason: '' }
+      : { id: null, reason: `txnTaxCodeId ${overrideId} is not a QuickBooks TaxCode id.` };
+  }
+  const fromCity = taxCodeIdForCity(invoice.city, cityOverrides);
+  if (fromCity) return { id: fromCity, reason: '' };
+  if (customerId) {
+    if (!customerTax.has(customerId)) customerTax.set(customerId, await taxCodeFromCustomer(customerId, query));
+    const prior = customerTax.get(customerId);
+    if (prior) return { id: prior, reason: '' };
+  }
+  return { id: null, reason: taxCodeMissingReason(invoice.city) };
+}
+
+async function taxCodeFromCustomer(customerId: string, query: (sql: string) => Promise<unknown>): Promise<string | null> {
+  try {
+    const invoices = rowsOf(
+      await query(`select TxnTaxDetail, Line from Invoice where CustomerRef = '${customerId}' MAXRESULTS 5`),
+      'Invoice'
+    );
+    for (const row of invoices) {
+      const detail = row.TxnTaxDetail as { TxnTaxCodeRef?: { value?: string } } | undefined;
+      const id = detail?.TxnTaxCodeRef?.value;
+      if (id) return String(id);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function jobCity(node: Record<string, any>): string | null {
+  const jobs = node.jobs?.nodes || [];
+  for (const job of jobs) {
+    const city = job?.property?.address?.city;
+    if (typeof city === 'string' && city.trim()) return city.trim();
+  }
+  return null;
 }
 
 function requestKey(batchId: string, invoiceNumber: string, kind: string): string {
   const raw = `${kind}-${batchId}-${invoiceNumber}`.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50);
   return raw.length >= 8 ? raw : `${raw}00000000`.slice(0, 8);
-}
-
-async function findTaxCode(query: (sql: string) => Promise<unknown>): Promise<string | null> {
-  const found = rowsOf(await query("select Id, Name from TaxCode where Name = 'CA-San Diego-San Diego'"), 'TaxCode');
-  const id = found[0]?.Id;
-  return id == null ? null : String(id);
 }
 
 async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promise<JobberInvoiceForQbo[]> {
@@ -272,6 +383,7 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
             invoiceNumber issuedDate dueDate message
             amounts { total taxAmount paymentsTotal }
             client { name }
+            jobs(first: 3) { nodes { property { address { city } } } }
             lineItems(first: 40) { nodes { name description quantity unitPrice taxable } }
           }
         }
@@ -289,6 +401,7 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
       dueDate: match.dueDate ? String(match.dueDate) : null,
       message: match.message ? String(match.message) : null,
       clientName: String(match.client?.name || ''),
+      city: jobCity(match),
       total: Number(match.amounts?.total || 0),
       taxAmount: Number(match.amounts?.taxAmount || 0),
       paymentsTotal: Number(match.amounts?.paymentsTotal || 0),

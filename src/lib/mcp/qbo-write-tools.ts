@@ -252,14 +252,21 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_import_jobber_invoices',
-    'Import Jobber invoices into QuickBooks the way the old Jobber sync posted them: DocNumber is the invoice number, the customer matches DisplayName, the item matches the line name, and tax is TAX or NON under CA-San Diego-San Diego. Skips a DocNumber that already exists. Preview returns every invoice and the totals. confirm:true posts and requires batchId. payments: none (default), undeposited, or deposit (also pass depositId). A deposit link does not remove sales lines already on that deposit. At most 40 invoices per call. Does not email.',
+    'Import Jobber invoices into QuickBooks the way the old Jobber sync posted them: DocNumber is the invoice number, the customer matches DisplayName, the item matches the line name, and line tax is TAX or NON. The header tax code is a TaxCode id from the jobsite (San Diego County 3, Menifee 30), not a display name. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. A missing tax code blocks that invoice only. confirm:true posts the chunk and requires batchId. payments: none (default), undeposited, or deposit (also pass depositId). Does not email.',
     {
-      invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 40 },
+      invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 500 },
       fromInvoice: { type: 'integer' },
       toInvoice: { type: 'integer' },
+      cursor: { type: 'string', description: 'nextCursor from the previous chunk. Inclusive invoice number to start at.' },
+      limit: { type: 'integer', description: 'Invoices to process this call. Default 8, max 10.' },
       payments: { type: 'string', enum: ['none', 'undeposited', 'deposit'] },
       depositId: { type: 'string', description: 'Existing QBO deposit to attach new payments to. Required when payments is deposit.' },
-      txnTaxCodeId: { type: 'string', description: 'Defaults to the TaxCode named CA-San Diego-San Diego.' },
+      txnTaxCodeId: { type: 'string', description: 'TaxCode id applied to every invoice in this call, for example 3. Looked up by id, not by name.' },
+      taxCodeByCity: {
+        type: 'object',
+        additionalProperties: { type: 'string' },
+        description: 'City to TaxCode id overrides, for example {"Hemet":"65","Phelan":"62"}.',
+      },
     },
     []
   ),

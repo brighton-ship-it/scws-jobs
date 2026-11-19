@@ -299,7 +299,7 @@ Production (real Southern California Well Service company). All three are requir
 
 After the SQL is applied and those three Production env vars are set, redeploy scws-jobs. Then preview an import before any confirm:
 
-`qbo_import_jobber_invoices` with `fromInvoice: 5826`, `toInvoice: 5865` (40 at a time), `batchId`, and `payments: "none"` until the deposit lines have been reviewed. `payments: "undeposited"` creates a payment in Undeposited Funds. `payments: "deposit"` also needs `depositId` of an existing deposit. October Jobber payouts are already deposits that post to account 4010 Sales, so linking a payment onto one of them records the invoice income as well. The preview includes that warning. `confirm: true` posts. `qbo_revert_batch` with the same `batchId` undoes it.
+`qbo_import_jobber_invoices` with `fromInvoice: 5826`, `toInvoice: 5900`, a `batchId`, and `payments: "none"`. Each call processes at most 10 invoices and returns `nextCursor`; pass that cursor back for the next chunk. Header tax is a TaxCode id from the jobsite (San Diego County `3`, Menifee `30`), not a display name. An unknown city blocks that invoice only. Override with `txnTaxCodeId` or `taxCodeByCity`. `payments: "undeposited"` creates a payment in Undeposited Funds. `payments: "deposit"` also needs `depositId` of an existing deposit. October Jobber payouts are already deposits that post to account 4010 Sales, so linking a payment onto one of them records the invoice income as well. The preview includes that warning. `confirm: true` posts. `qbo_revert_batch` with the same `batchId` undoes it.
 
 ### Sandbox integration test
 
