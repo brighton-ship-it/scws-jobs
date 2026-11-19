@@ -222,6 +222,21 @@ export async function qboStatus(env: Env = process.env) {
   }
 }
 
+/**
+ * Access token for a confirmed production write. Uses the same connection row
+ * and CAS refresh as reads, so a write does not rotate a second token.
+ * Refuses when the stored realm is not the opted-in production realm.
+ */
+export async function productionWriteAccessToken(env: Env, expectedRealm: string): Promise<string> {
+  const row = await readyConnection(env);
+  if (row.realm_id !== expectedRealm) {
+    throw new Error(`Connected realm does not equal QBO_WRITE_PRODUCTION_REALM_ID.`);
+  }
+  const name = row.environment || env.QBO_ENVIRONMENT || env.QUICKBOOKS_ENVIRONMENT || 'production';
+  if (name === 'sandbox') throw new Error('The stored QuickBooks connection is a sandbox company.');
+  return row.access_token;
+}
+
 /** Daily keep-alive: force a rotation so the 100-day idle window never lapses. */
 export async function keepAliveRefresh(env: Env = process.env) {
   const row = await loadConnection(env);

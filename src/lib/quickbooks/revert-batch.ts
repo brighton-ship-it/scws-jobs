@@ -1,0 +1,206 @@
+/**
+ * Undo one audited QuickBooks batch in reverse order.
+ * Deletes only entities this gateway created. Restores updates from the
+ * audited prior entity. Skips closed-period transactions and voids.
+ */
+import { readBookCloseDate, runQboPlan, type QboWriteDeps } from './durable-write.ts';
+import { parseBatchId, type QboPlan } from './write-payloads.ts';
+
+export type BatchAuditRow = {
+  id: number;
+  tool: string;
+  entity: string;
+  action: string | null;
+  created: boolean;
+  ok: boolean;
+  dryRun: boolean;
+  confirmed: boolean;
+  qboId: string | null;
+  syncToken: string | null;
+  priorState: Record<string, unknown> | null;
+  txnDate: string | null;
+};
+
+export type RevertStep = {
+  phase: 'restore' | 'delete-payment' | 'delete';
+  auditId: number;
+  entity: string;
+  qboId: string;
+  txnDate: string | null;
+  action: 'restore' | 'delete';
+};
+
+const PAYMENT_ENTITIES = new Set(['Payment', 'BillPayment']);
+
+export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
+  if (!closeDate || !txnDate) return false;
+  return txnDate <= closeDate;
+}
+
+export function planBatchRevert(rows: BatchAuditRow[], closeDate: string | null): { steps: RevertStep[]; couldNot: { entity: string; id: string | null; reason: string }[] } {
+  const steps: RevertStep[] = [];
+  const couldNot: { entity: string; id: string | null; reason: string }[] = [];
+  for (const row of rows) {
+    if (!row.ok || row.dryRun || !row.confirmed) continue;
+    if (row.tool === 'qbo_revert_batch') continue;
+    if (!row.qboId) {
+      couldNot.push({ entity: row.entity, id: null, reason: 'audit row has no QuickBooks id' });
+      continue;
+    }
+    if (row.action === 'void') {
+      couldNot.push({ entity: row.entity, id: row.qboId, reason: 'a void cannot be undone' });
+      continue;
+    }
+    if (closedPeriod(row.txnDate, closeDate) || (closeDate && !row.txnDate)) {
+      couldNot.push({
+        entity: row.entity,
+        id: row.qboId,
+        reason: row.txnDate ? `TxnDate ${row.txnDate} is on or before the books close date ${closeDate}` : `books are closed through ${closeDate} and this row has no TxnDate`,
+      });
+      continue;
+    }
+    if (row.created || row.action === 'create' || row.action === 'attach') {
+      steps.push({
+        phase: PAYMENT_ENTITIES.has(row.entity) ? 'delete-payment' : 'delete',
+        auditId: row.id,
+        entity: row.entity,
+        qboId: row.qboId,
+        txnDate: row.txnDate,
+        action: 'delete',
+      });
+      continue;
+    }
+    if (row.priorState && row.action === 'update') {
+      steps.push({
+        phase: 'restore',
+        auditId: row.id,
+        entity: row.entity,
+        qboId: row.qboId,
+        txnDate: row.txnDate,
+        action: 'restore',
+      });
+      continue;
+    }
+    couldNot.push({ entity: row.entity, id: row.qboId, reason: 'not created by these tools and no prior state was audited' });
+  }
+  const phaseOrder = { restore: 0, 'delete-payment': 1, delete: 2 };
+  steps.sort((a, b) => phaseOrder[a.phase] - phaseOrder[b.phase] || b.auditId - a.auditId);
+  return { steps, couldNot };
+}
+
+function entityPath(entity: string): string {
+  const paths: Record<string, string> = {
+    Invoice: 'invoice',
+    Payment: 'payment',
+    JournalEntry: 'journalentry',
+    Purchase: 'purchase',
+    Bill: 'bill',
+    BillPayment: 'billpayment',
+    Deposit: 'deposit',
+    Attachable: 'attachable',
+    Preferences: 'preferences',
+  };
+  const path = paths[entity];
+  if (!path) throw new Error(`Cannot revert QuickBooks entity ${entity}.`);
+  return path;
+}
+
+export async function runBatchRevert(
+  args: Record<string, unknown>,
+  deps: QboWriteDeps = {}
+): Promise<Record<string, unknown>> {
+  const batchId = parseBatchId(args.batchId, true);
+  const confirm = args.confirm === true || (typeof args.confirm === 'string' && args.confirm.trim().toLowerCase() === 'true');
+  const rows = deps.loadBatch ? await deps.loadBatch(batchId!) : await loadBatchFromSupabase(deps, batchId!);
+  let closeDate: string | null = null;
+  let closeError: string | null = null;
+  if (confirm) {
+    try {
+      closeDate = deps.readCloseDate ? await deps.readCloseDate() : await readBookCloseDate(deps);
+    } catch (error) {
+      closeError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const plan = planBatchRevert(rows, closeDate);
+  if (!confirm) {
+    return {
+      ok: true,
+      dryRun: true,
+      wrote: false,
+      batchId,
+      closeDate,
+      steps: plan.steps,
+      couldNot: plan.couldNot,
+      note: 'Preview only. confirm:true restores updates first, then deletes payments created by the batch, then deletes the other created entities. Closed-period rows are refused.',
+    };
+  }
+  if (closeError) {
+    return { ok: false, dryRun: true, wrote: false, refused: true, batchId, error: closeError, couldNot: plan.couldNot };
+  }
+  const results: Record<string, unknown>[] = [];
+  const couldNot = [...plan.couldNot];
+  for (const step of plan.steps) {
+    const row = rows.find((item) => item.id === step.auditId);
+    const path = `/${entityPath(step.entity)}`;
+    const qboPlan: QboPlan = {
+      tool: 'qbo_revert_batch',
+      entity: step.entity,
+      action: step.action === 'delete' ? 'delete' : 'update',
+      path,
+      operation: step.action === 'delete' ? 'delete' : undefined,
+      body: step.action === 'delete' ? { Id: step.qboId, sparse: true } : stripMeta(row?.priorState || {}),
+      read: { path: step.action === 'delete' ? `${path}/${step.qboId}` : `${path}/${step.qboId}`, apply: 'syncToken' },
+      reason: `revert ${batchId}`,
+    };
+    if (step.entity === 'Preferences') qboPlan.read = { path: '/preferences', apply: 'syncToken' };
+    const result = await runQboPlan(qboPlan, { confirm: true, batchId, requestId: `revert-${batchId}-${step.auditId}`.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50) }, deps);
+    if (!result.wrote) {
+      const missing = /failed \(404\)/.test(result.error || '');
+      if (missing && step.action === 'delete') {
+        results.push({ ...step, status: 'already-gone' });
+        continue;
+      }
+      couldNot.push({ entity: step.entity, id: step.qboId, reason: result.error || 'revert post failed' });
+      results.push({ ...step, status: 'failed', error: result.error });
+      continue;
+    }
+    results.push({ ...step, status: 'reverted', ids: result.ids });
+  }
+  return { ok: couldNot.length === 0, dryRun: false, wrote: results.some((item) => item.status === 'reverted'), batchId, closeDate, results, couldNot };
+}
+
+function stripMeta(entity: Record<string, unknown>): Record<string, unknown> {
+  const body = { ...entity };
+  delete body.MetaData;
+  return body;
+}
+
+async function loadBatchFromSupabase(deps: QboWriteDeps, batchId: string): Promise<BatchAuditRow[]> {
+  const env = deps.env || process.env;
+  const url = env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = env.SUPABASE_SERVICE_KEY;
+  if (!url || !key) throw new Error('Cannot load the batch audit. Set SUPABASE_SERVICE_KEY and apply supabase/migrations/20261119_qbo_write_audit_batch.sql.');
+  const { createClient } = await import('@supabase/supabase-js');
+  const client = createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } });
+  const { data, error } = await client.from('qbo_write_audit').select('*').eq('batch_id', batchId).order('id', { ascending: true });
+  if (error) throw new Error(`qbo_write_audit read failed: ${error.message}`);
+  return (data || []).map(rowFromDb);
+}
+
+function rowFromDb(row: Record<string, unknown>): BatchAuditRow {
+  const ids = (row.qbo_ids || {}) as { id?: string; syncToken?: string };
+  return {
+    id: Number(row.id),
+    tool: String(row.tool || ''),
+    entity: String(row.entity || ''),
+    action: row.action == null ? null : String(row.action),
+    created: row.created === true,
+    ok: row.ok === true,
+    dryRun: row.dry_run === true,
+    confirmed: row.confirmed === true,
+    qboId: ids.id || null,
+    syncToken: (row.sync_token as string) || ids.syncToken || null,
+    priorState: (row.prior_state as Record<string, unknown>) || null,
+    txnDate: (row.txn_date as string) || null,
+  };
+}

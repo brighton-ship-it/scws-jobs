@@ -184,6 +184,8 @@ npm test         # Unit tests (node:test)
 
 **Shared Jobber MCP (shop bots):** `POST/GET /api/mcp/jobber` — Streamable HTTP MCP so Travis / Damien / Grok Bot can draft Jobber quotes and enter clients, requests, assessments, jobs, and visits without holding Jobber OAuth. Auth is `Authorization: Bearer` from `JOBBER_MCP_API_KEYS`. Nothing emails or texts a client. No send, approve, convert, delete, or payroll. See `docs/jobber-mcp.md`.
 
+**QuickBooks writes (off until opted in):** preview unless `confirm` is true. Sandbox needs `QBO_WRITES_ENABLED=true` and `QBO_WRITE_REALM_ID`. The real company also needs `QBO_WRITE_ENVIRONMENT=production` and `QBO_WRITE_PRODUCTION_REALM_ID` equal to the connected realm (`9130349321543166`). Pass `batchId` so `qbo_revert_batch` can undo the batch. `qbo_import_jobber_invoices` skips DocNumbers already in QuickBooks. Apply `supabase/migrations/20261105_qbo_write_audit.sql` and `supabase/migrations/20261119_qbo_write_audit_batch.sql` in the SQL Editor first. See `docs/jobber-mcp.md` for the exact Vercel env vars.
+
 **Jobber OAuth:** one writer. Encrypted `settings.jobber_oauth` is the only place a refresh may land. Env `JOBBER_*_TOKEN` seeds that row once when it is empty; a failed durable read does not refresh env. Never refresh Jobber from a laptop or box script that only updates a local file. See `docs/JOBBER_OAUTH.md`. Health: `GET /api/jobber/oauth-health`. Apply `supabase/migrations/20260922_jobber_oauth_single_writer.sql` in the SQL Editor if `public.settings` is missing.
 
 ### Other Platforms

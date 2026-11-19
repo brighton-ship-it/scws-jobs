@@ -144,7 +144,11 @@ export async function handleJobberMcpRequest(
     );
   }
 
-  const baseDispatcher = createJobberMcpDispatcher(options.deps);
+  const baseDispatcher = createJobberMcpDispatcher({
+    ...options.deps,
+    actor: auth.name,
+    env: options.deps?.env ?? env,
+  });
   const dispatcher = auth.readOnly ? restrictToReadOnly(baseDispatcher) : baseDispatcher;
   const result = await handleMcpMessages(payload, dispatcher);
   if (result === null) {
