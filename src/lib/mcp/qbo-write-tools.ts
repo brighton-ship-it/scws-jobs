@@ -4,18 +4,24 @@
  */
 import type { McpToolDefinition, McpToolResult } from './protocol.ts';
 import { runQboWrite, type QboWriteDeps } from '../quickbooks/durable-write.ts';
+import { runJobberInvoiceImport } from '../quickbooks/jobber-invoice-import.ts';
+import { runBatchRevert } from '../quickbooks/revert-batch.ts';
 import { isQboWriteTool } from '../quickbooks/write-payloads.ts';
 
 const confirm = {
   type: 'boolean',
-  description: 'Default false (preview). true posts to the sandbox company. dryRun:false does not post. Do not set confirm and dryRun together.',
+  description: 'Default false (preview). true posts to the write-target company. dryRun:false does not post. Do not set confirm and dryRun together.',
 };
 const requestId = {
   type: 'string',
   description: 'Idempotency key sent as Intuit requestid. Reuse it on retry. If omitted, the key is a hash of the tool and payload so an identical retry does not double-post.',
 };
+const batchId = {
+  type: 'string',
+  description: 'Groups this write so qbo_revert_batch can undo it. Required on confirm for an import.',
+};
 
-const writeProps = { confirm, requestId };
+const writeProps = { confirm, requestId, batchId };
 
 function tool(name: string, description: string, properties: Record<string, unknown>, required: string[]): McpToolDefinition {
   return {
@@ -244,6 +250,25 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
     },
     ['entityType', 'entityId', 'reason']
   ),
+  tool(
+    'qbo_import_jobber_invoices',
+    'Import Jobber invoices into QuickBooks the way the old Jobber sync posted them: DocNumber is the invoice number, the customer matches DisplayName, the item matches the line name, and tax is TAX or NON under CA-San Diego-San Diego. Skips a DocNumber that already exists. Preview returns every invoice and the totals. confirm:true posts and requires batchId. payments: none (default), undeposited, or deposit (also pass depositId). A deposit link does not remove sales lines already on that deposit. At most 40 invoices per call. Does not email.',
+    {
+      invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 40 },
+      fromInvoice: { type: 'integer' },
+      toInvoice: { type: 'integer' },
+      payments: { type: 'string', enum: ['none', 'undeposited', 'deposit'] },
+      depositId: { type: 'string', description: 'Existing QBO deposit to attach new payments to. Required when payments is deposit.' },
+      txnTaxCodeId: { type: 'string', description: 'Defaults to the TaxCode named CA-San Diego-San Diego.' },
+    },
+    []
+  ),
+  tool(
+    'qbo_revert_batch',
+    'Undo one batchId. Preview lists the steps. confirm:true restores modified entities from the audited prior state, then deletes payments this batch created, then deletes the other created entities. It does not delete anything the batch did not create. It skips voids and anything on or before the books close date, and reports those in couldNot.',
+    {},
+    ['batchId']
+  ),
 ];
 
 export async function callQboWriteTool(
@@ -253,6 +278,14 @@ export async function callQboWriteTool(
 ): Promise<McpToolResult> {
   if (!isQboWriteTool(name)) {
     return { content: [{ type: 'text', text: JSON.stringify({ error: `Unknown QuickBooks tool: ${name}` }) }], isError: true };
+  }
+  if (name === 'qbo_revert_batch') {
+    const result = await runBatchRevert(args, deps);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
+  }
+  if (name === 'qbo_import_jobber_invoices') {
+    const result = await runJobberInvoiceImport(args, deps);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
   }
   const result = await runQboWrite(name, args, deps);
   return {

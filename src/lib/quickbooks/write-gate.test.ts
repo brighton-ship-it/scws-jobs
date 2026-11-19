@@ -12,14 +12,33 @@ test('writes are off unless the flag is exactly true', () => {
   assert.match(off.blockedReason || '', /off/);
 });
 
-test('production environment and the production realm are refused', () => {
+test('sandbox stays the default and production needs a second opt-in', () => {
   const productionHost = describeQboWriteGate({
     QBO_WRITES_ENABLED: 'true',
     QBO_WRITE_ENVIRONMENT: 'production',
     QBO_WRITE_REALM_ID: '2222222222222222',
   });
   assert.equal(productionHost.enabled, false);
-  assert.match(productionHost.blockedReason || '', /sandbox/);
+  assert.match(productionHost.blockedReason || '', /QBO_WRITE_PRODUCTION_REALM_ID/);
+
+  const opted = describeQboWriteGate({
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_ENVIRONMENT: 'production',
+    QBO_WRITE_PRODUCTION_REALM_ID: '9130349321543166',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  });
+  assert.equal(opted.enabled, true);
+  assert.equal(opted.environment, 'production');
+  assert.equal(opted.realmId, '9130349321543166');
+  assert.match(opted.baseUrl, /^https:\/\/quickbooks\.api\.intuit\.com$/);
+
+  const mismatch = describeQboWriteGate({
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_ENVIRONMENT: 'production',
+    QBO_WRITE_PRODUCTION_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  });
+  assert.equal(mismatch.enabled, false);
 
   const sameRealm = describeQboWriteGate({
     QBO_WRITES_ENABLED: 'true',

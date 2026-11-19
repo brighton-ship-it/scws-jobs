@@ -89,7 +89,7 @@ import { isQboWriteTool } from '../quickbooks/write-payloads.ts';
 import { callQboWriteTool, QBO_WRITE_MCP_TOOLS } from './qbo-write-tools.ts';
 
 export const JOBBER_MCP_SERVER_NAME = 'scws-jobber';
-export const JOBBER_MCP_SERVER_VERSION = '1.16.0';
+export const JOBBER_MCP_SERVER_VERSION = '1.17.0';
 
 export const FORBIDDEN_JOBBER_MCP_TOOLS = [
   'send_quote',
@@ -154,7 +154,7 @@ export const JOBBER_MCP_INSTRUCTIONS = [
   'create_quote_draft assigns Brighton Scala as salesperson when salespersonId is omitted. update_quote_draft changes salesperson only when salespersonId is passed, and errors if Jobber leaves the previous salesperson in place. It can add, edit, or delete line items on an unsent draft only (quoteEditLineItems / quoteDeleteLineItems) and refuses a non-draft quote or a delete that would leave no lines. set_quote_salesperson changes only the salesperson on a quote in any status and never contacts the customer. Quote reads include salesperson id and name.',
   'list_notes reads note text (message, author, created time, attachment file names and URLs) for a job including notes on its visits, or for a client, quote, or request. Read-only.',
   'search_jobs and get_job accept includeVisits (default false) for visit times and assigned technician names. That path skips photos and caps the Jobber page at 10. search_invoices and get_invoice accept includeJobs (default false) for linked job ids and job numbers.',
-  'QuickBooks writes (qbo_journal_entry, qbo_deposit, qbo_payment, qbo_invoice, qbo_categorize_purchase, qbo_bill, qbo_bill_payment, qbo_attach_note, qbo_closing_date, qbo_void) preview unless confirm is true. They post only to a sandbox realm when QBO_WRITES_ENABLED=true. They do not delete, do not email, and do not turn the Jobber to QuickBooks sync on. qbo_query, qbo_report, and qbo_status stay read-only.',
+  'QuickBooks writes preview unless confirm is true. Sandbox is the default. Production also requires QBO_WRITE_ENVIRONMENT=production and QBO_WRITE_PRODUCTION_REALM_ID equal to the connected realm. Pass batchId so qbo_revert_batch can undo the batch. qbo_import_jobber_invoices skips DocNumbers already in QuickBooks. These tools do not email and do not turn the Jobber sync back on. qbo_query, qbo_report, and qbo_status stay read-only.',
 ].join(' ');
 
 const LINE_ITEM_SCHEMA = {
@@ -1399,6 +1399,10 @@ export type JobberMcpDeps = JobberDeps & {
   qboAccessToken?: string;
   qboAudit?: (entry: QboAuditEntry) => Promise<void>;
   qboProductionRealmId?: string;
+  qboQuery?: (query: string) => Promise<unknown>;
+  loadJobberInvoices?: (numbers: string[]) => Promise<any[]>;
+  loadBatch?: (batchId: string) => Promise<any[]>;
+  readCloseDate?: () => Promise<string | null>;
 };
 
 export async function callJobberMcpTool(
@@ -2117,6 +2121,10 @@ export async function callJobberMcpTool(
             accessToken: deps?.qboAccessToken,
             audit: deps?.qboAudit,
             productionRealmId: deps?.qboProductionRealmId,
+            qboQuery: deps?.qboQuery,
+            loadJobberInvoices: deps?.loadJobberInvoices,
+            loadBatch: deps?.loadBatch,
+            readCloseDate: deps?.readCloseDate,
           });
         }
         return errorResult(`Unknown tool: ${name}`);

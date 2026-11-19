@@ -90,7 +90,7 @@ Vercel Authentication (SSO) on this project must stay **Preview only**. SSO on `
 
 ## Tools
 
-MCP server version **1.16.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
+MCP server version **1.17.0** (`JOBBER_MCP_SERVER_VERSION`). GraphQL version stays `2025-04-16`. Field names were checked against the public Jobber introspection captured at API version **2025-01-20** (`hightreequency/jobberschema`) and the [2025-04-16 changelog](https://developer.getjobber.com/docs/changelog/). That changelog does not change the argument names these tools send (`jobFormIds` and `customFields` type changes are unused). A newer API version is not required. This repo does not introspect production with the OAuth token.
 
 - `search_clients` — name / phone / email / address. Enough to find a client before `create_client`, `create_request`, or `create_job`
 - `get_client` — one client + properties + recent quotes
@@ -245,7 +245,7 @@ curl -sS \
 
 `qbo_status`, `qbo_report`, and `qbo_query` are still read-only GET/SELECT calls against the production company stored in `quickbooks_connections`.
 
-These tools preview by default and post only to a sandbox company:
+These tools preview by default. A confirm posts to the sandbox company unless production writes are opted in:
 
 | Tool | What a confirm does |
 | --- | --- |
@@ -259,27 +259,47 @@ These tools preview by default and post only to a sandbox company:
 | `qbo_attach_note` | Set `PrivateNote`, an invoice `CustomerMemo`, or an Attachable note (`IncludeOnSend` false). |
 | `qbo_closing_date` | Set `Preferences.AccountingInfoPrefs.BookCloseDate`. |
 | `qbo_void` | Void an Invoice or a Payment (`operation=void`). |
+| `qbo_import_jobber_invoices` | Import up to 40 Jobber invoices. Skips a DocNumber already in QuickBooks. |
+| `qbo_revert_batch` | Undo one `batchId`. Deletes only entities that batch created. |
 
 `confirm` defaults to false. A preview returns the POST body when it is known, or the exact field changes when confirm must read a SyncToken first (`qbo_categorize_purchase`, `qbo_closing_date`). `dryRun: false` does not post. Pass `confirm: true`.
 
 `requestId` is sent as Intuit's `requestid` query parameter. Reuse it to retry the same post. If you omit it, the gateway hashes the tool and payload so an identical retry uses the same key. Intuit returns the original response for a repeated request id instead of creating a second transaction.
 
-Every confirm writes `public.qbo_write_audit` (actor, tool, payload, QuickBooks response, ids) before the post and again with the response. Apply `supabase/migrations/20261105_qbo_write_audit.sql` in the Supabase SQL Editor. The app does not run that file. If the insert fails, the post is refused. Preview rows are best-effort.
+Every confirm writes `public.qbo_write_audit` before the post and again with the response: actor, tool, payload, QuickBooks response, entity, id, SyncToken, and `batchId` when you passed one. Apply both SQL files in the Supabase SQL Editor. The app does not run them. If the insert fails, the post is refused.
 
-### Env (leave unset in production)
+1. `supabase/migrations/20261105_qbo_write_audit.sql`
+2. `supabase/migrations/20261119_qbo_write_audit_batch.sql`
 
-| Name | Role |
+Pass the same `batchId` on every write in a batch, including `qbo_import_jobber_invoices` (required there on confirm). `qbo_revert_batch` previews, then on confirm restores modified entities from the audited prior state, deletes payments the batch created, then deletes the other created entities. It refuses voids, rows with no prior state that this gateway did not create, and anything on or before `BookCloseDate`. Those come back in `couldNot`.
+
+### Env vars on Vercel project scws-jobs
+
+Leave every write var unset until Brighton is ready. Health reports `quickbooksWrites: false` until the gate is open. `quickbooksDeletes` stays false. `qbo_revert_batch` is the only tool that deletes, and only entities its own batch created.
+
+Sandbox (does not touch the real company):
+
+| Name | Value |
 | --- | --- |
-| `QBO_WRITES_ENABLED` | Must be the string `true`. Anything else, including unset, keeps writes off. |
-| `QBO_WRITE_ENVIRONMENT` | Must be `sandbox` or unset. `production` is refused. |
-| `QBO_WRITE_REALM_ID` | Sandbox company realm. Refused when it equals the production connection's realm. |
-| `QBO_WRITE_REFRESH_TOKEN` | Sandbox refresh token, used only when no sandbox row is stored. Rotated tokens are written to a `quickbooks_connections` row with `environment=sandbox`. The production row is not updated. |
+| `QBO_WRITES_ENABLED` | `true` |
+| `QBO_WRITE_ENVIRONMENT` | `sandbox` or unset |
+| `QBO_WRITE_REALM_ID` | Sandbox realm id. Refused if it equals the connected production realm. |
+| `QBO_WRITE_REFRESH_TOKEN` | Sandbox refresh token. Rotated tokens are stored on a `quickbooks_connections` row with `environment=sandbox`. The production row is not updated. |
 | `QBO_WRITE_CLIENT_ID` / `QBO_WRITE_CLIENT_SECRET` | Optional. Fall back to `QBO_CLIENT_ID` / `QBO_CLIENT_SECRET`. |
-| `QBO_PRODUCTION_REALM_ID` | Optional extra guard. Confirm also reads the production realm from Supabase and refuses a match. |
 
-There is no flag that enables writes against the real company. Do not set these on the scws-jobs Production deployment for the live realm.
+Production (real Southern California Well Service company). All three are required. A confirm also reads `quickbooks_connections` and refuses unless `QBO_WRITE_PRODUCTION_REALM_ID` equals that connected realm. Production writes reuse that connection's token. Do not set `QBO_WRITE_REFRESH_TOKEN` for the real company.
 
-Health (`GET /api/mcp/jobber`) reports `quickbooksWrites: false` until the gate is open. `quickbooksDeletes` stays false.
+| Name | Value |
+| --- | --- |
+| `QBO_WRITES_ENABLED` | `true` |
+| `QBO_WRITE_ENVIRONMENT` | `production` |
+| `QBO_WRITE_PRODUCTION_REALM_ID` | `9130349321543166` |
+
+`QBO_PRODUCTION_REALM_ID` is an optional extra copy of that same realm. If it is set and differs, the gate stays closed.
+
+After the SQL is applied and those three Production env vars are set, redeploy scws-jobs. Then preview an import before any confirm:
+
+`qbo_import_jobber_invoices` with `fromInvoice: 5826`, `toInvoice: 5865` (40 at a time), `batchId`, and `payments: "none"` until the deposit lines have been reviewed. `payments: "undeposited"` creates a payment in Undeposited Funds. `payments: "deposit"` also needs `depositId` of an existing deposit. October Jobber payouts are already deposits that post to account 4010 Sales, so linking a payment onto one of them records the invoice income as well. The preview includes that warning. `confirm: true` posts. `qbo_revert_batch` with the same `batchId` undoes it.
 
 ### Sandbox integration test
 
@@ -311,9 +331,11 @@ This gateway does not enable, disable, or repair Jobber's QuickBooks sync. The a
 | `src/lib/mcp/jobber-auth.ts` | Named API keys |
 | `src/lib/mcp/jobber-tools.ts` | Tool list + handlers |
 | `src/lib/mcp/qbo-write-tools.ts` | QuickBooks write tool schemas (preview by default) |
-| `src/lib/quickbooks/write-gate.ts` | Sandbox-only write gate |
+| `src/lib/quickbooks/write-gate.ts` | Sandbox default, production opt-in |
 | `src/lib/quickbooks/write-payloads.ts` | Exact QuickBooks write bodies |
-| `src/lib/quickbooks/durable-write.ts` | Confirm, requestid, sandbox token, audit |
+| `src/lib/quickbooks/durable-write.ts` | Confirm, requestid, token, batch audit |
+| `src/lib/quickbooks/jobber-invoice-import.ts` | Jobber invoice batch import |
+| `src/lib/quickbooks/revert-batch.ts` | Reverse-order batch revert |
 | `src/lib/quickbooks/durable-read.ts` | Read-only production QuickBooks (`qbo_query`, `qbo_report`, `qbo_status`) |
 | `src/lib/jobber/products.ts` | product catalog search (`products`, not `productsAndServices`) + local name/description fallback |
 | `src/lib/jobber/mcp-products.ts` | `get_products` and one-product `edit_product` (`productsAndServicesEdit`) |

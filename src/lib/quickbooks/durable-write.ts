@@ -2,17 +2,20 @@
  * Gated QuickBooks Online writes for the Jobber MCP.
  *
  * Preview is the default and does not call QuickBooks.
- * A real post requires confirm:true, QBO_WRITES_ENABLED=true, and a sandbox
- * realm that is not the production company. Every confirm is audited before
- * the post. Deletes are not implemented.
+ * A real post requires confirm:true and QBO_WRITES_ENABLED=true.
+ * Sandbox is the default. Production also requires QBO_WRITE_ENVIRONMENT=production
+ * and QBO_WRITE_PRODUCTION_REALM_ID equal to the connected realm.
+ * Every confirm is audited before the post. Deletes happen only inside qbo_revert_batch.
  */
 import { createClient } from '@supabase/supabase-js';
-import { QBO_SANDBOX_BASE, assertSandboxPersistAllowed, describeQboWriteGate, type Env, type QboWriteGate } from './write-gate.ts';
+import { productionWriteAccessToken } from './durable-read.ts';
+import { assertSandboxPersistAllowed, describeQboWriteGate, type Env, type QboWriteEnvironment, type QboWriteGate } from './write-gate.ts';
 import {
   applyRead,
   buildQboPlan,
   confirmRequested,
   idempotencyPayload,
+  parseBatchId,
   resolveRequestId,
   type QboPlan,
 } from './write-payloads.ts';
@@ -43,13 +46,19 @@ export type QboAuditEntry = {
   ok: boolean;
   refused: boolean;
   realmId: string | null;
-  environment: 'sandbox';
+  environment: QboWriteEnvironment;
   entity: string;
   payload: unknown;
   qboResponse: unknown;
   qboIds: Record<string, string | null>;
   error: string | null;
   reason: string | null;
+  batchId?: string | null;
+  action?: string | null;
+  created?: boolean;
+  priorState?: unknown;
+  syncToken?: string | null;
+  txnDate?: string | null;
 };
 
 export type QboWriteDeps = {
@@ -65,6 +74,10 @@ export type QboWriteDeps = {
   };
   audit?: (entry: QboAuditEntry) => Promise<void>;
   now?: () => number;
+  qboQuery?: (query: string) => Promise<unknown>;
+  loadJobberInvoices?: (numbers: string[]) => Promise<any[]>;
+  loadBatch?: (batchId: string) => Promise<any[]>;
+  readCloseDate?: () => Promise<string | null>;
 };
 
 export type QboWriteResult = {
@@ -76,7 +89,8 @@ export type QboWriteResult = {
   tool: string;
   actor: string;
   requestId: string;
-  target: { enabled: boolean; environment: 'sandbox'; realmId: string | null; blockedReason: string | null };
+  target: { enabled: boolean; environment: QboWriteEnvironment; realmId: string | null; blockedReason: string | null };
+  batchId: string | null;
   http: {
     method: 'POST';
     path: string;
@@ -163,6 +177,12 @@ export async function insertQboAudit(client: SbClient, entry: QboAuditEntry): Pr
     qbo_ids: entry.qboIds,
     error: entry.error,
     reason: entry.reason,
+    batch_id: entry.batchId ?? null,
+    action: entry.action ?? null,
+    created: entry.created ?? false,
+    prior_state: cap(entry.priorState),
+    sync_token: entry.syncToken ?? entry.qboIds?.syncToken ?? null,
+    txn_date: entry.txnDate ?? null,
   })) as SbResult;
   if (error) throw new Error(`qbo_write_audit insert failed: ${error.message}`);
 }
@@ -255,6 +275,10 @@ export async function refreshSandboxToken(
 async function tokenFor(gate: QboWriteGate, productionRealmId: string, deps: QboWriteDeps, fetchImpl: typeof fetch): Promise<string> {
   if (deps.accessToken) return deps.accessToken;
   const env = deps.env || process.env;
+  if (gate.environment === 'production') {
+    if (!gate.realmId) throw new Error('Production write realm is missing.');
+    return productionWriteAccessToken(env, gate.realmId);
+  }
   const store = deps.tokenStore || {
     load: async (realmId: string) => {
       const client = service(env);
@@ -286,9 +310,9 @@ function queryOf(requestId: string, operation?: string): Record<string, string> 
   return query;
 }
 
-function writeUrl(realmId: string, path: string, query: Record<string, string>): string {
+function writeUrl(baseUrl: string, realmId: string, path: string, query: Record<string, string>): string {
   const qs = new URLSearchParams(query);
-  return `${QBO_SANDBOX_BASE}/v3/company/${encodeURIComponent(realmId)}${path}?${qs}`;
+  return `${baseUrl}/v3/company/${encodeURIComponent(realmId)}${path}?${qs}`;
 }
 
 async function qboFetch(url: string, token: string, fetchImpl: typeof fetch, body?: Record<string, unknown>): Promise<{ status: number; json: any; text: string }> {
@@ -343,9 +367,10 @@ function resultBase(plan: QboPlan, requestId: string, actor: string, confirm: bo
     tool: plan.tool,
     actor,
     requestId,
+    batchId: null,
     target: {
       enabled: gate.enabled,
-      environment: 'sandbox',
+      environment: gate.environment,
       realmId: gate.realmId,
       blockedReason: gate.blockedReason,
     },
@@ -378,13 +403,19 @@ async function remember(entry: QboAuditEntry, deps: QboWriteDeps, required: bool
 }
 
 export async function runQboWrite(tool: string, args: Record<string, unknown>, deps: QboWriteDeps = {}): Promise<QboWriteResult> {
-  const plan = buildQboPlan(tool, args);
+  return runQboPlan(buildQboPlan(tool, args), args, deps);
+}
+
+export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, deps: QboWriteDeps = {}): Promise<QboWriteResult> {
+  const tool = plan.tool;
   const confirm = confirmRequested(args);
   const requestId = resolveRequestId(tool, idempotencyPayload(plan), typeof args.requestId === 'string' ? args.requestId : undefined);
   const actor = deps.actor?.trim() || 'unknown';
   const env = deps.env || process.env;
   const gate = describeQboWriteGate(env);
   const base = resultBase(plan, requestId, actor, confirm, gate);
+  const batchId = parseBatchId(args.batchId);
+  base.batchId = batchId;
   const fetchImpl = deps.fetchImpl || fetch;
 
   if (!confirm) {
@@ -398,8 +429,9 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
         ok: true,
         refused: false,
         realmId: gate.realmId,
-        environment: 'sandbox',
+        environment: gate.environment,
         entity: plan.entity,
+        batchId,
         payload: { http: base.http, changes: plan.changes ?? null, reason: plan.reason || null },
         qboResponse: null,
         qboIds: {},
@@ -424,8 +456,9 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
         ok: false,
         refused: true,
         realmId: gate.realmId,
-        environment: 'sandbox',
+        environment: gate.environment,
         entity: plan.entity,
+        batchId,
         payload: { http: base.http, changes: plan.changes ?? null },
         qboResponse: null,
         qboIds: {},
@@ -454,8 +487,9 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
         ok: false,
         refused: true,
         realmId: gate.realmId,
-        environment: 'sandbox',
+        environment: gate.environment,
         entity: plan.entity,
+        batchId,
         payload: { http: base.http },
         qboResponse: null,
         qboIds: {},
@@ -467,7 +501,33 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
     );
     return { ...base, dryRun: true, refused: true, error, audit: { attempted: true } };
   }
-  if (productionRealmId === gate.realmId) {
+  if (gate.environment === 'production' && productionRealmId !== gate.realmId) {
+    const error = 'Refusing QBO write: QBO_WRITE_PRODUCTION_REALM_ID does not equal the connected realm.';
+    await remember(
+      {
+        actor,
+        tool: plan.tool,
+        requestId,
+        dryRun: true,
+        confirmed: true,
+        ok: false,
+        refused: true,
+        realmId: gate.realmId,
+        environment: gate.environment,
+        entity: plan.entity,
+        payload: { http: base.http },
+        qboResponse: null,
+        qboIds: {},
+        error,
+        reason: plan.reason || null,
+        batchId,
+      },
+      deps,
+      false
+    );
+    return { ...base, dryRun: true, refused: true, error, audit: { attempted: true } };
+  }
+  if (gate.environment !== 'production' && productionRealmId === gate.realmId) {
     const error = 'Refusing QBO write: QBO_WRITE_REALM_ID is the production company.';
     await remember(
       {
@@ -479,8 +539,9 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
         ok: false,
         refused: true,
         realmId: gate.realmId,
-        environment: 'sandbox',
+        environment: gate.environment,
         entity: plan.entity,
+        batchId,
         payload: { http: base.http },
         qboResponse: null,
         qboIds: {},
@@ -517,18 +578,21 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
 
   const token = await tokenFor(gate, productionRealmId, deps, fetchImpl);
   let body = plan.body;
+  let priorState: unknown = null;
   if (plan.read) {
-    const got = await qboFetch(writeUrl(gate.realmId, plan.read.path, { minorversion: MINOR_VERSION }), token, fetchImpl);
+    const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, plan.read.path, { minorversion: MINOR_VERSION }), token, fetchImpl);
     if (got.status < 200 || got.status >= 300) {
       const error = `QuickBooks read before write failed (${got.status}). Nothing was posted.`;
       await remember(failEntry(base, error, got.json), deps, false);
       return { ...base, error, qbo: slim(plan.entity, got.json), audit: { attempted: true } };
     }
+    const fetchedEntity = (got.json && (got.json[plan.entity] || got.json)) || null;
+    if (plan.action !== 'create' && plan.action !== 'attach') priorState = cap(fetchedEntity);
     body = applyRead(plan, got.json || {});
   }
   if (!body) throw new Error('QuickBooks write had no body to post.');
   const query = queryOf(requestId, plan.operation);
-  const posted = await qboFetch(writeUrl(gate.realmId, plan.path, query), token, fetchImpl, body);
+  const posted = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, plan.path, query), token, fetchImpl, body);
   const ids = idsFrom(plan.entity, posted.json);
   const http = { ...base.http, body, query };
   if (posted.status < 200 || posted.status >= 300) {
@@ -543,8 +607,9 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
         ok: false,
         refused: false,
         realmId: gate.realmId,
-        environment: 'sandbox',
+        environment: gate.environment,
         entity: plan.entity,
+        batchId,
         payload: { http, reason: plan.reason || null },
         qboResponse: cap(posted.json),
         qboIds: ids,
@@ -568,8 +633,14 @@ export async function runQboWrite(tool: string, args: Record<string, unknown>, d
         ok: true,
         refused: false,
         realmId: gate.realmId,
-        environment: 'sandbox',
+        environment: gate.environment,
         entity: plan.entity,
+        batchId,
+        action: plan.action,
+        created: plan.action === 'create' || plan.action === 'attach',
+        priorState,
+        syncToken: ids.syncToken,
+        txnDate: typeof body.TxnDate === 'string' ? body.TxnDate : null,
         payload: { http, reason: plan.reason || null },
         qboResponse: cap(posted.json),
         qboIds: ids,
@@ -605,8 +676,9 @@ function failEntry(base: QboWriteResult, error: string, qbo: unknown): QboAuditE
     ok: false,
     refused: false,
     realmId: base.target.realmId,
-    environment: 'sandbox',
+    environment: base.target.environment,
     entity: base.tool,
+    batchId: base.batchId,
     payload: { http: base.http },
     qboResponse: cap(qbo),
     qboIds: {},
@@ -615,14 +687,52 @@ function failEntry(base: QboWriteResult, error: string, qbo: unknown): QboAuditE
   };
 }
 
+async function writeToken(deps: QboWriteDeps): Promise<{ gate: QboWriteGate; token: string }> {
+  const env = deps.env || process.env;
+  const gate = describeQboWriteGate(env);
+  if (!gate.enabled || !gate.realmId) throw new Error(gate.blockedReason || 'QBO writes are off.');
+  const productionRealmId = deps.productionRealmId || (await (deps.loadProductionRealmId ? deps.loadProductionRealmId(env) : loadProductionRealmId(env))) || '';
+  if (gate.environment === 'production' && productionRealmId !== gate.realmId) {
+    throw new Error('Refusing QBO write: QBO_WRITE_PRODUCTION_REALM_ID does not equal the connected realm.');
+  }
+  if (gate.environment !== 'production' && productionRealmId === gate.realmId) {
+    throw new Error('Refusing QBO write: QBO_WRITE_REALM_ID is the production company.');
+  }
+  const token = await tokenFor(gate, productionRealmId, deps, deps.fetchImpl || fetch);
+  return { gate, token };
+}
+
+/** Read on the write-target company when the gate is open, otherwise the production read connection. */
+export async function writeRealmQuery(query: string, deps: QboWriteDeps = {}): Promise<unknown> {
+  const env = deps.env || process.env;
+  const gate = describeQboWriteGate(env);
+  if (!gate.enabled || !gate.realmId) {
+    const { runQboQuery } = await import('./durable-read.ts');
+    return runQboQuery(query, env);
+  }
+  const { token } = await writeToken(deps);
+  const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, '/query', { minorversion: MINOR_VERSION, query }), token, deps.fetchImpl || fetch);
+  if (got.status < 200 || got.status >= 300) throw new Error(`QuickBooks query failed (${got.status}).`);
+  return got.json;
+}
+
+export async function readBookCloseDate(deps: QboWriteDeps = {}): Promise<string | null> {
+  const { gate, token } = await writeToken(deps);
+  const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId || '', '/preferences', { minorversion: MINOR_VERSION }), token, deps.fetchImpl || fetch);
+  if (got.status < 200 || got.status >= 300) throw new Error(`Could not read BookCloseDate (${got.status}).`);
+  const date = got.json?.Preferences?.AccountingInfoPrefs?.BookCloseDate;
+  return typeof date === 'string' && date ? date : null;
+}
+
 export function qboWriteSafety(env: Env = process.env) {
   const gate = describeQboWriteGate(env);
   return {
     quickbooksReadOnly: !gate.enabled,
     quickbooksWrites: gate.enabled,
-    quickbooksWriteEnvironment: gate.enabled ? 'sandbox' : null,
+    quickbooksWriteEnvironment: gate.enabled ? gate.environment : null,
     quickbooksWriteRealmConfigured: Boolean(gate.enabled && gate.realmId),
     quickbooksDeletes: false,
+    quickbooksBatchRevert: gate.enabled,
     quickbooksWriteBlockedReason: gate.enabled ? null : gate.blockedReason,
   };
 }

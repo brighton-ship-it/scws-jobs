@@ -86,7 +86,7 @@ describe('JOBBER_MCP_TOOLS', () => {
     assert.ok(names.includes('create_products'));
     assert.ok(names.includes('list_products'));
     assert.equal(names.includes('delete_product'), false);
-    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.16.0');
+    assert.equal(JOBBER_MCP_SERVER_VERSION, '1.17.0');
     for (const qboWrite of [
       'qbo_journal_entry',
       'qbo_deposit',
@@ -98,6 +98,8 @@ describe('JOBBER_MCP_TOOLS', () => {
       'qbo_attach_note',
       'qbo_closing_date',
       'qbo_void',
+      'qbo_import_jobber_invoices',
+      'qbo_revert_batch',
     ]) {
       assert.ok(names.includes(qboWrite), qboWrite);
     }

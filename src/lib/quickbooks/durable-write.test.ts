@@ -76,7 +76,7 @@ test('confirm refuses the production realm and the production host', async () =>
     }
   );
   assert.equal(host.refused, true);
-  assert.match(host.error || '', /sandbox/);
+  assert.match(host.error || '', /QBO_WRITE_PRODUCTION_REALM_ID/);
 
   const live = await runQboWrite(
     'qbo_journal_entry',
@@ -138,6 +138,7 @@ test('confirm posts once to the sandbox company and retries reuse requestid', as
   assert.doesNotMatch(urls[0], /^https:\/\/quickbooks\.api\.intuit\.com/);
   assert.deepEqual(bodies[0], bodies[1]);
   assert.equal(first.ids.id, '55');
+  assert.equal(first.batchId, null);
   const posted = audits.filter((entry) => entry.ok && entry.qboIds.id === '55');
   assert.equal(posted.length, 2);
   assert.equal(posted[0].actor, 'bookkeeper');
@@ -170,6 +171,42 @@ test('a failed audit blocks the post', async () => {
     /audit log down/
   );
   assert.equal(calls, 0);
+});
+
+test('production opt-in posts to the production host only when the realm matches', async () => {
+  const urls: string[] = [];
+  const audits: QboAuditEntry[] = [];
+  const fetchImpl: typeof fetch = async (url) => {
+    urls.push(String(url));
+    return json({ JournalEntry: { Id: '7', SyncToken: '0' } });
+  };
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_ENVIRONMENT: 'production',
+    QBO_WRITE_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  const posted = await runQboWrite(
+    'qbo_journal_entry',
+    { ...journal, confirm: true, batchId: 'oct-2026' },
+    { env, productionRealmId: '9130349321543166', accessToken: 'tok', fetchImpl, audit: async (entry) => { audits.push(entry); } }
+  );
+  assert.equal(posted.wrote, true);
+  assert.match(urls[0], /^https:\/\/quickbooks\.api\.intuit\.com\/v3\/company\/9130349321543166\/journalentry\?/);
+  assert.equal(urls[0].includes('sandbox-quickbooks'), false);
+  const saved = audits.find((entry) => entry.ok && entry.created);
+  assert.equal(saved?.batchId, 'oct-2026');
+  assert.equal(saved?.entity, 'JournalEntry');
+  assert.equal(saved?.syncToken, '0');
+  assert.equal(saved?.qboIds.id, '7');
+
+  urls.length = 0;
+  const mismatch = await runQboWrite(
+    'qbo_journal_entry',
+    { ...journal, confirm: true, batchId: 'oct-2026' },
+    { env, productionRealmId: '2222222222222222', accessToken: 'tok', fetchImpl, audit: async () => {} }
+  );
+  assert.equal(mismatch.refused, true);
+  assert.equal(urls.length, 0);
 });
 
 test('omitted request ids match for the same payload', async () => {

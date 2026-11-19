@@ -19,6 +19,12 @@ create table if not exists public.qbo_write_audit (
   qbo_response jsonb,
   qbo_ids jsonb,
   error text,
-  reason text
+  reason text,
+  batch_id text,
+  action text,
+  created boolean not null default false,
+  prior_state jsonb,
+  sync_token text,
+  txn_date text
 );
 alter table public.qbo_write_audit enable row level security;

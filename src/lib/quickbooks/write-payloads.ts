@@ -14,6 +14,8 @@ export const QBO_WRITE_TOOLS = [
   'qbo_attach_note',
   'qbo_closing_date',
   'qbo_void',
+  'qbo_import_jobber_invoices',
+  'qbo_revert_batch',
 ] as const;
 
 export type QboWriteTool = (typeof QBO_WRITE_TOOLS)[number];
@@ -46,14 +48,14 @@ const ENTITY_PATH: Record<string, string> = {
   Vendor: 'vendor',
 };
 
-export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void';
+export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment';
 
 export type QboPlan = {
   tool: QboWriteTool;
   entity: string;
-  action: 'create' | 'update' | 'void' | 'attach' | 'close';
+  action: 'create' | 'update' | 'void' | 'attach' | 'close' | 'delete';
   path: string;
-  operation?: 'update' | 'void';
+  operation?: 'update' | 'void' | 'delete';
   /** Exact POST body when no read is required. Null when confirm must GET first. */
   body: Record<string, unknown> | null;
   read?: { path: string; apply: QboReadApply };
@@ -88,6 +90,18 @@ export function canonicalJson(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(obj[key])}`)
     .join(',')}}`;
+}
+
+export function parseBatchId(value: unknown, required = false): string | null {
+  if (value === undefined || value === null || value === '') {
+    if (required) throw new Error('batchId is required so the batch can be reverted.');
+    return null;
+  }
+  const id = String(value).trim();
+  if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id)) {
+    throw new Error('batchId must be 1–80 characters of letters, numbers, "_", ".", ":", or "-".');
+  }
+  return id;
 }
 
 export function explicitRequestId(value: unknown): string | undefined {
@@ -559,6 +573,20 @@ export function buildClosingDate(args: Record<string, unknown>): QboPlan {
   };
 }
 
+export function linkPaymentOnDeposit(deposit: Record<string, unknown>, paymentId: string, amount: number): Record<string, unknown> {
+  const lines = Array.isArray(deposit.Line) ? [...(deposit.Line as Record<string, unknown>[])] : [];
+  const already = lines.some((line) => {
+    const linked = line.LinkedTxn as Array<{ TxnId?: string; TxnType?: string }> | undefined;
+    return (linked || []).some((item) => item.TxnId === paymentId && item.TxnType === 'Payment');
+  });
+  if (!already) {
+    lines.push({ Amount: amount, LinkedTxn: [{ TxnId: paymentId, TxnLineId: '0', TxnType: 'Payment' }] });
+  }
+  const body: Record<string, unknown> = { ...deposit, Id: String(deposit.Id), SyncToken: String(deposit.SyncToken), Line: lines };
+  delete body.MetaData;
+  return body;
+}
+
 export function preferencesCloseDateBody(preferences: Record<string, unknown>, closeDate: string): Record<string, unknown> {
   const syncToken = typeof preferences.SyncToken === 'string' ? preferences.SyncToken : '';
   if (!syncToken) throw new Error('Preferences is missing SyncToken. The books close date was not changed.');
@@ -633,6 +661,10 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   if (plan.read?.apply === 'closeDate') {
     const changes = plan.changes as { closeDate: string };
     return preferencesCloseDateBody(entity, changes.closeDate);
+  }
+  if (plan.read?.apply === 'linkPayment') {
+    const changes = plan.changes as { paymentId: string; amount: number };
+    return linkPaymentOnDeposit(entity, changes.paymentId, changes.amount);
   }
   const syncToken = typeof entity.SyncToken === 'string' ? entity.SyncToken : '';
   if (!syncToken) throw new Error(`${plan.entity} is missing SyncToken.`);
