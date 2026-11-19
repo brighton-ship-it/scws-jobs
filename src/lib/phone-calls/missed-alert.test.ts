@@ -14,6 +14,7 @@ import {
   AWAIT_MIKE_MARKER,
   CALL_ALERT_MARKER,
   deliverMikeCallEmail,
+  hangupBeforeRing,
   inboundAlertCopy,
   inboundCallEmailPlan,
   mergeMikeCallEmail,
@@ -182,9 +183,19 @@ describe('status callback', () => {
 
 describe('abandon before the dial', () => {
   const pending = { dial_status: null, processing_status: 'pending' };
-  it('alerts when the final status closes a call that never reached the dial', () => {
-    const decision = abandonAlertDecision({ params: { CallSid: 'CA1', CallStatus: 'completed', CallDuration: '4' }, row: pending });
-    assert.deepEqual(decision, { closeOut: true, alert: true });
+  it('closes a notice hang-up without emailing, and still alerts once the dial should have started', () => {
+    const notice = abandonAlertDecision({
+      params: { CallSid: 'CA1', CallStatus: 'completed', CallDuration: '4' },
+      row: { ...pending, started_at: '2026-10-22T14:29:01.000Z' },
+      env: {} as NodeJS.ProcessEnv,
+    });
+    assert.deepEqual(notice, { closeOut: true, alert: false });
+    const ringing = abandonAlertDecision({
+      params: { CallSid: 'CA1', CallStatus: 'completed', CallDuration: '13' },
+      row: { ...pending, started_at: '2026-10-22T14:29:01.000Z' },
+      env: {} as NodeJS.ProcessEnv,
+    });
+    assert.deepEqual(ringing, { closeOut: true, alert: true });
   });
   it('does not alert when a dial result is already stored or the call is not final', () => {
     assert.equal(abandonAlertDecision({ params: { CallSid: 'CA1', CallStatus: 'completed' }, row: { dial_status: 'no-answer', processing_status: 'pending' } }).alert, false);
@@ -242,7 +253,7 @@ describe('abandon before the dial', () => {
     assert.match(decision.summary, /rang about 8 seconds/);
     assert.match(decision.summary, /never reached Mike/);
   });
-  it('emails a hang-up during the recording notice without waiting', async () => {
+  it('closes a hang-up during the recording notice without emailing or waiting', async () => {
     let waited = false;
     const decision = await confirmedAbandon({
       params: { CallSid: 'CA1', CallStatus: 'completed', CallDuration: '4' },
@@ -252,9 +263,13 @@ describe('abandon before the dial', () => {
       sleep: async () => { waited = true; },
     });
     assert.equal(waited, false);
+    assert.equal(decision.closeOut, true);
+    assert.equal(decision.alert, false);
+    assert.equal(decision.reason, 'hung-up-before-ring');
     assert.equal(decision.phase, 'before_dial');
     assert.equal(decision.ringSeconds, 0);
     assert.match(decision.summary, /recording notice/);
+    assert.match(decision.summary, /before any phone rang/);
   });
   it('after hours, a short hang-up was already ringing Mike, so it waits and counts the whole call', async () => {
     let waited = false;
@@ -266,9 +281,126 @@ describe('abandon before the dial', () => {
       sleep: async () => { waited = true; },
     });
     assert.equal(waited, true);
+    assert.equal(decision.alert, true);
     assert.equal(decision.phase, 'dial');
     assert.equal(decision.noticePlayed, false);
     assert.equal(decision.ringSeconds, 8);
+  });
+});
+
+describe('hang-up before the phone rings', () => {
+  const env = {} as NodeJS.ProcessEnv;
+  const pending = { dial_status: null as string | null, processing_status: 'pending', started_at: '2026-11-19T17:00:31.000Z' };
+  // Thu 2026-11-19 17:00:31Z is 9:00 AM PT, inside office hours. Website line, 1 second, no child leg.
+  const exampleSid = 'CAeb70f6b0e073cee3eb471189887af941';
+
+  it('does not email a 1-second hang-up that never rang, and still emails a real ring-out', async () => {
+    for (const seconds of ['0', '1', '5']) {
+      const decision = await confirmedAbandon({
+        params: { CallSid: exampleSid, CallStatus: 'completed', CallDuration: seconds },
+        row: pending,
+        env,
+        reread: async () => { throw new Error('should not re-read'); },
+        sleep: async () => { throw new Error('should not wait'); },
+      });
+      assert.equal(decision.closeOut, true, seconds);
+      assert.equal(decision.alert, false, seconds);
+      assert.equal(decision.phase, 'before_dial', seconds);
+      assert.equal(decision.ringSeconds, 0, seconds);
+      assert.equal(hangupBeforeRing({
+        dialStatus: 'caller_hung_up', durationSeconds: Number(seconds), startedAt: pending.started_at, env,
+      }), true, seconds);
+    }
+
+    const now = Date.parse('2026-11-19T17:10:00.000Z');
+    assert.equal(sweepInboundEmail({
+      processing_error: null, dial_status: 'caller_hung_up', answered: false, duration_seconds: 1,
+      started_at: pending.started_at, updated_at: '2026-11-19T17:00:32.000Z',
+    }, now, env), null);
+
+    let preRingSends = 0;
+    const closed = await confirmedAbandon({
+      params: { CallSid: exampleSid, CallStatus: 'completed', CallDuration: '1' },
+      row: pending,
+      env,
+      reread: async () => { throw new Error('should not re-read'); },
+      sleep: async () => { throw new Error('should not wait'); },
+    });
+    if (closed.alert) {
+      await notifyMissedInboundCall({
+        callSid: exampleSid, caller: '+19095701014', called: '+17604630493', source: 'seo',
+        startedAt: pending.started_at, phase: closed.phase, noticePlayed: closed.noticePlayed,
+        ringSeconds: closed.ringSeconds, now: new Date('2026-11-19T17:00:32.000Z'),
+      }, null, { send: async () => { preRingSends += 1; return { success: true }; }, env });
+    }
+    assert.equal(preRingSends, 0);
+
+    const ringing = await confirmedAbandon({
+      params: { CallSid: 'CA-ring', CallStatus: 'completed', CallDuration: '20' },
+      row: pending,
+      env,
+      reread: async () => ({ dial_status: null, processing_status: 'pending' }),
+      sleep: async () => {},
+    });
+    assert.equal(ringing.alert, true);
+    assert.equal(ringing.phase, 'dial');
+    assert.equal(ringing.ringSeconds, 15);
+    assert.equal(sweepInboundEmail({
+      processing_error: null, dial_status: 'caller_hung_up', answered: false, duration_seconds: 20,
+      started_at: pending.started_at, updated_at: '2026-11-19T17:00:52.000Z',
+    }, now, env), 'missed');
+
+    const plan = inboundCallEmailPlan({ dialStatus: 'no-answer', canHandoff: false, party: null, mikeOnly: false, mikeInDial: true });
+    assert.deepEqual(plan, { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ dialStatus: 'busy', canHandoff: false, party: null, mikeOnly: false, mikeInDial: true }), { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ dialStatus: 'failed', canHandoff: false, party: null, mikeOnly: false, mikeInDial: true }), { handoff: false, send: 'now', who: 'missed' });
+    assert.deepEqual(inboundCallEmailPlan({ dialStatus: 'canceled', canHandoff: true, party: null, mikeOnly: false, mikeInDial: true }), { handoff: false, send: 'now', who: 'missed' });
+
+    const { db } = memoryDb({
+      call_sid: 'CA-ringout', caller_number: '+19095701014', tracking_number: '+17604630493', source: 'seo',
+      started_at: pending.started_at, processing_error: null,
+    });
+    const sent: string[] = [];
+    const result = await notifyMissedInboundCall({
+      callSid: 'CA-ringout', caller: '+19095701014', called: '+17604630493', source: 'seo',
+      startedAt: pending.started_at, phase: 'dial', noticePlayed: true, ringSeconds: 15, who: 'missed',
+      now: new Date('2026-11-19T17:00:50.000Z'),
+    }, db, {
+      env,
+      send: async (message) => {
+        sent.push(message.subject);
+        assert.match(message.subject, /^Missed call:/);
+        assert.match(message.text, /Nobody answered this call/);
+        assert.match(message.text, /Ring duration: 15 seconds/);
+        assert.match(message.text, /Website/);
+        return { success: true };
+      },
+    });
+    assert.equal(result.reason, 'sent');
+    assert.equal(result.sent, true);
+    assert.equal(sent.length, OFFICE_ALERT_EMAILS.length);
+  });
+
+  it('still emails an after-hours hang-up, because Mike was already being dialed', async () => {
+    const decision = await confirmedAbandon({
+      params: { CallSid: 'CA-after', CallStatus: 'completed', CallDuration: '1' },
+      row: { dial_status: null, processing_status: 'pending', started_at: '2026-11-19T03:00:00.000Z' },
+      env,
+      reread: async () => ({ dial_status: null, processing_status: 'pending' }),
+      sleep: async () => {},
+    });
+    assert.equal(decision.alert, true);
+    assert.equal(decision.phase, 'dial');
+    assert.equal(decision.ringSeconds, 1);
+    assert.equal(hangupBeforeRing({
+      dialStatus: 'caller_hung_up', durationSeconds: 1, startedAt: '2026-11-19T03:00:00.000Z', env,
+    }), false);
+  });
+
+  it('does not treat a canceled or no-answer dial as a pre-ring hang-up', () => {
+    assert.equal(hangupBeforeRing({ dialStatus: 'no-answer', durationSeconds: 1, startedAt: pending.started_at, env }), false);
+    assert.equal(hangupBeforeRing({ dialStatus: 'canceled', durationSeconds: 1, startedAt: pending.started_at, env }), false);
+    assert.equal(hangupBeforeRing({ dialStatus: 'completed', durationSeconds: 2, startedAt: pending.started_at, processingError: 'leg:shop', env }), false);
   });
 });
 

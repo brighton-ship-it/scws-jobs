@@ -41,6 +41,39 @@ test('Mike call straight to the AI line keeps its own row', () => {
   assert.equal(rows[0].line, 'Mike');
 });
 
+test('a 1-second notice hang-up stays on the feed as a hang-up before ring', () => {
+  const rows = mergeCallFeed({
+    recordings: [{
+      started_at: '2026-11-19T17:00:31.000Z', caller_number: '+19095701014', tracking_number: '+17604630493',
+      source: 'seo', dial_status: 'caller_hung_up', answered: false, duration_seconds: 1, outcome: 'hung_up',
+      summary: 'Caller hung up after 1 second, during the recording notice, before any phone rang. Nobody answered and it never reached Mike.',
+    }],
+    log: [],
+    mike: [{ vapi_call_id: 'v-later', phone: '+19095701014', called_at: '2026-11-19T17:04:00Z', summary: 'A later call.', duration_sec: 40 }],
+  });
+  assert.equal(rows.length, 2);
+  assert.equal(rows[1].outcome, 'Hung up before ring');
+  assert.equal(rows[1].line, 'Website');
+  assert.equal(rows[1].durationSeconds, 1);
+  assert.match(rows[1].summary || '', /before any phone rang/);
+  assert.equal(rows[0].outcome, 'Mike (AI)');
+});
+
+test('a ring-out that nobody answered stays Missed', () => {
+  const rows = mergeCallFeed({
+    recordings: [{
+      started_at: '2026-11-19T17:10:00.000Z', caller_number: '+19095701014', tracking_number: '+17604630493',
+      source: 'seo', dial_status: 'no-answer', answered: false, duration_seconds: 20, outcome: 'voicemail_or_no_answer',
+      summary: null,
+    }],
+    log: [],
+    mike: [],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].outcome, 'Missed');
+  assert.equal(rows[0].line, 'Website');
+});
+
 test('markMikeHandoffs relabels a missed Voice leg Mike picked up', () => {
   const out = markMikeHandoffs(
     [{ started_at: '2026-10-17T00:12:18Z', caller_phone: '+18582019456', outcome: 'missed' }, { started_at: '2026-10-16T22:13:07Z', caller_phone: '+19514914618', outcome: 'missed' }],

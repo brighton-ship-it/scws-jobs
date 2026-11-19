@@ -6,7 +6,9 @@
  * The parent dial action often runs before that child callback. A short
  * completed dial with no party yet waits; it does not email on the duration
  * alone. No-answer, busy, failed, and a caller who hangs up while it is
- * still ringing still email. DialBridged alone is not a person: Google Voice
+ * still ringing still email. A hang-up during the recording notice does not:
+ * <Dial> has not started, no forwarded leg exists, and ring time is 0.
+ * DialBridged alone is not a person: Google Voice
  * bridges too. AMD machine/unknown still rolls to Mike.
  * Mike's email waits for his end-of-call report. If that report never comes
  * and the answered party was never recorded, the sweep sends one missed-call
@@ -355,17 +357,52 @@ export function statusCallbackPlan(input: { dialStatus: string | null | undefine
   return { handoff: plan.handoff, alert: plan.send === 'now' };
 }
 
+/**
+ * Caller hung up before any phone was dialed.
+ * Business hours: the first RECORDING_NOTICE_SECONDS are the recording notice.
+ * <Dial> has not started, so Twilio creates no child leg and ring time is 0.
+ * That window is the whole notice (5s), not a shorter guess: a 3–5s hang-up
+ * is the same case as a 1s robodialer. After hours Mike is dialed immediately,
+ * so a short hang-up already rang and is not this. A dial result other than
+ * the parent close-out (`caller_hung_up`) means a phone was in the dial.
+ */
+export function hangupBeforeRing(input: {
+  dialStatus?: string | null;
+  durationSeconds?: number | null;
+  startedAt?: string | null;
+  processingError?: string | null;
+  env?: NodeJS.ProcessEnv;
+}): boolean {
+  if (partyFromProcessing(input.processingError) || amdFromProcessing(input.processingError)) return false;
+  const dial = (input.dialStatus || '').trim().toLowerCase();
+  if (dial && dial !== 'caller_hung_up') return false;
+  const length = input.durationSeconds;
+  if (length == null || !Number.isFinite(length) || length < 0) return false;
+  const started = input.startedAt;
+  const afterHours = !!started && Number.isFinite(Date.parse(started)) && directToAi(new Date(started), AI_RECEPTIONIST, input.env);
+  if (afterHours) return false;
+  return length <= RECORDING_NOTICE_SECONDS;
+}
+
 /** Final status for a call that never reached <Dial>. Rows that already have a dial result are left to the status callback. */
 export function abandonAlertDecision(input: {
   params: Record<string, string>;
-  row: { dial_status: string | null; processing_status: string; processing_error?: string | null } | null;
+  row: { dial_status: string | null; processing_status: string; processing_error?: string | null; started_at?: string | null } | null;
+  env?: NodeJS.ProcessEnv;
 }): { closeOut: boolean; alert: boolean } {
   const patch = finalStatusPatch(input.params);
   if (!patch || !input.row) return { closeOut: false, alert: false };
   if (input.row.dial_status != null || input.row.processing_status !== 'pending') return { closeOut: false, alert: false };
   // The shop child can record the answer before the parent dial action writes dial_status.
   if (officeAnswerRecorded(input.row.processing_error)) return { closeOut: false, alert: false };
-  return { closeOut: true, alert: true };
+  const length = parseInt(input.params.CallDuration || '', 10);
+  const beforeRing = hangupBeforeRing({
+    durationSeconds: Number.isFinite(length) ? length : null,
+    startedAt: input.row.started_at,
+    processingError: input.row.processing_error,
+    env: input.env,
+  });
+  return { closeOut: true, alert: !beforeRing };
 }
 
 /**
@@ -409,7 +446,8 @@ export async function confirmedAbandon(input: {
   env?: NodeJS.ProcessEnv;
 }): Promise<{ closeOut: boolean; alert: boolean; phase: 'before_dial' | 'dial'; noticePlayed: boolean; ringSeconds: number; summary: string; reason: string }> {
   const none = { closeOut: false, alert: false, phase: 'before_dial' as const, noticePlayed: false, ringSeconds: 0, summary: '', reason: 'not-abandoned' };
-  if (!abandonAlertDecision(input).closeOut) return none;
+  const gate = abandonAlertDecision(input);
+  if (!gate.closeOut) return none;
   const length = parseInt(input.params.CallDuration || '', 10);
   const callLengthSeconds = Number.isFinite(length) ? length : null;
   const started = input.row?.started_at;
@@ -426,7 +464,16 @@ export async function confirmedAbandon(input: {
       console.error('[missed-alert] dial re-read failed', error instanceof Error ? error.message : error);
     }
   }
-  return { closeOut: true, alert: true, phase: timing.phase, noticePlayed: timing.noticePlayed, ringSeconds: timing.ringSeconds, summary: abandonSummary(timing, callLengthSeconds), reason: 'abandoned' };
+  const beforeRing = timing.phase === 'before_dial';
+  return {
+    closeOut: true,
+    alert: gate.alert && !beforeRing,
+    phase: timing.phase,
+    noticePlayed: timing.noticePlayed,
+    ringSeconds: timing.ringSeconds,
+    summary: abandonSummary(timing, callLengthSeconds),
+    reason: beforeRing ? 'hung-up-before-ring' : 'abandoned',
+  };
 }
 
 type SendFn = (message: { to: string; subject: string; text: string; html?: string }) => Promise<{ success?: boolean; error?: string }>;
@@ -803,7 +850,7 @@ export function sweepInboundEmail(row: {
   updated_at?: string | null;
   started_at?: string | null;
   duration_seconds?: number | null;
-}, nowMs: number): AnsweredBy | null {
+}, nowMs: number, env: NodeJS.ProcessEnv = process.env): AnsweredBy | null {
   if (hasAlertMarker(row.processing_error)) return null;
   const updated = Date.parse(row.updated_at || row.started_at || '');
   if (!Number.isFinite(updated)) return null;
@@ -811,6 +858,15 @@ export function sweepInboundEmail(row: {
   if (age < 0 || age > SWEEP_MAX_MS) return null;
   const dial = (row.dial_status || '').toLowerCase();
   if (!dial) return null;
+  // Parent close-out of a notice hang-up. The immediate path does not email,
+  // and this sweep must not send that email two minutes later.
+  if (hangupBeforeRing({
+    dialStatus: row.dial_status,
+    durationSeconds: row.duration_seconds,
+    startedAt: row.started_at,
+    processingError: row.processing_error,
+    env,
+  })) return null;
   const party = partyFromProcessing(row.processing_error);
   const human = amdFromProcessing(row.processing_error) === 'human';
   const answered = row.answered === true || ANSWERED.has(dial);
