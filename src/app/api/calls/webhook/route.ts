@@ -61,22 +61,24 @@ export async function POST(request: NextRequest) {
               .select('call_sid, caller_number, tracking_number, source, started_at');
             if (error) console.error('[calls/webhook] final status update failed', error.message);
             else if (data?.length) {
-              console.log(`[calls/webhook] final ${callStatus} ${callSid}: closed as missed before Mike (${decision.phase})`);
+              console.log(`[calls/webhook] final ${callStatus} ${callSid}: ${decision.alert ? `closed as missed before Mike (${decision.phase})` : 'closed as hang-up before ring, no email'}`);
               const row = data[0];
               const length = parseInt(params.CallDuration || '', 10);
-              try {
-                await notifyMissedInboundCall({
-                  callSid,
-                  caller: row.caller_number || callerNumber,
-                  called: row.tracking_number || calledNumber,
-                  source: row.source,
-                  startedAt: row.started_at,
-                  phase: decision.phase,
-                  noticePlayed: decision.noticePlayed,
-                  ringSeconds: decision.ringSeconds,
-                  callLengthSeconds: Number.isFinite(length) ? length : null,
-                }, db);
-              } catch (err) { console.error('[calls/webhook] missed alert failed', err instanceof Error ? err.message : err); }
+              if (decision.alert) {
+                try {
+                  await notifyMissedInboundCall({
+                    callSid,
+                    caller: row.caller_number || callerNumber,
+                    called: row.tracking_number || calledNumber,
+                    source: row.source,
+                    startedAt: row.started_at,
+                    phase: decision.phase,
+                    noticePlayed: decision.noticePlayed,
+                    ringSeconds: decision.ringSeconds,
+                    callLengthSeconds: Number.isFinite(length) ? length : null,
+                  }, db);
+                } catch (err) { console.error('[calls/webhook] missed alert failed', err instanceof Error ? err.message : err); }
+              }
             } else {
               console.log(`[calls/webhook] final ${callStatus} ${callSid}: dial result arrived before close-out`);
             }

@@ -96,7 +96,8 @@ export async function POST(request: NextRequest) {
 
   // Inbound backup, same cron (vercel.json: every 10 minutes). No extra env.
   // A recorded shop leg is an office answer at any length, including a couple of
-  // seconds, so it is not emailed as missed. An answered call that still does not
+  // seconds, so it is not emailed as missed. A hang-up during the recording
+  // notice (no dial leg, ring time 0) is not emailed either. An answered call that still does not
   // name a party, and was not a shop human, waits SWEEP_UNKNOWN_MIKE_MS (10 minutes
   // from the row's last update) when Mike was in the dial, or the shorter leg wait
   // when only the shop was dialed, then one missed-call email if nothing claims it.

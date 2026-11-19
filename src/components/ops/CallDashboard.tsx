@@ -666,7 +666,7 @@ const CALL_FILTERS = [['all', 'All'], ['missed', 'Missed'], ['mike', 'Mike'], ['
 type CallFilter = (typeof CALL_FILTERS)[number][0];
 function matchesFilter(c: MergedCall, f: CallFilter): boolean {
   const o = c.feed?.outcome ?? (c.rec?.outcome === 'hung_up' ? 'Hung up' : c.rec?.answered === false ? 'Missed' : 'Answered');
-  if (f === 'missed') return o === 'Missed' || o === 'Voicemail' || o === 'Hung up';
+  if (f === 'missed') return o === 'Missed' || o === 'Voicemail' || o === 'Hung up' || o.startsWith('Hung up');
   if (f === 'mike') return o.startsWith('Mike');
   if (f === 'follow') return !!c.rec?.needs_followup || !!c.feed?.goingCold || /^No callback/.test(c.feed?.callback ?? '');
   return true;
@@ -718,7 +718,7 @@ function CallsCard({ feed, recorded, focusSid }: { feed: FeedRow[] | null | unde
                   <span className="flex max-w-full flex-wrap items-center gap-1 text-xs">
                     <OutcomePill o={outcome} by={f?.answeredBy} unknownWho={!!r} />
                     {String(r?.processing_error || '').includes('note posted') ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-emerald-700">Jobber note</span> : null}
-                    {r?.outcome ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
+                    {r?.outcome && !(r.outcome === 'hung_up' && outcome.startsWith('Hung up')) ? <span className={`rounded-full px-2 py-0.5 font-semibold ${r.outcome === 'booked' ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-700'}`}>{r.outcome.replace(/_/g, ' ')}</span> : null}
                     {r?.needs_followup ? <span className="rounded-full bg-amber-100 px-2 py-0.5 text-amber-800">follow up</span> : null}
                   </span>
                 </span>

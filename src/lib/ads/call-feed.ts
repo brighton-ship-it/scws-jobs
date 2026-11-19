@@ -1,7 +1,8 @@
 /** Unified, legible call feed for the ops dashboard (main "Recent calls" table + TV Activity). Pure. */
 import { digits10 } from './call-dashboard.ts';
+import { hangupBeforeRing } from '../phone-calls/missed-alert.ts';
 
-export type FeedOutcome = 'Booked' | 'Answered' | 'Missed' | 'Voicemail' | 'Mike (AI)';
+export type FeedOutcome = 'Booked' | 'Answered' | 'Missed' | 'Voicemail' | 'Mike (AI)' | 'Hung up before ring';
 export interface FeedRow {
   at: string; name: string | null; phone: string; line: string; outcome: FeedOutcome;
   answeredBy: string | null; durationSeconds: number | null; summary: string | null;
@@ -46,7 +47,8 @@ export function feedToday(rows: FeedRow[], todayStartMs: number) {
   const t = rows.filter((r) => Date.parse(r.at) >= todayStartMs);
   const mike = t.filter((r) => r.line.startsWith('Mike') || r.outcome === 'Mike (AI)').length;
   const missed = t.filter((r) => r.outcome === 'Missed' || r.outcome === 'Voicemail').length;
-  return { total: t.length, answered: t.length - mike - missed, missed, forwardedAi: mike };
+  const preRing = t.filter((r) => r.outcome === 'Hung up before ring').length;
+  return { total: t.length, answered: t.length - mike - missed - preRing, missed, forwardedAi: mike };
 }
 
 /** Mike legs start within this window of the office leg they followed (Twilio no-answer handoff or Voice roll-over). */
@@ -92,6 +94,14 @@ export function mergeCallFeed(input: {
     const d = digits10(r.caller_number);
     const answered = r.answered !== false && r.dial_status !== 'no-answer' && r.dial_status !== 'busy';
     const lineName = LINE_BY_SOURCE[r.source] ?? LINE_BY_NUMBER[digits10(r.tracking_number) ?? ''] ?? 'Tracking line';
+    // Notice hang-up: no child leg, ring time 0. Keep the row, but it is not a missed call to call back.
+    if (hangupBeforeRing({
+      dialStatus: r.dial_status, durationSeconds: r.duration_seconds ?? null, startedAt: r.started_at, processingError: r.processing_error,
+    })) {
+      rows.push({ at: r.started_at, name: r.caller_name ?? null, phone: formatPhone(r.caller_number), line: lineName,
+        outcome: 'Hung up before ring', answeredBy: null, durationSeconds: r.duration_seconds ?? null, summary: firstLine(r.summary), _d: d, _t: t, _src: 'rec' });
+      continue;
+    }
     // Not picked up -> Twilio hands the caller to Mike. Answered -> only a Mike leg right at the start (Voice roll-over).
     const m = r.outcome === 'booked' ? null : answered ? takeMike(d, t, 30_000, 2 * 60_000) : takeMike(d, t);
     if (m) {
