@@ -42,6 +42,7 @@ import {
 } from '@/lib/receptionist/office-callback';
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
 import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
+import { assignReceptionistFollowUp } from '@/lib/receptionist/follow-up-task-jobber';
 import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
 
 interface VapiMessage {
@@ -420,48 +421,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 🎯 AUTO-CREATE TASK - Assign to Brighton
-    let taskCreated = false;
-    try {
-      const taskTitle = isUrgent 
-        ? `⚠️ URGENT: Call back ${customerName || formatPhone(phone)}`
-        : `📞 Follow up: ${customerName || formatPhone(phone)}`;
-      
-      const taskDescription = [
-        `Mike received call at ${startTime.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`,
-        '',
-        `Phone: ${formatPhone(phone)}`,
-        customerName ? `Customer: ${customerName}` : '',
-        serviceNeeded ? `Service: ${serviceNeeded}` : '',
-        address ? `Address: ${address}${city ? `, ${city}` : ''}` : '',
-        '',
-        summary ? `Summary: ${summary}` : '',
-        '',
-        customerId ? `Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/customers/${customerId}` : '',
-      ].filter(Boolean).join('\n');
-
-      // Get Brighton's user ID
-      const { data: brightonUser } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', 'travis@scwellservice.com')
-        .single();
-
-      const { error: taskError } = await supabase.from('tasks').insert({
-        title: taskTitle,
-        description: taskDescription,
-        assigned_to: brightonUser?.id || null,
-        due_date: new Date().toISOString().split('T')[0],
-        status: 'pending',
-        priority: isUrgent ? 'urgent' : 'high',
-      });
-
-      taskCreated = !taskError;
-      if (taskError) console.log('[Receptionist] Task creation skipped:', taskError.message);
-    } catch (taskErr) {
-      console.log('[Receptionist] Task creation failed:', taskErr);
-    }
-
     // Send email notification
     const pstTime = startedAt 
       ? startTime.toLocaleString('en-US', {
@@ -538,6 +497,35 @@ export async function POST(request: NextRequest) {
       console.log('[Receptionist] Lead source lookup skipped:', leadErr);
       leadLine = 'Lead source: Unknown (lookup failed)';
     }
+    // Jobber task for Brian (pump) or Damian (drill). Not an in-app public.tasks row.
+    let followUp: Awaited<ReturnType<typeof assignReceptionistFollowUp>> = {
+      created: false,
+      reason: null,
+      taskId: null,
+      assigneeName: null,
+      lane: null,
+      dedupeChecked: false,
+      customerNotified: false,
+    };
+    try {
+      followUp = await assignReceptionistFollowUp({
+        source: 'mike',
+        phone,
+        name: customerName || outcome.name,
+        serviceNeeded: serviceNeeded || outcome.issue,
+        summary,
+        callerText: callerSaid,
+        notes,
+        address: address || outcome.address,
+        city: city || outcome.city,
+        leadSource: leadLine,
+        urgent: isUrgent || outcome.emergency,
+        booked: outcome.booked,
+        durationSec,
+      });
+    } catch (taskErr) {
+      console.error('[Receptionist] Jobber follow-up failed', taskErr instanceof Error ? taskErr.message : taskErr);
+    }
     const built = buildCallEmail({
       outcome,
       leadSourceLine: leadLine,
@@ -609,7 +597,7 @@ export async function POST(request: NextRequest) {
       false,
     );
 
-    console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Task: ${taskCreated}`);
+    console.log(`[Receptionist] Call processed: ${call.id} - ${customerName || phone} - Jobber task: ${followUp.created ? followUp.assigneeName : followUp.reason || 'not-created'}`);
 
     if (callbackAttempt) {
       try {
@@ -631,7 +619,11 @@ export async function POST(request: NextRequest) {
       customer_id: customerId,
       is_new_customer: isNewCustomer,
       is_urgent: isUrgent,
-      task_created: taskCreated,
+      task_created: followUp.created,
+      task_id: followUp.taskId,
+      task_assignee: followUp.assigneeName,
+      task_skipped: followUp.reason,
+      customer_notified: followUp.customerNotified,
       email_sent: emailResult?.success || false,
       email_error: emailResult?.error || null,
     });

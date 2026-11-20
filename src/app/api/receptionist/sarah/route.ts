@@ -2,9 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase/service';
 import { sendEmail, textToHtml } from '@/lib/messaging/email';
 import { authorizeVapiWebhook } from '@/lib/receptionist/vapi-webhook-auth';
+import { callerUtteranceText } from '@/lib/receptionist/caller-urgency';
+import { assignReceptionistFollowUp } from '@/lib/receptionist/follow-up-task-jobber';
 
 const OFFICE_EMAILS = ['brighton@scwellservice.com', 'shanicey@scwellservice.com'];
-const BRIGHTON_USER_ID = process.env.BRIGHTON_USER_ID || null; // Set in env
 
 interface SarahCallData {
   // SpeakSarah expected fields (flexible - we'll adapt to their actual format)
@@ -49,7 +50,7 @@ interface SarahCallData {
 
 /**
  * POST /api/receptionist/sarah - Receive calls from SpeakSarah AI Receptionist
- * Creates leads, tasks, and customer records
+ * Creates leads and customer records. Follow-ups are Jobber tasks, not in-app tasks.
  */
 export async function POST(request: NextRequest) {
   const webhookAuth = authorizeVapiWebhook(request.headers, process.env, {
@@ -176,43 +177,35 @@ export async function POST(request: NextRequest) {
       source: 'phone' as any,
     } as any);
 
-    // 🎯 AUTO-CREATE TASK - Assign to Brighton
-    const taskTitle = isUrgent 
-      ? `⚠️ URGENT: Call back ${customerName || formatPhone(phone)}`
-      : `📞 Follow up: ${customerName || formatPhone(phone)}`;
-    
-    const taskDescription = [
-      `AI Receptionist received call at ${new Date(callTime).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })}`,
-      '',
-      `Phone: ${formatPhone(phone)}`,
-      customerName ? `Customer: ${customerName}` : '',
-      serviceNeeded ? `Service: ${serviceNeeded}` : '',
-      address ? `Address: ${address}${city ? `, ${city}` : ''}` : '',
-      '',
-      summary ? `Summary: ${summary}` : '',
-      '',
-      customerId ? `Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/customers/${customerId}` : '',
-    ].filter(Boolean).join('\n');
-
-    // Get Brighton's user ID if we don't have it hardcoded
-    let assigneeId = BRIGHTON_USER_ID;
-    if (!assigneeId) {
-      const { data: brightonUser } = await supabase
-        .from('users')
-        .select('id')
-        .eq('email', 'brighton@scwellservice.com')
-        .single();
-      assigneeId = brightonUser?.id || null;
+    const callerSaid = callerUtteranceText(transcript, body.messages);
+    let followUp: Awaited<ReturnType<typeof assignReceptionistFollowUp>> = {
+      created: false,
+      reason: null,
+      taskId: null,
+      assigneeName: null,
+      lane: null,
+      dedupeChecked: false,
+      customerNotified: false,
+    };
+    try {
+      followUp = await assignReceptionistFollowUp({
+        source: 'sarah',
+        phone,
+        name: customerName,
+        serviceNeeded,
+        summary,
+        callerText: callerSaid,
+        transcript,
+        address,
+        city,
+        notes: body.notes,
+        urgent: isUrgent,
+        booked: /booked/i.test(body.outcome || ''),
+        durationSec: duration,
+      });
+    } catch (taskErr) {
+      console.error('[Sarah Webhook] Jobber follow-up failed', taskErr instanceof Error ? taskErr.message : taskErr);
     }
-
-    await supabase.from('tasks').insert({
-      title: taskTitle,
-      description: taskDescription,
-      assigned_to: assigneeId,
-      due_date: new Date().toISOString().split('T')[0], // Due today
-      status: 'pending',
-      priority: isUrgent ? 'urgent' : 'high',
-    });
 
     // Email notification
     const pstTime = new Date(callTime).toLocaleString('en-US', {
@@ -247,10 +240,11 @@ ${transcript || 'No transcript available'}
 
 ---
 ${isNewCustomer ? '⚡ NEW CUSTOMER CREATED' : customerId ? '✓ Existing customer matched' : '⚪ Customer not matched'}
-✅ Task created and assigned
+${followUp.created
+  ? `Jobber task for ${followUp.assigneeName}. The customer was not texted or emailed.`
+  : `No Jobber task (${followUp.reason || 'not created'}).`}
 
 ${customerId ? `View Customer: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/customers/${customerId}` : ''}
-View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}/tasks
     `.trim();
 
     // Send to all office emails
@@ -263,7 +257,7 @@ View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}
       });
     }
 
-    console.log(`[Sarah Webhook] Call processed: ${callId} - ${customerName || phone} - Task created`);
+    console.log(`[Sarah Webhook] Call processed: ${callId} - ${customerName || phone} - Jobber task: ${followUp.created ? followUp.assigneeName : followUp.reason || 'not-created'}`);
 
     return NextResponse.json({
       ok: true,
@@ -271,7 +265,11 @@ View Tasks: ${process.env.NEXT_PUBLIC_APP_URL || 'https://scws-jobs.vercel.app'}
       customer_id: customerId,
       is_new_customer: isNewCustomer,
       is_urgent: isUrgent,
-      task_created: true,
+      task_created: followUp.created,
+      task_id: followUp.taskId,
+      task_assignee: followUp.assigneeName,
+      task_skipped: followUp.reason,
+      customer_notified: followUp.customerNotified,
     });
   } catch (error) {
     console.error('[Sarah Webhook] Error:', error);
