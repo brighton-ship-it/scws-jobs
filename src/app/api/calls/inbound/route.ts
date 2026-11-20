@@ -55,9 +55,10 @@ export async function POST(req: NextRequest) {
   }
   // Ringing the same Twilio number (test loop) needs our own caller ID; otherwise pass the caller's number through.
   const callerId = dial.shop.includes(to) ? to : undefined;
-  // Caller-facing ring (default 15s). Twilio adds ~5s, so the TwiML attribute is 10.
+  // Caller-facing ring (default 30s). Twilio adds ~5s, so the TwiML attribute is 25.
+  // Live voice URLs still say timeout=15; only signed test requests may override.
   // Mike is the next number in this same dial, not a Google Voice forward and not a later webhook.
-  const timeout = dialTimeoutAttribute(desiredRingSeconds(q.get('timeout')));
+  const timeout = dialTimeoutAttribute(desiredRingSeconds(q.get('test') === '1' ? q.get('timeout') : null));
   const rollToMike = Boolean(dial.mike);
   // rolled=1: this dial already lists Mike, so a no-answer of the whole dial must not dial him again.
   // If Google Voice answers the shop number, sequential never reaches that second Number. AMD hangs
