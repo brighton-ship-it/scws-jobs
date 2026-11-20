@@ -24,7 +24,7 @@ import {
   withSpanishSpeakerFlag,
 } from '@/lib/receptionist/mike-call-fixes';
 import { getBusinessHours } from '@/lib/receptionist/business-hours';
-import { checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
+import { canonicalServiceCity, checkServiceArea, serviceAreaLocationFromParams } from '@/lib/receptionist/service-area';
 import { callCustomerPhone, parseVapiServerTools, vapiCallId, vapiToolHttpBody } from '@/lib/receptionist/vapi-tools';
 import { isOwnNumber } from '@/lib/ads/real-leads';
 import { isReceptionistTestCaller, testToolResult } from '@/lib/receptionist/test-call';
@@ -39,9 +39,11 @@ import {
   isOfficeAlertTool,
   omitOfficeDedupeColumns,
   resolveOfficeToolBatch,
+  saveSarahOfficeRequest,
 } from '@/lib/receptionist/office-callback';
+import { ownerCallbackAction, ownerPersonCallback, type OwnerCallbackLookup } from '@/lib/receptionist/owner-request';
 import { BOOK_TOOL_NAMES, checkBookingConsent, consentTurnsFromVapiBody } from '@/lib/receptionist/booking-consent';
-import { buildMissedServiceFlag, isMissingNeedsCallbackColumn } from '@/lib/receptionist/missed-service-flag';
+import { buildMissedServiceFlag, isMissingNeedsCallbackColumn, toolOutcomes } from '@/lib/receptionist/missed-service-flag';
 import { callerTownContext, rememberLookupCaller, withTownGuard } from '@/lib/receptionist/town-guard';
 
 interface VapiMessage {
@@ -310,6 +312,17 @@ export async function POST(request: NextRequest) {
     const rawMessages = artifact.messages || message.messages || call.messages || [];
     const callerSaid = callerUtteranceText(transcript, rawMessages);
     const spanishCaller = callerNeedsSpanish(callerSaid);
+    let ownerLogged = false;
+    if (!isReceptionistTestCaller(phone)) {
+      ownerLogged = await logOwnerPersonCallback({
+        callId: call.id,
+        phone,
+        name: customerName,
+        callerText: callerSaid,
+        callbackLogged: toolOutcomes(rawMessages).callbackLogged,
+        toolCallId: 'owner-request-end',
+      });
+    }
     const isUrgent = isCallerUrgent({
       structuredUrgency: urgency,
       transcript,
@@ -324,6 +337,7 @@ export async function POST(request: NextRequest) {
       transcript,
       isTestCall: isReceptionistTestCaller(phone),
       callbackAttempt: Boolean(callbackAttempt),
+      callbackAlreadyLogged: ownerLogged,
       vapiCallId: call.id,
       phone,
     });
@@ -692,6 +706,26 @@ async function handleVapiTools(body: any) {
   const executed: Array<{ id: string | null; body: { result: unknown } } | undefined> = new Array(calls.length);
   const consentTurns = consentTurnsFromVapiBody(body);
   const officeIndexes: number[] = [];
+  if (!testCall) {
+    const callerText = consentTurns.filter((turn) => turn.role === 'user').map((turn) => turn.text).join('\n');
+    const nameFromTools = calls.map((call) => {
+      const params = call.params || {};
+      for (const key of ['name', 'callerName', 'customerName']) {
+        const value = params[key];
+        if (typeof value === 'string' && value.trim()) return value.trim();
+      }
+      return '';
+    }).find(Boolean) || '';
+    // Before any other tool, so a hang-up after this turn still has the callback.
+    await logOwnerPersonCallback({
+      callId,
+      phone: callPhone,
+      name: nameFromTools,
+      callerText,
+      callbackLogged: false,
+      toolCallId: 'owner-request',
+    });
+  }
 
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
@@ -806,7 +840,16 @@ async function handleVapiTools(body: any) {
   ));
 }
 
+function applyCanonicalCity(params: Record<string, unknown>) {
+  for (const key of ['city', 'town', 'location']) {
+    if (typeof params[key] !== 'string') continue;
+    const next = canonicalServiceCity(params[key]);
+    if (next) params[key] = next;
+  }
+}
+
 async function executeTool(name: string, params: any, phone: string, callId: string | null = null) {
+  applyCanonicalCity(params);
   switch (name) {
     case 'lookupCustomer': {
       const looked = await handleLookupCustomer(phone || params.phone);
@@ -989,6 +1032,74 @@ async function loadOfficeAlertCandidates(identity: OfficeRequestIdentity): Promi
   }
 
   return [...found.values()];
+}
+
+/** Calls we already saved, and calls we already tried while the lookup was down. */
+const ownerCallbackSaved = new Set<string>();
+const ownerCallbackAttempted = new Set<string>();
+
+async function lookupOwnerCallback(callId: string): Promise<OwnerCallbackLookup> {
+  try {
+    const supabase = createServiceClient();
+    const { data, error } = await supabase
+      .from('booking_requests')
+      .select('id')
+      .eq('vapi_call_id', callId)
+      .in('service_type', ['Callback', 'Emergency'])
+      .limit(1);
+    if (error) return 'unknown';
+    return Array.isArray(data) && data.length > 0 ? 'yes' : 'no';
+  } catch (error) {
+    console.error('[Receptionist] owner callback lookup failed', error instanceof Error ? error.message : error);
+    return 'unknown';
+  }
+}
+
+/**
+ * Save a callback when the caller asked for the owner or a real person and Mike
+ * had not already logged one. Does not email, text, or dial. One row per call:
+ * a failed Supabase lookup does not insert again on the next tool call.
+ */
+async function logOwnerPersonCallback(input: {
+  callId: string | null;
+  phone: string;
+  name: string;
+  callerText: string;
+  callbackLogged: boolean;
+  toolCallId: string;
+}): Promise<boolean> {
+  if (!input.callId) return false;
+  const request = ownerPersonCallback(input);
+  if (!request) return false;
+  const lookup = ownerCallbackSaved.has(input.callId) ? 'yes' : await lookupOwnerCallback(input.callId);
+  const action = ownerCallbackAction({
+    succeeded: ownerCallbackSaved.has(input.callId),
+    attempted: ownerCallbackAttempted.has(input.callId),
+    lookup,
+  });
+  if (action === 'done') {
+    ownerCallbackSaved.add(input.callId);
+    return true;
+  }
+  if (action === 'skip') return false;
+  if (lookup === 'unknown') ownerCallbackAttempted.add(input.callId);
+  try {
+    const saved = await saveSarahOfficeRequest(request, {
+      insertBooking: insertOfficeBooking,
+      updateBooking: updateOfficeBooking,
+      // Already decided this call needs one row. An empty candidate list inserts it.
+      // A failed lookup is remembered above so the next tool call does not insert again.
+      loadCandidates: async () => [],
+      // Not an email. success:true would count a failed insert as logged.
+      sendAlert: async () => ({ success: false }),
+    }, { vapiCallId: input.callId, toolCallId: input.toolCallId });
+    if (saved.success) ownerCallbackSaved.add(input.callId);
+    return saved.success;
+  } catch (error) {
+    ownerCallbackAttempted.add(input.callId);
+    console.error('[Receptionist] owner callback failed', error instanceof Error ? error.message : error);
+    return false;
+  }
 }
 
 async function insertOfficeBooking(row: {

@@ -1,5 +1,5 @@
 /**
- * Three Mike call fixes. Speech rules are pasted into the SCWS Receptionist
+ * Mike call fixes. Speech rules are pasted into the SCWS Receptionist
  * system prompt (applyMikeCallFixes). Tool results enforce the same rules.
  *
  * Does not change the greeting, voice, call routing, or MIKE_CALLBACKS_ENABLED.
@@ -16,6 +16,8 @@ export const SPANISH_SPEAKER_FLAG = 'Spanish speaker';
 export const LOST_PRESSURE_HEADING = '## Lost pressure emergency (HARD RULE)';
 export const SPANISH_HEADING = '## Spanish speaker (HARD RULE)';
 export const ADDRESS_CONFIRM_HEADING = '## Confirm street and city (HARD RULE)';
+export const OWNER_PERSON_HEADING = '## Owner or a real person (HARD RULE)';
+export const OWNER_CALLBACK_REASON = 'asked for owner/person';
 
 export const MIKE_LOST_PRESSURE_RULE = `${LOST_PRESSURE_HEADING}
 Treat this the same as no water. If the caller says the pressure is gone (including completely gone), or they have zero pressure or no pressure, AND they want help today or as soon as possible (today, tonight, right now, ASAP, immediately):
@@ -32,23 +34,30 @@ If the caller speaks Spanish, or asks whether you speak Spanish (including "do y
 - After they give a name and a number, call createCallback once. The reason must start with "${SPANISH_SPEAKER_FLAG}". Do not book a visit on this call.`;
 
 export const MIKE_ADDRESS_CONFIRM_RULE = `${ADDRESS_CONFIRM_HEADING}
-Before bookJob, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called (Ramona, Anza, or any other). An address on file is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said.`;
+Before bookJob, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes (yes, that's correct, or right). Do not assume the city from the line they called (Ramona, Anza, or any other). An address on file is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. After that yes, call bookJob with addressConfirmed set to true. If they have not said yes to that street and city, set addressConfirmed to false and do not book.`;
+
+export const MIKE_OWNER_PERSON_RULE = `${OWNER_PERSON_HEADING}
+If the caller asks for the owner, the boss, a manager, a real person, or a human (including "speak to a person", "actual human", or "get in touch with the owner"):
+- Call createCallback immediately, before any other tool and before you ask another question.
+- Name is the name they gave, or "Caller" if they have not given one. Phone is the number they are calling from.
+- The reason must be exactly "${OWNER_CALLBACK_REASON}".
+- Then say you have passed it to the office and someone will call them back. Do not try to connect them on this call. Do not place an outbound call.`;
 
 export const ADDRESS_ON_FILE_RULE =
-  'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. Never use the caller\'s name as the town.';
+  'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes (yes, that\'s correct, or right). Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. After that yes, call book_job with addressConfirmed true. Never use the caller\'s name as the town.';
 
 const INSERT_BEFORE = '## NEVER GO SILENT (hard rule)';
 
 /** Returned on lookupCustomer so the live assistant sees the rules before booking. */
-export const MIKE_CALL_RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE].join('\n\n');
+export const MIKE_CALL_RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE, MIKE_OWNER_PERSON_RULE].join('\n\n');
 
-const RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE] as const;
+const RULES = [MIKE_LOST_PRESSURE_RULE, MIKE_SPANISH_RULE, MIKE_ADDRESS_CONFIRM_RULE, MIKE_OWNER_PERSON_RULE] as const;
 
 function headingOf(section: string): string {
   return section.split('\n')[0];
 }
 
-/** Insert the three hard rules. Idempotent. Leaves every other line as it was. */
+/** Insert the hard rules. Idempotent. Leaves every other line as it was. */
 export function applyMikeCallFixes(prompt: string): string {
   let next = prompt;
   for (let i = RULES.length - 1; i >= 0; i--) {
@@ -291,14 +300,77 @@ const GENERIC_STREET = new Set([
   'boulevard', 'place', 'circle', 'trail', 'way',
 ]);
 
+const STREET_TYPE = new Set(Object.values(STREET_WORD));
+const DIRECTION_CANON = new Set(['north', 'south', 'east', 'west']);
+
+/** Prices Mike quotes. A "yes, the $200" is not a house number. */
+const NOT_A_HOUSE_NUMBER = new Set(['100', '200', '300']);
+
+const DIGIT_WORD: Record<string, string> = {
+  zero: '0', oh: '0',
+  one: '1', two: '2', three: '3', four: '4', five: '5',
+  six: '6', seven: '7', eight: '8', nine: '9',
+};
+
+/**
+ * Known speech-to-text slips. Nothing else is fuzzy: Pine/Pike, Lake/Lane,
+ * Vista/Vesta, and a changed house number do not match.
+ */
+const ASR_STREET: Array<[string, string]> = [
+  ['yerba', 'yuba'],
+  ['tierra', 'tiara'],
+  ['tiera', 'tiara'],
+];
+
+function collapseDoubles(token: string): string {
+  return token.replace(/([a-z])\1+/g, '$1');
+}
+
+function knownStreetSlip(wanted: string, heard: string): boolean {
+  const left = collapseDoubles(wanted);
+  const right = collapseDoubles(heard);
+  return ASR_STREET.some(([a, b]) => (left === a && right === b) || (left === b && right === a));
+}
+
+/** Exact word, or Yerba/Yuba and Tierra/Tiara. Digits never fuzzy-match. */
+function tokenNear(wanted: string, heard: string): boolean {
+  if (wanted === heard) return true;
+  if (!wanted || !heard) return false;
+  if (/^\d+$/.test(wanted) || /^\d+$/.test(heard)) return false;
+  return knownStreetSlip(wanted, heard);
+}
+
 function canonicalWords(value: string): string[] {
-  return norm(value)
+  const mapped = norm(value)
     .split(' ')
     .filter(Boolean)
     .map((token) => DIRECTION_WORD[token] || STREET_WORD[token] || token);
+  return collapseDigitRuns(mapped);
 }
 
-/** Distinctive street words. Hwy and Highway match. A leading house number is optional. */
+/** "2 4 5 1 0" and "two four five one zero" are the same house number as "24510". */
+function collapseDigitRuns(tokens: string[]): string[] {
+  const out: string[] = [];
+  let run = '';
+  const flush = () => {
+    if (!run) return;
+    out.push(run);
+    run = '';
+  };
+  for (const token of tokens) {
+    const piece = /^\d$/.test(token) ? token : DIGIT_WORD[token];
+    if (piece) {
+      run += piece;
+      continue;
+    }
+    flush();
+    out.push(token);
+  }
+  flush();
+  return out;
+}
+
+/** Distinctive street words. Hwy and Highway match. A leading house number is checked separately. */
 function significantAddressTokens(address: string): string[] {
   const words = canonicalWords(address);
   const body = words[0] && /^\d+$/.test(words[0]) && words.length > 1 ? words.slice(1) : words;
@@ -306,31 +378,86 @@ function significantAddressTokens(address: string): string[] {
   return significant.length ? significant : body.filter((token) => !DIRECTION_WORD[token]);
 }
 
+function bookedHouseNumber(address: string): string {
+  const words = canonicalWords(address);
+  return words[0] && /^\d+$/.test(words[0]) && words.length > 1 ? words[0] : '';
+}
+
+function houseNumbersBefore(hay: string[], anchor: string): string[] {
+  const found: string[] = [];
+  for (let i = 0; i < hay.length; i++) {
+    if (!tokenNear(hay[i], anchor)) continue;
+    let j = i - 1;
+    while (j >= 0 && DIRECTION_CANON.has(hay[j])) j -= 1;
+    if (j >= 0 && /^\d+$/.test(hay[j]) && !NOT_A_HOUSE_NUMBER.has(hay[j])) found.push(hay[j]);
+  }
+  return found;
+}
+
 function mentionsStreet(haystack: string, address: string): boolean {
   const needed = significantAddressTokens(address);
   if (!needed.length) return false;
-  const hay = new Set(canonicalWords(haystack));
-  return needed.every((token) => hay.has(token));
+  const hay = canonicalWords(haystack);
+  const bookedNumber = bookedHouseNumber(address);
+  if (bookedNumber) {
+    const heard = houseNumbersBefore(hay, needed[0]);
+    if (heard.length && !heard.includes(bookedNumber)) return false;
+  }
+  return needed.every((token) => hay.some((heard) => tokenNear(token, heard)));
+}
+
+/** Drop a trailing state or ZIP so "Hemet, CA" matches a read-back of "Hemet". */
+function cityKey(city: string): string {
+  return normalizeServicePlace(city)
+    .replace(/\b\d{5}(?:\d{4})?\b/g, ' ')
+    .replace(/\b(?:california|calif|ca)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function mentionsCity(haystack: string, city: string): boolean {
-  const wanted = normalizeServicePlace(city);
+  const wanted = cityKey(city);
   if (!wanted) return false;
   const escaped = wanted.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(normalizeServicePlace(haystack));
 }
 
+/** A no, a correction, or "that's not correct". These are never a yes. */
+function isNegative(text: string): boolean {
+  const said = norm(text);
+  if (!said) return false;
+  if (/^(?:no|nope|nah)\b/.test(said)) return true;
+  if (/\b(?:not correct|is not correct|isn'?t correct|not right|is not right|isn'?t right)\b/.test(said)) return true;
+  if (/\b(?:not that one|other property|wrong address|not that address|different address)\b/.test(said)) return true;
+  return false;
+}
+
 function isAffirmative(text: string): boolean {
-  return /\b(?:yes|yeah|yep|yup|correct|that'?s right|that is right|that'?s the one|sure|ok|okay)\b/.test(norm(text));
+  const said = norm(text);
+  if (!said || isNegative(said)) return false;
+  // A bare "right" or "correct" is a yes to the read-back. "Right now" is not.
+  if (/^(?:right|correct)$/.test(said)) return true;
+  if (/^that(?:'s| is) (?:right|correct)$/.test(said)) return true;
+  return /\b(?:yes|yeah|yep|yup|that'?s right|that is right|that'?s correct|that is correct|that'?s the one|sure|ok|okay)\b/.test(said);
 }
 
 function withoutLineMention(text: string): string {
   return text.replace(/\b[\w.'’-]+\s+line\b/gi, ' ');
 }
 
+/**
+ * "Natalie Boulevard" is a street in Hemet, not the town of Boulevard.
+ * "in Boulevard" still is that town.
+ */
+function stripStreetSuffixTowns(text: string): string {
+  return text.replace(/\b([a-z0-9']+)\s+boulevard\b/gi, (full, prev) => (
+    /^(?:in|at|to|the|from|near|of|around)$/i.test(prev) ? full : ' '
+  ));
+}
+
 /** A town the caller gave as the well location. "The Ramona line" is not one. */
 function claimedServiceTown(text: string): string | null {
-  const cleaned = withoutLineMention(text);
+  const cleaned = stripStreetSuffixTowns(withoutLineMention(text));
   const placesWell = /\b(?:well|address|street|live|living|located|property|house|home)\b/i.test(cleaned)
     || /\b(?:i'm|i am|we're|we are)\s+in\b/i.test(cleaned);
   const town = matchedTownName(cleaned);
@@ -342,13 +469,34 @@ function claimedServiceTown(text: string): string | null {
 
 function contradicts(text: string, city: string): boolean {
   const claimed = claimedServiceTown(text);
-  if (claimed && normalizeServicePlace(claimed) !== normalizeServicePlace(city)) return true;
-  if (/\b(?:wrong address|not that address|different address)\b/.test(norm(text))) return true;
+  if (claimed && cityKey(claimed) !== cityKey(city)) return true;
+  if (/\b(?:wrong address|not that address|different address|other property)\b/.test(norm(text))) return true;
   return false;
 }
 
+function looksLikeStatedStreet(text: string, city: string): boolean {
+  const words = canonicalWords(text);
+  const cityWords = new Set(cityKey(city).split(' ').filter(Boolean));
+  if (words.some((word) => STREET_TYPE.has(word) && !cityWords.has(word))) return true;
+  return words.some((word) => /^\d{3,}$/.test(word) && !NOT_A_HOUSE_NUMBER.has(word));
+}
+
+/** A yes that also states a different street or house number is not confirmation. */
+function statesDifferentStreet(text: string, address: string, city: string): boolean {
+  if (!looksLikeStatedStreet(text, city)) return false;
+  if (mentionsStreet(text, address)) return false;
+  const words = canonicalWords(text);
+  const cityWords = new Set(cityKey(city).split(' ').filter(Boolean));
+  const hasType = words.some((word) => STREET_TYPE.has(word) && !cityWords.has(word));
+  const heard = words.filter((word) => /^\d{3,}$/.test(word) && !NOT_A_HOUSE_NUMBER.has(word));
+  const bookedNumber = bookedHouseNumber(address);
+  if (!hasType && bookedNumber && heard.length && heard.every((number) => number === bookedNumber)) return false;
+  return true;
+}
+
 function userConfirms(text: string, address: string, city: string): boolean {
-  if (contradicts(text, city)) return false;
+  if (isNegative(text) || contradicts(text, city)) return false;
+  if (statesDifferentStreet(text, address, city)) return false;
   if (isAffirmative(text)) return true;
   return mentionsStreet(text, address) && mentionsCity(text, city);
 }
@@ -361,7 +509,18 @@ export type AddressDecision =
 
 export const ADDRESS_CONFIRM_RETRY_LIMIT = 2;
 
-function addressReject(why: string): AddressDecision {
+export type AddressConfirmChannel = 'voice' | 'text';
+
+function addressReject(why: string, channel: AddressConfirmChannel): AddressDecision {
+  const voice =
+    `NOT BOOKED (${why}). Before booking, confirm the street address and the city out loud, even for an existing customer. ` +
+    `Ask: "Just to confirm, the well is at [street] in [city]?" Do not assume Ramona, Anza, or the line they called. ` +
+    `Wait for a yes, then call book_job again with that street, that city, and addressConfirmed set to true. ` +
+    `If they correct the street or city, use what they said.`;
+  const text =
+    `NOT BOOKED (${why}). Text the street and the town and wait for a yes. ` +
+    `Then call book_job again with that street and that town. ` +
+    `If they correct the street or town, use what they said. Do not say there is an issue booking the slot.`;
   return {
     ok: false,
     result: {
@@ -369,16 +528,18 @@ function addressReject(why: string): AddressDecision {
       canConfirm: false,
       mayBook: false,
       addressConfirmationRequired: true,
-      message:
-        `NOT BOOKED (${why}). Before booking, confirm the street address and the city out loud, even for an existing customer. ` +
-        `Ask: "Just to confirm, the well is at [street] in [city]?" Do not assume Ramona, Anza, or the line they called. ` +
-        `Wait for a yes, then call book_job again with that street, that city, and addressConfirmed set to their exact yes. ` +
-        `If they correct the street or city, use what they said.`,
+      message: channel === 'text' ? text : voice,
     },
   };
 }
 
-function addressFallback(): AddressDecision {
+function addressFallback(channel: AddressConfirmChannel): AddressDecision {
+  const voice =
+    `NOT BOOKED. The street and city were not confirmed after ${ADDRESS_CONFIRM_RETRY_LIMIT} tries. ` +
+    'Call createCallback once with their name, number, and the street and city you have. Do not call book_job again.';
+  const text =
+    `NOT BOOKED. The street and town were not confirmed after ${ADDRESS_CONFIRM_RETRY_LIMIT} tries. ` +
+    'Call hand_off_to_office once with their name and the street and town you have. Do not call book_job again.';
   return {
     ok: false,
     result: {
@@ -386,10 +547,8 @@ function addressFallback(): AddressDecision {
       canConfirm: false,
       mayBook: false,
       addressConfirmationRequired: false,
-      fallback: 'createCallback',
-      message:
-        `NOT BOOKED. The street and city were not confirmed after ${ADDRESS_CONFIRM_RETRY_LIMIT} tries. ` +
-        'Call createCallback once with their name, number, and the street and city you have. Do not call book_job again.',
+      fallback: channel === 'text' ? 'hand_off_to_office' : 'createCallback',
+      message: channel === 'text' ? text : voice,
     },
   };
 }
@@ -398,44 +557,110 @@ function str(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** True when book_job says the caller agreed to the read-back. A boolean true counts. A missing field does not. */
+function addressConfirmedFlag(value: unknown): boolean {
+  if (value === true || value === 1) return true;
+  if (value === false || value === 0 || value == null) return false;
+  if (typeof value !== 'string') return false;
+  const said = value.trim();
+  if (!said || /^(false|no|0)$/i.test(said)) return false;
+  if (/^(true|yes|1)$/i.test(said)) return true;
+  return isAffirmative(said);
+}
+
+function wordCount(text: string): number {
+  return canonicalWords(text).length;
+}
+
+/**
+ * A read-back of this street. The city can be in the same bot turn, the next short
+ * bot turn, or (when the bot misheard the town) the caller's reply.
+ */
+function findReadBack(
+  turns: AddressTurn[],
+  index: number,
+  address: string,
+  city: string,
+): { end: number; callerMustNameCity: boolean } | null {
+  const turn = turns[index];
+  if (!turn || turn.role !== 'bot' || !mentionsStreet(turn.text, address)) return null;
+  if (mentionsCity(turn.text, city)) return { end: index, callerMustNameCity: false };
+  const next = turns[index + 1];
+  if (next?.role === 'bot' && wordCount(next.text) <= 14 && mentionsCity(next.text, city)) {
+    return { end: index + 1, callerMustNameCity: false };
+  }
+  return { end: index, callerMustNameCity: true };
+}
+
+function repliesConfirm(
+  replies: string[],
+  address: string,
+  city: string,
+  callerMustNameCity: boolean,
+): boolean {
+  if (!replies.length) return false;
+  if (replies.some((text) => isNegative(text) || contradicts(text, city) || statesDifferentStreet(text, address, city))) return false;
+  if (callerMustNameCity) {
+    return replies.some((text) => (isAffirmative(text) && mentionsCity(text, city)) || (mentionsStreet(text, address) && mentionsCity(text, city)));
+  }
+  return replies.some((text) => userConfirms(text, address, city));
+}
+
 /**
  * book_job must have a street and a city the caller confirmed.
  * An address on file, or the city of the line they dialed, is not confirmation.
+ * addressConfirmed is accepted only when Vapi sent no user transcript.
+ * A transcript no, correction, or empty reply always refuses, even if the flag is true.
+ * Out-of-area and the open-slot check still run after this gate.
  */
 export function checkServiceAddressConfirmation(
   params: Record<string, unknown>,
   turns: AddressTurn[] = [],
+  options: { channel?: AddressConfirmChannel } = {},
 ): AddressDecision {
+  const channel = options.channel === 'text' ? 'text' : 'voice';
   const address = str(params.address) || str(params.serviceAddress) || str(params.street);
   const city = str(params.city) || str(params.town);
-  if (!address || !city) return addressReject('street and city are both required');
+  if (!address || !city) return addressReject('street and city are both required', channel);
 
   const users = turns.filter((turn) => turn.role === 'user').map((turn) => turn.text);
-  const hasTranscript = users.length > 0;
+  // Any turn is a transcript. The flag counts only when Vapi sent none at all.
+  const hasTranscript = turns.length > 0;
+  const flagSource = params.addressConfirmed !== undefined && params.addressConfirmed !== null && params.addressConfirmed !== ''
+    ? params.addressConfirmed
+    : params.callerAddressYes;
+  const confirmedFlag = addressConfirmedFlag(flagSource);
   let asks = 0;
   let agreed = false;
   for (let i = 0; i < turns.length; i++) {
-    const turn = turns[i];
-    if (turn.role !== 'bot' || !mentionsStreet(turn.text, address) || !mentionsCity(turn.text, city)) continue;
-    asks += 1;
+    const read = findReadBack(turns, i, address, city);
+    if (!read) continue;
     const reply: string[] = [];
-    for (let j = i + 1; j < turns.length && turns[j].role === 'user'; j++) reply.push(turns[j].text);
-    if (reply.some((text) => userConfirms(text, address, city))) agreed = true;
+    for (let j = read.end + 1; j < turns.length && turns[j].role === 'user'; j++) reply.push(turns[j].text);
+    if (read.callerMustNameCity) {
+      if (!repliesConfirm(reply, address, city, true)) continue;
+      asks += 1;
+      agreed = true;
+    } else {
+      asks += 1;
+      if (repliesConfirm(reply, address, city, false)) agreed = true;
+    }
+    if (read.end > i) i = read.end;
   }
   if (agreed) return { ok: true };
 
-  const claimed = users.map(claimedServiceTown).find((town) => town && normalizeServicePlace(town) !== normalizeServicePlace(city));
+  const claimed = users.map(claimedServiceTown).find((town) => town && cityKey(town) !== cityKey(city));
   if (claimed && asks < ADDRESS_CONFIRM_RETRY_LIMIT) {
-    return addressReject(`the caller said ${claimed}, not ${city}`);
+    return addressReject(`the caller said ${claimed}, not ${city}`, channel);
   }
-  if (asks >= ADDRESS_CONFIRM_RETRY_LIMIT) return addressFallback();
+  if (asks >= ADDRESS_CONFIRM_RETRY_LIMIT) return addressFallback(channel);
 
   if (!hasTranscript) {
-    const confirmed = str(params.addressConfirmed) || str(params.callerAddressYes);
-    if (confirmed && isAffirmative(confirmed) && !contradicts(confirmed, city)) return { ok: true };
-    return addressReject('the street and city were not confirmed');
+    const flagText = typeof flagSource === 'string' ? flagSource : '';
+    if (confirmedFlag && !isNegative(flagText) && !contradicts(flagText, city)) return { ok: true };
+    return addressReject('the street and city were not confirmed', channel);
   }
 
-  if (!asks) return addressReject('you have not read back the street and the city');
-  return addressReject('the caller has not said yes to that street and city');
+  if (!asks) return addressReject('you have not read back the street and the city', channel);
+  return addressReject('the caller has not said yes to that street and city', channel);
 }

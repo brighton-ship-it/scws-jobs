@@ -150,7 +150,7 @@ export const PAST_WORK_RULE =
   'recentJobs are our latest jobs for this caller, newest first. You may mention the most recent one once in plain words if it helps. Never read job numbers, prices, invoices or balances. If the same problem was worked on in the last ~30 days, start book_job notes with "Repeat visit:".';
 
 export const ADDRESS_ON_FILE_RULE =
-  'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. If the caller says "usual", "same" or "my" address, use addressOnFile for that question. Never use the caller\'s name as the town.';
+  'Before book_job, confirm the street address and the city out loud, even for an existing customer. Ask: "Just to confirm, the well is at [street] in [city]?" and wait for a yes. Do not assume the city from the line they called. addressOnFile is only a suggestion until they confirm the street and the city. If they give a different street or city, use what they said. If the caller says "usual", "same" or "my" address, use addressOnFile for that question. After they say yes, call book_job with addressConfirmed true. Never use the caller\'s name as the town.';
 
 export async function handleLookupCustomer(
   phone: string,
