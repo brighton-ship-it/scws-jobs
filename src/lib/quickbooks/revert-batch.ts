@@ -2,8 +2,12 @@
  * Undo one audited QuickBooks batch in reverse order.
  * Deletes only entities this gateway created. Restores updates from the
  * audited prior entity. Skips closed-period transactions and voids.
+ * Pending, refused, preview, and failed rows are not writes. A pending row
+ * is covered when the same request later recorded ok or failed. An unresolved
+ * pending row is reported, because the batch id alone does not identify a
+ * QuickBooks entity to undo.
  */
-import { readBookCloseDate, runQboPlan, type QboWriteDeps } from './durable-write.ts';
+import { readBookCloseDate, runQboPlan, type QboAuditStatus, type QboWriteDeps } from './durable-write.ts';
 import { parseBatchId, type QboPlan } from './write-payloads.ts';
 
 export type BatchAuditRow = {
@@ -19,6 +23,9 @@ export type BatchAuditRow = {
   syncToken: string | null;
   priorState: Record<string, unknown> | null;
   txnDate: string | null;
+  status: QboAuditStatus | null;
+  requestId: string | null;
+  error: string | null;
 };
 
 export type RevertStep = {
@@ -31,18 +38,52 @@ export type RevertStep = {
 };
 
 const PAYMENT_ENTITIES = new Set(['Payment', 'BillPayment']);
+const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed']);
 
 export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
   if (!closeDate || !txnDate) return false;
   return txnDate <= closeDate;
 }
 
+/** A row that recorded a QuickBooks change revert can undo. Legacy rows have no status and use ok. */
+function isRevertTarget(row: BatchAuditRow): boolean {
+  if (row.dryRun || !row.confirmed) return false;
+  if (row.tool === 'qbo_revert_batch') return false;
+  if (row.status && NOT_A_WRITE.has(row.status)) return false;
+  if (row.status === 'ok') return true;
+  return row.ok === true;
+}
+
+/** The pre-write row is settled once the same request stored an outcome. */
+function settlesRequest(row: BatchAuditRow): boolean {
+  if (!row.requestId) return false;
+  if (row.status === 'ok' || row.status === 'failed') return true;
+  if (row.status != null) return false;
+  return row.ok || Boolean(row.error);
+}
+
 export function planBatchRevert(rows: BatchAuditRow[], closeDate: string | null): { steps: RevertStep[]; couldNot: { entity: string; id: string | null; reason: string }[] } {
   const steps: RevertStep[] = [];
   const couldNot: { entity: string; id: string | null; reason: string }[] = [];
+  const settled = new Set(rows.filter(settlesRequest).map((row) => row.requestId as string));
   for (const row of rows) {
-    if (!row.ok || row.dryRun || !row.confirmed) continue;
-    if (row.tool === 'qbo_revert_batch') continue;
+    if (row.status === 'pending') {
+      if (row.dryRun || !row.confirmed) continue;
+      const coveredByRequest = Boolean(row.requestId && settled.has(row.requestId));
+      const coveredByEntity = Boolean(
+        row.qboId &&
+          rows.some((other) => other.id !== row.id && isRevertTarget(other) && other.entity === row.entity && other.qboId === row.qboId)
+      );
+      if (coveredByRequest || coveredByEntity) continue;
+      if (!row.qboId) {
+        couldNot.push({
+          entity: row.entity,
+          id: null,
+          reason: 'pending audit row has no recorded QuickBooks id, so this batch cannot revert that write',
+        });
+        continue;
+      }
+    } else if (!isRevertTarget(row)) continue;
     if (!row.qboId) {
       couldNot.push({ entity: row.entity, id: null, reason: 'audit row has no QuickBooks id' });
       continue;
@@ -202,5 +243,13 @@ function rowFromDb(row: Record<string, unknown>): BatchAuditRow {
     syncToken: (row.sync_token as string) || ids.syncToken || null,
     priorState: (row.prior_state as Record<string, unknown>) || null,
     txnDate: (row.txn_date as string) || null,
+    status: auditStatus(row.status),
+    requestId: row.request_id == null ? null : String(row.request_id),
+    error: row.error == null ? null : String(row.error),
   };
+}
+
+function auditStatus(value: unknown): QboAuditStatus | null {
+  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed') return value;
+  return null;
 }

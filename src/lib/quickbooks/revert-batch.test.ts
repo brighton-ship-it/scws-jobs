@@ -14,6 +14,9 @@ function row(partial: Partial<BatchAuditRow> & Pick<BatchAuditRow, 'id' | 'entit
     syncToken: '0',
     priorState: null,
     txnDate: '2026-10-02',
+    status: null,
+    requestId: null,
+    error: null,
     ...partial,
   };
 }
@@ -52,6 +55,154 @@ test('revert refuses a closed period, a void, and a row this gateway did not cre
   assert.match(plan.couldNot[0].reason, /close date/);
   assert.match(plan.couldNot[1].reason, /void/);
   assert.match(plan.couldNot[2].reason, /not created/);
+});
+
+test('a pending intent row is not a second write when the ok row recorded the entity', () => {
+  const plan = planBatchRevert(
+    [
+      row({
+        id: 2,
+        entity: 'Invoice',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'pending',
+        requestId: 'inv-write-test',
+        qboId: null,
+        syncToken: null,
+      }),
+      row({
+        id: 3,
+        entity: 'Invoice',
+        action: 'create',
+        created: true,
+        ok: true,
+        status: 'ok',
+        requestId: 'inv-write-test',
+        qboId: '39107',
+      }),
+    ],
+    null
+  );
+  assert.deepEqual(
+    plan.steps.map((step) => [step.action, step.entity, step.qboId]),
+    [['delete', 'Invoice', '39107']]
+  );
+  assert.equal(plan.couldNot.length, 0);
+
+  const sameEntity = planBatchRevert(
+    [
+      row({
+        id: 4,
+        entity: 'Invoice',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'pending',
+        requestId: 'intent',
+        qboId: '39107',
+      }),
+      row({
+        id: 5,
+        entity: 'Invoice',
+        action: 'create',
+        created: true,
+        ok: true,
+        status: 'ok',
+        requestId: 'outcome',
+        qboId: '39107',
+      }),
+    ],
+    null
+  );
+  assert.deepEqual(
+    sameEntity.steps.map((step) => step.auditId),
+    [5]
+  );
+});
+
+test('an unresolved pending row is reported and a pending row that already has an id is reverted once', () => {
+  const unresolved = planBatchRevert(
+    [
+      row({
+        id: 2,
+        entity: 'Invoice',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'pending',
+        requestId: 'inv-only',
+        qboId: null,
+      }),
+    ],
+    null
+  );
+  assert.equal(unresolved.steps.length, 0);
+  assert.equal(unresolved.couldNot.length, 1);
+  assert.match(unresolved.couldNot[0].reason, /pending audit row/);
+
+  const onlyId = planBatchRevert(
+    [
+      row({
+        id: 4,
+        entity: 'Invoice',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'pending',
+        requestId: 'inv-stamped',
+        qboId: '39107',
+      }),
+    ],
+    null
+  );
+  assert.deepEqual(
+    onlyId.steps.map((step) => step.qboId),
+    ['39107']
+  );
+  assert.equal(onlyId.couldNot.length, 0);
+});
+
+test('refused and failed rows are not reverted, and a failed outcome settles its pending row', () => {
+  const plan = planBatchRevert(
+    [
+      row({
+        id: 1,
+        entity: 'Invoice',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'pending',
+        requestId: 'inv-fail',
+        qboId: null,
+      }),
+      row({
+        id: 2,
+        entity: 'Invoice',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'failed',
+        requestId: 'inv-fail',
+        qboId: '55',
+        error: 'QuickBooks /invoice failed (400).',
+      }),
+      row({
+        id: 3,
+        entity: 'Payment',
+        action: 'create',
+        created: false,
+        ok: false,
+        status: 'refused',
+        requestId: 'pay-refused',
+        qboId: '9',
+        dryRun: true,
+      }),
+    ],
+    null
+  );
+  assert.equal(plan.steps.length, 0);
+  assert.equal(plan.couldNot.length, 0);
 });
 
 test('confirm revert posts deletes after the deposit restore', async () => {

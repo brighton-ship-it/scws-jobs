@@ -1,6 +1,6 @@
 /**
  * QuickBooks Online write tool definitions for the Jobber MCP.
- * Preview is the default. confirm:true posts only when the sandbox gate is open.
+ * Preview is the default. confirm:true posts to whatever environment the env vars select.
  */
 import type { McpToolDefinition, McpToolResult } from './protocol.ts';
 import { runQboWrite, type QboWriteDeps } from '../quickbooks/durable-write.ts';
@@ -10,7 +10,7 @@ import { isQboWriteTool } from '../quickbooks/write-payloads.ts';
 
 const confirm = {
   type: 'boolean',
-  description: 'Default false (preview). true posts to the write-target company. dryRun:false does not post. Do not set confirm and dryRun together.',
+  description: 'Default false (preview). true posts to whatever environment the env vars select. dryRun:false does not post. Do not set confirm and dryRun together.',
 };
 const requestId = {
   type: 'string',
@@ -39,7 +39,7 @@ function tool(name: string, description: string, properties: Record<string, unkn
 export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   tool(
     'qbo_journal_entry',
-    'Create or update a QuickBooks journal entry. Preview is the default and returns the exact JournalEntry body. confirm:true posts to the sandbox company only. Lines must balance. Pass id to update. Nothing is deleted; reverse a journal with another entry. Does not email.',
+    'Create or update a QuickBooks journal entry. Preview is the default and returns the exact JournalEntry body. confirm:true posts to whatever environment the env vars select. Lines must balance. Pass id to update. Nothing is deleted; reverse a journal with another entry. Does not email.',
     {
       txnDate: { type: 'string', description: 'YYYY-MM-DD' },
       docNumber: { type: 'string' },
@@ -68,7 +68,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_deposit',
-    'Create a QuickBooks deposit into a bank account. A line is either an account amount or an existing payment (paymentId) being deposited. Preview is the default. confirm:true posts to the sandbox company only. Does not delete.',
+    'Create a QuickBooks deposit into a bank account. A line is either an account amount or an existing payment (paymentId) being deposited. Preview is the default. confirm:true posts to whatever environment the env vars select. Does not delete.',
     {
       depositToAccountId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -95,7 +95,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_payment',
-    'Create a QuickBooks payment and apply it to one or more invoices. Preview is the default. confirm:true posts to the sandbox company only. totalAmt must equal the applications unless allowUnapplied is true. Does not email, and does not record a Jobber payment.',
+    'Create a QuickBooks payment and apply it to one or more invoices. Preview is the default. confirm:true posts to whatever environment the env vars select. totalAmt must equal the applications unless allowUnapplied is true. Does not email, and does not record a Jobber payment.',
     {
       customerId: { type: 'string' },
       totalAmt: { type: 'number' },
@@ -119,7 +119,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_invoice',
-    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to the sandbox company only. Never sets EmailStatus and never sends the invoice. Pass id to update. Does not delete.',
+    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. Does not delete.',
     {
       customerId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -150,7 +150,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_categorize_purchase',
-    'Set the expense account on an existing QuickBooks purchase. Preview returns the line account changes. confirm:true reads the purchase and posts it back with those AccountRef values. Pass accountId for every account-based line, or lines: [{ lineId, accountId }]. Does not create or delete a purchase.',
+    'Set the expense account on an existing QuickBooks purchase. Preview is the default and returns the line account changes. confirm:true reads the purchase and posts those AccountRef values to whatever environment the env vars select. Pass accountId for every account-based line, or lines: [{ lineId, accountId }]. Does not create or delete a purchase.',
     {
       id: { type: 'string' },
       accountId: { type: 'string' },
@@ -170,7 +170,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_bill',
-    'Create or update a QuickBooks bill. Preview is the default. confirm:true posts to the sandbox company only. Pass id to update. Does not delete or pay the bill (use qbo_bill_payment to pay).',
+    'Create or update a QuickBooks bill. Preview is the default. confirm:true posts to whatever environment the env vars select. Pass id to update. Does not delete or pay the bill (use qbo_bill_payment to pay).',
     {
       vendorId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -199,7 +199,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_bill_payment',
-    'Create a QuickBooks bill payment (check or credit card) and apply it to bills. Preview is the default. confirm:true posts to the sandbox company only. totalAmt must equal the applications. Does not delete.',
+    'Create a QuickBooks bill payment (check or credit card) and apply it to bills. Preview is the default. confirm:true posts to whatever environment the env vars select. totalAmt must equal the applications. Does not delete.',
     {
       vendorId: { type: 'string' },
       totalAmt: { type: 'number' },
@@ -223,7 +223,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_attach_note',
-    'Attach a memo or note to a QuickBooks transaction. mode private_note (default) sets PrivateNote. mode customer_memo sets Invoice CustomerMemo and does not email. mode attachable creates an Attachable note with IncludeOnSend false. Preview is the default. confirm:true posts to the sandbox company only.',
+    'Attach a memo or note to a QuickBooks transaction. mode private_note (default) sets PrivateNote. mode customer_memo sets Invoice CustomerMemo and does not email. mode attachable creates an Attachable note with IncludeOnSend false. Preview is the default. confirm:true posts to whatever environment the env vars select.',
     {
       entityType: { type: 'string' },
       entityId: { type: 'string' },
@@ -235,13 +235,13 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_closing_date',
-    'Set QuickBooks AccountingInfoPrefs.BookCloseDate (the books close date). Preview shows the sparse Preferences update. confirm:true reads Preferences and posts BookCloseDate to the sandbox company only. Intuit may reject the write; the error is returned and nothing else is changed. Does not close a period by deleting transactions.',
+    'Set QuickBooks AccountingInfoPrefs.BookCloseDate (the books close date). Preview shows the sparse Preferences update. confirm:true reads Preferences and posts BookCloseDate to whatever environment the env vars select. Intuit may reject the write; the error is returned and nothing else is changed. Does not close a period by deleting transactions.',
     { closeDate: { type: 'string', description: 'YYYY-MM-DD. The books are closed through this date.' } },
     ['closeDate']
   ),
   tool(
     'qbo_void',
-    'Void a QuickBooks Invoice or Payment. Preview is the default. confirm:true posts operation=void to the sandbox company only. This is not a delete. Journal entries are reversed with qbo_journal_entry, not voided. reason is stored in the audit log.',
+    'Void a QuickBooks Invoice or Payment. Preview is the default. confirm:true posts operation=void to whatever environment the env vars select. This is not a delete. Journal entries are reversed with qbo_journal_entry, not voided. reason is stored in the audit log.',
     {
       entityType: { type: 'string', enum: ['Invoice', 'Payment'] },
       entityId: { type: 'string' },
@@ -252,7 +252,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_import_jobber_invoices',
-    'Import Jobber invoices into QuickBooks the way the old Jobber sync posted them: DocNumber is the invoice number, the customer matches DisplayName, the item matches the line name, and line tax is TAX or NON. The header tax code is a TaxCode id from the jobsite (San Diego County 3, Menifee 30), not a display name. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. A missing tax code blocks that invoice only. confirm:true posts the chunk and requires batchId. payments: none (default), undeposited, or deposit (also pass depositId). Does not email.',
+    'Import Jobber invoices into QuickBooks the way the old Jobber sync posted them: DocNumber is the invoice number, the customer matches DisplayName, the item matches the line name, and line tax is TAX or NON. The header tax code is a TaxCode id from the jobsite (San Diego County 3, Menifee 30), not a display name. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. A missing tax code blocks that invoice only. confirm:true posts the chunk to whatever environment the env vars select and requires batchId. payments: none (default), undeposited, or deposit (also pass depositId). Does not email.',
     {
       invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 500 },
       fromInvoice: { type: 'integer' },
@@ -272,7 +272,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_revert_batch',
-    'Undo one batchId. Preview lists the steps. confirm:true restores modified entities from the audited prior state, then deletes payments this batch created, then deletes the other created entities. It does not delete anything the batch did not create. It skips voids and anything on or before the books close date, and reports those in couldNot.',
+    'Undo one batchId. Preview lists the steps. confirm:true posts those undos to whatever environment the env vars select. It restores modified entities from the audited prior state, then deletes payments this batch created, then deletes the other created entities. It uses the ok audit rows for that batch. A pending row is the pre-write intent, not a second write, and a refused row did not post. It does not delete anything the batch did not create. It skips voids and anything on or before the books close date, and reports those in couldNot.',
     {},
     ['batchId']
   ),

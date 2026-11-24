@@ -245,7 +245,7 @@ curl -sS \
 
 `qbo_status`, `qbo_report`, and `qbo_query` are still read-only GET/SELECT calls against the production company stored in `quickbooks_connections`.
 
-These tools preview by default. A confirm posts to the sandbox company unless production writes are opted in:
+These tools preview by default. `confirm: true` posts to whatever environment the env vars select. Sandbox is the default. Production also requires `QBO_WRITE_ENVIRONMENT=production` and `QBO_WRITE_PRODUCTION_REALM_ID` equal to the connected realm:
 
 | Tool | What a confirm does |
 | --- | --- |
@@ -266,12 +266,13 @@ These tools preview by default. A confirm posts to the sandbox company unless pr
 
 `requestId` is sent as Intuit's `requestid` query parameter. Reuse it to retry the same post. If you omit it, the gateway hashes the tool and payload so an identical retry uses the same key. Intuit returns the original response for a repeated request id instead of creating a second transaction.
 
-Every confirm writes `public.qbo_write_audit` before the post and again with the response: actor, tool, payload, QuickBooks response, entity, id, SyncToken, and `batchId` when you passed one. Apply both SQL files in the Supabase SQL Editor. The app does not run them. If the insert fails, the post is refused.
+Every confirm writes `public.qbo_write_audit` before the post and again with the response. The first row is `status=pending` (not a failure): it has the gate environment and the `batchId` when one was passed, `ok=false`, and no QuickBooks id yet. The second row is `status=ok` or `status=failed` and carries the response, entity, id, and SyncToken. A confirm the gate refuses is `status=refused` and does not post. A preview is `status=preview`. Apply the SQL files in the Supabase SQL Editor. The app does not run them. If the insert fails, the post is refused.
 
 1. `supabase/migrations/20261105_qbo_write_audit.sql`
 2. `supabase/migrations/20261119_qbo_write_audit_batch.sql`
+3. `supabase/migrations/20261124_qbo_write_audit_status.sql`
 
-Pass the same `batchId` on every write in a batch, including `qbo_import_jobber_invoices` (required there on confirm). `qbo_revert_batch` previews, then on confirm restores modified entities from the audited prior state, deletes payments the batch created, then deletes the other created entities. It refuses voids, rows with no prior state that this gateway did not create, and anything on or before `BookCloseDate`. Those come back in `couldNot`.
+Pass the same `batchId` on every write in a batch, including `qbo_import_jobber_invoices` (required there on confirm). `qbo_revert_batch` loads every row for that `batchId`. It undoes `status=ok` rows (and older rows with `ok=true` and no status): restores modified entities from the audited prior state, deletes payments the batch created, then deletes the other created entities. A pending row is skipped when the same request has an ok or failed outcome, so it is not undone twice and it is not mistaken for a failed write. A pending row with no outcome and no QuickBooks id is reported in `couldNot`. Refused and failed rows are not writes. It refuses voids, rows with no prior state that this gateway did not create, and anything on or before `BookCloseDate`. Those come back in `couldNot`.
 
 ### Env vars on Vercel project scws-jobs
 

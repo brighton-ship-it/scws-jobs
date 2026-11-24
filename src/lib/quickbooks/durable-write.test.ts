@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { callJobberMcpTool, jobberMcpHealthBody } from '../mcp/jobber-tools.ts';
 import { insertQboAudit, loadSandboxToken, runQboWrite, saveSandboxToken, type QboAuditEntry, type SbClient } from './durable-write.ts';
+import { planBatchRevert, type BatchAuditRow } from './revert-batch.ts';
 
 const SANDBOX = {
   QBO_WRITES_ENABLED: 'true',
@@ -24,11 +25,19 @@ function json(data: unknown, status = 200): Response {
 
 test('preview is the default and does not call QuickBooks', async () => {
   let calls = 0;
+  const audits: QboAuditEntry[] = [];
   const fetchImpl: typeof fetch = async () => {
     calls += 1;
     return json({});
   };
-  const result = await runQboWrite('qbo_journal_entry', journal, { fetchImpl, env: SANDBOX, productionRealmId: '9130349321543166' });
+  const result = await runQboWrite('qbo_journal_entry', { ...journal, batchId: 'oct-2026' }, {
+    fetchImpl,
+    env: SANDBOX,
+    productionRealmId: '9130349321543166',
+    audit: async (entry) => {
+      audits.push(entry);
+    },
+  });
   assert.equal(calls, 0);
   assert.equal(result.dryRun, true);
   assert.equal(result.wrote, false);
@@ -36,6 +45,11 @@ test('preview is the default and does not call QuickBooks', async () => {
   assert.equal(result.http.body && (result.http.body.Line as unknown[]).length, 2);
   assert.equal(result.http.query.minorversion, '75');
   assert.match(result.requestId, /^[a-f0-9]{32}$/);
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].status, 'preview');
+  assert.equal(audits[0].ok, true);
+  assert.equal(audits[0].environment, 'sandbox');
+  assert.equal(audits[0].batchId, 'oct-2026');
 });
 
 test('confirm is refused when writes are off, even if dryRun is false', async () => {
@@ -145,6 +159,11 @@ test('confirm posts once to the sandbox company and retries reuse requestid', as
   assert.equal(posted[0].tool, 'qbo_journal_entry');
   assert.equal(posted[0].confirmed, true);
   assert.equal(posted[0].dryRun, false);
+  assert.equal(posted[0].status, 'ok');
+  assert.equal(posted[0].environment, 'sandbox');
+  const pending = audits.filter((entry) => entry.status === 'pending');
+  assert.equal(pending.length, 2);
+  assert.equal(pending.every((entry) => entry.environment === 'sandbox' && entry.batchId == null && entry.ok === false && entry.refused === false && entry.error == null), true);
 });
 
 test('a failed audit blocks the post', async () => {
@@ -195,9 +214,28 @@ test('production opt-in posts to the production host only when the realm matches
   assert.equal(urls[0].includes('sandbox-quickbooks'), false);
   const saved = audits.find((entry) => entry.ok && entry.created);
   assert.equal(saved?.batchId, 'oct-2026');
+  assert.equal(saved?.status, 'ok');
+  assert.equal(saved?.environment, 'production');
+  assert.equal(saved?.realmId, '9130349321543166');
   assert.equal(saved?.entity, 'JournalEntry');
   assert.equal(saved?.syncToken, '0');
   assert.equal(saved?.qboIds.id, '7');
+  const pending = audits.filter((entry) => entry.status === 'pending');
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].ok, false);
+  assert.equal(pending[0].refused, false);
+  assert.equal(pending[0].error, null);
+  assert.equal(pending[0].environment, 'production');
+  assert.equal(pending[0].realmId, '9130349321543166');
+  assert.equal(pending[0].batchId, 'oct-2026');
+  assert.equal(pending[0].requestId, saved?.requestId);
+  assert.equal(pending[0].qboIds.id, undefined);
+  const revert = planBatchRevert(audits.map(auditRow), null);
+  assert.deepEqual(
+    revert.steps.map((step) => [step.entity, step.qboId]),
+    [['JournalEntry', '7']]
+  );
+  assert.equal(revert.couldNot.length, 0);
 
   urls.length = 0;
   const mismatch = await runQboWrite(
@@ -207,6 +245,107 @@ test('production opt-in posts to the production host only when the realm matches
   );
   assert.equal(mismatch.refused, true);
   assert.equal(urls.length, 0);
+});
+
+test('a refused confirm is status refused and keeps the batch id', async () => {
+  const audits: QboAuditEntry[] = [];
+  let calls = 0;
+  const result = await runQboWrite(
+    'qbo_journal_entry',
+    { ...journal, confirm: true, batchId: 'write-test-2026-11-24-5860' },
+    {
+      env: { QBO_WRITES_ENABLED: 'true', QBO_WRITE_ENVIRONMENT: 'production' },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl: async () => {
+        calls += 1;
+        return json({});
+      },
+      audit: async (entry) => {
+        audits.push(entry);
+      },
+    }
+  );
+  assert.equal(calls, 0);
+  assert.equal(result.refused, true);
+  assert.equal(result.wrote, false);
+  assert.equal(audits.length, 1);
+  assert.equal(audits[0].status, 'refused');
+  assert.equal(audits[0].ok, false);
+  assert.equal(audits[0].refused, true);
+  assert.equal(audits[0].environment, 'production');
+  assert.equal(audits[0].batchId, 'write-test-2026-11-24-5860');
+  assert.equal(planBatchRevert(audits.map(auditRow), null).steps.length, 0);
+  assert.equal(planBatchRevert(audits.map(auditRow), null).couldNot.length, 0);
+});
+
+test('a QuickBooks error is status failed, not pending, and does not become a revert', async () => {
+  const audits: QboAuditEntry[] = [];
+  const result = await runQboWrite(
+    'qbo_journal_entry',
+    { ...journal, confirm: true, batchId: 'write-test-2026-11-24-5860' },
+    {
+      env: {
+        QBO_WRITES_ENABLED: 'true',
+        QBO_WRITE_ENVIRONMENT: 'production',
+        QBO_WRITE_PRODUCTION_REALM_ID: '9130349321543166',
+      },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl: async () => json({ Fault: { Error: [{ Message: 'no' }] } }, 400),
+      audit: async (entry) => {
+        audits.push(entry);
+      },
+    }
+  );
+  assert.equal(result.wrote, false);
+  assert.equal(result.refused, false);
+  assert.deepEqual(audits.map((entry) => entry.status), ['pending', 'failed']);
+  assert.equal(audits.every((entry) => entry.environment === 'production' && entry.batchId === 'write-test-2026-11-24-5860' && entry.realmId === '9130349321543166'), true);
+  assert.equal(audits[1].ok, false);
+  assert.equal(audits[1].refused, false);
+  assert.match(audits[1].error || '', /failed \(400\)/);
+  const plan = planBatchRevert(audits.map(auditRow), null);
+  assert.equal(plan.steps.length, 0);
+  assert.equal(plan.couldNot.length, 0);
+});
+
+test('a read before the post is status failed and does not post', async () => {
+  const audits: QboAuditEntry[] = [];
+  let calls = 0;
+  const result = await runQboWrite(
+    'qbo_categorize_purchase',
+    { id: '5', lines: [{ lineId: '1', accountId: '80' }], confirm: true, batchId: 'oct-2026' },
+    {
+      env: {
+        QBO_WRITES_ENABLED: 'true',
+        QBO_WRITE_ENVIRONMENT: 'production',
+        QBO_WRITE_PRODUCTION_REALM_ID: '9130349321543166',
+      },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl: async () => {
+        calls += 1;
+        return json({}, 400);
+      },
+      audit: async (entry) => {
+        audits.push(entry);
+      },
+    }
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.wrote, false);
+  assert.deepEqual(
+    audits.map((entry) => entry.status),
+    ['pending', 'failed']
+  );
+  assert.equal(audits[1].entity, 'Purchase');
+  assert.equal(audits[1].environment, 'production');
+  assert.equal(audits[1].batchId, 'oct-2026');
+  assert.match(audits[1].error || '', /Nothing was posted/);
+  const plan = planBatchRevert(audits.map(auditRow), null);
+  assert.equal(plan.steps.length, 0);
+  assert.equal(plan.couldNot.length, 0);
 });
 
 test('omitted request ids match for the same payload', async () => {
@@ -343,6 +482,27 @@ test('health keeps writes off when the flag is unset', async () => {
   assert.equal(health.tools.some((name) => name.startsWith('qbo_delete')), false);
 });
 
+function auditRow(entry: QboAuditEntry, index: number): BatchAuditRow {
+  const prior = entry.priorState && typeof entry.priorState === 'object' ? (entry.priorState as Record<string, unknown>) : null;
+  return {
+    id: index + 1,
+    tool: entry.tool,
+    entity: entry.entity,
+    action: entry.action ?? null,
+    created: entry.created === true,
+    ok: entry.ok,
+    dryRun: entry.dryRun,
+    confirmed: entry.confirmed,
+    qboId: entry.qboIds.id ?? null,
+    syncToken: entry.syncToken ?? entry.qboIds.syncToken ?? null,
+    priorState: prior,
+    txnDate: entry.txnDate ?? null,
+    status: entry.status,
+    requestId: entry.requestId,
+    error: entry.error,
+  };
+}
+
 function fakeDb(rows: Record<string, unknown>[]): SbClient & { ops: { op: string; filters: [string, string][] }[]; store: Record<string, unknown>[] } {
   const store = rows;
   const ops: { op: string; filters: [string, string][] }[] = [];
@@ -435,6 +595,7 @@ test('sandbox token storage never updates a production connection', async () => 
     refused: false,
     realmId: '222',
     environment: 'sandbox',
+    status: 'ok',
     entity: 'JournalEntry',
     payload: { amount: 1 },
     qboResponse: { JournalEntry: { Id: '9' } },
@@ -445,4 +606,6 @@ test('sandbox token storage never updates a production connection', async () => 
   assert.equal(auditDb.store[0].tool, 'qbo_journal_entry');
   assert.equal((auditDb.store[0].qbo_ids as { id: string }).id, '9');
   assert.equal(auditDb.store[0].actor, 'brighton');
+  assert.equal(auditDb.store[0].status, 'ok');
+  assert.equal(auditDb.store[0].environment, 'sandbox');
 });
