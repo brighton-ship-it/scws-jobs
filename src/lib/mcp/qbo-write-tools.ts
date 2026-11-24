@@ -139,7 +139,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       retaxLineIds: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Update only, with syncToken and txnTaxCodeId, without lines, totalTax or other fields. Re-saves the invoice so QuickBooks computes the tax itself (no override): resends the live Line array sparse with these line ids set TAX and their saved tax class cleared so it is re-derived from the item, plus the live ShipAddr/ShipFromAddr and TxnTaxCodeRef. Refused when a listed line item is not Taxable, the SyncToken changed, or the invoice has no ShipFromAddr.',
+        description: 'Update only, with syncToken and txnTaxCodeId, without lines, totalTax or other fields. Re-saves the invoice so QuickBooks computes the tax itself (no override): resends the live Line array sparse with these line ids set TAX (their TaxClassificationRef is dropped, a harmless defensive step since QuickBooks takes the class from the item), plus the live ShipAddr/ShipFromAddr and TxnTaxCodeRef. Refused when a listed line item is not Taxable, the SyncToken changed, or the invoice has no ShipFromAddr.',
       },
       totalTax: { type: 'number', description: 'Under Automated Sales Tax QuickBooks prorates this over the code it assigns and may replace TxnTaxCodeRef (saved code is checked and flagged as taxCodeChanged); prefer retaxLineIds. Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines and addresses stay as saved.' },
       txnTaxCodeId: { type: 'string', description: 'Required with totalTax: the TaxCode id to keep on TxnTaxDetail, for example 3.' },

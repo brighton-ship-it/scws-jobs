@@ -901,10 +901,13 @@ export function savedTaxCode(json: unknown): string | null {
 
 /**
  * qbo_invoice retaxLineIds: re-save an existing invoice so Automated Sales Tax recomputes it on the
- * given header code with NO TotalTax override. QuickBooks stamps each line's TaxClassificationRef at
- * save, so a later item reclass does not reach posted lines; this resends the full Line array as read
- * (sparse:true, so addresses, memo and notes stay) with TaxCodeRef TAX and no TaxClassificationRef on
- * the listed lines, so QuickBooks re-derives their class from the item. ShipAddr/ShipFromAddr are
+ * given header code with NO TotalTax override. Invoice reads show each line's TaxClassificationRef
+ * from the item's current class (39144 line 3 read EUC-99990202 right after the item fix, with the
+ * invoice unchanged), but the saved TxnTaxDetail (TaxLine amounts, NetAmountTaxable, TotalTax) is not
+ * recalculated until the invoice is saved again. This resends the full Line array as read (sparse:true,
+ * so addresses, memo and notes stay) with TaxCodeRef TAX on the listed lines. Dropping their
+ * TaxClassificationRef is harmless and defensive: QuickBooks takes the class from the item either way,
+ * and this avoids resending a stale value. ShipAddr/ShipFromAddr are
  * resent as read. The handler shows the body on preview from a live read; confirm rebuilds it from its
  * own read and refuses a SyncToken change.
  */
