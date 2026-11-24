@@ -87,6 +87,7 @@ export type QboWriteDeps = {
   loadJobberInvoices?: (numbers: string[]) => Promise<any[]>;
   loadBatch?: (batchId: string) => Promise<any[]>;
   readCloseDate?: () => Promise<string | null>;
+  sleep?: (ms: number) => Promise<void>;
 };
 
 export type QboWriteResult = {
@@ -613,6 +614,14 @@ export async function writeRealmQuery(query: string, deps: QboWriteDeps = {}): P
   const { token } = await writeToken(deps);
   const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, '/query', { minorversion: MINOR_VERSION, query }), token, deps.fetchImpl || fetch);
   if (got.status < 200 || got.status >= 300) throw new Error(`QuickBooks query failed (${got.status}).`);
+  return got.json;
+}
+
+/** GET one entity on the write-target company. The gate must already be open. */
+export async function readWriteRealm(path: string, deps: QboWriteDeps = {}): Promise<unknown> {
+  const { gate, token } = await writeToken(deps);
+  const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId || '', path, { minorversion: MINOR_VERSION }), token, deps.fetchImpl || fetch);
+  if (got.status < 200 || got.status >= 300) throw new Error(`QuickBooks read failed (${got.status}).`);
   return got.json;
 }
 

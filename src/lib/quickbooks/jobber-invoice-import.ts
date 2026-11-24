@@ -9,17 +9,29 @@
  * - TaxCodeRef is TAX or NON. The header TxnTaxCodeRef is a TaxCode id
  *   (San Diego County 3, Menifee 30). Ids are not looked up by display name.
  * - TxnDate is the issue timestamp's America/Los_Angeles date. DueDate is the due date
- * - CustomerMemo is the Jobber client message
+ * - CustomerMemo is the Jobber client message, cut at 1,000 characters. The preview
+ *   reports the original length.
+ * - A Jobber discount is a negative line so the total is not the pre-discount sum.
  * - EmailStatus is never set
  *
  * ServiceDate is not copied: the invoice line we can read does not carry the visit date.
- * October Jobber payouts are already deposits that hit Sales. Linking a payment onto
- * one of those deposits records the invoice income as well. The preview says so.
+ * A deposit that already booked the payout to 4010 Sales is rewritten with
+ * qbo_relink_deposit, not by linking a second payment onto that income.
  */
 import { runQboPlan, writeRealmQuery, type QboWriteDeps } from './durable-write.ts';
+import { isQboRateLimit, withQboBackoff } from './qbo-backoff.ts';
 import { taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
 import { describeQboWriteGate } from './write-gate.ts';
-import { parseBatchId, type QboPlan } from './write-payloads.ts';
+import { buildDeposit, parseBatchId, type QboPlan } from './write-payloads.ts';
+
+export const QBO_MEMO_LIMIT = 1000;
+
+export type JobberPaymentForQbo = {
+  id?: string | null;
+  amount: number;
+  entryDate?: string | null;
+  adjustmentType?: string | null;
+};
 
 export type JobberInvoiceForQbo = {
   invoiceNumber: string;
@@ -32,24 +44,42 @@ export type JobberInvoiceForQbo = {
   total: number;
   taxAmount: number;
   paymentsTotal: number;
+  discountAmount?: number;
+  payments?: JobberPaymentForQbo[];
 };
 
 export type ImportStatus = 'create' | 'skip' | 'blocked';
+
+export type ImportPaymentLine = {
+  amount: number;
+  applied: number;
+  txnDate: string;
+  ref: string;
+  source: 'jobber-payment' | 'invoice-total';
+};
+
+export type MemoReport = { length: number; limit: number; truncated: boolean; value: string | null };
 
 export type ImportInvoicePlan = {
   invoiceNumber: string;
   status: ImportStatus;
   reason: string | null;
   customerName: string;
+  customerId: string | null;
   total: number;
   taxAmount: number;
   paymentsTotal: number;
+  discountAmount: number;
+  negativeTaxableLines: number;
+  memo: MemoReport | null;
+  customerCreate: { displayName: string } | null;
   body: Record<string, unknown> | null;
-  payment: Record<string, unknown> | null;
+  payment: ImportPaymentLine | null;
+  paymentLines: ImportPaymentLine[];
 };
 
 const DEPOSIT_WARNING =
-  'October Jobber payouts are already QBO deposits that post to 4010 Sales. Linking a payment to one of those deposits also records the invoice income. Read the deposit before confirm, or use payments: "undeposited".';
+  'payments: "deposit" links onto a deposit that may already credit 4010 Sales. That records the invoice income a second time. Use qbo_relink_deposit to replace that sales line, or payments: "payout" to make a new deposit with a fee line.';
 
 export function pacificDate(iso: string): string {
   const date = new Date(iso);
@@ -111,37 +141,123 @@ function money(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+export function memoReport(message: string | null | undefined): MemoReport {
+  const text = (message || '').trim();
+  return {
+    length: text.length,
+    limit: QBO_MEMO_LIMIT,
+    truncated: text.length > QBO_MEMO_LIMIT,
+    value: text ? text.slice(0, QBO_MEMO_LIMIT) : null,
+  };
+}
+
+export function paymentTxnDate(entryDate: string | null | undefined, fallback: string): string {
+  const text = (entryDate || '').trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  if (!text) return fallback;
+  return pacificDate(text);
+}
+
+function collectedPayment(record: JobberPaymentForQbo): boolean {
+  const kind = (record.adjustmentType || 'PAYMENT').toUpperCase();
+  if (kind === 'REFUND' || kind === 'BAD_DEBT' || kind === 'FAILED_ACH_PAYMENT') return false;
+  return record.amount > 0 && (kind === 'PAYMENT' || kind === 'DEPOSIT' || kind === '');
+}
+
+/** Payment date and amount come from the Jobber payment record when one exists. */
+export function jobberPaymentLines(invoice: JobberInvoiceForQbo): ImportPaymentLine[] {
+  const invoiceDate = pacificDate(invoice.issuedDate);
+  const records = (invoice.payments || []).filter(collectedPayment);
+  if (!records.length) {
+    if (!(invoice.paymentsTotal > 0)) return [];
+    const amount = money(Math.min(invoice.paymentsTotal, invoice.total));
+    return [{ amount, applied: amount, txnDate: invoiceDate, ref: invoice.invoiceNumber, source: 'invoice-total' }];
+  }
+  let remaining = money(invoice.total);
+  return records
+    .map((record) => {
+      const amount = money(record.amount);
+      const applied = money(Math.min(amount, Math.max(remaining, 0)));
+      remaining = money(Math.max(0, remaining - applied));
+      return {
+        amount,
+        applied,
+        txnDate: paymentTxnDate(record.entryDate, invoiceDate),
+        ref: invoice.invoiceNumber,
+        source: 'jobber-payment' as const,
+      };
+    })
+    .filter((line) => line.amount > 0);
+}
+
 export function buildJobberSyncedInvoice(
   invoice: JobberInvoiceForQbo,
   customerId: string,
   itemsByName: Record<string, string>,
-  txnTaxCodeId: string
-): { body: Record<string, unknown> | null; missingItems: string[] } {
-  const missing = [...new Set(invoice.lines.map((line) => line.name).filter((name) => !itemsByName[name]))];
-  if (missing.length || !invoice.lines.length) return { body: null, missingItems: missing.length ? missing : ['(no lines)'] };
-  const txnDate = pacificDate(invoice.issuedDate);
-  const due = invoice.dueDate ? pacificDate(invoice.dueDate) : txnDate;
-  const body: Record<string, unknown> = {
-    DocNumber: invoice.invoiceNumber,
-    CustomerRef: { value: customerId },
-    TxnDate: txnDate,
-    DueDate: due,
-    Line: invoice.lines.map((line) => ({
-      Amount: money(line.quantity * line.unitPrice),
+  txnTaxCodeId: string,
+  options: { taxOverride?: boolean; discountItemId?: string | null } = {}
+): { body: Record<string, unknown> | null; missingItems: string[]; negativeTaxableLines: number; discountAmount: number; memo: MemoReport; error?: string } {
+  const memo = memoReport(invoice.message);
+  const missing = [...new Set(invoice.lines.map((line) => line.name).filter((name) => name && !itemsByName[name]))];
+  if (missing.length || !invoice.lines.length) {
+    return { body: null, missingItems: missing.length ? missing : ['(no lines)'], negativeTaxableLines: 0, discountAmount: 0, memo };
+  }
+  let negativeTaxableLines = 0;
+  const lineAmounts: number[] = [];
+  const lines = invoice.lines.map((line) => {
+    const amount = money(line.quantity * line.unitPrice);
+    lineAmounts.push(amount);
+    const taxable = line.taxable && amount >= 0;
+    if (line.taxable && amount < 0) negativeTaxableLines += 1;
+    return {
+      Amount: amount,
       DetailType: 'SalesItemLineDetail',
       ...(line.description ? { Description: line.description } : {}),
       SalesItemLineDetail: {
         ItemRef: { value: itemsByName[line.name] },
         Qty: line.quantity,
         UnitPrice: money(line.unitPrice),
-        TaxCodeRef: { value: line.taxable ? 'TAX' : 'NON' },
+        TaxCodeRef: { value: taxable ? 'TAX' : 'NON' },
       },
-    })),
-    TxnTaxDetail: { TxnTaxCodeRef: { value: txnTaxCodeId } },
+    };
+  });
+  const statedDiscount = money(Math.max(0, invoice.discountAmount || 0));
+  const negativeAlready = money(lineAmounts.filter((amount) => amount < 0).reduce((sum, amount) => sum + amount, 0));
+  const discountAmount = statedDiscount > 0 && Math.abs(negativeAlready + statedDiscount) > 0.009 ? statedDiscount : 0;
+  if (discountAmount > 0) {
+    const discountItem = options.discountItemId || itemsByName.Discount || itemsByName[invoice.lines.find((line) => line.quantity * line.unitPrice > 0)?.name || ''] || '';
+    if (!discountItem) {
+      return { body: null, missingItems: ['Discount'], negativeTaxableLines, discountAmount, memo };
+    }
+    if (money(lineAmounts.reduce((sum, amount) => sum + amount, 0) - discountAmount) < 0) {
+      return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, error: 'Discount is larger than the line total.' };
+    }
+    lines.push({
+      Amount: money(-discountAmount),
+      DetailType: 'SalesItemLineDetail',
+      Description: 'Jobber discount',
+      SalesItemLineDetail: {
+        ItemRef: { value: discountItem },
+        Qty: 1,
+        UnitPrice: money(-discountAmount),
+        TaxCodeRef: { value: 'NON' },
+      },
+    });
+  }
+  const txnDate = pacificDate(invoice.issuedDate);
+  const due = invoice.dueDate ? pacificDate(invoice.dueDate) : txnDate;
+  const taxDetail: Record<string, unknown> = { TxnTaxCodeRef: { value: txnTaxCodeId } };
+  if (options.taxOverride) taxDetail.TotalTax = money(invoice.taxAmount);
+  const body: Record<string, unknown> = {
+    DocNumber: invoice.invoiceNumber,
+    ...(customerId ? { CustomerRef: { value: customerId } } : {}),
+    TxnDate: txnDate,
+    DueDate: due,
+    Line: lines,
+    TxnTaxDetail: taxDetail,
   };
-  const memo = (invoice.message || '').trim();
-  if (memo) body.CustomerMemo = { value: memo.slice(0, 1000) };
-  return { body, missingItems: [] };
+  if (memo.value) body.CustomerMemo = { value: memo.value };
+  return { body, missingItems: [], negativeTaxableLines, discountAmount, memo };
 }
 
 export function classifyJobberInvoice(
@@ -150,30 +266,51 @@ export function classifyJobberInvoice(
   customerId: string | null,
   itemsByName: Record<string, string>,
   txnTaxCodeId: string | null,
-  taxReason?: string
+  taxReason?: string,
+  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean } = {}
 ): ImportInvoicePlan {
+  const paymentLines = jobberPaymentLines(invoice);
   const base = {
     invoiceNumber: invoice.invoiceNumber,
     customerName: invoice.clientName,
+    customerId,
     total: invoice.total,
     taxAmount: invoice.taxAmount,
     paymentsTotal: invoice.paymentsTotal,
+    discountAmount: money(Math.max(0, invoice.discountAmount || 0)),
+    negativeTaxableLines: 0,
+    memo: memoReport(invoice.message),
+    customerCreate: null as { displayName: string } | null,
+    payment: paymentLines[0] || null,
+    paymentLines,
   };
   if (existingDocNumbers.has(invoice.invoiceNumber)) {
-    return { ...base, status: 'skip', reason: 'DocNumber already exists in QuickBooks', body: null, payment: null };
+    return { ...base, status: 'skip', reason: 'DocNumber already exists in QuickBooks', body: null };
   }
-  if (!customerId) {
-    return { ...base, status: 'blocked', reason: `No QuickBooks customer with DisplayName "${invoice.clientName}"`, body: null, payment: null };
+  const createCustomer = Boolean(options.createCustomer && !customerId && invoice.clientName.trim());
+  if (!customerId && !createCustomer) {
+    return { ...base, status: 'blocked', reason: `No QuickBooks customer with DisplayName "${invoice.clientName}"`, body: null };
   }
   if (!txnTaxCodeId) {
-    return { ...base, status: 'blocked', reason: taxReason || taxCodeMissingReason(invoice.city), body: null, payment: null };
+    return { ...base, status: 'blocked', reason: taxReason || taxCodeMissingReason(invoice.city), body: null };
   }
-  const built = buildJobberSyncedInvoice(invoice, customerId, itemsByName, txnTaxCodeId);
+  const built = buildJobberSyncedInvoice(invoice, customerId || '', itemsByName, txnTaxCodeId, options);
+  if (built.error) {
+    return { ...base, status: 'blocked', reason: built.error, body: null, negativeTaxableLines: built.negativeTaxableLines, discountAmount: built.discountAmount, memo: built.memo };
+  }
   if (!built.body) {
-    return { ...base, status: 'blocked', reason: `Missing QuickBooks items: ${built.missingItems.join(', ')}`, body: null, payment: null };
+    return { ...base, status: 'blocked', reason: `Missing QuickBooks items: ${built.missingItems.join(', ')}`, body: null, negativeTaxableLines: built.negativeTaxableLines, memo: built.memo };
   }
-  const payment = invoice.paymentsTotal > 0 ? { amount: money(Math.min(invoice.paymentsTotal, invoice.total)), ref: invoice.invoiceNumber } : null;
-  return { ...base, status: 'create', reason: null, body: built.body, payment };
+  return {
+    ...base,
+    status: 'create',
+    reason: null,
+    body: built.body,
+    negativeTaxableLines: built.negativeTaxableLines,
+    discountAmount: built.discountAmount,
+    memo: built.memo,
+    customerCreate: createCustomer ? { displayName: invoice.clientName.trim() } : null,
+  };
 }
 
 function sqlString(value: string): string {
@@ -185,52 +322,129 @@ function rowsOf(json: any, key: string): Record<string, unknown>[] {
   return Array.isArray(rows) ? rows : [];
 }
 
+function blockedPlan(number: string, reason: string): ImportInvoicePlan {
+  return {
+    invoiceNumber: number,
+    status: 'blocked',
+    reason,
+    customerName: '',
+    customerId: null,
+    total: 0,
+    taxAmount: 0,
+    paymentsTotal: 0,
+    discountAmount: 0,
+    negativeTaxableLines: 0,
+    memo: null,
+    customerCreate: null,
+    body: null,
+    payment: null,
+    paymentLines: [],
+  };
+}
+
+function flagOn(value: unknown): boolean {
+  return value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
+}
+
+function nonNegativeMoney(value: unknown, field: string): number {
+  if (value === undefined || value === null || value === '') return 0;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${field} must be 0 or greater.`);
+  return money(n);
+}
+
 export async function runJobberInvoiceImport(
   args: Record<string, unknown>,
   deps: QboWriteDeps & {
     loadJobberInvoices?: (numbers: string[]) => Promise<JobberInvoiceForQbo[]>;
     qboQuery?: (query: string) => Promise<unknown>;
+    rateLimitAttempts?: number;
   } = {}
 ): Promise<Record<string, unknown>> {
   const numbers = invoiceNumbersFromArgs(args);
-  const confirm = args.confirm === true || (typeof args.confirm === 'string' && args.confirm.trim().toLowerCase() === 'true');
+  const confirm = flagOn(args.confirm);
   const batchId = parseBatchId(args.batchId, confirm);
   const payments = args.payments === undefined || args.payments === '' ? 'none' : String(args.payments);
-  if (payments !== 'none' && payments !== 'undeposited' && payments !== 'deposit') {
-    throw new Error('payments must be none, undeposited, or deposit.');
+  if (payments !== 'none' && payments !== 'undeposited' && payments !== 'deposit' && payments !== 'payout') {
+    throw new Error('payments must be none, undeposited, deposit, or payout.');
   }
   const depositId = args.depositId === undefined || args.depositId === '' ? null : String(args.depositId).trim();
   if (payments === 'deposit' && !depositId) throw new Error('depositId is required when payments is deposit.');
+  const depositToAccountId = args.depositToAccountId === undefined || args.depositToAccountId === '' ? null : String(args.depositToAccountId).trim();
+  const feeAmount = nonNegativeMoney(args.feeAmount, 'feeAmount');
+  const feeAccountId = args.feeAccountId === undefined || args.feeAccountId === '' ? null : String(args.feeAccountId).trim();
+  if (payments === 'payout' && !depositToAccountId) throw new Error('depositToAccountId is required when payments is payout.');
+  if (feeAmount > 0 && !feeAccountId) throw new Error('feeAccountId is required when feeAmount is set.');
+  const payoutDate = typeof args.payoutDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.payoutDate.trim()) ? args.payoutDate.trim() : null;
+  const createCustomers = flagOn(args.createCustomers);
+  const taxOverride = flagOn(args.taxOverride);
+  const customerIds = idMap(args.customerIds);
+  const itemIds = idMap(args.itemIds);
+  const discountItemId = typeof args.discountItemId === 'string' && args.discountItemId.trim() ? args.discountItemId.trim() : null;
   const limit = importChunkLimit(args.limit);
   const { chunk, nextCursor } = sliceInvoiceChunk(numbers, args.cursor, limit);
   const query = deps.qboQuery || ((sql: string) => writeRealmQuery(sql, deps));
+  let rateLimitRetries = 0;
+  const qbo = (sql: string) => withQboBackoff(() => query(sql), {
+    attempts: deps.rateLimitAttempts,
+    sleep: deps.sleep,
+    onRetry: () => { rateLimitRetries += 1; },
+  });
   const load = deps.loadJobberInvoices || ((nums: string[]) => loadJobberInvoices(nums, deps));
   const invoices = await load(chunk);
   const byNumber = new Map(invoices.map((invoice) => [invoice.invoiceNumber, invoice]));
   const cityOverrides = cityOverrideMap(args.taxCodeByCity);
   const overrideId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : null;
-  const overrideExists = overrideId ? await taxCodeIdExists(overrideId, query) : false;
+  const overrideExists = overrideId ? await taxCodeIdExists(overrideId, qbo) : false;
   const customerTax = new Map<string, string | null>();
   const plans: ImportInvoicePlan[] = [];
   for (const number of chunk) {
-    const invoice = byNumber.get(number);
-    if (!invoice) {
-      plans.push({ invoiceNumber: number, status: 'blocked', reason: 'Jobber invoice was not found', customerName: '', total: 0, taxAmount: 0, paymentsTotal: 0, body: null, payment: null });
-      continue;
+    try {
+      const invoice = byNumber.get(number);
+      if (!invoice) {
+        plans.push(blockedPlan(number, 'Jobber invoice was not found'));
+        continue;
+      }
+      const existing = rowsOf(await qbo(`select Id, DocNumber from Invoice where DocNumber = ${sqlString(number)}`), 'Invoice');
+      const explicitCustomer = customerIds[invoice.clientName] || null;
+      let customerId = explicitCustomer;
+      let ambiguousCustomer = false;
+      if (!explicitCustomer) {
+        const customers = rowsOf(await qbo(`select Id, DisplayName from Customer where DisplayName = ${sqlString(invoice.clientName)}`), 'Customer');
+        if (customers.length > 1) ambiguousCustomer = true;
+        else if (customers[0]?.Id != null) customerId = String(customers[0].Id);
+      }
+      const items: Record<string, string> = { ...itemIds };
+      const ambiguousItems: string[] = [];
+      for (const name of [...new Set(invoice.lines.map((line) => line.name).filter(Boolean))]) {
+        if (items[name]) continue;
+        const found = rowsOf(await qbo(`select Id, Name from Item where Name = ${sqlString(name)}`), 'Item');
+        if (found.length > 1) ambiguousItems.push(name);
+        else if (found[0]?.Id != null) items[name] = String(found[0].Id);
+      }
+      const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, qbo);
+      let plan = classifyJobberInvoice(
+        invoice,
+        new Set(existing.map((row) => String(row.DocNumber))),
+        customerId,
+        items,
+        tax.id,
+        tax.reason,
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer }
+      );
+      if (ambiguousCustomer) {
+        plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
+      } else if (ambiguousItems.length) {
+        plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks item matches: ${ambiguousItems.join(', ')}. Pass itemIds.`, body: null };
+      }
+      plans.push(plan);
+    } catch (error) {
+      if (!isQboRateLimit(error)) throw error;
+      plans.push(blockedPlan(number, error instanceof Error ? error.message : 'QuickBooks rate limit.'));
     }
-    const existing = rowsOf(await query(`select Id, DocNumber from Invoice where DocNumber = ${sqlString(number)}`), 'Invoice');
-    const customers = rowsOf(await query(`select Id, DisplayName from Customer where DisplayName = ${sqlString(invoice.clientName)}`), 'Customer');
-    const items: Record<string, string> = {};
-    for (const name of [...new Set(invoice.lines.map((line) => line.name))]) {
-      const found = rowsOf(await query(`select Id, Name from Item where Name = ${sqlString(name)}`), 'Item');
-      const id = found[0]?.Id;
-      if (id != null) items[name] = String(id);
-    }
-    const customerId = customers[0]?.Id != null ? String(customers[0].Id) : null;
-    const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, query);
-    plans.push(classifyJobberInvoice(invoice, new Set(existing.map((row) => String(row.DocNumber))), customerId, items, tax.id, tax.reason));
   }
   const creates = plans.filter((row) => row.status === 'create');
+  const paymentTotal = money(creates.reduce((sum, row) => sum + row.paymentLines.reduce((inner, line) => inner + line.amount, 0), 0));
   const summary = {
     batchId,
     count: plans.length,
@@ -239,10 +453,20 @@ export async function runJobberInvoiceImport(
     blocked: plans.filter((row) => row.status === 'blocked').length,
     invoiceTotal: money(creates.reduce((sum, row) => sum + row.total, 0)),
     taxTotal: money(creates.reduce((sum, row) => sum + row.taxAmount, 0)),
-    paymentTotal: money(creates.reduce((sum, row) => sum + (row.payment ? Number(row.payment.amount) : 0), 0)),
+    paymentTotal,
+    memosTruncated: plans.filter((row) => row.memo?.truncated).length,
+    rateLimitRetries,
     payments,
     depositId,
     warning: payments === 'deposit' ? DEPOSIT_WARNING : null,
+    payout: payments === 'payout' ? {
+      depositToAccountId,
+      feeAmount,
+      feeAccountId,
+      gross: paymentTotal,
+      net: money(paymentTotal - feeAmount),
+      paymentCount: creates.reduce((count, row) => count + row.paymentLines.length, 0),
+    } : null,
     cursor: args.cursor ? String(args.cursor) : null,
     nextCursor,
     done: nextCursor == null,
@@ -256,46 +480,109 @@ export async function runJobberInvoiceImport(
     return { ok: false, dryRun: true, wrote: false, refused: true, error: gate.blockedReason, ...summary, invoices: plans };
   }
   const posted: Record<string, unknown>[] = [];
+  const createdCustomers = new Map<string, string>();
+  const payoutPayments: { id: string; amount: number; txnDate: string }[] = [];
   for (const row of creates) {
-    const invoicePlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Invoice', action: 'create', path: '/invoice', body: row.body };
-    const invoiceResult = await runQboPlan(invoicePlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'inv') }, deps);
-    const entry: Record<string, unknown> = { invoiceNumber: row.invoiceNumber, invoice: { wrote: invoiceResult.wrote, id: invoiceResult.ids.id, error: invoiceResult.error || null } };
-    if (invoiceResult.wrote && row.payment && payments !== 'none' && invoiceResult.ids.id) {
-      const amount = Number(row.payment.amount);
-      const paymentBody = {
-        CustomerRef: (row.body as { CustomerRef: { value: string } }).CustomerRef,
-        TotalAmt: amount,
-        TxnDate: (row.body as { TxnDate: string }).TxnDate,
-        PaymentRefNum: String(row.payment.ref).slice(0, 21),
-        Line: [{ Amount: amount, LinkedTxn: [{ TxnId: invoiceResult.ids.id, TxnType: 'Invoice' }] }],
-      };
-      const paymentPlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Payment', action: 'create', path: '/payment', body: paymentBody };
-      const paymentResult = await runQboPlan(paymentPlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'pay') }, deps);
-      entry.payment = { wrote: paymentResult.wrote, id: paymentResult.ids.id, error: paymentResult.error || null };
-      if (payments === 'deposit' && paymentResult.wrote && paymentResult.ids.id && depositId) {
-        const link: QboPlan = {
-          tool: 'qbo_import_jobber_invoices',
-          entity: 'Deposit',
-          action: 'update',
-          path: '/deposit',
-          body: { Id: depositId },
-          read: { path: `/deposit/${depositId}`, apply: 'linkPayment' },
-          changes: { paymentId: paymentResult.ids.id, amount },
-        };
-        const linkResult = await runQboPlan(link, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'dep') }, deps);
-        entry.deposit = { wrote: linkResult.wrote, id: linkResult.ids.id, error: linkResult.error || null };
+    const entry: Record<string, unknown> = { invoiceNumber: row.invoiceNumber };
+    let customerId = row.customerId;
+    if (!customerId && row.customerCreate) {
+      customerId = createdCustomers.get(row.customerCreate.displayName) || null;
+      if (!customerId) {
+        const customerResult = await runQboPlan(
+          { tool: 'qbo_import_jobber_invoices', entity: 'Customer', action: 'create', path: '/customer', body: { DisplayName: row.customerCreate.displayName } },
+          { confirm: true, batchId, requestId: requestKey(batchId!, row.customerCreate.displayName, 'cus') },
+          deps
+        );
+        entry.customer = { wrote: customerResult.wrote, id: customerResult.ids.id, error: customerResult.error || null };
+        if (!customerResult.wrote || !customerResult.ids.id) {
+          entry.invoice = { wrote: false, id: null, error: 'Customer was not created.' };
+          posted.push(entry);
+          continue;
+        }
+        customerId = customerResult.ids.id;
+        createdCustomers.set(row.customerCreate.displayName, customerId);
       }
     }
+    const invoiceBody = { ...(row.body || {}), ...(customerId ? { CustomerRef: { value: customerId } } : {}) };
+    const invoicePlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Invoice', action: 'create', path: '/invoice', body: invoiceBody };
+    const invoiceResult = await runQboPlan(invoicePlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'inv') }, deps);
+    entry.invoice = { wrote: invoiceResult.wrote, id: invoiceResult.ids.id, error: invoiceResult.error || null };
+    const made: Record<string, unknown>[] = [];
+    if (invoiceResult.wrote && payments !== 'none' && invoiceResult.ids.id && customerId) {
+      for (let index = 0; index < row.paymentLines.length; index += 1) {
+        const line = row.paymentLines[index];
+        const paymentBody: Record<string, unknown> = {
+          CustomerRef: { value: customerId },
+          TotalAmt: line.amount,
+          TxnDate: line.txnDate,
+          PaymentRefNum: String(line.ref).slice(0, 21),
+        };
+        if (line.applied > 0) {
+          paymentBody.Line = [{ Amount: line.applied, LinkedTxn: [{ TxnId: invoiceResult.ids.id, TxnType: 'Invoice' }] }];
+        }
+        const paymentPlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Payment', action: 'create', path: '/payment', body: paymentBody };
+        const paymentResult = await runQboPlan(paymentPlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, index === 0 ? 'pay' : `pay${index + 1}`) }, deps);
+        made.push({ wrote: paymentResult.wrote, id: paymentResult.ids.id, amount: line.amount, txnDate: line.txnDate, error: paymentResult.error || null });
+        if (payments === 'deposit' && paymentResult.wrote && paymentResult.ids.id && depositId) {
+          const link: QboPlan = {
+            tool: 'qbo_import_jobber_invoices',
+            entity: 'Deposit',
+            action: 'update',
+            path: '/deposit',
+            body: { Id: depositId },
+            read: { path: `/deposit/${depositId}`, apply: 'linkPayment' },
+            changes: { paymentId: paymentResult.ids.id, amount: line.amount },
+          };
+          const linkResult = await runQboPlan(link, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, index === 0 ? 'dep' : `dep${index + 1}`) }, deps);
+          made[made.length - 1].deposit = { wrote: linkResult.wrote, id: linkResult.ids.id, error: linkResult.error || null };
+        }
+        if (payments === 'payout' && paymentResult.wrote && paymentResult.ids.id) {
+          payoutPayments.push({ id: paymentResult.ids.id, amount: line.amount, txnDate: line.txnDate });
+        }
+      }
+    }
+    if (made.length) entry.payments = made;
     posted.push(entry);
   }
+  if (payments === 'payout' && payoutPayments.length && depositToAccountId) {
+    const txnDate = payoutDate || payoutPayments.map((row) => row.txnDate).sort().at(-1);
+    const depositPlan = buildDeposit({
+      depositToAccountId,
+      ...(txnDate ? { txnDate } : {}),
+      privateNote: batchId ? `Jobber payout ${batchId}` : 'Jobber payout',
+      lines: [
+        ...payoutPayments.map((row) => ({ amount: row.amount, paymentId: row.id })),
+        ...(feeAmount > 0 && feeAccountId ? [{ amount: -feeAmount, accountId: feeAccountId, description: 'Jobber fee' }] : []),
+      ],
+    });
+    const payoutResult = await runQboPlan(
+      { ...depositPlan, tool: 'qbo_import_jobber_invoices' },
+      { confirm: true, batchId, requestId: requestKey(batchId!, 'payout', 'out') },
+      deps
+    );
+    posted.push({ payout: { wrote: payoutResult.wrote, id: payoutResult.ids.id, error: payoutResult.error || null, net: money(paymentTotal - feeAmount) } });
+  }
   return {
-    ok: posted.every((row) => (row.invoice as { wrote: boolean }).wrote) && plans.every((row) => row.status !== 'blocked'),
+    ok: posted.every((row) => {
+      if (row.payout) return (row.payout as { wrote: boolean }).wrote;
+      if (row.invoice) return (row.invoice as { wrote: boolean }).wrote;
+      return true;
+    }) && plans.every((row) => row.status !== 'blocked'),
     dryRun: false,
-    wrote: posted.some((row) => (row.invoice as { wrote: boolean }).wrote),
+    wrote: posted.some((row) => (row.invoice as { wrote?: boolean } | undefined)?.wrote),
     ...summary,
     invoices: plans,
     posted,
   };
+}
+
+function idMap(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, string> = {};
+  for (const [key, id] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof id === 'string' && id.trim() && key.trim()) out[key.trim()] = id.trim();
+  }
+  return out;
 }
 
 function cityOverrideMap(value: unknown): Record<string, string> {
@@ -312,7 +599,8 @@ async function taxCodeIdExists(id: string, query: (sql: string) => Promise<unkno
   try {
     const found = rowsOf(await query(`select Id from TaxCode where Id = '${id}'`), 'TaxCode');
     return found.some((row) => String(row.Id) === id);
-  } catch {
+  } catch (error) {
+    if (isQboRateLimit(error)) throw error;
     return false;
   }
 }
@@ -352,7 +640,8 @@ async function taxCodeFromCustomer(customerId: string, query: (sql: string) => P
       const id = detail?.TxnTaxCodeRef?.value;
       if (id) return String(id);
     }
-  } catch {
+  } catch (error) {
+    if (isQboRateLimit(error)) throw error;
     return null;
   }
   return null;
@@ -381,7 +670,8 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
         invoices(first: 5, searchTerm: $searchTerm) {
           nodes {
             invoiceNumber issuedDate dueDate message
-            amounts { total taxAmount paymentsTotal }
+            amounts { subtotal discountAmount total taxAmount paymentsTotal }
+            paymentRecords(first: 20) { nodes { id amount entryDate adjustmentType } }
             client { name }
             jobs(first: 3) { nodes { property { address { city } } } }
             lineItems(first: 40) { nodes { name description quantity unitPrice taxable } }
@@ -405,6 +695,13 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
       total: Number(match.amounts?.total || 0),
       taxAmount: Number(match.amounts?.taxAmount || 0),
       paymentsTotal: Number(match.amounts?.paymentsTotal || 0),
+      discountAmount: Number(match.amounts?.discountAmount || 0),
+      payments: (match.paymentRecords?.nodes || []).map((record: Record<string, unknown>) => ({
+        id: record.id ? String(record.id) : null,
+        amount: Number(record.amount || 0),
+        entryDate: record.entryDate ? String(record.entryDate) : null,
+        adjustmentType: record.adjustmentType ? String(record.adjustmentType) : null,
+      })),
       lines: (match.lineItems?.nodes || []).map((line: Record<string, unknown>) => ({
         name: String(line.name || ''),
         description: line.description ? String(line.description) : null,

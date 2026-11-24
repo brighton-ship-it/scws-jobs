@@ -205,6 +205,27 @@ test('refused and failed rows are not reverted, and a failed outcome settles its
   assert.equal(plan.couldNot.length, 0);
 });
 
+test('revert restores a relinked deposit before it deletes the payment, invoice, and customer', () => {
+  const plan = planBatchRevert(
+    [
+      row({ id: 1, entity: 'Customer', created: true, action: 'create', qboId: '8', txnDate: null }),
+      row({ id: 2, entity: 'Invoice', created: true, action: 'create', qboId: '10' }),
+      row({ id: 3, entity: 'Payment', created: true, action: 'create', qboId: '20' }),
+      row({ id: 4, entity: 'Deposit', created: false, action: 'update', qboId: '30', priorState: { Id: '30', SyncToken: '1', Line: [] } }),
+    ],
+    null
+  );
+  assert.deepEqual(
+    plan.steps.map((step) => [step.phase, step.entity, step.qboId]),
+    [
+      ['restore', 'Deposit', '30'],
+      ['delete-payment', 'Payment', '20'],
+      ['delete', 'Invoice', '10'],
+      ['delete', 'Customer', '8'],
+    ]
+  );
+});
+
 test('confirm revert posts deletes after the deposit restore', async () => {
   const calls: string[] = [];
   const fetchImpl: typeof fetch = async (url, init) => {

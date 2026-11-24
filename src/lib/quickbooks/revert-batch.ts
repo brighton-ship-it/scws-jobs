@@ -140,6 +140,7 @@ function entityPath(entity: string): string {
     Deposit: 'deposit',
     Attachable: 'attachable',
     Preferences: 'preferences',
+    Customer: 'customer',
   };
   const path = paths[entity];
   if (!path) throw new Error(`Cannot revert QuickBooks entity ${entity}.`);
