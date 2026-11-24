@@ -236,6 +236,9 @@ export async function runBatchRevert(
       reason: `revert ${batchId}`,
     };
     if (step.entity === 'Preferences') qboPlan.read = { path: '/preferences', apply: 'syncToken' };
+    // A full invoice restore can be re-coded by Automated Sales Tax; flag it if the saved code differs.
+    const priorCode = step.entity === 'Invoice' && step.action !== 'delete' ? (row?.priorState as any)?.TxnTaxDetail?.TxnTaxCodeRef?.value : null;
+    if (typeof priorCode === 'string' && priorCode) qboPlan.expectTaxCode = priorCode;
     const result = await runQboPlan(qboPlan, { confirm: true, batchId, requestId: `revert-${batchId}-${step.auditId}`.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50) }, deps);
     if (!result.wrote) {
       const missing = /failed \(404\)/.test(result.error || '');
@@ -247,7 +250,7 @@ export async function runBatchRevert(
       results.push({ ...step, status: 'failed', error: result.error });
       continue;
     }
-    results.push({ ...step, status: 'reverted', ids: result.ids });
+    results.push({ ...step, status: 'reverted', ids: result.ids, ...(qboPlan.expectTaxCode ? { taxCodeChanged: result.taxCodeChanged ?? null } : {}) });
   }
   return {
     ok: couldNot.length === 0,

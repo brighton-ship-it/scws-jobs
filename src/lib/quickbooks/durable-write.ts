@@ -21,6 +21,7 @@ import {
   idempotencyPayload,
   parseBatchId,
   resolveRequestId,
+  savedTaxCode,
   type QboPlan,
 } from './write-payloads.ts';
 
@@ -127,6 +128,8 @@ export type QboWriteResult = {
   reason?: string;
   /** The POST was sent but the result is not known. QuickBooks may have saved it. */
   outcomeUnknown?: boolean;
+  /** Invoice writes with plan.expectTaxCode: the saved TxnTaxCodeRef was not the requested one (Automated Sales Tax re-picked it). */
+  taxCodeChanged?: { requested: string; saved: string | null } | null;
   audit: { attempted: boolean; error?: string };
 };
 
@@ -598,6 +601,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     return { ...base, http, error, ids, qbo: slim(plan.entity, posted.json), audit: { attempted: true } };
   }
   let auditError: string | undefined;
+  const taxCodeChanged = taxCodeChangeOf(plan, posted.json);
   try {
     await remember(
       logged('ok', {
@@ -606,9 +610,10 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
         priorState,
         syncToken: ids.syncToken,
         txnDate: typeof body.TxnDate === 'string' ? body.TxnDate : null,
-        payload: { http, reason: plan.reason || null },
+        payload: { http, reason: plan.reason || null, ...(plan.expectTaxCode ? { taxCodeChanged } : {}) },
         qboResponse: cap(posted.json),
         qboIds: ids,
+        ...(taxCodeChanged ? { error: `taxCodeChanged: requested TxnTaxCodeRef ${taxCodeChanged.requested}, QuickBooks saved ${taxCodeChanged.saved ?? 'none'}.` } : {}),
       }),
       deps,
       true
@@ -625,9 +630,17 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     ids,
     qbo: slim(plan.entity, posted.json),
     error: auditError ? `Posted, but the audit log failed: ${auditError}` : undefined,
+    ...(plan.expectTaxCode ? { taxCodeChanged } : {}),
     audit: { attempted: true, error: auditError },
   };
   }
+}
+
+/** Compare the saved invoice header tax code with plan.expectTaxCode. Null when it matches or nothing was expected. */
+export function taxCodeChangeOf(plan: QboPlan, json: unknown): { requested: string; saved: string | null } | null {
+  if (!plan.expectTaxCode || plan.entity !== 'Invoice') return null;
+  const saved = savedTaxCode(json);
+  return saved === plan.expectTaxCode ? null : { requested: plan.expectTaxCode, saved };
 }
 
 function failEntry(base: QboWriteResult, entity: string, error: string, qbo: unknown): QboAuditEntry {

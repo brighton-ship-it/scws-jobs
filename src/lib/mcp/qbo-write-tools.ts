@@ -5,6 +5,7 @@
 import type { McpToolDefinition, McpToolResult } from './protocol.ts';
 import { runRelinkDeposit } from '../quickbooks/deposit-relink.ts';
 import { runQboWrite, type QboWriteDeps } from '../quickbooks/durable-write.ts';
+import { checkInvoiceRetax } from '../quickbooks/invoice-retax.ts';
 import { checkItemTaxCategory } from '../quickbooks/item-tax-category.ts';
 import { runJobberInvoiceImport } from '../quickbooks/jobber-invoice-import.ts';
 import { runBatchRevert } from '../quickbooks/revert-batch.ts';
@@ -125,7 +126,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_invoice',
-    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. Does not delete.',
+    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. retaxLineIds re-saves the live lines so QuickBooks recomputes tax with no override. After any invoice write the saved TxnTaxCodeRef is compared with the requested one and a difference is returned and audited as taxCodeChanged. Does not delete.',
     {
       customerId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -135,7 +136,12 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       customerMemo: { type: 'string', description: 'Customer-facing memo. This does not email the customer.' },
       id: { type: 'string' },
       syncToken: { type: 'string' },
-      totalTax: { type: 'number', description: 'Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines, addresses and the tax code stay as saved.' },
+      retaxLineIds: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Update only, with syncToken and txnTaxCodeId, without lines, totalTax or other fields. Re-saves the invoice so QuickBooks computes the tax itself (no override): resends the live Line array sparse with these line ids set TAX and their saved tax class cleared so it is re-derived from the item, plus the live ShipAddr/ShipFromAddr and TxnTaxCodeRef. Refused when a listed line item is not Taxable, the SyncToken changed, or the invoice has no ShipFromAddr.',
+      },
+      totalTax: { type: 'number', description: 'Under Automated Sales Tax QuickBooks prorates this over the code it assigns and may replace TxnTaxCodeRef (saved code is checked and flagged as taxCodeChanged); prefer retaxLineIds. Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines and addresses stay as saved.' },
       txnTaxCodeId: { type: 'string', description: 'Required with totalTax: the TaxCode id to keep on TxnTaxDetail, for example 3.' },
       lines: {
         type: 'array',
@@ -271,7 +277,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_import_jobber_invoices',
-    'Import Jobber invoices into QuickBooks one at a time. DocNumber is the invoice number. Customer and item match an explicit customerIds or itemIds entry, otherwise one exact DisplayName or Name. More than one match blocks that invoice. createCustomers:true creates a missing customer. Discounts become a negative line. Payment date and amount come from the Jobber payment record when one exists. payments: payout groups those payments into a new deposit with an optional fee line (feeAmount, feeAccountId, depositToAccountId). taxOverride:true sets TotalTax to the Jobber tax. Negative taxable lines are sent as NON so QuickBooks does not reject them. The preview reports CustomerMemo length and whether it was cut at 1,000 characters. Queries run sequentially and back off on HTTP 429. Header tax is a TaxCode id (San Diego County 3, Menifee 30, other Riverside County cities 65). ShipAddr and ShipFromAddr are the Jobber property address (structured, FreeFormAddress false) so Automated Sales Tax uses the jobsite instead of the company address. An invoice with no property street, city, and postal code is blocked, and so is an invoice whose jobs use different properties. PrivateNote on a create includes [batch:<batchId>] once when batchId is set. County rates are fixed ids, 4 for San Diego County and 25 for Riverside County, because TaxRate names are hashes. Preview blocks with ok false when those ids cannot be checked against TaxCode 3 and TaxCode 23, and nothing is posted. Confirm requires rate 4 or 25 to be present on the saved tax lines and the other county id to be absent, and TotalTax within $0.01 of the Jobber tax. A mismatch stops the chunk before payments and writes audit status tax_mismatch. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. confirm:true posts the chunk to whatever environment the env vars select (the configured write target, production when QBO_WRITE_ENVIRONMENT=production) and requires batchId. Does not email.',
+    'Import Jobber invoices into QuickBooks one at a time. DocNumber is the invoice number. Customer and item match an explicit customerIds or itemIds entry, otherwise one exact DisplayName or Name. More than one match blocks that invoice. createCustomers:true creates a missing customer. Discounts become a negative line. Payment date and amount come from the Jobber payment record when one exists. payments: payout groups those payments into a new deposit with an optional fee line (feeAmount, feeAccountId, depositToAccountId). taxOverride:true sets TotalTax to the Jobber tax. Negative taxable lines are sent as NON so QuickBooks does not reject them. The preview reports CustomerMemo length and whether it was cut at 1,000 characters. Queries run sequentially and back off on HTTP 429. Header tax is a TaxCode id (San Diego County 3, Menifee 30, other Riverside County cities 23). ShipAddr and ShipFromAddr are the Jobber property address (structured, FreeFormAddress false) so Automated Sales Tax uses the jobsite instead of the company address. An invoice with no property street, city, and postal code is blocked, and so is an invoice whose jobs use different properties. PrivateNote on a create includes [batch:<batchId>] once when batchId is set. County rates are fixed ids, 4 for San Diego County and 25 for Riverside County, because TaxRate names are hashes. Preview blocks with ok false when those ids cannot be checked against TaxCode 3 and TaxCode 23, and nothing is posted. Confirm requires rate 4 or 25 to be present on the saved tax lines and the other county id to be absent, and TotalTax within $0.01 of the Jobber tax. A mismatch stops the chunk before payments and writes audit status tax_mismatch. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. confirm:true posts the chunk to whatever environment the env vars select (the configured write target, production when QBO_WRITE_ENVIRONMENT=production) and requires batchId. Does not email.',
     {
       invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 500 },
       fromInvoice: { type: 'integer' },
@@ -288,12 +294,12 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       createCustomers: { type: 'boolean', description: 'Create a QuickBooks customer when the exact DisplayName is missing. Does not guess among several matches.' },
       customerIds: { type: 'object', additionalProperties: { type: 'string' }, description: 'Jobber client name to QuickBooks customer id. Skips the name lookup for those clients.' },
       itemIds: { type: 'object', additionalProperties: { type: 'string' }, description: 'Jobber line name to QuickBooks item id. Skips the name lookup for those items.' },
-      discountItemId: { type: 'string', description: 'QuickBooks item for the Jobber discount line. Defaults to an item named Discount, then the first positive line item.' },
+      discountItemId: { type: 'string', description: 'QuickBooks item for the Jobber discount line. Defaults to the one active item named Discount (any case), then the first positive line item.' },
       txnTaxCodeId: { type: 'string', description: 'TaxCode id applied to every invoice in this call, for example 3. Looked up by id, not by name.' },
       taxCodeByCity: {
         type: 'object',
         additionalProperties: { type: 'string' },
-        description: 'City to TaxCode id overrides, for example {"Hemet":"65","Phelan":"62"}.',
+        description: 'City to TaxCode id overrides, for example {"Anza":"23","Phelan":"62"}.',
       },
     },
     []
@@ -341,6 +347,15 @@ export async function callQboWriteTool(
   if (name === 'qbo_relink_deposit') {
     const result = await runRelinkDeposit(args, deps);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
+  }
+  if (name === 'qbo_invoice' && Array.isArray(args.retaxLineIds)) {
+    // The body is built from the live invoice, so the preview shows exactly what confirm will send.
+    const checked = await checkInvoiceRetax(args, deps);
+    if (!checked.ok) {
+      const refused = { ok: false, dryRun: true, wrote: false, refused: true, error: checked.error };
+      return { content: [{ type: 'text', text: JSON.stringify(refused, null, 2) }], isError: true };
+    }
+    args = { ...args, liveInvoice: checked.invoice };
   }
   if (name === 'qbo_item_tax_category') {
     // Checked against the live TaxClassification list and item Type on preview and confirm.

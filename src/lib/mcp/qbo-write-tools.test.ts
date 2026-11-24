@@ -47,3 +47,24 @@ test('qbo_item_tax_category preview refuses a goods class on a Service item befo
   const schema = QBO_WRITE_MCP_TOOLS.find((tool) => tool.name === 'qbo_item_tax_category')?.inputSchema as { required?: string[] };
   assert.deepEqual(schema.required, ['itemId', 'taxClassificationId', 'syncToken']);
 });
+
+test('qbo_invoice retaxLineIds preview shows the body built from the live invoice, with no TotalTax', async () => {
+  const { callQboWriteTool } = await import('./qbo-write-tools.ts');
+  const ship = { Id: '46096', Line1: '8770 Harbison Canyon Road', City: 'Alpine', CountrySubDivisionCode: 'CA', PostalCode: '91901' };
+  const invoice = {
+    Id: '39144',
+    SyncToken: '1',
+    ShipAddr: ship,
+    ShipFromAddr: { ...ship, Id: '46097' },
+    Line: [{ Id: '3', LineNum: 3, Amount: 150, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '1010000474' }, TaxCodeRef: { value: 'TAX' }, TaxClassificationRef: { value: 'EUC-99990201-V1-00020000' } } }],
+  };
+  const qboQuery = async (sql: string) => (/from Invoice/.test(sql) ? { QueryResponse: { Invoice: [invoice] } } : { QueryResponse: { Item: [{ Id: '1010000474', Taxable: true }] } });
+  const got = await callQboWriteTool('qbo_invoice', { id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'] }, { qboQuery, env: {}, audit: async () => {} });
+  const out = JSON.parse(got.content[0].text as string);
+  assert.equal(out.wrote, false);
+  assert.deepEqual(out.http.body.TxnTaxDetail, { TxnTaxCodeRef: { value: '3' } });
+  assert.equal(out.http.body.SyncToken, '1');
+  assert.equal(out.http.body.ShipFromAddr.Id, '46097');
+  assert.equal('TaxClassificationRef' in out.http.body.Line[0].SalesItemLineDetail, false);
+  assert.equal(out.http.readFirst, '/invoice/39144');
+});

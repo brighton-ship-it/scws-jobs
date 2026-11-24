@@ -9,9 +9,12 @@
  * - Id 30 is "CA-Riverside-Riverside-Menifee". Menifee invoice 5700 (job 3347) uses
  *   it. Sun City is the same city. The manual code "San Diego Tax" (54) is not
  *   what synced San Diego invoices used.
- * - Id 65 is the manual "Riverside county" code. Menifee stays on 30. The other
- *   Riverside County cities Jobber uses, including Hemet, were blocking invoices
- *   because they were not in this map. They use 65.
+ * - Id 23 is "CA-Riverside-Riverside" (TaxRateRefs 3 California State, 9 Riverside
+ *   County District, 25 Riverside County; 7.75%, SYSTEM_GENERATED). The other
+ *   Riverside County cities Jobber uses (Hemet, Anza, Aguanga, Murrieta, ...) use it;
+ *   AST may still swap in a city code on save. Menifee stays on 30. Id 65 is the
+ *   manual USER_DEFINED "Riverside county" code (one 7.75% rate 53, no county rate
+ *   25), which the import's county-rate check cannot verify, so it is no longer the default.
  * - Line TaxCodeRef stays TAX or NON. Only the header TxnTaxCodeRef changes by jobsite.
  *
  * Cities not in this map are resolved from the customer's last synced invoice, then
@@ -21,7 +24,7 @@
  */
 export const SAN_DIEGO_TAX_CODE_ID = '3';
 export const MENIFEE_TAX_CODE_ID = '30';
-export const RIVERSIDE_COUNTY_TAX_CODE_ID = '65';
+export const RIVERSIDE_COUNTY_TAX_CODE_ID = '23';
 
 const SAN_DIEGO_COUNTY = [
   'san diego', 'ramona', 'escondido', 'poway', 'lakeside', 'santee', 'el cajon', 'la mesa',

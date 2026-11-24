@@ -370,4 +370,8 @@ test('revert restores an item tax category update and an invoice tax override fr
   assert.equal(item.TaxClassificationRef.value, 'EUC-99990201-V1-00020000');
   const invoice = posted.find((body) => body.Id === '39144') as { TxnTaxDetail: { TotalTax: number } };
   assert.equal(invoice.TxnTaxDetail.TotalTax, 401.53);
+  const invoiceStep = (result.results as any[]).find((step: any) => step.entity === 'Invoice') as any;
+  assert.deepEqual(invoiceStep.taxCodeChanged, { requested: '3', saved: null }, 'the restored invoice response has no tax code here, so the guard flags it');
+  const itemStep = (result.results as any[]).find((step: any) => step.entity === 'Item') as any;
+  assert.equal('taxCodeChanged' in itemStep, false);
 });
