@@ -5,6 +5,7 @@ import {
   applyPurchaseAccounts,
   buildDeposit,
   buildInvoice,
+  buildItemTaxCategory,
   buildJournalEntry,
   buildQboPlan,
   buildVoid,
@@ -170,4 +171,23 @@ test('a deposit fee line is negative and a sales line relinks to a payment of th
   assert.equal(next.some((line) => line.DepositLineDetail && (line.DepositLineDetail as { AccountRef: { value: string } }).AccountRef.value === '35'), false);
   assert.equal(next.find((line) => line.LinkedTxn)?.LinkedTxn?.[0].TxnId, '50');
   assert.equal(next.reduce((sum, line) => sum + line.Amount, 0), 110);
+});
+
+test('qbo_invoice totalTax sparse-sets a tax override on an existing invoice only', () => {
+  const plan = buildInvoice({ id: '39144', syncToken: '0', totalTax: 413.15, txnTaxCodeId: '3' });
+  assert.deepEqual(plan.body, { TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 413.15 }, Id: '39144', sparse: true, SyncToken: '0' });
+  assert.deepEqual(plan.read, { path: '/invoice/39144', apply: 'syncToken' }, 'a tax override always reads the invoice first so prior_state is audited for revert');
+  assert.throws(() => buildInvoice({ customerId: '1', lines: [{ amount: 1, itemId: '23' }], totalTax: 1, txnTaxCodeId: '3' }), /only for an invoice update/);
+  assert.throws(() => buildInvoice({ id: '39144', lines: [{ amount: 1, itemId: '23' }], totalTax: 1, txnTaxCodeId: '3' }), /cannot be combined with lines/);
+  assert.throws(() => buildInvoice({ id: '39144', totalTax: 1 }), /txnTaxCodeId/);
+});
+
+test('qbo_item_tax_category is a sparse Item update that reads prior state first', () => {
+  const plan = buildItemTaxCategory({ itemId: '1010000474', taxClassificationId: 'EUC-09020802-V1-00120000', taxable: true });
+  assert.equal(plan.entity, 'Item');
+  assert.equal(plan.action, 'update');
+  assert.deepEqual(plan.body, { Id: '1010000474', sparse: true, TaxClassificationRef: { value: 'EUC-09020802-V1-00120000' }, Taxable: true });
+  assert.deepEqual(plan.read, { path: '/item/1010000474', apply: 'syncToken' });
+  assert.throws(() => buildItemTaxCategory({ itemId: '1', taxClassificationId: 'goods' }), /taxClassificationId/);
+  assert.equal(buildQboPlan('qbo_item_tax_category', { itemId: '1', taxClassificationId: 'EUC-09020802-V1-00120000' }).tool, 'qbo_item_tax_category');
 });

@@ -120,7 +120,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_invoice',
-    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. Does not delete.',
+    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax. Does not delete.',
     {
       customerId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -130,6 +130,8 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       customerMemo: { type: 'string', description: 'Customer-facing memo. This does not email the customer.' },
       id: { type: 'string' },
       syncToken: { type: 'string' },
+      totalTax: { type: 'number', description: 'Update only, without lines. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Lines, addresses and the tax code stay as saved.' },
+      txnTaxCodeId: { type: 'string', description: 'Required with totalTax: the TaxCode id to keep on TxnTaxDetail, for example 3.' },
       lines: {
         type: 'array',
         maxItems: 50,
@@ -239,6 +241,16 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
     'Set QuickBooks AccountingInfoPrefs.BookCloseDate (the books close date). Preview shows the sparse Preferences update. confirm:true reads Preferences and posts BookCloseDate to whatever environment the env vars select. Intuit may reject the write; the error is returned and nothing else is changed. Does not close a period by deleting transactions.',
     { closeDate: { type: 'string', description: 'YYYY-MM-DD. The books are closed through this date.' } },
     ['closeDate']
+  ),
+  tool(
+    'qbo_item_tax_category',
+    'Set the sales tax category (TaxClassificationRef) and optionally the Taxable flag on one QuickBooks item. Sparse update; name, price, accounts and type are unchanged. Preview is the default. confirm:true reads the item (audited as prior_state, so qbo_revert_batch can restore it) and posts to whatever environment the env vars select. Affects new and resaved transactions that use the item.',
+    {
+      itemId: { type: 'string' },
+      taxClassificationId: { type: 'string', description: 'Tax category id, for example EUC-09020802-V1-00120000.' },
+      taxable: { type: 'boolean' },
+    },
+    ['itemId', 'taxClassificationId']
   ),
   tool(
     'qbo_void',

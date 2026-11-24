@@ -14,6 +14,7 @@ export const QBO_WRITE_TOOLS = [
   'qbo_attach_note',
   'qbo_closing_date',
   'qbo_void',
+  'qbo_item_tax_category',
   'qbo_import_jobber_invoices',
   'qbo_relink_deposit',
   'qbo_revert_batch',
@@ -396,6 +397,11 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   }
   if (customerMemo) body.CustomerMemo = { value: customerMemo };
   if (number) body.DocNumber = number;
+  if (args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '') {
+    if (!id) throw new Error('totalTax is only for an invoice update. Use taxOverride on the import for a new invoice.');
+    if (hasLines) throw new Error('totalTax cannot be combined with lines. A full update would drop the saved addresses and tax detail.');
+    body.TxnTaxDetail = { TxnTaxCodeRef: { value: qboId(args.txnTaxCodeId, 'txnTaxCodeId') }, TotalTax: money(args.totalTax, 'totalTax') };
+  }
   if (id) {
     body.Id = id;
     body.sparse = !hasLines;
@@ -415,7 +421,7 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   if (noteOnUpdate) {
     plan.read = { path: `/invoice/${id}`, apply: 'appendPrivateNote' };
     plan.changes = { privateNote: suppliedNote, batchId: batch };
-  } else if (id && !syncToken) {
+  } else if (id && (!syncToken || body.TxnTaxDetail)) {
     plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
   }
   return plan;
@@ -611,6 +617,27 @@ export function buildAttachNote(args: Record<string, unknown>): QboPlan {
   return plan;
 }
 
+/** Sparse Item update of the sales tax category (TaxClassificationRef) and Taxable flag only. The read captures prior_state for revert. */
+export function buildItemTaxCategory(args: Record<string, unknown>): QboPlan {
+  const itemId = qboId(args.itemId, 'itemId');
+  const raw = typeof args.taxClassificationId === 'string' ? args.taxClassificationId.trim() : '';
+  if (!/^EUC-\d{8}-V1-\d{8}$/.test(raw)) throw new Error('taxClassificationId must look like EUC-09020802-V1-00120000.');
+  const body: Record<string, unknown> = { Id: itemId, sparse: true, TaxClassificationRef: { value: raw } };
+  if (args.taxable !== undefined) {
+    if (typeof args.taxable !== 'boolean') throw new Error('taxable must be true or false');
+    body.Taxable = args.taxable;
+  }
+  return {
+    tool: 'qbo_item_tax_category',
+    entity: 'Item',
+    action: 'update',
+    path: '/item',
+    body,
+    read: { path: `/item/${itemId}`, apply: 'syncToken' },
+    changes: { taxClassificationId: raw, taxable: args.taxable ?? null },
+  };
+}
+
 export function buildClosingDate(args: Record<string, unknown>): QboPlan {
   const closeDate = dateField(args.closeDate, 'closeDate', true);
   return {
@@ -766,6 +793,8 @@ export function buildQboPlan(tool: string, args: Record<string, unknown>): QboPl
       return buildClosingDate(args);
     case 'qbo_void':
       return buildVoid(args);
+    case 'qbo_item_tax_category':
+      return buildItemTaxCategory(args);
     case 'qbo_relink_deposit':
       throw new Error('qbo_relink_deposit has its own preview and confirm path.');
     default:
