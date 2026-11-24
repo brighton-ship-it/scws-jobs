@@ -54,8 +54,6 @@ export type JobberPropertyAddress = {
   country: string | null;
 };
 
-export type QboTaxRate = { id: string; name: string; rate: number };
-
 export type InvoiceTaxReport = {
   requestedTxnTaxCodeId: string | null;
   savedTxnTaxCodeId: string | null;
@@ -67,6 +65,23 @@ export type InvoiceTaxReport = {
   savedTotalTax: number | null;
   taxMismatch: boolean;
   taxMismatchReasons: string[];
+  /** True when the county rate id could not be resolved, so nothing may be posted. */
+  countyRateUnresolved: boolean;
+};
+
+/** Automated Sales Tax county rates. TaxRate.Name is a hash, so these ids are fixed. */
+export const SAN_DIEGO_COUNTY_RATE_ID = '4';
+export const RIVERSIDE_COUNTY_RATE_ID = '25';
+/** TaxCode whose rate list must include the San Diego county rate when QuickBooks returns it. */
+export const SAN_DIEGO_COUNTY_TAX_CODE_ID = '3';
+/** TaxCode whose rate list must include the Riverside county rate when QuickBooks returns it. */
+export const RIVERSIDE_COUNTY_TAX_CODE_ID = '23';
+
+export type CountyRateIds = {
+  sanDiego: string;
+  riverside: string;
+  /** Set when a TaxCode rate list was returned and did not contain the fixed county id. */
+  unresolvedReason: string | null;
 };
 
 export type JobberInvoiceForQbo = {
@@ -287,7 +302,36 @@ export function emptyTaxReport(requestedTxnTaxCodeId: string | null): InvoiceTax
     savedTotalTax: null,
     taxMismatch: false,
     taxMismatchReasons: [],
+    countyRateUnresolved: false,
   };
+}
+
+export function fixedCountyRateIds(): CountyRateIds {
+  return { sanDiego: SAN_DIEGO_COUNTY_RATE_ID, riverside: RIVERSIDE_COUNTY_RATE_ID, unresolvedReason: null };
+}
+
+export function countyRateIdFor(county: 'San Diego' | 'Riverside', ids: CountyRateIds = fixedCountyRateIds()): string | null {
+  if (ids.unresolvedReason) return null;
+  return county === 'San Diego' ? ids.sanDiego : ids.riverside;
+}
+
+/**
+ * TaxRate names are 64-character hashes, so the county ids stay 4 and 25.
+ * When TaxCode 3 and TaxCode 23 both include a rate list, those lists must contain 4 and 25.
+ * A missing list is not a contradiction; the fixed ids are used.
+ */
+export function verifyCountyRateIds(taxCodes: Array<{ id: string; rateIds: string[] | null }>): CountyRateIds {
+  const fixed = fixedCountyRateIds();
+  const sanDiego = taxCodes.find((code) => code.id === SAN_DIEGO_COUNTY_TAX_CODE_ID);
+  const riverside = taxCodes.find((code) => code.id === RIVERSIDE_COUNTY_TAX_CODE_ID);
+  if (!sanDiego?.rateIds || !riverside?.rateIds) return fixed;
+  if (!sanDiego.rateIds.includes(fixed.sanDiego)) {
+    return { sanDiego: '', riverside: '', unresolvedReason: 'TaxCode 3 does not include San Diego County rate 4.' };
+  }
+  if (!riverside.rateIds.includes(fixed.riverside)) {
+    return { sanDiego: '', riverside: '', unresolvedReason: 'TaxCode 23 does not include Riverside County rate 25.' };
+  }
+  return fixed;
 }
 
 export function missingJobsiteAddressReason(address: JobberPropertyAddress | null | undefined): string | null {
@@ -320,17 +364,16 @@ export function resolveJobProperties(addresses: Array<JobberPropertyAddress | nu
   };
 }
 
-/** The 1% county TaxRate for the jobsite, matched by name from QuickBooks TaxRate rows. */
-export function countyPercentRateId(rates: QboTaxRate[], county: 'San Diego' | 'Riverside'): string | null {
-  const needle = county.toLowerCase();
-  const match = rates.find((rate) => {
-    if (!Number.isFinite(rate.rate) || Math.abs(rate.rate - 1) > 0.001) return false;
-    const name = rate.name.toLowerCase();
-    if (!name.includes(needle)) return false;
-    if (name.includes('district') || name.includes('state')) return false;
-    return true;
-  });
-  return match?.id || null;
+function savedRateIds(lines: unknown[] | null): string[] {
+  if (!lines) return [];
+  const ids: string[] = [];
+  for (const line of lines) {
+    if (!line || typeof line !== 'object') continue;
+    const detail = (line as { TaxLineDetail?: { TaxRateRef?: { value?: unknown } } }).TaxLineDetail;
+    const id = detail?.TaxRateRef?.value;
+    if (id != null && String(id).trim()) ids.push(String(id).trim());
+  }
+  return ids;
 }
 
 function savedTxnTax(qbo: unknown): { code: string | null; total: number | null; lines: unknown[] | null } {
@@ -347,15 +390,10 @@ function savedTxnTax(qbo: unknown): { code: string | null; total: number | null;
   };
 }
 
-function savedCountyRateId(lines: unknown[] | null): string | null {
-  if (!lines) return null;
-  for (const line of lines) {
-    if (!line || typeof line !== 'object') continue;
-    const detail = (line as { TaxLineDetail?: { TaxPercent?: unknown; TaxRateRef?: { value?: unknown } } }).TaxLineDetail;
-    const percent = Number(detail?.TaxPercent);
-    if (!Number.isFinite(percent) || Math.abs(percent - 1) > 0.001) continue;
-    const id = detail?.TaxRateRef?.value;
-    if (id != null && String(id).trim()) return String(id);
+function countyBlockReason(city: string | null, ids?: CountyRateIds): string | null {
+  if (ids?.unresolvedReason) return ids.unresolvedReason;
+  if (!countyNameForCity(city)) {
+    return `No county rate for jobsite city ${city ? `"${city}"` : '(missing)'}. San Diego County is rate 4 and Riverside County is rate 25.`;
   }
   return null;
 }
@@ -370,26 +408,35 @@ export function assessSavedTax(input: {
   city: string | null;
   jobberTax: number;
   qbo: unknown;
-  rates: QboTaxRate[];
+  countyRates?: CountyRateIds;
 }): InvoiceTaxReport {
+  const ids = input.countyRates || fixedCountyRateIds();
   const county = countyNameForCity(input.city);
-  const expectedCountyRateId = county ? countyPercentRateId(input.rates, county) : null;
+  const otherCountyRateId = county === 'San Diego' ? ids.riverside : county === 'Riverside' ? ids.sanDiego : null;
+  const expectedCountyRateId = county && !ids.unresolvedReason ? countyRateIdFor(county, ids) : null;
   const base: InvoiceTaxReport = {
     ...emptyTaxReport(input.requestedTxnTaxCodeId),
     county,
     expectedCountyRateId,
     jobberTax: money(input.jobberTax),
+    countyRateUnresolved: Boolean(ids.unresolvedReason),
   };
   if (!input.qbo) return base;
   const saved = savedTxnTax(input.qbo);
-  const savedCounty = savedCountyRateId(saved.lines);
+  const savedIds = savedRateIds(saved.lines);
+  const savedCounty = expectedCountyRateId && savedIds.includes(expectedCountyRateId)
+    ? expectedCountyRateId
+    : otherCountyRateId && savedIds.includes(otherCountyRateId)
+      ? otherCountyRateId
+      : null;
   const reasons: string[] = [];
-  if (!county) {
-    reasons.push(`No county for jobsite city ${input.city ? `"${input.city}"` : '(missing)'}.`);
-  } else if (!expectedCountyRateId) {
-    reasons.push(`No 1% ${county} County TaxRate was found in QuickBooks, so the saved jurisdiction cannot be checked.`);
-  } else if (savedCounty !== expectedCountyRateId) {
-    reasons.push(`Saved 1% county rate ${savedCounty ?? 'missing'} is not the ${county} County rate ${expectedCountyRateId}.`);
+  if (ids.unresolvedReason) reasons.push(ids.unresolvedReason);
+  else if (!county) reasons.push(`No county for jobsite city ${input.city ? `"${input.city}"` : '(missing)'}.`);
+  else if (expectedCountyRateId && !savedIds.includes(expectedCountyRateId)) {
+    reasons.push(`Saved tax lines do not include ${county} County rate ${expectedCountyRateId}.`);
+  }
+  if (otherCountyRateId && savedIds.includes(otherCountyRateId)) {
+    reasons.push(`Saved tax lines include ${county === 'San Diego' ? 'Riverside' : 'San Diego'} County rate ${otherCountyRateId}.`);
   }
   if (!taxWithinCent(saved.total, money(input.jobberTax))) {
     reasons.push(`Saved tax ${saved.total ?? 'missing'} does not match Jobber tax ${money(input.jobberTax)} within $0.01.`);
@@ -402,6 +449,7 @@ export function assessSavedTax(input: {
     savedTotalTax: saved.total,
     taxMismatch: reasons.length > 0,
     taxMismatchReasons: reasons,
+    countyRateUnresolved: Boolean(ids.unresolvedReason),
   };
 }
 
@@ -490,7 +538,7 @@ export function classifyJobberInvoice(
   itemsByName: Record<string, string>,
   txnTaxCodeId: string | null,
   taxReason?: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; rates?: QboTaxRate[] } = {}
+  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; countyRates?: CountyRateIds } = {}
 ): ImportInvoicePlan {
   const paymentLines = jobberPaymentLines(invoice);
   const base = {
@@ -512,7 +560,7 @@ export function classifyJobberInvoice(
       city: invoice.city,
       jobberTax: invoice.taxAmount,
       qbo: null,
-      rates: options.rates || [],
+      countyRates: options.countyRates,
     }),
   };
   if (existingDocNumbers.has(invoice.invoiceNumber)) {
@@ -527,6 +575,16 @@ export function classifyJobberInvoice(
     const taxText = txnTaxCodeId ? null : taxReason || taxCodeMissingReason(invoice.city);
     const reason = [addressReason, taxText].filter(Boolean).join(' ');
     return { ...base, status: 'blocked', reason, body: null };
+  }
+  const countyBlocked = countyBlockReason(invoice.city, options.countyRates);
+  if (countyBlocked) {
+    return {
+      ...base,
+      status: 'blocked',
+      reason: countyBlocked,
+      body: null,
+      tax: { ...base.tax, countyRateUnresolved: true, taxMismatchReasons: [countyBlocked] },
+    };
   }
   const built = buildJobberSyncedInvoice(invoice, customerId || '', itemsByName, txnTaxCodeId, options);
   if (built.error) {
@@ -633,7 +691,7 @@ export async function runJobberInvoiceImport(
   const overrideId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : null;
   const overrideExists = overrideId ? await taxCodeIdExists(overrideId, qbo) : false;
   const customerTax = new Map<string, string | null>();
-  const rates = await loadQboTaxRates(qbo);
+  const countyRates = await loadCountyRateIds(qbo);
   const plans: ImportInvoicePlan[] = [];
   for (const number of chunk) {
     try {
@@ -667,7 +725,7 @@ export async function runJobberInvoiceImport(
         items,
         tax.id,
         tax.reason,
-        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, rates }
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates }
       );
       if (ambiguousCustomer) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
@@ -710,12 +768,25 @@ export async function runJobberInvoiceImport(
     limit,
   };
   const taxMismatch = () => plans.some((row) => row.tax.taxMismatch);
+  const countyRateUnresolved = plans.some((row) => row.tax.countyRateUnresolved);
+  if (countyRateUnresolved) {
+    return {
+      ok: false,
+      dryRun: true,
+      wrote: false,
+      ...summary,
+      taxMismatch: taxMismatch(),
+      countyRateUnresolved: true,
+      error: 'County tax rate could not be resolved. Nothing was posted.',
+      invoices: plans,
+    };
+  }
   if (!confirm) {
-    return { ok: true, dryRun: true, wrote: false, ...summary, taxMismatch: taxMismatch(), invoices: plans };
+    return { ok: true, dryRun: true, wrote: false, ...summary, taxMismatch: taxMismatch(), countyRateUnresolved: false, invoices: plans };
   }
   const gate = describeQboWriteGate(deps.env || process.env);
   if (!gate.enabled) {
-    return { ok: false, dryRun: true, wrote: false, refused: true, error: gate.blockedReason, ...summary, taxMismatch: taxMismatch(), invoices: plans };
+    return { ok: false, dryRun: true, wrote: false, refused: true, error: gate.blockedReason, ...summary, taxMismatch: taxMismatch(), countyRateUnresolved: false, invoices: plans };
   }
   const posted: Record<string, unknown>[] = [];
   const createdCustomers = new Map<string, string>();
@@ -751,7 +822,7 @@ export async function runJobberInvoiceImport(
         city: row.city,
         jobberTax: row.taxAmount,
         qbo: invoiceResult.qbo,
-        rates,
+        countyRates,
       });
     }
     entry.tax = row.tax;
@@ -832,6 +903,7 @@ export async function runJobberInvoiceImport(
     wrote: posted.some((row) => (row.invoice as { wrote?: boolean } | undefined)?.wrote),
     ...summary,
     taxMismatch: taxMismatch(),
+    countyRateUnresolved: false,
     stoppedForTax,
     invoices: plans,
     posted,
@@ -936,18 +1008,26 @@ function jobProperty(node: Record<string, any>): { city: string | null; address:
   return { city: resolved.address?.city || null, address: resolved.address, addressConflict: resolved.conflict };
 }
 
-async function loadQboTaxRates(query: (sql: string) => Promise<unknown>): Promise<QboTaxRate[]> {
+function rateIdsFromTaxCode(row: Record<string, unknown>): string[] | null {
+  const list = row.SalesTaxRateList as { TaxRateDetail?: unknown } | undefined;
+  if (!list || !Array.isArray(list.TaxRateDetail)) return null;
+  return list.TaxRateDetail.map((detail) => {
+    if (!detail || typeof detail !== 'object') return '';
+    const id = (detail as { TaxRateRef?: { value?: unknown } }).TaxRateRef?.value;
+    return id == null ? '' : String(id).trim();
+  }).filter(Boolean);
+}
+
+async function loadCountyRateIds(query: (sql: string) => Promise<unknown>): Promise<CountyRateIds> {
   try {
-    const rows = rowsOf(await query('select Id, Name, Description, RateValue from TaxRate MAXRESULTS 200'), 'TaxRate');
-    return rows
-      .map((row) => {
-        const name = [row.Name, row.Description].filter((part) => typeof part === 'string' && String(part).trim()).join(' ');
-        return { id: row.Id == null ? '' : String(row.Id), name, rate: Number(row.RateValue) };
-      })
-      .filter((rate) => rate.id && Number.isFinite(rate.rate));
+    const rows = rowsOf(
+      await query(`select Id, SalesTaxRateList from TaxCode where Id in ('${SAN_DIEGO_COUNTY_TAX_CODE_ID}', '${RIVERSIDE_COUNTY_TAX_CODE_ID}')`),
+      'TaxCode'
+    );
+    return verifyCountyRateIds(rows.map((row) => ({ id: row.Id == null ? '' : String(row.Id), rateIds: rateIdsFromTaxCode(row) })));
   } catch (error) {
     if (isQboRateLimit(error)) throw error;
-    return [];
+    return fixedCountyRateIds();
   }
 }
 

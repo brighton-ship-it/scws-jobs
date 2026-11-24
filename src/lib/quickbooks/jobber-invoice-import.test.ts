@@ -4,7 +4,7 @@ import {
   assessSavedTax,
   buildJobberSyncedInvoice,
   classifyJobberInvoice,
-  countyPercentRateId,
+  countyRateIdFor,
   jobberPaymentLines,
   missingJobsiteAddressReason,
   pacificDate,
@@ -12,21 +12,32 @@ import {
   resolveJobProperties,
   runJobberInvoiceImport,
   sliceInvoiceChunk,
+  verifyCountyRateIds,
   type InvoiceTaxReport,
   type JobberInvoiceForQbo,
-  type QboTaxRate,
 } from './jobber-invoice-import.ts';
 import { taxCodeIdForCity } from './tax-codes.ts';
 import { privateNoteWithBatch } from './write-payloads.ts';
 
-const TAX_RATES: QboTaxRate[] = [
-  { id: '4', name: 'San Diego County', rate: 1 },
-  { id: '25', name: 'Riverside County', rate: 1 },
-  { id: '5', name: 'San Diego County District', rate: 0.5 },
-  { id: '3', name: 'California State', rate: 6.25 },
+const HASH = 'a'.repeat(64);
+const TAX_RATE_ROWS = [
+  { Id: '4', Name: HASH, Description: '', RateValue: 1 },
+  { Id: '25', Name: 'b'.repeat(64), Description: '', RateValue: 1 },
+  { Id: '5', Name: 'c'.repeat(64), Description: '', RateValue: 0.5 },
+  { Id: '3', Name: 'd'.repeat(64), Description: '', RateValue: 6.25 },
 ];
 
-const TAX_RATE_ROWS = TAX_RATES.map((rate) => ({ Id: rate.id, Name: rate.name, RateValue: rate.rate }));
+function taxLines(ids: string[], percents: number[], totalTax: number) {
+  return {
+    TotalTax: totalTax,
+    TxnTaxCodeRef: { value: '3' },
+    TaxLine: ids.map((id, index) => ({
+      Amount: 1,
+      DetailType: 'TaxLineDetail',
+      TaxLineDetail: { TaxRateRef: { value: id }, TaxPercent: percents[index], NetAmountTaxable: 100 },
+    })),
+  };
+}
 
 function taxDetail(totalTax: number, countyRateId: string) {
   return {
@@ -538,46 +549,121 @@ test('a missing property address is blocked and disagreeing properties are flagg
   assert.equal(result.ok, true);
 });
 
-test('county rates come from TaxRate names, and saved tax must match the jobsite', () => {
-  assert.equal(countyPercentRateId(TAX_RATES, 'San Diego'), '4');
-  assert.equal(countyPercentRateId(TAX_RATES, 'Riverside'), '25');
-  const escondidoMatch = assessSavedTax({
+test('county rates are fixed ids, and district cities can have more than one 1% line', () => {
+  assert.equal(HASH.length, 64);
+  assert.equal(countyRateIdFor('San Diego'), '4');
+  assert.equal(countyRateIdFor('Riverside'), '25');
+  assert.equal(verifyCountyRateIds([
+    { id: '3', rateIds: ['3', '4', '5'] },
+    { id: '23', rateIds: ['9', '16', '25', '3'] },
+  ]).unresolvedReason, null);
+  assert.match(verifyCountyRateIds([
+    { id: '3', rateIds: ['3', '5'] },
+    { id: '23', rateIds: ['25'] },
+  ]).unresolvedReason || '', /TaxCode 3/);
+  assert.equal(verifyCountyRateIds([{ id: '3', rateIds: null }, { id: '23', rateIds: null }]).unresolvedReason, null);
+
+  const sanDiego = assessSavedTax({
     requestedTxnTaxCodeId: '3',
     city: 'Escondido',
     jobberTax: 2.95,
-    rates: TAX_RATES,
-    qbo: { TxnTaxDetail: taxDetail(2.95, '4') },
+    qbo: { TxnTaxDetail: taxLines(['3', '4', '5'], [6.25, 1, 0.5], 2.95) },
   });
-  assert.equal(escondidoMatch.taxMismatch, false);
-  assert.equal(escondidoMatch.expectedCountyRateId, '4');
-  const riversideShop = assessSavedTax({
-    requestedTxnTaxCodeId: '3',
-    city: 'Escondido',
-    jobberTax: 2.95,
-    rates: TAX_RATES,
-    qbo: { TxnTaxDetail: taxDetail(2.96, '25') },
-  });
-  assert.equal(riversideShop.taxMismatch, true);
-  assert.match(riversideShop.taxMismatchReasons.join(' '), /not the San Diego County rate 4/);
-  const hemet = assessSavedTax({
+  assert.equal(sanDiego.taxMismatch, false);
+  assert.equal(sanDiego.expectedCountyRateId, '4');
+  assert.equal(sanDiego.savedCountyRateId, '4');
+
+  const murrieta = assessSavedTax({
     requestedTxnTaxCodeId: '65',
-    city: 'Hemet',
+    city: 'Murrieta',
     jobberTax: 8.75,
-    rates: TAX_RATES,
-    qbo: { TxnTaxDetail: taxDetail(8.75, '25') },
+    qbo: { TxnTaxDetail: taxLines(['9', '16', '25', '3'], [1, 1, 1, 6.25], 8.75) },
   });
-  assert.equal(hemet.county, 'Riverside');
-  assert.equal(hemet.savedCountyRateId, '25');
-  assert.equal(hemet.taxMismatch, false);
+  assert.equal(murrieta.county, 'Riverside');
+  assert.equal(murrieta.taxMismatch, false);
+  assert.equal(murrieta.savedCountyRateId, '25');
+
+  const menifee = assessSavedTax({
+    requestedTxnTaxCodeId: '30',
+    city: 'Menifee',
+    jobberTax: 8.75,
+    qbo: { TxnTaxDetail: taxLines(['14', '9', '25', '3'], [1, 0.5, 1, 6.25], 8.75) },
+  });
+  assert.equal(menifee.taxMismatch, false);
+  assert.equal(menifee.expectedCountyRateId, '25');
+
+  const shopCounty = assessSavedTax({
+    requestedTxnTaxCodeId: '3',
+    city: 'Escondido',
+    jobberTax: 2.95,
+    qbo: { TxnTaxDetail: taxLines(['3', '25', '5'], [6.25, 1, 0.5], 2.95) },
+  });
+  assert.equal(shopCounty.taxMismatch, true);
+  assert.match(shopCounty.taxMismatchReasons.join(' '), /do not include San Diego County rate 4/);
+  assert.match(shopCounty.taxMismatchReasons.join(' '), /include Riverside County rate 25/);
+
   const pennyOver = assessSavedTax({
     requestedTxnTaxCodeId: '65',
     city: 'Hemet',
     jobberTax: 8.75,
-    rates: TAX_RATES,
-    qbo: { TxnTaxDetail: taxDetail(8.77, '25') },
+    qbo: { TxnTaxDetail: taxLines(['9', '25', '3'], [1, 1, 6.25], 8.77) },
   });
   assert.equal(pennyOver.taxMismatch, true);
   assert.match(pennyOver.taxMismatchReasons.join(' '), /within \$0\.01/);
+});
+
+test('an unresolved county rate blocks preview and confirm before any post', async () => {
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  const badCodes = {
+    QueryResponse: {
+      TaxCode: [
+        { Id: '3', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '5' } }] } },
+        { Id: '23', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '25' } }] } },
+      ],
+    },
+  };
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('SalesTaxRateList')) return badCodes;
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '15285' }] } };
+    if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
+    if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+    return { QueryResponse: {} };
+  };
+  let posts = 0;
+  const preview = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5824'], batchId: 'rates' },
+    { env, qboQuery, loadJobberInvoices: async () => [invoice], fetchImpl: async () => { posts += 1; throw new Error('preview posted'); } }
+  );
+  assert.equal(preview.ok, false);
+  assert.equal(preview.wrote, false);
+  assert.equal(preview.countyRateUnresolved, true);
+  assert.equal(posts, 0);
+  const row = (preview.invoices as Array<{ status: string; reason: string | null; body: unknown; tax: InvoiceTaxReport }>)[0];
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.body, null);
+  assert.equal(row.tax.countyRateUnresolved, true);
+  assert.match(row.reason || '', /TaxCode 3/);
+
+  const confirm = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5824'], batchId: 'rates', confirm: true, payments: 'undeposited' },
+    {
+      env,
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      audit: async () => {},
+      qboQuery,
+      loadJobberInvoices: async () => [invoice],
+      fetchImpl: async () => { posts += 1; return new Response('{}', { status: 500 }); },
+    }
+  );
+  assert.equal(confirm.ok, false);
+  assert.equal(confirm.wrote, false);
+  assert.equal(posts, 0);
 });
 
 test('confirm stops the chunk on a tax mismatch before payments', async () => {
