@@ -269,3 +269,29 @@ test('confirm revert posts deletes after the deposit restore', async () => {
   assert.match(deleteCalls[1], /payment/);
   assert.match(deleteCalls[2], /invoice/);
 });
+
+test('a replayed payment row (relink-older-01 rows 29-35) is deleted once, not twice', () => {
+  const rows = [
+    row({ id: 29, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'pending', ok: false, qboId: null, requestId: 'relpay-relink-older-01-38114' }),
+    row({ id: 30, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'ok', created: true, action: 'create', qboId: '39116', requestId: 'relpay-relink-older-01-38114', txnDate: '2026-10-23' }),
+    row({ id: 31, entity: 'Deposit', tool: 'qbo_relink_deposit', status: 'pending', ok: false, qboId: null, requestId: 'reldep-relink-older-01-38114' }),
+    row({ id: 32, entity: 'Deposit', tool: 'qbo_relink_deposit', status: 'ok', action: 'update', qboId: '38114', priorState: { Id: '38114', SyncToken: '1', Line: [] }, requestId: 'reldep-relink-older-01-38114', txnDate: '2026-10-23' }),
+    row({ id: 33, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'pending', ok: false, qboId: null, requestId: 'relpay-relink-older-01-38114' }),
+    row({ id: 34, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'ok', created: true, action: 'create', qboId: '39116', requestId: 'relpay-relink-older-01-38114', txnDate: '2026-10-23' }),
+    row({ id: 35, entity: 'Deposit', tool: 'qbo_relink_deposit', status: 'failed', ok: false, qboId: null, requestId: 'reldep-relink-older-01-38114' }),
+  ];
+  const plan = planBatchRevert(rows, '2024-12-31');
+  assert.deepEqual(
+    plan.steps.map((step) => [step.phase, step.entity, step.qboId, step.auditId]),
+    [
+      ['restore', 'Deposit', '38114', 32],
+      ['delete-payment', 'Payment', '39116', 30],
+    ]
+  );
+  assert.equal(plan.couldNot.length, 0);
+  assert.deepEqual(plan.duplicates.map((item) => [item.auditId, item.qboId, item.sameAsAuditId]), [[34, '39116', 30]]);
+  // Row 35 still pending (before it is closed) is covered by row 32's request id.
+  const stillPending = planBatchRevert(rows.map((item) => (item.id === 35 ? { ...item, status: 'pending' as const } : item)), '2024-12-31');
+  assert.equal(stillPending.steps.length, 2);
+  assert.equal(stillPending.couldNot.length, 0);
+});

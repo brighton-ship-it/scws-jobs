@@ -509,11 +509,33 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     true
   );
 
-  const token = await tokenFor(gate, productionRealmId, deps, fetchImpl);
+  // From here on a pending row exists. Any throw before an outcome row (token, the
+  // read-before-write apply guard, a network error) must leave a failed row, or the
+  // pending row is orphaned with no error.
+  const realmId: string = gate.realmId;
+  const prodRealmId: string = productionRealmId;
+  try {
+    return await postAfterPending();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await remember(
+      logged('failed', {
+        action: plan.action,
+        payload: { http: base.http, changes: plan.changes ?? null, reason: plan.reason || null },
+        error: `Stopped after the pending row: ${message}`,
+      }),
+      deps,
+      false
+    );
+    throw error;
+  }
+
+  async function postAfterPending(): Promise<QboWriteResult> {
+  const token = await tokenFor(gate, prodRealmId, deps, fetchImpl);
   let body = plan.body;
   let priorState: unknown = null;
   if (plan.read) {
-    const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, plan.read.path, { minorversion: MINOR_VERSION }), token, fetchImpl);
+    const got = await qboFetch(writeUrl(gate.baseUrl, realmId, plan.read.path, { minorversion: MINOR_VERSION }), token, fetchImpl);
     if (got.status < 200 || got.status >= 300) {
       const error = `QuickBooks read before write failed (${got.status}). Nothing was posted.`;
       await remember(failEntry(base, plan.entity, error, got.json), deps, false);
@@ -525,7 +547,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   }
   if (!body) throw new Error('QuickBooks write had no body to post.');
   const query = queryOf(requestId, plan.operation);
-  const posted = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, plan.path, query), token, fetchImpl, body);
+  const posted = await qboFetch(writeUrl(gate.baseUrl, realmId, plan.path, query), token, fetchImpl, body);
   const ids = idsFrom(plan.entity, posted.json);
   const http = { ...base.http, body, query };
   if (posted.status < 200 || posted.status >= 300) {
@@ -572,6 +594,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     error: auditError ? `Posted, but the audit log failed: ${auditError}` : undefined,
     audit: { attempted: true, error: auditError },
   };
+  }
 }
 
 function failEntry(base: QboWriteResult, entity: string, error: string, qbo: unknown): QboAuditEntry {

@@ -282,7 +282,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_relink_deposit',
-    'Replace one deposit line that posts to an income account (4010 Sales) with a ReceivePayment of the same amount applied to an invoice, then link that payment on the deposit. The deposit total does not change, so the bank reconciliation stays, and the invoice is the only income. Preview is the default and does not read QuickBooks. confirm:true posts to whatever environment the env vars select and requires batchId. qbo_revert_batch restores the deposit, then deletes the payment. salesAccountId is the QuickBooks account id. Pass lineId when more than one line has that amount.',
+    'Replace one deposit line that posts to an income account (4010 Sales) with a ReceivePayment of the same amount applied to an invoice, then link that payment on the deposit. The deposit total does not change, so the bank reconciliation stays, and the invoice is the only income. Preview is the default and does not read QuickBooks. confirm:true posts to whatever environment the env vars select and requires batchId. qbo_revert_batch restores the deposit, then deletes the payment. salesAccountId is the QuickBooks account id. Pass lineId when more than one line has that amount. Each relink gets its own Intuit requestid built from the batch, deposit, line, invoice, customer and amount, so several relinks on one deposit do not replay each other; a requestId you pass changes that key. After the payment is created it must match the requested amount, customer and invoice, and the saved deposit must have a higher SyncToken and link the new payment, or the call throws.',
     {
       depositId: { type: 'string' },
       lineId: { type: 'string', description: 'Deposit line id to remove. Optional when amount and salesAccountId match one line.' },
@@ -293,12 +293,13 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       txnDate: { type: 'string', description: 'YYYY-MM-DD payment date.' },
       paymentRefNum: { type: 'string' },
       privateNote: { type: 'string' },
+      requestId: { type: 'string', description: 'Optional. Mixed into the per-line request ids so a retry gets new keys.' },
     },
     ['depositId', 'amount', 'invoiceId', 'customerId', 'txnDate']
   ),
   tool(
     'qbo_revert_batch',
-    'Undo one batchId. Preview lists the steps. confirm:true posts those undos to whatever environment the env vars select. It restores modified entities from the audited prior state, then deletes payments this batch created, then deletes the other created entities. It uses the ok audit rows for that batch. A pending row is the pre-write intent, not a second write, and a refused row did not post. It does not delete anything the batch did not create. It skips voids and anything on or before the books close date, and reports those in couldNot.',
+    'Undo one batchId. Preview lists the steps. confirm:true posts those undos to whatever environment the env vars select. It restores modified entities from the audited prior state, then deletes payments this batch created, then deletes the other created entities. It uses the ok audit rows for that batch. A pending row is the pre-write intent, not a second write, and a refused row did not post. It does not delete anything the batch did not create. It skips voids and anything on or before the books close date, and reports those in couldNot. When two ok rows created the same QuickBooks id (a replayed response), it deletes that entity once and lists the extra row in duplicates.',
     {},
     ['batchId']
   ),
