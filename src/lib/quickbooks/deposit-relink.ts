@@ -6,7 +6,7 @@
  * it restores the deposit first, then deletes the payment.
  */
 import { createHash } from 'node:crypto';
-import { readWriteRealm, runQboPlan, writeRealmQuery, type QboWriteDeps } from './durable-write.ts';
+import { auditRefusal, readWriteRealm, runQboPlan, writeRealmQuery, type QboWriteDeps } from './durable-write.ts';
 import { withQboBackoff } from './qbo-backoff.ts';
 import { describeQboWriteGate } from './write-gate.ts';
 import { buildPayment, findDepositSalesLine, parseBatchId, type QboPlan } from './write-payloads.ts';
@@ -63,14 +63,28 @@ type QboPaymentRow = {
   Id?: unknown;
   TotalAmt?: unknown;
   CustomerRef?: { value?: unknown };
+  DepositToAccountRef?: { value?: unknown; name?: unknown };
   LinkedTxn?: Array<{ TxnId?: unknown; TxnType?: string }>;
   Line?: Array<{ Amount?: unknown; LinkedTxn?: Array<{ TxnId?: unknown; TxnType?: string }> }>;
 };
 
-function linkedToDeposit(payment: QboPaymentRow): boolean {
+/** SCWS Undeposited Funds is QuickBooks account 36. Override with QBO_UNDEPOSITED_FUNDS_ACCOUNT_ID. */
+export const DEFAULT_UNDEPOSITED_FUNDS_ACCOUNT_ID = '36';
+
+/**
+ * Already deposited: linked on a Deposit, or received straight into a bank account
+ * (DepositToAccountRef set to anything other than Undeposited Funds).
+ */
+function alreadyDeposited(payment: QboPaymentRow, undepositedFundsAccountId: string): boolean {
   const top = (payment.LinkedTxn || []).some((item) => item.TxnType === 'Deposit');
   const inLines = (payment.Line || []).some((line) => (line.LinkedTxn || []).some((item) => item.TxnType === 'Deposit'));
-  return top || inLines;
+  if (top || inLines) return true;
+  const ref = payment.DepositToAccountRef;
+  const account = ref?.value == null ? '' : String(ref.value);
+  if (!account) return false;
+  if (account === undepositedFundsAccountId) return false;
+  if (typeof ref?.name === 'string' && /undeposited/i.test(ref.name)) return false;
+  return true;
 }
 
 /**
@@ -78,7 +92,11 @@ function linkedToDeposit(payment: QboPaymentRow): boolean {
  * any deposit. One of these means an earlier relink attempt already created the
  * payment, and creating another would pay the invoice twice.
  */
-export function unlinkedMatchingPayments(payments: QboPaymentRow[], want: { invoiceId: string; customerId: string; amountCents: number }): string[] {
+export function unlinkedMatchingPayments(
+  payments: QboPaymentRow[],
+  want: { invoiceId: string; customerId: string; amountCents: number },
+  undepositedFundsAccountId: string = DEFAULT_UNDEPOSITED_FUNDS_ACCOUNT_ID
+): string[] {
   return payments
     .filter((payment) => String(payment.CustomerRef?.value ?? '') === want.customerId)
     .filter((payment) =>
@@ -88,7 +106,7 @@ export function unlinkedMatchingPayments(payments: QboPaymentRow[], want: { invo
           (line.LinkedTxn || []).some((item) => String(item.TxnId) === want.invoiceId && item.TxnType === 'Invoice')
       ) || (cents(payment.TotalAmt) === want.amountCents && (payment.Line || []).some((line) => (line.LinkedTxn || []).some((item) => String(item.TxnId) === want.invoiceId && item.TxnType === 'Invoice')))
     )
-    .filter((payment) => !linkedToDeposit(payment))
+    .filter((payment) => !alreadyDeposited(payment, undepositedFundsAccountId))
     .map((payment) => String(payment.Id));
 }
 
@@ -160,12 +178,26 @@ export async function runRelinkDeposit(args: Record<string, unknown>, deps: QboW
     { sleep: deps.sleep }
   );
   const existing = ((found as { QueryResponse?: { Payment?: QboPaymentRow[] } })?.QueryResponse?.Payment || []) as QboPaymentRow[];
-  const duplicates = unlinkedMatchingPayments(existing, keyParts);
+  const undepositedFundsAccountId = String((deps.env || process.env).QBO_UNDEPOSITED_FUNDS_ACCOUNT_ID || DEFAULT_UNDEPOSITED_FUNDS_ACCOUNT_ID).trim();
+  const duplicates = unlinkedMatchingPayments(existing, keyParts, undepositedFundsAccountId);
   if (duplicates.length) {
-    throw new Error(
+    const message =
       `Refusing to create a payment: invoice ${keyParts.invoiceId} already has payment ${duplicates.join(', ')} for ${args.amount} from customer ${keyParts.customerId} that is not on any deposit. ` +
-        'An earlier relink attempt probably created it. Link that payment on the deposit or delete it before relinking. Nothing was posted.'
+      'An earlier relink attempt probably created it. Link that payment on the deposit or delete it before relinking. Nothing was posted.';
+    // Leave a trace in qbo_write_audit: status refused is not a write, so revert ignores it.
+    const audited = await auditRefusal(
+      {
+        tool: 'qbo_relink_deposit',
+        entity: 'Payment',
+        requestId: relinkRequestId('relpay', keyParts),
+        batchId,
+        error: message,
+        payload: { payment: paymentPlan.body, deposit: preview.deposit, existingPaymentIds: duplicates },
+        reason: `relink deposit ${depositId} line ${lineId ?? 'by account'} refused: unlinked payment exists`,
+      },
+      deps
     );
+    throw new Error(audited.ok ? message : `${message} (The refusal could not be written to the audit log: ${audited.error})`);
   }
   const paymentResult = await runQboPlan(paymentPlan, {
     confirm: true,

@@ -11,7 +11,11 @@
 --   alter table public.qbo_write_audit drop constraint if exists qbo_write_audit_status_check;
 --   alter table public.qbo_write_audit add constraint qbo_write_audit_status_check
 --     check (status is null or status in ('preview', 'pending', 'refused', 'ok', 'failed', 'tax_mismatch'));
+-- Wrapped in a transaction so there is no moment without the constraint.
+-- Applied to project htzsnpqrrrdfleldgybn on 2026-11-24 at 1:04 PM PT.
+begin;
 alter table public.qbo_write_audit drop constraint if exists qbo_write_audit_status_check;
 alter table public.qbo_write_audit
   add constraint qbo_write_audit_status_check
   check (status is null or status in ('preview', 'pending', 'refused', 'ok', 'failed', 'tax_mismatch', 'unknown'));
+commit;
