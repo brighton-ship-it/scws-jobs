@@ -28,6 +28,10 @@ export async function checkInvoiceRetax(args: Record<string, unknown>, deps: Qbo
     return { ok: false, error: `Invoice ${id} has SyncToken ${String(invoice.SyncToken ?? 'none')} in QuickBooks, not ${syncToken}. Re-read it before changing it.` };
   }
   const lines = Array.isArray(invoice.Line) ? invoice.Line : [];
+  const other = lines.filter((row: any) => row?.DetailType !== 'SalesItemLineDetail' && row?.DetailType !== 'SubTotalLineDetail');
+  if (other.length) {
+    return { ok: false, error: `Invoice ${id} has ${other.map((row: any) => row?.DetailType || 'unknown').join(', ')} lines. Retax resends only sales lines and would delete them.` };
+  }
   const items: { lineId: string; itemId: string; taxable: boolean; taxClassificationId: string | null }[] = [];
   for (const lineId of lineIds) {
     const line = lines.find((row: any) => String(row?.Id) === lineId && row?.DetailType === 'SalesItemLineDetail');

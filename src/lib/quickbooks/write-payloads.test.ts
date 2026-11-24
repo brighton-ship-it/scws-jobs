@@ -271,4 +271,8 @@ test('retaxInvoiceBody resends every sales line, clears the class only on retaxe
   assert.throws(() => retaxInvoiceBody(live39144, ['9'], '3'), /no sales line 9/);
   assert.throws(() => retaxInvoiceBody({ ...live39144, ShipFromAddr: undefined }, ['3'], '3'), /no ShipFromAddr/);
   assert.equal(savedTaxCode({ Invoice: live39144 }), '24');
+  assert.deepEqual(body.Line.map((line: any) => line.Description), ['VFD', 'Lumber & Materials', 'Labor'], 'descriptions are resent as read');
+  for (const DetailType of ['DiscountLineDetail', 'DescriptionOnly', 'GroupLineDetail']) {
+    assert.throws(() => retaxInvoiceBody({ ...live39144, Line: [...live39144.Line, { Id: '9', DetailType, Amount: 0 }] }, ['3'], '3'), new RegExp(`${DetailType} lines.*would delete them`));
+  }
 });

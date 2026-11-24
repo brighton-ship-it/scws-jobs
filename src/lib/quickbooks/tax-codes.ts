@@ -25,6 +25,17 @@
 export const SAN_DIEGO_TAX_CODE_ID = '3';
 export const MENIFEE_TAX_CODE_ID = '30';
 export const RIVERSIDE_COUNTY_TAX_CODE_ID = '23';
+/** "CA-Riverside-Riverside-Murrieta" (TaxRateRefs 3, 9, 16 Murrieta city district, 25). */
+export const MURRIETA_TAX_CODE_ID = '25';
+
+/** County TaxRate id each jobsite tax code must carry: 4 San Diego County, 25 Riverside County. */
+export const COUNTY_RATE_ID_BY_TAX_CODE: Record<string, string> = {
+  [SAN_DIEGO_TAX_CODE_ID]: '4',
+  [RIVERSIDE_COUNTY_TAX_CODE_ID]: '25',
+  [MURRIETA_TAX_CODE_ID]: '25',
+  [MENIFEE_TAX_CODE_ID]: '25',
+};
+export const COUNTY_RATE_IDS = ['4', '25'];
 
 const SAN_DIEGO_COUNTY = [
   'san diego', 'ramona', 'escondido', 'poway', 'lakeside', 'santee', 'el cajon', 'la mesa',
@@ -52,6 +63,7 @@ export const TAX_CODE_ID_BY_CITY: Record<string, string> = {};
 for (const city of SAN_DIEGO_COUNTY) TAX_CODE_ID_BY_CITY[city] = SAN_DIEGO_TAX_CODE_ID;
 for (const city of RIVERSIDE_COUNTY) TAX_CODE_ID_BY_CITY[city] = RIVERSIDE_COUNTY_TAX_CODE_ID;
 for (const city of MENIFEE_CITIES) TAX_CODE_ID_BY_CITY[city] = MENIFEE_TAX_CODE_ID;
+TAX_CODE_ID_BY_CITY.murrieta = MURRIETA_TAX_CODE_ID;
 
 export function normalizePlace(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');

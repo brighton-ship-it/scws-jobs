@@ -65,6 +65,8 @@ export type QboPlan = {
   reason?: string;
   /** Invoice writes: the TxnTaxCodeRef that must still be on the saved invoice. A different saved code is flagged as taxCodeChanged. */
   expectTaxCode?: string;
+  /** With expectTaxCode: the NetAmountTaxable every saved TaxLine must carry. 'body' sums the posted TAX lines. */
+  expectNetAmountTaxable?: number | 'body';
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -891,6 +893,16 @@ export function addressArg(value: unknown): Record<string, unknown> | null {
   return out;
 }
 
+/** Sum of TAX sales lines in an invoice body (what NetAmountTaxable should be with no discount lines). */
+export function taxableAmountOfBody(body: Record<string, unknown> | null | undefined): number | null {
+  const lines = Array.isArray(body?.Line) ? (body!.Line as Record<string, any>[]) : null;
+  if (!lines) return null;
+  const sum = lines
+    .filter((line) => line?.DetailType === 'SalesItemLineDetail' && line?.SalesItemLineDetail?.TaxCodeRef?.value === 'TAX')
+    .reduce((total, line) => total + Number(line.Amount || 0), 0);
+  return Math.round(sum * 100) / 100;
+}
+
 /** Saved header TxnTaxCodeRef on an Invoice response, or null. */
 export function savedTaxCode(json: unknown): string | null {
   const root = (json && typeof json === 'object' ? json : {}) as Record<string, any>;
@@ -934,12 +946,18 @@ function buildInvoiceRetax(args: Record<string, unknown>, id: string | undefined
     read: { path: `/invoice/${id}`, apply: 'retaxLines' },
     changes: { expectedSyncToken: syncToken, retaxLineIds: lineIds, txnTaxCodeId },
     expectTaxCode: txnTaxCodeId,
+    expectNetAmountTaxable: 'body',
   };
 }
 
 /** Sparse retax body from a live invoice. Throws when a listed line is missing or the invoice has no ShipFromAddr. */
 export function retaxInvoiceBody(invoice: Record<string, unknown>, lineIds: string[], txnTaxCodeId: string): Record<string, unknown> {
   const lines = Array.isArray(invoice.Line) ? (invoice.Line as Record<string, any>[]) : [];
+  // A sparse Line array replaces every line, so a line type this body does not resend would be deleted.
+  const other = lines.filter((line) => line?.DetailType !== 'SalesItemLineDetail' && line?.DetailType !== 'SubTotalLineDetail');
+  if (other.length) {
+    throw new Error(`Invoice ${String(invoice.Id ?? '')} has ${other.map((line) => line?.DetailType || 'unknown').join(', ')} lines; retax resends only sales lines and would delete them. Nothing was posted.`);
+  }
   const sales = lines.filter((line) => line?.DetailType === 'SalesItemLineDetail');
   for (const lineId of lineIds) {
     if (!sales.some((line) => String(line.Id) === lineId)) throw new Error(`Invoice ${String(invoice.Id ?? '')} has no sales line ${lineId}.`);

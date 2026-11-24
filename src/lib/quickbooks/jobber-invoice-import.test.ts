@@ -93,7 +93,7 @@ test('tax codes resolve by id from the jobsite, and a chunk returns a cursor', (
   assert.equal(taxCodeIdForCity('Menifee'), '30');
   assert.equal(taxCodeIdForCity('Sun City'), '30');
   assert.equal(taxCodeIdForCity('Hemet'), '23');
-  assert.equal(taxCodeIdForCity('Murrieta'), '23');
+  assert.equal(taxCodeIdForCity('Murrieta'), '25', 'Murrieta has its own city-district code 25');
   assert.equal(taxCodeIdForCity('Temecula'), '23');
   assert.equal(taxCodeIdForCity('Anza'), '23', 'Riverside County defaults to AST code 23, not manual code 65');
   assert.equal(taxCodeIdForCity('Hemet', { Hemet: '99' }), '99');

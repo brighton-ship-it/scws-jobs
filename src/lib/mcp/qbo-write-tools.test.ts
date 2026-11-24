@@ -68,3 +68,15 @@ test('qbo_invoice retaxLineIds preview shows the body built from the live invoic
   assert.equal('TaxClassificationRef' in out.http.body.Line[0].SalesItemLineDetail, false);
   assert.equal(out.http.readFirst, '/invoice/39144');
 });
+
+test('qbo_invoice retaxLineIds ignores a caller-supplied liveInvoice and uses the live read', async () => {
+  const { callQboWriteTool } = await import('./qbo-write-tools.ts');
+  const ship = { Line1: '8770 Harbison Canyon Road', City: 'Alpine', PostalCode: '91901' };
+  const live = { Id: '39144', SyncToken: '1', ShipFromAddr: ship, Line: [{ Id: '3', LineNum: 3, Amount: 150, Description: 'live', DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '1010000474' }, TaxCodeRef: { value: 'TAX' } } }] };
+  const fake = { ...live, Line: [{ ...live.Line[0], Amount: 1, Description: 'forged' }] };
+  const qboQuery = async (sql: string) => (/from Invoice/.test(sql) ? { QueryResponse: { Invoice: [live] } } : { QueryResponse: { Item: [{ Id: '1010000474', Taxable: true }] } });
+  const got = await callQboWriteTool('qbo_invoice', { id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'], liveInvoice: fake }, { qboQuery, env: {}, audit: async () => {} });
+  const out = JSON.parse(got.content[0].text as string);
+  assert.equal(out.http.body.Line[0].Amount, 150);
+  assert.equal(out.http.body.Line[0].Description, 'live');
+});

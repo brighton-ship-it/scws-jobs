@@ -1,5 +1,9 @@
 # Supabase migrations
 
+## `20261124_qbo_write_audit_tax_code_changed.sql`
+
+Adds `tax_code_changed` to the `qbo_write_audit_status_check` constraint (all earlier values kept). `qbo_invoice` and `qbo_revert_batch` write that status when an invoice write posts but the saved tax code, county rate (4 San Diego / 25 Riverside) or NetAmountTaxable is not what was asked. Until this is applied, that row insert fails the constraint: the tool still returns ok:false with status `tax_code_changed` and "the audit log failed", and the pending row stays pending. Apply it in the SQL Editor after `20261124_qbo_write_audit_unknown.sql`. The rollback is in the file header.
+
 ## `20261029_missed_call_text_delivery.sql`
 
 Adds `delivery_status`, `delivery_error`, and `delivery_updated_at` on `missed_call_texts`, plus an index on `twilio_message_sid`. `/api/sms/status` (Twilio delivery receipt) and the call dashboard write them. Inbound replies are stored on the existing `thread` column by `/api/sms/forward` and `/api/sms/inbound`; that does not need this migration. Until the columns exist, the office dashboard still lists texts and replies, and delivery shows as Sent. Apply it in the SQL Editor. Undo with `20261029_missed_call_text_delivery_rollback.sql`.
