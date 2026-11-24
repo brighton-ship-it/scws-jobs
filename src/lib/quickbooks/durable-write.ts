@@ -42,7 +42,19 @@ export type SbClient = {
 };
 
 /** preview and refused never post. pending is the pre-write row. failed is a QuickBooks error. */
-export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed' | 'tax_mismatch';
+/**
+ * unknown = the POST was sent but no answer came back (network error, timeout, or a
+ * 408/502/503/504 gateway status). QuickBooks may have saved it. Revert and
+ * reconciliation must treat it as possibly written, never as failed.
+ */
+export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed' | 'tax_mismatch' | 'unknown';
+
+/** HTTP statuses where the request may have reached QuickBooks and been saved. */
+const OUTCOME_UNKNOWN_STATUSES = new Set([408, 502, 503, 504]);
+
+class PostOutcomeUnknownError extends Error {
+  logged = true;
+}
 
 export type QboAuditEntry = {
   actor: string;
@@ -113,6 +125,8 @@ export type QboWriteResult = {
   qbo: unknown;
   error?: string;
   reason?: string;
+  /** The POST was sent but the result is not known. QuickBooks may have saved it. */
+  outcomeUnknown?: boolean;
   audit: { attempted: boolean; error?: string };
 };
 
@@ -509,14 +523,16 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     true
   );
 
-  // From here on a pending row exists. Any throw before an outcome row (token, the
-  // read-before-write apply guard, a network error) must leave a failed row, or the
-  // pending row is orphaned with no error.
+  // From here on a pending row exists. Any throw before the POST is sent (token, the
+  // read-before-write apply guard) leaves a failed row, so the pending row is not
+  // orphaned. A throw while the POST is in flight is logged as unknown inside
+  // postAfterPending, because QuickBooks may have saved it.
   const realmId: string = gate.realmId;
   const prodRealmId: string = productionRealmId;
   try {
     return await postAfterPending();
   } catch (error) {
+    if (error instanceof PostOutcomeUnknownError) throw error;
     const message = error instanceof Error ? error.message : String(error);
     await remember(
       logged('failed', {
@@ -547,9 +563,26 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   }
   if (!body) throw new Error('QuickBooks write had no body to post.');
   const query = queryOf(requestId, plan.operation);
-  const posted = await qboFetch(writeUrl(gate.baseUrl, realmId, plan.path, query), token, fetchImpl, body);
-  const ids = idsFrom(plan.entity, posted.json);
   const http = { ...base.http, body, query };
+  let posted: { status: number; json: any; text: string };
+  try {
+    posted = await qboFetch(writeUrl(gate.baseUrl, realmId, plan.path, query), token, fetchImpl, body);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const unknownError = `QuickBooks ${plan.path} outcome unknown: the request was sent but no response came back (${message}). It may have posted. Read QuickBooks before any retry or revert.`;
+    await remember(logged('unknown', { action: plan.action, payload: { http, reason: plan.reason || null }, error: unknownError }), deps, false);
+    throw new PostOutcomeUnknownError(unknownError);
+  }
+  const ids = idsFrom(plan.entity, posted.json);
+  if (OUTCOME_UNKNOWN_STATUSES.has(posted.status)) {
+    const error = `QuickBooks ${plan.path} returned ${posted.status}, so the outcome is unknown. It may have posted. Read QuickBooks before any retry or revert.`;
+    await remember(
+      logged('unknown', { action: plan.action, payload: { http, reason: plan.reason || null }, qboResponse: cap(posted.json), qboIds: ids, error }),
+      deps,
+      false
+    );
+    return { ...base, http, error, ids, qbo: slim(plan.entity, posted.json), outcomeUnknown: true, audit: { attempted: true } };
+  }
   if (posted.status < 200 || posted.status >= 300) {
     const error = `QuickBooks ${plan.path} failed (${posted.status}).`;
     await remember(

@@ -295,3 +295,21 @@ test('a replayed payment row (relink-older-01 rows 29-35) is deleted once, not t
   assert.equal(stillPending.steps.length, 2);
   assert.equal(stillPending.couldNot.length, 0);
 });
+
+test('an unknown post outcome is reported as possibly written, not treated as failed', () => {
+  const rows = [
+    row({ id: 1, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'pending', ok: false, qboId: null, requestId: 'relpay-38114-L3-aaaa' }),
+    row({ id: 2, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'unknown', ok: false, qboId: null, requestId: 'relpay-38114-L3-aaaa', error: 'outcome unknown' }),
+  ];
+  const plan = planBatchRevert(rows, null);
+  assert.equal(plan.steps.length, 0);
+  assert.equal(plan.couldNot.length, 1);
+  assert.match(plan.couldNot[0].reason, /outcome unknown[\s\S]*may have posted/);
+  // A later ok row for the same request id is the real outcome.
+  const resolved = planBatchRevert(
+    [...rows, row({ id: 3, entity: 'Payment', tool: 'qbo_relink_deposit', status: 'ok', created: true, action: 'create', qboId: '39200', requestId: 'relpay-38114-L3-aaaa' })],
+    null
+  );
+  assert.deepEqual(resolved.steps.map((step) => [step.qboId, step.auditId]), [['39200', 3]]);
+  assert.equal(resolved.couldNot.length, 0);
+});

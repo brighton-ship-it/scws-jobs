@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { relinkRequestId, runRelinkDeposit } from './deposit-relink.ts';
+import { relinkRequestId, runRelinkDeposit, unlinkedMatchingPayments } from './deposit-relink.ts';
 import type { QboAuditEntry } from './durable-write.ts';
 
 const env = {
@@ -73,7 +73,7 @@ test('relink confirm creates the payment and replaces the sales line without cha
 });
 
 /** A live-ish QuickBooks double: one deposit with two 4010 lines, payments keyed by Intuit requestid. */
-function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; driftDepositAfterFirstRead?: boolean } = {}) {
+function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; driftDepositAfterFirstRead?: boolean; paymentPost?: 'throw' | 504 | 'noLine' } = {}) {
   const state = {
     deposit: {
       Id: '38114',
@@ -89,10 +89,14 @@ function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; 
     requestIds: [] as Array<{ path: string; requestId: string }>,
     posts: [] as string[],
     depositReads: 0,
+    payments: [] as Array<Record<string, unknown>>,
   };
   const fetchImpl = async (input: unknown, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     const requestId = url.searchParams.get('requestid') || '';
+    if (!init?.body && url.pathname.endsWith('/query')) {
+      return json({ QueryResponse: { Payment: structuredClone(state.payments) } });
+    }
     if (!init?.body) {
       state.depositReads += 1;
       if (options.driftDepositAfterFirstRead && state.depositReads > 1) {
@@ -104,6 +108,9 @@ function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; 
     const path = url.pathname.endsWith('/payment') ? 'payment' : 'deposit';
     state.requestIds.push({ path, requestId });
     state.posts.push(path);
+    if (path === 'payment' && options.paymentPost === 'throw') throw new TypeError('fetch failed (socket hang up)');
+    if (path === 'payment' && options.paymentPost === 504) return json({ Fault: { type: 'GatewayTimeout' } }, 504);
+    if (path === 'payment' && options.paymentPost === 'noLine') return json({ Payment: { Id: '39300', SyncToken: '0', TotalAmt: body.TotalAmt, CustomerRef: body.CustomerRef } });
     const replay = path === 'payment' ? options.replayPayments : options.replayDeposits;
     if (replay && state.byRequest.size > 0 && Array.from(state.byRequest.keys()).some((key) => key.startsWith(path))) {
       const first = Array.from(state.byRequest.entries()).find(([key]) => key.startsWith(path));
@@ -112,7 +119,9 @@ function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; 
     if (state.byRequest.has(`${path}:${requestId}`)) return json(state.byRequest.get(`${path}:${requestId}`));
     let response: unknown;
     if (path === 'payment') {
-      response = { Payment: { ...body, Id: String(state.nextPaymentId++), SyncToken: '0' } };
+      const payment = { ...body, Id: String(state.nextPaymentId++), SyncToken: '0' };
+      state.payments.push(payment);
+      response = { Payment: payment };
     } else {
       state.deposit = { ...(body as typeof state.deposit), SyncToken: String(Number(state.deposit.SyncToken) + 1) };
       response = { Deposit: structuredClone(state.deposit) };
@@ -162,18 +171,98 @@ test('two relinks on one deposit in one batch use different payment and deposit 
   assert.deepEqual(audit.map((entry) => entry.status), ['pending', 'ok', 'pending', 'ok', 'pending', 'ok', 'pending', 'ok']);
 });
 
-test('relink request ids change with the line, invoice, amount, customer and a caller requestId', () => {
+test('relink request ids change with the line, account, invoice, amount and customer, and nothing else', () => {
   const base = { batchId: 'b1', depositId: '38114', lineId: '3', salesAccountId: null, invoiceId: '35369', customerId: '21', amountCents: 108305 };
   const key = relinkRequestId('relpay', base);
   assert.notEqual(key, relinkRequestId('relpay', { ...base, lineId: '4' }));
   assert.notEqual(key, relinkRequestId('relpay', { ...base, invoiceId: '35968' }));
   assert.notEqual(key, relinkRequestId('relpay', { ...base, amountCents: 25819 }));
   assert.notEqual(key, relinkRequestId('relpay', { ...base, customerId: '12810' }));
-  assert.notEqual(key, relinkRequestId('relpay', { ...base, requestId: 'retry-20261124' }));
+  // salesAccountId is part of the key: a retry must pass identical arguments.
+  assert.notEqual(key, relinkRequestId('relpay', { ...base, salesAccountId: '35' }));
   assert.notEqual(key, relinkRequestId('reldep', base));
   assert.equal(key, relinkRequestId('relpay', { ...base }));
+  // Extra fields (such as a caller requestId) cannot change the key.
+  assert.equal(key, relinkRequestId('relpay', { ...base, requestId: 'retry-20261124' } as typeof base));
   const long = relinkRequestId('reldep', { ...base, depositId: '12345678901234567890', lineId: '9999999999999' });
   assert.match(long, /^[A-Za-z0-9_-]{8,50}$/);
+});
+
+test('a caller requestId is refused on preview and confirm, so it cannot bypass dedupe', async () => {
+  const qbo = fakeQbo();
+  await assert.rejects(() => runRelinkDeposit({ ...relinkA, confirm: false, requestId: 'retry-20261124' }, relinkDeps(qbo.fetchImpl)), /does not take requestId[\s\S]*identical arguments/);
+  await assert.rejects(() => runRelinkDeposit({ ...relinkA, requestId: 'retry-20261124' }, relinkDeps(qbo.fetchImpl)), /does not take requestId/);
+  assert.deepEqual(qbo.state.posts, []);
+});
+
+test('a preview shows the request ids, and the same arguments give the same ids', async () => {
+  const one = await runRelinkDeposit({ ...relinkA, confirm: false }, {});
+  const two = await runRelinkDeposit({ ...relinkA, confirm: false }, {});
+  const withAccount = await runRelinkDeposit({ ...relinkA, confirm: false, salesAccountId: '35' }, {});
+  assert.deepEqual(one.requestIds, two.requestIds);
+  assert.notDeepEqual(one.requestIds, withAccount.requestIds);
+});
+
+test('an existing unlinked payment for the same invoice, amount and customer blocks a second payment', async () => {
+  // First attempt creates the payment, then the deposit step stops, leaving the payment unlinked.
+  const qbo = fakeQbo({ driftDepositAfterFirstRead: true });
+  await assert.rejects(() => runRelinkDeposit(relinkA, relinkDeps(qbo.fetchImpl)), /No deposit sales line matches/);
+  assert.equal(qbo.state.payments.length, 1);
+  const postsBefore = qbo.state.posts.length;
+  // Retry with the same arguments, after the deposit is readable again.
+  const retry = fakeQbo();
+  retry.state.payments.push(...qbo.state.payments);
+  await assert.rejects(
+    () => runRelinkDeposit(relinkA, relinkDeps(retry.fetchImpl)),
+    /Refusing to create a payment: invoice 35369 already has payment 39200 for 1083.05 from customer 21 that is not on any deposit/
+  );
+  assert.deepEqual(retry.state.posts, []);
+  assert.equal(qbo.state.posts.length, postsBefore);
+});
+
+test('unlinkedMatchingPayments ignores deposited payments and other invoices, amounts and customers', () => {
+  const applied = (invoiceId: string, amount: number) => [{ Amount: amount, LinkedTxn: [{ TxnId: invoiceId, TxnType: 'Invoice' }] }];
+  const payments = [
+    { Id: '1', TotalAmt: 1083.05, CustomerRef: { value: '21' }, Line: applied('35369', 1083.05) },
+    { Id: '2', TotalAmt: 1083.05, CustomerRef: { value: '21' }, Line: applied('35369', 1083.05), LinkedTxn: [{ TxnId: '38114', TxnType: 'Deposit' }] },
+    { Id: '3', TotalAmt: 1083.05, CustomerRef: { value: '21' }, Line: [...applied('35369', 1083.05), { Amount: 1083.05, LinkedTxn: [{ TxnId: '38114', TxnType: 'Deposit' }] }] },
+    { Id: '4', TotalAmt: 1083.05, CustomerRef: { value: '21' }, Line: applied('99999', 1083.05) },
+    { Id: '5', TotalAmt: 200, CustomerRef: { value: '21' }, Line: applied('35369', 200) },
+    { Id: '6', TotalAmt: 1083.05, CustomerRef: { value: '12810' }, Line: applied('35369', 1083.05) },
+  ];
+  assert.deepEqual(unlinkedMatchingPayments(payments, { invoiceId: '35369', customerId: '21', amountCents: 108305 }), ['1']);
+});
+
+test('a payment response with no Line list fails the replay check before the deposit is touched', async () => {
+  const qbo = fakeQbo({ paymentPost: 'noLine' });
+  await assert.rejects(() => runRelinkDeposit(relinkA, relinkDeps(qbo.fetchImpl)), /does not match the request[\s\S]*no Line list/);
+  assert.deepEqual(qbo.state.posts, ['payment']);
+  assert.equal(qbo.state.deposit.SyncToken, '2');
+});
+
+test('a network error during the payment post is logged unknown, not failed', async () => {
+  const qbo = fakeQbo({ paymentPost: 'throw' });
+  const audit: QboAuditEntry[] = [];
+  await assert.rejects(() => runRelinkDeposit(relinkA, relinkDeps(qbo.fetchImpl, audit)), /outcome unknown[\s\S]*may have posted/);
+  assert.deepEqual(audit.map((entry) => [entry.entity, entry.status]), [
+    ['Payment', 'pending'],
+    ['Payment', 'unknown'],
+  ]);
+  assert.equal(audit[1].requestId, audit[0].requestId);
+  assert.equal(audit[1].ok, false);
+  assert.equal(audit.some((entry) => entry.status === 'failed'), false);
+  assert.deepEqual(qbo.state.posts, ['payment']);
+});
+
+test('a 504 from the payment post is logged unknown and the deposit is not touched', async () => {
+  const qbo = fakeQbo({ paymentPost: 504 });
+  const audit: QboAuditEntry[] = [];
+  const result = await runRelinkDeposit(relinkA, relinkDeps(qbo.fetchImpl, audit));
+  assert.equal(result.ok, false);
+  assert.equal(result.outcomeUnknown, true);
+  assert.match(String(result.error), /returned 504[\s\S]*may have posted[\s\S]*Do not retry under a new key/);
+  assert.deepEqual(audit.map((entry) => entry.status), ['pending', 'unknown']);
+  assert.deepEqual(qbo.state.posts, ['payment']);
 });
 
 test('a replayed payment response that does not match the request stops before the deposit is touched', async () => {

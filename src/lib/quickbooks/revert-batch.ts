@@ -5,7 +5,9 @@
  * Pending, refused, preview, and failed rows are not writes. A pending row
  * is covered when the same request later recorded ok or failed. An unresolved
  * pending row is reported, because the batch id alone does not identify a
- * QuickBooks entity to undo.
+ * QuickBooks entity to undo. An unknown row (the POST was sent, no answer came
+ * back) may have posted: it is reported in couldNot unless the same request
+ * later recorded ok, and it is never treated as failed.
  */
 import { readBookCloseDate, runQboPlan, type QboAuditStatus, type QboWriteDeps } from './durable-write.ts';
 import { parseBatchId, type QboPlan } from './write-payloads.ts';
@@ -38,7 +40,7 @@ export type RevertStep = {
 };
 
 const PAYMENT_ENTITIES = new Set(['Payment', 'BillPayment']);
-const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed', 'tax_mismatch']);
+const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed', 'tax_mismatch', 'unknown']);
 
 export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
   if (!closeDate || !txnDate) return false;
@@ -75,7 +77,22 @@ export function planBatchRevert(
   const firstCreate = new Map<string, number>();
   const couldNot: { entity: string; id: string | null; reason: string }[] = [];
   const settled = new Set(rows.filter(settlesRequest).map((row) => row.requestId as string));
+  const okRequests = new Set(rows.filter((row) => row.status === 'ok' && row.requestId).map((row) => row.requestId as string));
+  const unknownRequests = new Set(rows.filter((row) => row.status === 'unknown' && row.requestId).map((row) => row.requestId as string));
   for (const row of rows) {
+    if (row.status === 'unknown') {
+      if (row.dryRun || !row.confirmed) continue;
+      // A later ok row for the same Intuit requestid is the real outcome, and revert uses that row.
+      if (row.requestId && okRequests.has(row.requestId)) continue;
+      couldNot.push({
+        entity: row.entity,
+        id: row.qboId,
+        reason: 'post outcome unknown (network error or timeout); it may have posted. Read QuickBooks for this entity before reverting',
+      });
+      continue;
+    }
+    // The pending row of an unknown post is reported once, through its unknown row.
+    if (row.status === 'pending' && row.requestId && unknownRequests.has(row.requestId) && !settled.has(row.requestId)) continue;
     if (row.status === 'pending') {
       if (row.dryRun || !row.confirmed) continue;
       const coveredByRequest = Boolean(row.requestId && settled.has(row.requestId));
@@ -283,6 +300,6 @@ function rowFromDb(row: Record<string, unknown>): BatchAuditRow {
 }
 
 function auditStatus(value: unknown): QboAuditStatus | null {
-  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch') return value;
+  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch' || value === 'unknown') return value;
   return null;
 }
