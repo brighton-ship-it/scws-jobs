@@ -1,19 +1,42 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  assessSavedTax,
   buildJobberSyncedInvoice,
   classifyJobberInvoice,
+  countyPercentRateId,
   jobberPaymentLines,
+  missingJobsiteAddressReason,
   pacificDate,
   qboShipAddress,
+  resolveJobProperties,
   runJobberInvoiceImport,
-  savedTaxReport,
   sliceInvoiceChunk,
   type InvoiceTaxReport,
   type JobberInvoiceForQbo,
+  type QboTaxRate,
 } from './jobber-invoice-import.ts';
 import { taxCodeIdForCity } from './tax-codes.ts';
 import { privateNoteWithBatch } from './write-payloads.ts';
+
+const TAX_RATES: QboTaxRate[] = [
+  { id: '4', name: 'San Diego County', rate: 1 },
+  { id: '25', name: 'Riverside County', rate: 1 },
+  { id: '5', name: 'San Diego County District', rate: 0.5 },
+  { id: '3', name: 'California State', rate: 6.25 },
+];
+
+const TAX_RATE_ROWS = TAX_RATES.map((rate) => ({ Id: rate.id, Name: rate.name, RateValue: rate.rate }));
+
+function taxDetail(totalTax: number, countyRateId: string) {
+  return {
+    TotalTax: totalTax,
+    TxnTaxCodeRef: { value: '3' },
+    TaxLine: [
+      { Amount: 1, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: countyRateId }, TaxPercent: 1, NetAmountTaxable: 100 } },
+    ],
+  };
+}
 
 const invoice: JobberInvoiceForQbo = {
   invoiceNumber: '5824',
@@ -22,6 +45,14 @@ const invoice: JobberInvoiceForQbo = {
   message: 'On-site, everything is functioning well.',
   clientName: 'Colleen Baker',
   city: 'Ramona',
+  address: {
+    line1: '420 Pile Street',
+    line2: null,
+    city: 'Ramona',
+    province: 'CA',
+    postalCode: '92065',
+    country: 'United States',
+  },
   lines: [
     { name: '1MS', description: '1 Man service', quantity: 1, unitPrice: 200, taxable: false },
     { name: 'MISC', description: '161-110v Start Capacitor', quantity: 1, unitPrice: 38, taxable: true },
@@ -143,6 +174,7 @@ test('preview does not post, and confirm is idempotent by DocNumber and request 
         if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '15285' }] } };
         if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
         if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+        if (sql.includes('TaxRate')) return { QueryResponse: { TaxRate: TAX_RATE_ROWS } };
         return { QueryResponse: { TaxCode: [{ Id: '3' }] } };
       },
       fetchImpl: async (url, init) => {
@@ -152,7 +184,10 @@ test('preview does not post, and confirm is idempotent by DocNumber and request 
         if (entity === 'Invoice') existing = true;
         const body = JSON.parse(String(init?.body));
         assert.equal('EmailStatus' in body, false);
-        return new Response(JSON.stringify({ [entity]: { Id: entity === 'Invoice' ? '99' : '50', SyncToken: '0', DocNumber: '5824' } }), { status: 200 });
+        const row = entity === 'Invoice'
+          ? { Id: '99', SyncToken: '0', DocNumber: '5824', TxnTaxDetail: taxDetail(2.95, '4') }
+          : { Id: '50', SyncToken: '0', DocNumber: '5824' };
+        return new Response(JSON.stringify({ [entity]: row }), { status: 200 });
       },
     }
   );
@@ -336,6 +371,7 @@ test('payout confirm posts payment dates and a deposit with a fee line', async (
         if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '15285' }] } };
         if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
         if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+        if (sql.includes('TaxRate')) return { QueryResponse: { TaxRate: TAX_RATE_ROWS } };
         return { QueryResponse: { TaxCode: [{ Id: '3' }] } };
       },
       fetchImpl: async (url, init) => {
@@ -344,7 +380,8 @@ test('payout confirm posts payment dates and a deposit with a fee line', async (
         const path = String(url);
         const entity = path.includes('/deposit') ? 'Deposit' : path.includes('/payment') ? 'Payment' : 'Invoice';
         const id = entity === 'Deposit' ? '70' : entity === 'Payment' ? '50' : '99';
-        return new Response(JSON.stringify({ [entity]: { Id: id, SyncToken: '0' } }), { status: 200 });
+        const row = entity === 'Invoice' ? { Id: id, SyncToken: '0', TxnTaxDetail: taxDetail(2.95, '4') } : { Id: id, SyncToken: '0' };
+        return new Response(JSON.stringify({ [entity]: row }), { status: 200 });
       },
     }
   );
@@ -404,6 +441,7 @@ test('createCustomers confirm posts the customer before the invoice', async () =
         if (sql.includes('DisplayName')) return { QueryResponse: {} };
         if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
         if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+        if (sql.includes('TaxRate')) return { QueryResponse: { TaxRate: TAX_RATE_ROWS } };
         return { QueryResponse: {} };
       },
       fetchImpl: async (url, init) => {
@@ -414,7 +452,7 @@ test('createCustomers confirm posts the customer before the invoice', async () =
           return new Response(JSON.stringify({ Customer: { Id: '77', SyncToken: '0' } }), { status: 200 });
         }
         order.push(`invoice:${body.CustomerRef.value}`);
-        return new Response(JSON.stringify({ Invoice: { Id: '99', SyncToken: '0' } }), { status: 200 });
+        return new Response(JSON.stringify({ Invoice: { Id: '99', SyncToken: '0', TxnTaxDetail: taxDetail(2.95, '4') } }), { status: 200 });
       },
     }
   );
@@ -469,68 +507,129 @@ test('jobsite address matches the old sync and the batch id stays inside Private
   assert.equal(note?.length, 4000);
 });
 
-test('preview reports the requested tax code and confirm flags a saved mismatch', async () => {
+test('a missing property address is blocked and disagreeing properties are flagged', async () => {
+  assert.match(missingJobsiteAddressReason(null) || '', /Anza shop/);
+  assert.match(missingJobsiteAddressReason({ line1: null, line2: null, city: 'Escondido', province: 'CA', postalCode: null, country: null }) || '', /street/);
+  const conflict = resolveJobProperties([
+    escondido.address,
+    { line1: '1 State Street', line2: null, city: 'Hemet', province: 'CA', postalCode: '92543', country: 'US' },
+  ]);
+  assert.match(conflict.conflict || '', /different property addresses/);
+  assert.equal(conflict.address, null);
+  const bare = { ...invoice, address: null };
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5824'] },
+    {
+      qboQuery: async (sql: string) => {
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '15285' }] } };
+        if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
+        if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [bare],
+      fetchImpl: async () => { throw new Error('blocked invoice posted'); },
+    }
+  );
+  const row = (result.invoices as Array<{ status: string; reason: string | null; body: unknown }>)[0];
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.body, null);
+  assert.match(row.reason || '', /Anza shop/);
+  assert.equal(result.ok, true);
+});
+
+test('county rates come from TaxRate names, and saved tax must match the jobsite', () => {
+  assert.equal(countyPercentRateId(TAX_RATES, 'San Diego'), '4');
+  assert.equal(countyPercentRateId(TAX_RATES, 'Riverside'), '25');
+  const escondidoMatch = assessSavedTax({
+    requestedTxnTaxCodeId: '3',
+    city: 'Escondido',
+    jobberTax: 2.95,
+    rates: TAX_RATES,
+    qbo: { TxnTaxDetail: taxDetail(2.95, '4') },
+  });
+  assert.equal(escondidoMatch.taxMismatch, false);
+  assert.equal(escondidoMatch.expectedCountyRateId, '4');
+  const riversideShop = assessSavedTax({
+    requestedTxnTaxCodeId: '3',
+    city: 'Escondido',
+    jobberTax: 2.95,
+    rates: TAX_RATES,
+    qbo: { TxnTaxDetail: taxDetail(2.96, '25') },
+  });
+  assert.equal(riversideShop.taxMismatch, true);
+  assert.match(riversideShop.taxMismatchReasons.join(' '), /not the San Diego County rate 4/);
+  const hemet = assessSavedTax({
+    requestedTxnTaxCodeId: '65',
+    city: 'Hemet',
+    jobberTax: 8.75,
+    rates: TAX_RATES,
+    qbo: { TxnTaxDetail: taxDetail(8.75, '25') },
+  });
+  assert.equal(hemet.county, 'Riverside');
+  assert.equal(hemet.savedCountyRateId, '25');
+  assert.equal(hemet.taxMismatch, false);
+  const pennyOver = assessSavedTax({
+    requestedTxnTaxCodeId: '65',
+    city: 'Hemet',
+    jobberTax: 8.75,
+    rates: TAX_RATES,
+    qbo: { TxnTaxDetail: taxDetail(8.77, '25') },
+  });
+  assert.equal(pennyOver.taxMismatch, true);
+  assert.match(pennyOver.taxMismatchReasons.join(' '), /within \$0\.01/);
+});
+
+test('confirm stops the chunk on a tax mismatch before payments', async () => {
   const env = {
     QBO_WRITES_ENABLED: 'true',
     QBO_WRITE_REALM_ID: '2222222222222222',
     QBO_PRODUCTION_REALM_ID: '9130349321543166',
   };
-  const qboQuery = async (sql: string) => {
-    if (sql.includes('DocNumber')) return { QueryResponse: {} };
-    if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '16110' }] } };
-    if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
-    if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
-    return { QueryResponse: { TaxCode: [{ Id: '3' }] } };
-  };
-  const preview = await runJobberInvoiceImport(
-    { invoiceNumbers: ['5824'], batchId: 'ast-check' },
-    { env, qboQuery, loadJobberInvoices: async () => [escondido], fetchImpl: async () => { throw new Error('preview posted'); } }
-  );
-  assert.equal(preview.dryRun, true);
-  assert.equal(preview.taxCodeMismatch, false);
-  const previewRow = (preview.invoices as Array<{ body: { PrivateNote: string; ShipAddr: { City: string } }; tax: InvoiceTaxReport }>)[0];
-  assert.equal(previewRow.body.PrivateNote, '[batch:ast-check]');
-  assert.equal(previewRow.body.ShipAddr.City, 'Escondido');
-  assert.equal(previewRow.tax.requestedTxnTaxCodeId, '3');
-  assert.equal(previewRow.tax.savedTxnTaxCodeId, null);
-  assert.equal(previewRow.tax.taxLines, null);
-  assert.equal(previewRow.tax.taxCodeMismatch, false);
-
-  const taxLines = [
-    { Amount: 6.25, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: '3' }, TaxPercent: 6.25, NetAmountTaxable: 100 } },
-    { Amount: 1, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: '20' }, TaxPercent: 1, NetAmountTaxable: 100 } },
-    { Amount: 0.5, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: '5' }, TaxPercent: 0.5, NetAmountTaxable: 100 } },
-  ];
-  let postedBody: Record<string, unknown> | null = null;
+  const next = { ...invoice, invoiceNumber: '5825' };
+  const urls: string[] = [];
+  const audits: Array<{ status: string }> = [];
+  const captured: { body: Record<string, unknown> | null } = { body: null };
   const result = await runJobberInvoiceImport(
-    { invoiceNumbers: ['5824'], batchId: 'ast-check', confirm: true, payments: 'none' },
+    { invoiceNumbers: ['5824', '5825'], batchId: 'ast-check', confirm: true, payments: 'undeposited' },
     {
       env,
       productionRealmId: '9130349321543166',
       accessToken: 'tok',
-      audit: async () => {},
-      loadJobberInvoices: async () => [escondido],
-      qboQuery,
-      fetchImpl: async (_url, init) => {
-        postedBody = JSON.parse(String(init?.body));
+      audit: async (entry) => { audits.push({ status: entry.status }); },
+      loadJobberInvoices: async () => [escondido, next],
+      qboQuery: async (sql: string) => {
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '16110' }] } };
+        if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
+        if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+        if (sql.includes('TaxRate')) return { QueryResponse: { TaxRate: TAX_RATE_ROWS } };
+        return { QueryResponse: {} };
+      },
+      fetchImpl: async (url, init) => {
+        urls.push(String(url));
+        captured.body = JSON.parse(String(init?.body));
         return new Response(JSON.stringify({
-          Invoice: { Id: '39108', SyncToken: '0', DocNumber: '5824', TxnTaxDetail: { TxnTaxCodeRef: { value: '24' }, TaxLine: taxLines } },
+          Invoice: { Id: '39108', SyncToken: '0', DocNumber: '5824', TxnTaxDetail: taxDetail(2.95, '25') },
         }), { status: 200 });
       },
     }
   );
-  assert.equal(postedBody?.PrivateNote, '[batch:ast-check]');
-  assert.equal((postedBody?.ShipFromAddr as { City: string }).City, 'Escondido');
-  assert.equal((postedBody?.ShipAddr as { CountrySubDivisionCode: string }).CountrySubDivisionCode, 'CA');
-  assert.equal(postedBody?.FreeFormAddress, false);
-  assert.equal('BillAddr' in (postedBody || {}), false);
-  assert.equal(result.wrote, true);
-  assert.equal(result.taxCodeMismatch, true);
-  const tax = (result.posted as Array<{ tax: InvoiceTaxReport }>)[0].tax;
-  assert.equal(tax.requestedTxnTaxCodeId, '3');
-  assert.equal(tax.savedTxnTaxCodeId, '24');
-  assert.equal(tax.taxCodeMismatch, true);
-  assert.deepEqual(tax.taxLines, taxLines);
-  assert.equal((result.invoices as Array<{ tax: InvoiceTaxReport }>)[0].tax.taxCodeMismatch, true);
-  assert.equal(savedTaxReport('3', { TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TaxLine: taxLines } }).taxCodeMismatch, false);
+  const postedBody = captured.body;
+  assert.ok(postedBody);
+  assert.equal(postedBody.PrivateNote, '[batch:ast-check]');
+  assert.equal((postedBody.ShipAddr as { City: string }).City, 'Escondido');
+  assert.equal(result.ok, false);
+  assert.equal(result.taxMismatch, true);
+  assert.equal(result.stoppedForTax, true);
+  assert.equal(urls.length, 1);
+  assert.match(urls[0], /\/invoice/);
+  assert.equal(urls.some((url) => url.includes('/payment')), false);
+  const tax = (result.posted as Array<{ invoiceNumber: string; tax: InvoiceTaxReport }>)[0];
+  assert.equal(tax.invoiceNumber, '5824');
+  assert.equal(tax.tax.savedCountyRateId, '25');
+  assert.equal(tax.tax.expectedCountyRateId, '4');
+  assert.equal(tax.tax.taxMismatch, true);
+  assert.equal(audits.some((row) => row.status === 'tax_mismatch'), true);
+  assert.equal(audits.some((row) => row.status === 'ok'), true);
 });

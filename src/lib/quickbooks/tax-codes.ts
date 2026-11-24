@@ -64,6 +64,15 @@ export function taxCodeIdForCity(city: string | null | undefined, overrides?: Re
   return TAX_CODE_ID_BY_CITY[key] || null;
 }
 
+/** County for the 1% county rate. Menifee is Riverside County even though its tax code id is 30. */
+export function countyNameForCity(city: string | null | undefined): 'San Diego' | 'Riverside' | null {
+  if (!city) return null;
+  const key = normalizePlace(city);
+  if ((MENIFEE_CITIES as readonly string[]).includes(key) || (RIVERSIDE_COUNTY as readonly string[]).includes(key)) return 'Riverside';
+  if ((SAN_DIEGO_COUNTY as readonly string[]).includes(key)) return 'San Diego';
+  return null;
+}
+
 export function taxCodeMissingReason(city: string | null | undefined): string {
   const where = city ? `city "${city}"` : 'this invoice (no jobsite city)';
   return `No QuickBooks tax code id for ${where}. Pass txnTaxCodeId (an id such as 3) or taxCodeByCity. Synced examples: San Diego County id 3, Menifee id 30.`;

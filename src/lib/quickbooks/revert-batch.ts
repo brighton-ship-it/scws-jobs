@@ -38,7 +38,7 @@ export type RevertStep = {
 };
 
 const PAYMENT_ENTITIES = new Set(['Payment', 'BillPayment']);
-const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed']);
+const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed', 'tax_mismatch']);
 
 export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
   if (!closeDate || !txnDate) return false;
@@ -251,6 +251,6 @@ function rowFromDb(row: Record<string, unknown>): BatchAuditRow {
 }
 
 function auditStatus(value: unknown): QboAuditStatus | null {
-  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed') return value;
+  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch') return value;
   return null;
 }

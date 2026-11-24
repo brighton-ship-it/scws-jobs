@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  applyRead,
   applyPurchaseAccounts,
   buildDeposit,
   buildInvoice,
@@ -77,6 +78,24 @@ test('invoice body never asks QuickBooks to email', () => {
     lines: [{ amount: 40, itemId: '3', quantity: 1, unitPrice: 40 }],
   });
   assert.equal(stamped.body?.PrivateNote, 'shop copy [batch:oct-2026]');
+  const again = buildInvoice({
+    customerId: '10',
+    docNumber: '5831',
+    privateNote: 'shop copy [batch:oct-2026]',
+    batchId: 'oct-2026',
+    lines: [{ amount: 40, itemId: '3', quantity: 1, unitPrice: 40 }],
+  });
+  assert.equal(again.body?.PrivateNote, 'shop copy [batch:oct-2026]');
+  const update = buildInvoice({ id: '44', syncToken: '2', privateNote: 'follow up', batchId: 'oct-2026' });
+  assert.equal(update.read?.apply, 'appendPrivateNote');
+  assert.equal('PrivateNote' in (update.body || {}), false);
+  const untouched = buildInvoice({ id: '44', syncToken: '2', txnDate: '2026-10-02', batchId: 'oct-2026' });
+  assert.equal(untouched.read, undefined);
+  assert.equal('PrivateNote' in (untouched.body || {}), false);
+  const appended = applyRead(update, { Invoice: { Id: '44', SyncToken: '9', PrivateNote: 'shop copy [batch:oct-2026]' } });
+  assert.equal(appended.PrivateNote, 'shop copy [batch:oct-2026]\nfollow up');
+  const appendedAgain = applyRead(update, { Invoice: { Id: '44', SyncToken: '9', PrivateNote: appended.PrivateNote } });
+  assert.equal(appendedAgain.PrivateNote, appended.PrivateNote);
 });
 
 test('purchase account update and books close date are exact', () => {

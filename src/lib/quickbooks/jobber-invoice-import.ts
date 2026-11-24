@@ -17,7 +17,11 @@
  * - TxnDate is the issue timestamp's America/Los_Angeles date. DueDate is the due date
  * - CustomerMemo is the Jobber client message, cut at 1,000 characters. The preview
  *   reports the original length.
- * - PrivateNote is `[batch:<batchId>]` when a batch id is set, kept within 4,000 characters.
+ * - PrivateNote is `[batch:<batchId>]` on create when a batch id is set. The tag is
+ *   not added twice. It stays within 4,000 characters.
+ * - A missing property street, city, or postal code blocks that invoice. QuickBooks
+ *   would otherwise tax the Anza shop. Two different properties on one invoice
+ *   block it instead of picking the first.
  * - A Jobber discount is a negative line so the total is not the pre-discount sum.
  * - EmailStatus is never set
  *
@@ -25,9 +29,9 @@
  * A deposit that already booked the payout to 4010 Sales is rewritten with
  * qbo_relink_deposit, not by linking a second payment onto that income.
  */
-import { runQboPlan, writeRealmQuery, type QboWriteDeps } from './durable-write.ts';
+import { recordQboAudit, runQboPlan, writeRealmQuery, type QboAuditEntry, type QboWriteDeps } from './durable-write.ts';
 import { isQboRateLimit, withQboBackoff } from './qbo-backoff.ts';
-import { taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
+import { countyNameForCity, taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
 import { describeQboWriteGate } from './write-gate.ts';
 import { buildDeposit, parseBatchId, privateNoteWithBatch, type QboPlan } from './write-payloads.ts';
 
@@ -50,11 +54,19 @@ export type JobberPropertyAddress = {
   country: string | null;
 };
 
+export type QboTaxRate = { id: string; name: string; rate: number };
+
 export type InvoiceTaxReport = {
   requestedTxnTaxCodeId: string | null;
   savedTxnTaxCodeId: string | null;
   taxLines: unknown[] | null;
-  taxCodeMismatch: boolean;
+  county: 'San Diego' | 'Riverside' | null;
+  expectedCountyRateId: string | null;
+  savedCountyRateId: string | null;
+  jobberTax: number | null;
+  savedTotalTax: number | null;
+  taxMismatch: boolean;
+  taxMismatchReasons: string[];
 };
 
 export type JobberInvoiceForQbo = {
@@ -65,6 +77,7 @@ export type JobberInvoiceForQbo = {
   clientName: string;
   city: string | null;
   address?: JobberPropertyAddress | null;
+  addressConflict?: string | null;
   lines: Array<{ name: string; description: string | null; quantity: number; unitPrice: number; taxable: boolean }>;
   total: number;
   taxAmount: number;
@@ -91,6 +104,7 @@ export type ImportInvoicePlan = {
   reason: string | null;
   customerName: string;
   customerId: string | null;
+  city: string | null;
   total: number;
   taxAmount: number;
   paymentsTotal: number;
@@ -262,21 +276,132 @@ export function qboShipAddress(address: JobberPropertyAddress | null | undefined
 }
 
 export function emptyTaxReport(requestedTxnTaxCodeId: string | null): InvoiceTaxReport {
-  return { requestedTxnTaxCodeId, savedTxnTaxCodeId: null, taxLines: null, taxCodeMismatch: false };
-}
-
-export function savedTaxReport(requestedTxnTaxCodeId: string | null, qbo: unknown): InvoiceTaxReport {
-  const entity = qbo && typeof qbo === 'object' ? (qbo as Record<string, unknown>) : null;
-  const invoice = entity && entity.Invoice && typeof entity.Invoice === 'object' ? (entity.Invoice as Record<string, unknown>) : entity;
-  const detail = invoice?.TxnTaxDetail as { TxnTaxCodeRef?: { value?: unknown }; TaxLine?: unknown } | undefined;
-  const savedRaw = detail?.TxnTaxCodeRef?.value;
-  const savedTxnTaxCodeId = savedRaw != null && String(savedRaw).trim() ? String(savedRaw).trim() : null;
-  const taxLines = Array.isArray(detail?.TaxLine) ? detail.TaxLine : null;
   return {
     requestedTxnTaxCodeId,
-    savedTxnTaxCodeId,
-    taxLines,
-    taxCodeMismatch: Boolean(requestedTxnTaxCodeId && savedTxnTaxCodeId && savedTxnTaxCodeId !== requestedTxnTaxCodeId),
+    savedTxnTaxCodeId: null,
+    taxLines: null,
+    county: null,
+    expectedCountyRateId: null,
+    savedCountyRateId: null,
+    jobberTax: null,
+    savedTotalTax: null,
+    taxMismatch: false,
+    taxMismatchReasons: [],
+  };
+}
+
+export function missingJobsiteAddressReason(address: JobberPropertyAddress | null | undefined): string | null {
+  const missing: string[] = [];
+  if (!address?.line1?.trim()) missing.push('street');
+  if (!address?.city?.trim()) missing.push('city');
+  if (!address?.postalCode?.trim()) missing.push('postal code');
+  if (!missing.length) return null;
+  const what = address ? `is missing ${missing.join(', ')}` : 'is missing';
+  return `Jobber property address ${what}, so QuickBooks would tax the Anza shop instead of the jobsite.`;
+}
+
+function placeKey(address: JobberPropertyAddress): string {
+  const street = (address.line1 || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const city = (address.city || '').trim().toLowerCase();
+  const zip = (address.postalCode || '').trim().slice(0, 5);
+  return `${street}|${city}|${zip}`;
+}
+
+/** One jobsite. Different streets, cities, or ZIPs are a conflict instead of the first address. */
+export function resolveJobProperties(addresses: Array<JobberPropertyAddress | null | undefined>): { address: JobberPropertyAddress | null; conflict: string | null } {
+  const present = addresses.filter((address): address is JobberPropertyAddress => Boolean(address && (address.line1 || address.city || address.postalCode)));
+  if (!present.length) return { address: null, conflict: null };
+  const keys = new Set(present.map(placeKey));
+  if (keys.size === 1) return { address: present[0], conflict: null };
+  const listed = present.map((address) => [address.line1, address.city, address.postalCode].filter(Boolean).join(', ')).join(' vs ');
+  return {
+    address: null,
+    conflict: `Jobber jobs on this invoice use different property addresses (${listed}). Refusing to pick one, because QuickBooks would tax the wrong county.`,
+  };
+}
+
+/** The 1% county TaxRate for the jobsite, matched by name from QuickBooks TaxRate rows. */
+export function countyPercentRateId(rates: QboTaxRate[], county: 'San Diego' | 'Riverside'): string | null {
+  const needle = county.toLowerCase();
+  const match = rates.find((rate) => {
+    if (!Number.isFinite(rate.rate) || Math.abs(rate.rate - 1) > 0.001) return false;
+    const name = rate.name.toLowerCase();
+    if (!name.includes(needle)) return false;
+    if (name.includes('district') || name.includes('state')) return false;
+    return true;
+  });
+  return match?.id || null;
+}
+
+function savedTxnTax(qbo: unknown): { code: string | null; total: number | null; lines: unknown[] | null } {
+  const entity = qbo && typeof qbo === 'object' ? (qbo as Record<string, unknown>) : null;
+  const invoice = entity && entity.Invoice && typeof entity.Invoice === 'object' ? (entity.Invoice as Record<string, unknown>) : entity;
+  const detail = invoice?.TxnTaxDetail as { TxnTaxCodeRef?: { value?: unknown }; TotalTax?: unknown; TaxLine?: unknown } | undefined;
+  const codeRaw = detail?.TxnTaxCodeRef?.value;
+  const code = codeRaw != null && String(codeRaw).trim() ? String(codeRaw).trim() : null;
+  const total = detail?.TotalTax == null || detail.TotalTax === '' ? null : Number(detail.TotalTax);
+  return {
+    code,
+    total: total != null && Number.isFinite(total) ? total : null,
+    lines: Array.isArray(detail?.TaxLine) ? detail.TaxLine : null,
+  };
+}
+
+function savedCountyRateId(lines: unknown[] | null): string | null {
+  if (!lines) return null;
+  for (const line of lines) {
+    if (!line || typeof line !== 'object') continue;
+    const detail = (line as { TaxLineDetail?: { TaxPercent?: unknown; TaxRateRef?: { value?: unknown } } }).TaxLineDetail;
+    const percent = Number(detail?.TaxPercent);
+    if (!Number.isFinite(percent) || Math.abs(percent - 1) > 0.001) continue;
+    const id = detail?.TaxRateRef?.value;
+    if (id != null && String(id).trim()) return String(id);
+  }
+  return null;
+}
+
+function taxWithinCent(saved: number | null, expected: number): boolean {
+  if (saved == null) return false;
+  return Math.abs(saved - expected) <= 0.01 + 1e-9;
+}
+
+export function assessSavedTax(input: {
+  requestedTxnTaxCodeId: string | null;
+  city: string | null;
+  jobberTax: number;
+  qbo: unknown;
+  rates: QboTaxRate[];
+}): InvoiceTaxReport {
+  const county = countyNameForCity(input.city);
+  const expectedCountyRateId = county ? countyPercentRateId(input.rates, county) : null;
+  const base: InvoiceTaxReport = {
+    ...emptyTaxReport(input.requestedTxnTaxCodeId),
+    county,
+    expectedCountyRateId,
+    jobberTax: money(input.jobberTax),
+  };
+  if (!input.qbo) return base;
+  const saved = savedTxnTax(input.qbo);
+  const savedCounty = savedCountyRateId(saved.lines);
+  const reasons: string[] = [];
+  if (!county) {
+    reasons.push(`No county for jobsite city ${input.city ? `"${input.city}"` : '(missing)'}.`);
+  } else if (!expectedCountyRateId) {
+    reasons.push(`No 1% ${county} County TaxRate was found in QuickBooks, so the saved jurisdiction cannot be checked.`);
+  } else if (savedCounty !== expectedCountyRateId) {
+    reasons.push(`Saved 1% county rate ${savedCounty ?? 'missing'} is not the ${county} County rate ${expectedCountyRateId}.`);
+  }
+  if (!taxWithinCent(saved.total, money(input.jobberTax))) {
+    reasons.push(`Saved tax ${saved.total ?? 'missing'} does not match Jobber tax ${money(input.jobberTax)} within $0.01.`);
+  }
+  return {
+    ...base,
+    savedTxnTaxCodeId: saved.code,
+    taxLines: saved.lines,
+    savedCountyRateId: savedCounty,
+    savedTotalTax: saved.total,
+    taxMismatch: reasons.length > 0,
+    taxMismatchReasons: reasons,
   };
 }
 
@@ -365,13 +490,14 @@ export function classifyJobberInvoice(
   itemsByName: Record<string, string>,
   txnTaxCodeId: string | null,
   taxReason?: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null } = {}
+  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; rates?: QboTaxRate[] } = {}
 ): ImportInvoicePlan {
   const paymentLines = jobberPaymentLines(invoice);
   const base = {
     invoiceNumber: invoice.invoiceNumber,
     customerName: invoice.clientName,
     customerId,
+    city: invoice.city,
     total: invoice.total,
     taxAmount: invoice.taxAmount,
     paymentsTotal: invoice.paymentsTotal,
@@ -381,7 +507,13 @@ export function classifyJobberInvoice(
     customerCreate: null as { displayName: string } | null,
     payment: paymentLines[0] || null,
     paymentLines,
-    tax: emptyTaxReport(txnTaxCodeId),
+    tax: assessSavedTax({
+      requestedTxnTaxCodeId: txnTaxCodeId,
+      city: invoice.city,
+      jobberTax: invoice.taxAmount,
+      qbo: null,
+      rates: options.rates || [],
+    }),
   };
   if (existingDocNumbers.has(invoice.invoiceNumber)) {
     return { ...base, status: 'skip', reason: 'DocNumber already exists in QuickBooks', body: null };
@@ -390,8 +522,11 @@ export function classifyJobberInvoice(
   if (!customerId && !createCustomer) {
     return { ...base, status: 'blocked', reason: `No QuickBooks customer with DisplayName "${invoice.clientName}"`, body: null };
   }
-  if (!txnTaxCodeId) {
-    return { ...base, status: 'blocked', reason: taxReason || taxCodeMissingReason(invoice.city), body: null };
+  const addressReason = invoice.addressConflict || missingJobsiteAddressReason(invoice.address);
+  if (!txnTaxCodeId || addressReason) {
+    const taxText = txnTaxCodeId ? null : taxReason || taxCodeMissingReason(invoice.city);
+    const reason = [addressReason, taxText].filter(Boolean).join(' ');
+    return { ...base, status: 'blocked', reason, body: null };
   }
   const built = buildJobberSyncedInvoice(invoice, customerId || '', itemsByName, txnTaxCodeId, options);
   if (built.error) {
@@ -428,6 +563,7 @@ function blockedPlan(number: string, reason: string): ImportInvoicePlan {
     reason,
     customerName: '',
     customerId: null,
+    city: null,
     total: 0,
     taxAmount: 0,
     paymentsTotal: 0,
@@ -497,6 +633,7 @@ export async function runJobberInvoiceImport(
   const overrideId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : null;
   const overrideExists = overrideId ? await taxCodeIdExists(overrideId, qbo) : false;
   const customerTax = new Map<string, string | null>();
+  const rates = await loadQboTaxRates(qbo);
   const plans: ImportInvoicePlan[] = [];
   for (const number of chunk) {
     try {
@@ -530,7 +667,7 @@ export async function runJobberInvoiceImport(
         items,
         tax.id,
         tax.reason,
-        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId }
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, rates }
       );
       if (ambiguousCustomer) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
@@ -572,17 +709,18 @@ export async function runJobberInvoiceImport(
     done: nextCursor == null,
     limit,
   };
-  const taxCodeMismatch = () => plans.some((row) => row.tax.taxCodeMismatch);
+  const taxMismatch = () => plans.some((row) => row.tax.taxMismatch);
   if (!confirm) {
-    return { ok: true, dryRun: true, wrote: false, ...summary, taxCodeMismatch: taxCodeMismatch(), invoices: plans };
+    return { ok: true, dryRun: true, wrote: false, ...summary, taxMismatch: taxMismatch(), invoices: plans };
   }
   const gate = describeQboWriteGate(deps.env || process.env);
   if (!gate.enabled) {
-    return { ok: false, dryRun: true, wrote: false, refused: true, error: gate.blockedReason, ...summary, taxCodeMismatch: taxCodeMismatch(), invoices: plans };
+    return { ok: false, dryRun: true, wrote: false, refused: true, error: gate.blockedReason, ...summary, taxMismatch: taxMismatch(), invoices: plans };
   }
   const posted: Record<string, unknown>[] = [];
   const createdCustomers = new Map<string, string>();
   const payoutPayments: { id: string; amount: number; txnDate: string }[] = [];
+  let stoppedForTax = false;
   for (const row of creates) {
     const entry: Record<string, unknown> = { invoiceNumber: row.invoiceNumber, tax: row.tax };
     let customerId = row.customerId;
@@ -607,9 +745,28 @@ export async function runJobberInvoiceImport(
     const invoiceBody = { ...(row.body || {}), ...(customerId ? { CustomerRef: { value: customerId } } : {}) };
     const invoicePlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Invoice', action: 'create', path: '/invoice', body: invoiceBody };
     const invoiceResult = await runQboPlan(invoicePlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'inv') }, deps);
-    if (invoiceResult.wrote) row.tax = savedTaxReport(row.tax.requestedTxnTaxCodeId, invoiceResult.qbo);
+    if (invoiceResult.wrote) {
+      row.tax = assessSavedTax({
+        requestedTxnTaxCodeId: row.tax.requestedTxnTaxCodeId,
+        city: row.city,
+        jobberTax: row.taxAmount,
+        qbo: invoiceResult.qbo,
+        rates,
+      });
+    }
     entry.tax = row.tax;
     entry.invoice = { wrote: invoiceResult.wrote, id: invoiceResult.ids.id, error: invoiceResult.error || null };
+    if (invoiceResult.wrote && row.tax.taxMismatch) {
+      stoppedForTax = true;
+      entry.stopped = 'tax_mismatch';
+      try {
+        await recordQboAudit(taxMismatchAudit(row, invoiceResult.ids.id || null, batchId, gate, deps), deps);
+      } catch (error) {
+        entry.auditError = error instanceof Error ? error.message : String(error);
+      }
+      posted.push(entry);
+      break;
+    }
     const made: Record<string, unknown>[] = [];
     if (invoiceResult.wrote && payments !== 'none' && invoiceResult.ids.id && customerId) {
       for (let index = 0; index < row.paymentLines.length; index += 1) {
@@ -647,7 +804,7 @@ export async function runJobberInvoiceImport(
     if (made.length) entry.payments = made;
     posted.push(entry);
   }
-  if (payments === 'payout' && payoutPayments.length && depositToAccountId) {
+  if (!stoppedForTax && payments === 'payout' && payoutPayments.length && depositToAccountId) {
     const txnDate = payoutDate || payoutPayments.map((row) => row.txnDate).sort().at(-1);
     const depositPlan = buildDeposit({
       depositToAccountId,
@@ -666,7 +823,7 @@ export async function runJobberInvoiceImport(
     posted.push({ payout: { wrote: payoutResult.wrote, id: payoutResult.ids.id, error: payoutResult.error || null, net: money(paymentTotal - feeAmount) } });
   }
   return {
-    ok: posted.every((row) => {
+    ok: !stoppedForTax && posted.every((row) => {
       if (row.payout) return (row.payout as { wrote: boolean }).wrote;
       if (row.invoice) return (row.invoice as { wrote: boolean }).wrote;
       return true;
@@ -674,7 +831,8 @@ export async function runJobberInvoiceImport(
     dryRun: false,
     wrote: posted.some((row) => (row.invoice as { wrote?: boolean } | undefined)?.wrote),
     ...summary,
-    taxCodeMismatch: taxCodeMismatch(),
+    taxMismatch: taxMismatch(),
+    stoppedForTax,
     invoices: plans,
     posted,
   };
@@ -771,13 +929,57 @@ function propertyAddress(raw: Record<string, unknown> | null | undefined): Jobbe
   return address;
 }
 
-function jobProperty(node: Record<string, any>): { city: string | null; address: JobberPropertyAddress | null } {
+function jobProperty(node: Record<string, any>): { city: string | null; address: JobberPropertyAddress | null; addressConflict: string | null } {
   const jobs = node.jobs?.nodes || [];
-  for (const job of jobs) {
-    const address = propertyAddress(job?.property?.address);
-    if (address) return { city: address.city, address };
+  const addresses = jobs.map((job: { property?: { address?: Record<string, unknown> } }) => propertyAddress(job?.property?.address));
+  const resolved = resolveJobProperties(addresses);
+  return { city: resolved.address?.city || null, address: resolved.address, addressConflict: resolved.conflict };
+}
+
+async function loadQboTaxRates(query: (sql: string) => Promise<unknown>): Promise<QboTaxRate[]> {
+  try {
+    const rows = rowsOf(await query('select Id, Name, Description, RateValue from TaxRate MAXRESULTS 200'), 'TaxRate');
+    return rows
+      .map((row) => {
+        const name = [row.Name, row.Description].filter((part) => typeof part === 'string' && String(part).trim()).join(' ');
+        return { id: row.Id == null ? '' : String(row.Id), name, rate: Number(row.RateValue) };
+      })
+      .filter((rate) => rate.id && Number.isFinite(rate.rate));
+  } catch (error) {
+    if (isQboRateLimit(error)) throw error;
+    return [];
   }
-  return { city: null, address: null };
+}
+
+function taxMismatchAudit(
+  row: ImportInvoicePlan,
+  qboId: string | null,
+  batchId: string | null,
+  gate: { realmId: string | null; environment: QboAuditEntry['environment'] },
+  deps: QboWriteDeps
+): QboAuditEntry {
+  const reason = row.tax.taxMismatchReasons.join(' ');
+  return {
+    actor: deps.actor?.trim() || 'unknown',
+    tool: 'qbo_import_jobber_invoices',
+    requestId: requestKey(batchId || 'batch', row.invoiceNumber, 'tax'),
+    dryRun: false,
+    confirmed: true,
+    ok: false,
+    refused: false,
+    status: 'tax_mismatch',
+    realmId: gate.realmId,
+    environment: gate.environment,
+    entity: 'Invoice',
+    payload: row.tax,
+    qboResponse: null,
+    qboIds: { id: qboId, syncToken: null, docNumber: row.invoiceNumber },
+    error: reason,
+    reason,
+    batchId,
+    action: 'create',
+    created: false,
+  };
 }
 
 function requestKey(batchId: string, invoiceNumber: string, kind: string): string {
@@ -789,6 +991,7 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
   const { jobberGraphql, assertNoJobberErrors } = await import('../jobber/client.ts');
   const out: JobberInvoiceForQbo[] = [];
   for (const number of numbers) {
+    // Same Address fields as list_tasks in src/lib/jobber/mcp-tasks.ts, including street and country.
     const res = await jobberGraphql(
       `query ImportInvoice($searchTerm: String!) {
         invoices(first: 5, searchTerm: $searchTerm) {
@@ -818,6 +1021,7 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
       clientName: String(match.client?.name || ''),
       city: property.city,
       address: property.address,
+      addressConflict: property.addressConflict,
       total: Number(match.amounts?.total || 0),
       taxAmount: Number(match.amounts?.taxAmount || 0),
       paymentsTotal: Number(match.amounts?.paymentsTotal || 0),
