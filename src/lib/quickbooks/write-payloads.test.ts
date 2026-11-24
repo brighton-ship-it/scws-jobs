@@ -12,6 +12,8 @@ import {
   preferencesCloseDateBody,
   replaceDepositSalesLine,
   resolveRequestId,
+  retaxInvoiceBody,
+  savedTaxCode,
 } from './write-payloads.ts';
 
 const lines = [
@@ -177,7 +179,8 @@ test('qbo_invoice totalTax sparse-sets a tax override on an existing invoice onl
   const plan = buildInvoice({ id: '39144', syncToken: '0', totalTax: 413.15, txnTaxCodeId: '3' });
   assert.deepEqual(plan.body, { TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 413.15 }, Id: '39144', sparse: true, SyncToken: '0' });
   assert.deepEqual(plan.read, { path: '/invoice/39144', apply: 'syncToken' }, 'a tax override always reads the invoice first so prior_state is audited for revert');
-  assert.deepEqual(plan.changes, { expectedSyncToken: '0', totalTax: 413.15 });
+  assert.deepEqual(plan.changes, { expectedSyncToken: '0', totalTax: 413.15, txnTaxCodeId: '3' });
+  assert.equal(plan.expectTaxCode, '3', 'the saved code is compared after the write');
   assert.throws(() => buildInvoice({ customerId: '1', lines: [{ amount: 1, itemId: '23' }], totalTax: 1, txnTaxCodeId: '3' }), /only for an invoice update/);
   assert.throws(() => buildInvoice({ id: '39144', lines: [{ amount: 1, itemId: '23' }], totalTax: 1, txnTaxCodeId: '3' }), /cannot be combined with lines/);
   assert.throws(() => buildInvoice({ id: '39144', syncToken: '0', totalTax: 1 }), /txnTaxCodeId/);
@@ -211,4 +214,65 @@ test('qbo_item_tax_category confirm refuses a changed SyncToken or an item type 
   assert.throws(() => applyRead(plan, { Item: { Id: '1010000474', SyncToken: '1', Type: 'NonInventory' } }), /type NonInventory/);
   const body = applyRead(plan, { Item: { Id: '1010000474', SyncToken: '1', Type: 'Service' } });
   assert.deepEqual(body, { Id: '1010000474', SyncToken: '1', sparse: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000' }, Taxable: true });
+});
+
+const alpine = { Id: '46096', Line1: '8770 Harbison Canyon Road', City: 'Alpine', Country: 'United States', CountrySubDivisionCode: 'CA', PostalCode: '91901' };
+const live39144 = {
+  Id: '39144',
+  SyncToken: '1',
+  CustomerMemo: { value: 'memo' },
+  PrivateNote: '[batch:imp-A-01]',
+  ShipAddr: alpine,
+  ShipFromAddr: { ...alpine, Id: '46097' },
+  TxnTaxDetail: { TxnTaxCodeRef: { value: '24' }, TotalTax: 413.15, TaxReviewStatus: 'AST_TAX_OVERRIDE' },
+  Line: [
+    { Id: '1', LineNum: 1, Description: 'VFD', Amount: 4981, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '334' }, UnitPrice: 4981, Qty: 1, ItemAccountRef: { value: '25' }, TaxCodeRef: { value: 'TAX' }, TaxClassificationRef: { value: 'EUC-09020802-V1-00120000' } } },
+    { Id: '3', LineNum: 3, Description: 'Lumber & Materials', Amount: 150, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '1010000474' }, UnitPrice: 150, Qty: 1, ItemAccountRef: { value: '25' }, TaxCodeRef: { value: 'TAX' }, TaxClassificationRef: { value: 'EUC-99990201-V1-00020000' } } },
+    { Id: '4', LineNum: 4, Description: 'Labor', Amount: 1400, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '30' }, UnitPrice: 1400, Qty: 1, ItemAccountRef: { value: '25' }, TaxCodeRef: { value: 'NON' }, TaxClassificationRef: {} } },
+    { Amount: 6531, DetailType: 'SubTotalLineDetail', SubTotalLineDetail: {} },
+  ],
+};
+
+test('qbo_invoice retaxLineIds plans a no-override re-save that is rebuilt from the confirm read', () => {
+  const plan = buildInvoice({ id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'] });
+  assert.equal(plan.body, null, 'without a live read the body is built on confirm');
+  assert.deepEqual(plan.read, { path: '/invoice/39144', apply: 'retaxLines' });
+  assert.deepEqual(plan.changes, { expectedSyncToken: '1', retaxLineIds: ['3'], txnTaxCodeId: '3' });
+  assert.equal(plan.expectTaxCode, '3');
+  assert.throws(() => applyRead(plan, { Invoice: { ...live39144, SyncToken: '2' } }), /SyncToken 2 in QuickBooks, not 1/);
+  const body = applyRead(plan, { Invoice: live39144 });
+  assert.equal(body.SyncToken, '1');
+  assert.deepEqual(body.TxnTaxDetail, { TxnTaxCodeRef: { value: '3' } }, 'no TotalTax, so QuickBooks computes the tax');
+  for (const bad of [
+    { id: '39144', txnTaxCodeId: '3', retaxLineIds: ['3'] },
+    { id: '39144', syncToken: '1', retaxLineIds: ['3'] },
+    { id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'], totalTax: 413.15 },
+    { id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'], privateNote: 'x' },
+    { id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'], lines: [{ amount: 1, itemId: '23' }] },
+    { id: '39144', syncToken: '1', txnTaxCodeId: '3', retaxLineIds: [] },
+    { customerId: '1', lines: [{ amount: 1, itemId: '23' }], syncToken: '1', txnTaxCodeId: '3', retaxLineIds: ['3'] },
+  ]) assert.throws(() => buildInvoice(bad));
+});
+
+test('retaxInvoiceBody resends every sales line, clears the class only on retaxed lines, and keeps the addresses', () => {
+  const body = retaxInvoiceBody(live39144, ['3'], '3') as any;
+  assert.equal(body.sparse, true);
+  assert.equal(body.Line.length, 3, 'the subtotal line is dropped');
+  assert.deepEqual(body.Line.map((line: any) => line.Id), ['1', '3', '4']);
+  assert.equal(body.Line[0].SalesItemLineDetail.TaxClassificationRef.value, 'EUC-09020802-V1-00120000');
+  assert.equal(body.Line[1].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
+  assert.equal('TaxClassificationRef' in body.Line[1].SalesItemLineDetail, false);
+  assert.equal('TaxClassificationRef' in body.Line[2].SalesItemLineDetail, false, 'an empty class is not resent');
+  assert.equal(body.Line[2].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.deepEqual(body.ShipAddr, alpine);
+  assert.equal(body.ShipFromAddr.Id, '46097');
+  assert.equal('CustomerMemo' in body, false);
+  assert.equal('PrivateNote' in body, false);
+  assert.throws(() => retaxInvoiceBody(live39144, ['9'], '3'), /no sales line 9/);
+  assert.throws(() => retaxInvoiceBody({ ...live39144, ShipFromAddr: undefined }, ['3'], '3'), /no ShipFromAddr/);
+  assert.equal(savedTaxCode({ Invoice: live39144 }), '24');
+  assert.deepEqual(body.Line.map((line: any) => line.Description), ['VFD', 'Lumber & Materials', 'Labor'], 'descriptions are resent as read');
+  for (const DetailType of ['DiscountLineDetail', 'DescriptionOnly', 'GroupLineDetail']) {
+    assert.throws(() => retaxInvoiceBody({ ...live39144, Line: [...live39144.Line, { Id: '9', DetailType, Amount: 0 }] }, ['3'], '3'), new RegExp(`${DetailType} lines.*would delete them`));
+  }
 });

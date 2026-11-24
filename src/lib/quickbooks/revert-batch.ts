@@ -41,6 +41,8 @@ export type RevertStep = {
 
 const PAYMENT_ENTITIES = new Set(['Payment', 'BillPayment']);
 const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed', 'tax_mismatch', 'unknown']);
+/** Rows that posted but were flagged; still revert targets. */
+const FLAGGED_WRITE = new Set<QboAuditStatus>(['tax_code_changed']);
 
 export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
   if (!closeDate || !txnDate) return false;
@@ -53,13 +55,14 @@ function isRevertTarget(row: BatchAuditRow): boolean {
   if (row.tool === 'qbo_revert_batch') return false;
   if (row.status && NOT_A_WRITE.has(row.status)) return false;
   if (row.status === 'ok') return true;
+  if (row.status && FLAGGED_WRITE.has(row.status)) return true;
   return row.ok === true;
 }
 
 /** The pre-write row is settled once the same request stored an outcome. */
 function settlesRequest(row: BatchAuditRow): boolean {
   if (!row.requestId) return false;
-  if (row.status === 'ok' || row.status === 'failed') return true;
+  if (row.status === 'ok' || row.status === 'failed' || row.status === 'tax_code_changed') return true;
   if (row.status != null) return false;
   return row.ok || Boolean(row.error);
 }
@@ -236,6 +239,13 @@ export async function runBatchRevert(
       reason: `revert ${batchId}`,
     };
     if (step.entity === 'Preferences') qboPlan.read = { path: '/preferences', apply: 'syncToken' };
+    // A full invoice restore can be re-coded by Automated Sales Tax; flag it if the saved code differs.
+    const priorCode = step.entity === 'Invoice' && step.action !== 'delete' ? (row?.priorState as any)?.TxnTaxDetail?.TxnTaxCodeRef?.value : null;
+    if (typeof priorCode === 'string' && priorCode) {
+      qboPlan.expectTaxCode = priorCode;
+      const priorNet = (row?.priorState as any)?.TxnTaxDetail?.TaxLine?.[0]?.TaxLineDetail?.NetAmountTaxable;
+      if (typeof priorNet === 'number') qboPlan.expectNetAmountTaxable = priorNet;
+    }
     const result = await runQboPlan(qboPlan, { confirm: true, batchId, requestId: `revert-${batchId}-${step.auditId}`.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 50) }, deps);
     if (!result.wrote) {
       const missing = /failed \(404\)/.test(result.error || '');
@@ -247,12 +257,17 @@ export async function runBatchRevert(
       results.push({ ...step, status: 'failed', error: result.error });
       continue;
     }
-    results.push({ ...step, status: 'reverted', ids: result.ids });
+    if (result.taxCodeChanged) {
+      couldNot.push({ entity: step.entity, id: step.qboId, reason: result.error || 'restored, but the saved tax differs from the prior state' });
+      results.push({ ...step, status: 'tax_code_changed', ids: result.ids, taxCodeChanged: result.taxCodeChanged });
+      continue;
+    }
+    results.push({ ...step, status: 'reverted', ids: result.ids, ...(qboPlan.expectTaxCode ? { taxCodeChanged: null } : {}) });
   }
   return {
     ok: couldNot.length === 0,
     dryRun: false,
-    wrote: results.some((item) => item.status === 'reverted'),
+    wrote: results.some((item) => item.status === 'reverted' || item.status === 'tax_code_changed'),
     batchId,
     closeDate,
     results,
@@ -301,6 +316,6 @@ function rowFromDb(row: Record<string, unknown>): BatchAuditRow {
 }
 
 function auditStatus(value: unknown): QboAuditStatus | null {
-  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch' || value === 'unknown') return value;
+  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch' || value === 'unknown' || value === 'tax_code_changed') return value;
   return null;
 }

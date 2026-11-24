@@ -50,7 +50,7 @@ const ENTITY_PATH: Record<string, string> = {
   Vendor: 'vendor',
 };
 
-export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote' | 'itemTaxCategory';
+export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote' | 'itemTaxCategory' | 'retaxLines';
 
 export type QboPlan = {
   tool: QboWriteTool;
@@ -63,6 +63,10 @@ export type QboPlan = {
   read?: { path: string; apply: QboReadApply };
   changes?: unknown;
   reason?: string;
+  /** Invoice writes: the TxnTaxCodeRef that must still be on the saved invoice. A different saved code is flagged as taxCodeChanged. */
+  expectTaxCode?: string;
+  /** With expectTaxCode: the NetAmountTaxable every saved TaxLine must carry. 'body' sums the posted TAX lines. */
+  expectNetAmountTaxable?: number | 'body';
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -397,12 +401,15 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   }
   if (customerMemo) body.CustomerMemo = { value: customerMemo };
   if (number) body.DocNumber = number;
+  const retax = Array.isArray(args.retaxLineIds) ? args.retaxLineIds : null;
+  if (retax) return buildInvoiceRetax(args, id, syncToken, hasLines, suppliedNote);
   if (args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '') {
     if (!id) throw new Error('totalTax is only for an invoice update. Use taxOverride on the import for a new invoice.');
     if (hasLines) throw new Error('totalTax cannot be combined with lines. A full update would drop the saved addresses and tax detail.');
     if (!syncToken) throw new Error('totalTax needs syncToken: the SyncToken you read. Confirm refuses when QuickBooks has a different one.');
     if (suppliedNote) throw new Error('totalTax cannot be combined with privateNote. Send the note as its own update.');
     body.TxnTaxDetail = { TxnTaxCodeRef: { value: qboId(args.txnTaxCodeId, 'txnTaxCodeId') }, TotalTax: money(args.totalTax, 'totalTax') };
+
   }
   if (id) {
     body.Id = id;
@@ -425,8 +432,12 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
     plan.changes = { privateNote: suppliedNote, batchId: batch };
   } else if (id && body.TxnTaxDetail) {
     // Always read so prior_state is audited, and refuse when the live SyncToken is not the one passed.
+    // Under Automated Sales Tax a TotalTax override is prorated over the AST-assigned code and the
+    // saved TxnTaxCodeRef is replaced by that code (Intuit AST FAQ), so the saved code is checked.
+    const taxCode = ((body.TxnTaxDetail as { TxnTaxCodeRef: { value: string } }).TxnTaxCodeRef).value;
     plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
-    plan.changes = { expectedSyncToken: syncToken, totalTax: (body.TxnTaxDetail as { TotalTax: number }).TotalTax };
+    plan.changes = { expectedSyncToken: syncToken, totalTax: (body.TxnTaxDetail as { TotalTax: number }).TotalTax, txnTaxCodeId: taxCode };
+    plan.expectTaxCode = taxCode;
   } else if (id && !syncToken) {
     plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
   }
@@ -863,6 +874,118 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   body.Id = qboId(entity.Id ?? body.Id, 'Id');
   body.SyncToken = syncToken;
   if (plan.read?.apply === 'void') body.sparse = true;
+  if (plan.read?.apply === 'retaxLines') {
+    const changes = plan.changes as { retaxLineIds: string[]; txnTaxCodeId: string };
+    return { ...retaxInvoiceBody(entity, changes.retaxLineIds, changes.txnTaxCodeId), SyncToken: syncToken };
+  }
+  return body;
+}
+
+/** A structured QuickBooks address object, or null. Keeps the address Id so QuickBooks reuses the saved record. */
+export function addressArg(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const src = value as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of ['Id', 'Line1', 'Line2', 'Line3', 'Line4', 'Line5', 'City', 'Country', 'CountrySubDivisionCode', 'PostalCode', 'Lat', 'Long']) {
+    if (typeof src[key] === 'string' && (src[key] as string).length) out[key] = src[key];
+  }
+  if (!out.Line1 && !out.City && !out.PostalCode) return null;
+  return out;
+}
+
+/** Sum of TAX sales lines in an invoice body (what NetAmountTaxable should be with no discount lines). */
+export function taxableAmountOfBody(body: Record<string, unknown> | null | undefined): number | null {
+  const lines = Array.isArray(body?.Line) ? (body!.Line as Record<string, any>[]) : null;
+  if (!lines) return null;
+  const sum = lines
+    .filter((line) => line?.DetailType === 'SalesItemLineDetail' && line?.SalesItemLineDetail?.TaxCodeRef?.value === 'TAX')
+    .reduce((total, line) => total + Number(line.Amount || 0), 0);
+  return Math.round(sum * 100) / 100;
+}
+
+/** Saved header TxnTaxCodeRef on an Invoice response, or null. */
+export function savedTaxCode(json: unknown): string | null {
+  const root = (json && typeof json === 'object' ? json : {}) as Record<string, any>;
+  const entity = root.Invoice || root;
+  const value = entity?.TxnTaxDetail?.TxnTaxCodeRef?.value;
+  return typeof value === 'string' && value ? value : null;
+}
+
+/**
+ * qbo_invoice retaxLineIds: re-save an existing invoice so Automated Sales Tax recomputes it on the
+ * given header code with NO TotalTax override. Invoice reads show each line's TaxClassificationRef
+ * from the item's current class (39144 line 3 read EUC-99990202 right after the item fix, with the
+ * invoice unchanged), but the saved TxnTaxDetail (TaxLine amounts, NetAmountTaxable, TotalTax) is not
+ * recalculated until the invoice is saved again. This resends the full Line array as read (sparse:true,
+ * so addresses, memo and notes stay) with TaxCodeRef TAX on the listed lines. Dropping their
+ * TaxClassificationRef is harmless and defensive: QuickBooks takes the class from the item either way,
+ * and this avoids resending a stale value. ShipAddr/ShipFromAddr are
+ * resent as read. The handler shows the body on preview from a live read; confirm rebuilds it from its
+ * own read and refuses a SyncToken change.
+ */
+function buildInvoiceRetax(args: Record<string, unknown>, id: string | undefined, syncToken: string | undefined, hasLines: boolean, note: string | undefined): QboPlan {
+  if (!id) throw new Error('retaxLineIds is only for an invoice update.');
+  if (!syncToken) throw new Error('retaxLineIds needs syncToken: the SyncToken you read.');
+  if (hasLines) throw new Error('retaxLineIds cannot be combined with lines; the lines are resent from the live invoice.');
+  if (note) throw new Error('retaxLineIds cannot be combined with privateNote.');
+  if (args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '') throw new Error('retaxLineIds cannot be combined with totalTax; the point is to let QuickBooks compute the tax.');
+  for (const key of ['customerId', 'txnDate', 'dueDate', 'customerMemo', 'docNumber']) {
+    if (args[key] !== undefined && args[key] !== '') throw new Error(`retaxLineIds cannot be combined with ${key}.`);
+  }
+  const lineIds = (args.retaxLineIds as unknown[]).map((value, index) => qboId(value, `retaxLineIds[${index}]`));
+  if (!lineIds.length) throw new Error('retaxLineIds needs at least one line id.');
+  const txnTaxCodeId = qboId(args.txnTaxCodeId, 'txnTaxCodeId');
+  const live = args.liveInvoice && typeof args.liveInvoice === 'object' ? (args.liveInvoice as Record<string, unknown>) : null;
+  const body = live ? { ...retaxInvoiceBody(live, lineIds, txnTaxCodeId), SyncToken: syncToken } : null;
+  return {
+    tool: 'qbo_invoice',
+    entity: 'Invoice',
+    action: 'update',
+    path: '/invoice',
+    body,
+    read: { path: `/invoice/${id}`, apply: 'retaxLines' },
+    changes: { expectedSyncToken: syncToken, retaxLineIds: lineIds, txnTaxCodeId },
+    expectTaxCode: txnTaxCodeId,
+    expectNetAmountTaxable: 'body',
+  };
+}
+
+/** Sparse retax body from a live invoice. Throws when a listed line is missing or the invoice has no ShipFromAddr. */
+export function retaxInvoiceBody(invoice: Record<string, unknown>, lineIds: string[], txnTaxCodeId: string): Record<string, unknown> {
+  const lines = Array.isArray(invoice.Line) ? (invoice.Line as Record<string, any>[]) : [];
+  // A sparse Line array replaces every line, so a line type this body does not resend would be deleted.
+  const other = lines.filter((line) => line?.DetailType !== 'SalesItemLineDetail' && line?.DetailType !== 'SubTotalLineDetail');
+  if (other.length) {
+    throw new Error(`Invoice ${String(invoice.Id ?? '')} has ${other.map((line) => line?.DetailType || 'unknown').join(', ')} lines; retax resends only sales lines and would delete them. Nothing was posted.`);
+  }
+  const sales = lines.filter((line) => line?.DetailType === 'SalesItemLineDetail');
+  for (const lineId of lineIds) {
+    if (!sales.some((line) => String(line.Id) === lineId)) throw new Error(`Invoice ${String(invoice.Id ?? '')} has no sales line ${lineId}.`);
+  }
+  const shipFrom = addressArg(invoice.ShipFromAddr);
+  if (!shipFrom) throw new Error(`Invoice ${String(invoice.Id ?? '')} has no ShipFromAddr; QuickBooks would source the tax from the company address.`);
+  const ship = addressArg(invoice.ShipAddr);
+  const outLines = sales.map((line) => {
+    const detail = { ...(line.SalesItemLineDetail || {}) } as Record<string, any>;
+    const retaxed = lineIds.includes(String(line.Id));
+    if (retaxed) {
+      detail.TaxCodeRef = { value: 'TAX' };
+      delete detail.TaxClassificationRef;
+    } else if (!detail.TaxClassificationRef || !detail.TaxClassificationRef.value) {
+      delete detail.TaxClassificationRef;
+    }
+    const out: Record<string, unknown> = { Id: String(line.Id), LineNum: line.LineNum, Amount: line.Amount, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: detail };
+    if (typeof line.Description === 'string') out.Description = line.Description;
+    return out;
+  });
+  const body: Record<string, unknown> = {
+    Id: qboId(invoice.Id, 'Id'),
+    sparse: true,
+    Line: outLines,
+    TxnTaxDetail: { TxnTaxCodeRef: { value: txnTaxCodeId } },
+    ShipFromAddr: shipFrom,
+  };
+  if (ship) body.ShipAddr = ship;
   return body;
 }
 
