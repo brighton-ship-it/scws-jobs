@@ -410,3 +410,16 @@ test('an invoice restore that QuickBooks re-codes is reported as tax_code_change
   assert.equal((result.couldNot as any[]).length, 1);
   assert.equal(audits.some((entry) => entry.status === 'tax_code_changed' && entry.ok === false), true);
 });
+
+test('a tax_code_changed row (ok:false) is a revert target and settles its pending row', () => {
+  const prior = { Id: '39144', SyncToken: '1', TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 413.15 } };
+  const plan = planBatchRevert(
+    [
+      row({ id: 10, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'pending', requestId: 'fix-39144-tax-02-r1', qboId: '39144', priorState: prior }),
+      row({ id: 11, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'tax_code_changed', requestId: 'fix-39144-tax-02-r1', qboId: '39144', priorState: prior, error: 'tax_code_changed: saved 24' }),
+    ],
+    null
+  );
+  assert.deepEqual(plan.steps.map((step) => [step.action, step.entity, step.qboId, step.auditId]), [['restore', 'Invoice', '39144', 11]]);
+  assert.equal(plan.couldNot.length, 0, 'the pending row is settled by the tax_code_changed outcome');
+});
