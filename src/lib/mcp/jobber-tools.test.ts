@@ -100,6 +100,7 @@ describe('JOBBER_MCP_TOOLS', () => {
       'qbo_closing_date',
       'qbo_void',
       'qbo_import_jobber_invoices',
+      'qbo_relink_deposit',
       'qbo_revert_batch',
     ]) {
       assert.ok(names.includes(qboWrite), qboWrite);
@@ -1644,6 +1645,7 @@ describe('handleJobberMcpRequest auth gate', () => {
       'qbo_closing_date',
       'qbo_void',
       'qbo_import_jobber_invoices',
+      'qbo_relink_deposit',
       'qbo_revert_batch',
     ]) {
       assert.ok(rpc.result.tools.some((tool) => tool.name === name), name);

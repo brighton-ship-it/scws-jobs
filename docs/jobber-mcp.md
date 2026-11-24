@@ -250,8 +250,8 @@ These tools preview by default. `confirm: true` posts to whatever environment th
 | Tool | What a confirm does |
 | --- | --- |
 | `qbo_journal_entry` | Create or update a balanced journal entry. Reverse an entry with another entry. |
-| `qbo_deposit` | Create a deposit, or deposit an existing payment. |
-| `qbo_payment` | Create a payment and apply it to invoices. |
+| `qbo_deposit` | Create a deposit, or deposit an existing payment. A negative account line is a fee, so the total can match a net payout. |
+| `qbo_payment` | Create a payment and apply it to invoices. `txnDate` is the payment date. |
 | `qbo_invoice` | Create or update an invoice (DocNumber backfill). Never sets `EmailStatus`. |
 | `qbo_categorize_purchase` | Change the account on an existing purchase. Does not create one. |
 | `qbo_bill` | Create or update a bill. |
@@ -259,8 +259,9 @@ These tools preview by default. `confirm: true` posts to whatever environment th
 | `qbo_attach_note` | Set `PrivateNote`, an invoice `CustomerMemo`, or an Attachable note (`IncludeOnSend` false). |
 | `qbo_closing_date` | Set `Preferences.AccountingInfoPrefs.BookCloseDate`. |
 | `qbo_void` | Void an Invoice or a Payment (`operation=void`). |
-| `qbo_import_jobber_invoices` | Import up to 40 Jobber invoices. Skips a DocNumber already in QuickBooks. |
-| `qbo_revert_batch` | Undo one `batchId`. Deletes only entities that batch created. |
+| `qbo_import_jobber_invoices` | Import a chunk of Jobber invoices. Keeps discounts, uses Jobber payment dates and amounts, and can create a missing customer or a payout deposit with a fee line. |
+| `qbo_relink_deposit` | Replace one 4010 Sales deposit line with a payment of the same amount applied to an invoice, then link that payment on the deposit. The deposit total stays the same. |
+| `qbo_revert_batch` | Undo one `batchId`. Restores updates, then deletes payments, then deletes other created entities (including customers this batch created). |
 
 `confirm` defaults to false. A preview returns the POST body when it is known, or the exact field changes when confirm must read a SyncToken first (`qbo_categorize_purchase`, `qbo_closing_date`). `dryRun: false` does not post. Pass `confirm: true`.
 
@@ -300,7 +301,11 @@ Production (real Southern California Well Service company). All three are requir
 
 After the SQL is applied and those three Production env vars are set, redeploy scws-jobs. Then preview an import before any confirm:
 
-`qbo_import_jobber_invoices` with `fromInvoice: 5826`, `toInvoice: 5900`, a `batchId`, and `payments: "none"`. Each call processes at most 10 invoices and returns `nextCursor`; pass that cursor back for the next chunk. Header tax is a TaxCode id from the jobsite (San Diego County `3`, Menifee `30`), not a display name. An unknown city blocks that invoice only. Override with `txnTaxCodeId` or `taxCodeByCity`. `payments: "undeposited"` creates a payment in Undeposited Funds. `payments: "deposit"` also needs `depositId` of an existing deposit. October Jobber payouts are already deposits that post to account 4010 Sales, so linking a payment onto one of them records the invoice income as well. The preview includes that warning. `confirm: true` posts. `qbo_revert_batch` with the same `batchId` undoes it.
+`qbo_import_jobber_invoices` with `fromInvoice: 5826`, `toInvoice: 5900`, a `batchId`, and `payments: "none"`. Each call processes at most 10 invoices and returns `nextCursor`; pass that cursor back for the next chunk. QuickBooks queries run one at a time and back off on HTTP 429. Header tax is a TaxCode id from the jobsite, not a display name: San Diego County `3`, Menifee and Sun City `30`, other Riverside County cities (Hemet, Perris, Murrieta, Temecula, and the rest of that list) `65`. An unknown city blocks that invoice only. Override the city with `txnTaxCodeId` or `taxCodeByCity`. `taxOverride: true` sets `TxnTaxDetail.TotalTax` to the Jobber tax amount. A negative taxable line is posted as `NON` so QuickBooks does not reject a negative tax amount.
+
+A Jobber discount is a negative line, so an invoice such as #5834 stays at the discounted total. The preview reports `memo.length`, `memo.limit` (1000), and `memo.truncated` for the client message. `customerIds` and `itemIds` pick the QuickBooks customer or item explicitly. A name that matches more than one record blocks that invoice. `createCustomers: true` creates a customer when the exact DisplayName is missing.
+
+`payments: "undeposited"` creates a payment in Undeposited Funds. The date and amount come from the Jobber payment record (`entryDate`, `amount`) when the invoice has one; otherwise the invoice date and `paymentsTotal` are used. `payments: "payout"` also needs `depositToAccountId`. It creates those payments, then one deposit that links them, plus a negative fee line when `feeAmount` and `feeAccountId` are set, so the deposit matches the net payout. `payments: "deposit"` still links each payment onto an existing `depositId`. If that deposit already credited 4010 Sales, use `qbo_relink_deposit` instead: it removes that sales line and links a new payment of the same amount, so the deposit total and the bank reconciliation do not change and the income is not counted twice. `confirm: true` posts. `qbo_revert_batch` with the same `batchId` undoes it, including a created customer and a relinked deposit.
 
 ### Sandbox integration test
 

@@ -3,6 +3,7 @@
  * Preview is the default. confirm:true posts to whatever environment the env vars select.
  */
 import type { McpToolDefinition, McpToolResult } from './protocol.ts';
+import { runRelinkDeposit } from '../quickbooks/deposit-relink.ts';
 import { runQboWrite, type QboWriteDeps } from '../quickbooks/durable-write.ts';
 import { runJobberInvoiceImport } from '../quickbooks/jobber-invoice-import.ts';
 import { runBatchRevert } from '../quickbooks/revert-batch.ts';
@@ -68,7 +69,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_deposit',
-    'Create a QuickBooks deposit into a bank account. A line is either an account amount or an existing payment (paymentId) being deposited. Preview is the default. confirm:true posts to whatever environment the env vars select. Does not delete.',
+    'Create a QuickBooks deposit into a bank account. A line is either an account amount or an existing payment (paymentId) being deposited. A negative account amount is a fee line, such as a Jobber card or ACH fee, so the deposit total can match a net payout. Preview is the default. confirm:true posts to whatever environment the env vars select. Does not delete.',
     {
       depositToAccountId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -95,7 +96,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_payment',
-    'Create a QuickBooks payment and apply it to one or more invoices. Preview is the default. confirm:true posts to whatever environment the env vars select. totalAmt must equal the applications unless allowUnapplied is true. Does not email, and does not record a Jobber payment.',
+    'Create a QuickBooks payment and apply it to one or more invoices. Preview is the default. confirm:true posts to whatever environment the env vars select. Pass txnDate for the payment date. totalAmt must equal the applications unless allowUnapplied is true. Does not email, and does not record a Jobber payment.',
     {
       customerId: { type: 'string' },
       totalAmt: { type: 'number' },
@@ -252,15 +253,24 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_import_jobber_invoices',
-    'Import Jobber invoices into QuickBooks the way the old Jobber sync posted them: DocNumber is the invoice number, the customer matches DisplayName, the item matches the line name, and line tax is TAX or NON. The header tax code is a TaxCode id from the jobsite (San Diego County 3, Menifee 30), not a display name. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. A missing tax code blocks that invoice only. confirm:true posts the chunk to whatever environment the env vars select and requires batchId. payments: none (default), undeposited, or deposit (also pass depositId). Does not email.',
+    'Import Jobber invoices into QuickBooks one at a time. DocNumber is the invoice number. Customer and item match an explicit customerIds or itemIds entry, otherwise one exact DisplayName or Name. More than one match blocks that invoice. createCustomers:true creates a missing customer. Discounts become a negative line. Payment date and amount come from the Jobber payment record when one exists. payments: payout groups those payments into a new deposit with an optional fee line (feeAmount, feeAccountId, depositToAccountId). taxOverride:true sets TotalTax to the Jobber tax. Negative taxable lines are sent as NON so QuickBooks does not reject them. The preview reports CustomerMemo length and whether it was cut at 1,000 characters. Queries run sequentially and back off on HTTP 429. Header tax is a TaxCode id (San Diego County 3, Menifee 30, other Riverside County cities 65). Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. confirm:true posts the chunk to whatever environment the env vars select and requires batchId. Does not email.',
     {
       invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 500 },
       fromInvoice: { type: 'integer' },
       toInvoice: { type: 'integer' },
       cursor: { type: 'string', description: 'nextCursor from the previous chunk. Inclusive invoice number to start at.' },
       limit: { type: 'integer', description: 'Invoices to process this call. Default 8, max 10.' },
-      payments: { type: 'string', enum: ['none', 'undeposited', 'deposit'] },
-      depositId: { type: 'string', description: 'Existing QBO deposit to attach new payments to. Required when payments is deposit.' },
+      payments: { type: 'string', enum: ['none', 'undeposited', 'deposit', 'payout'] },
+      depositId: { type: 'string', description: 'Existing QBO deposit to attach new payments to. Required when payments is deposit. Use qbo_relink_deposit when that deposit already credits 4010 Sales.' },
+      depositToAccountId: { type: 'string', description: 'Bank account for payments: payout.' },
+      payoutDate: { type: 'string', description: 'YYYY-MM-DD for the payout deposit. Defaults to the latest payment date in the chunk.' },
+      feeAmount: { type: 'number', description: 'Jobber card or ACH fee subtracted on the payout deposit. Requires feeAccountId.' },
+      feeAccountId: { type: 'string', description: 'Expense account for the payout fee line.' },
+      taxOverride: { type: 'boolean', description: 'Set TxnTaxDetail.TotalTax to the Jobber tax amount so the tax matches to the cent.' },
+      createCustomers: { type: 'boolean', description: 'Create a QuickBooks customer when the exact DisplayName is missing. Does not guess among several matches.' },
+      customerIds: { type: 'object', additionalProperties: { type: 'string' }, description: 'Jobber client name to QuickBooks customer id. Skips the name lookup for those clients.' },
+      itemIds: { type: 'object', additionalProperties: { type: 'string' }, description: 'Jobber line name to QuickBooks item id. Skips the name lookup for those items.' },
+      discountItemId: { type: 'string', description: 'QuickBooks item for the Jobber discount line. Defaults to an item named Discount, then the first positive line item.' },
       txnTaxCodeId: { type: 'string', description: 'TaxCode id applied to every invoice in this call, for example 3. Looked up by id, not by name.' },
       taxCodeByCity: {
         type: 'object',
@@ -269,6 +279,22 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       },
     },
     []
+  ),
+  tool(
+    'qbo_relink_deposit',
+    'Replace one deposit line that posts to an income account (4010 Sales) with a ReceivePayment of the same amount applied to an invoice, then link that payment on the deposit. The deposit total does not change, so the bank reconciliation stays, and the invoice is the only income. Preview is the default and does not read QuickBooks. confirm:true posts to whatever environment the env vars select and requires batchId. qbo_revert_batch restores the deposit, then deletes the payment. salesAccountId is the QuickBooks account id. Pass lineId when more than one line has that amount.',
+    {
+      depositId: { type: 'string' },
+      lineId: { type: 'string', description: 'Deposit line id to remove. Optional when amount and salesAccountId match one line.' },
+      salesAccountId: { type: 'string', description: 'QuickBooks account id of the income line to remove, such as 4010 Sales.' },
+      amount: { type: 'number' },
+      invoiceId: { type: 'string' },
+      customerId: { type: 'string' },
+      txnDate: { type: 'string', description: 'YYYY-MM-DD payment date.' },
+      paymentRefNum: { type: 'string' },
+      privateNote: { type: 'string' },
+    },
+    ['depositId', 'amount', 'invoiceId', 'customerId', 'txnDate']
   ),
   tool(
     'qbo_revert_batch',
@@ -292,6 +318,10 @@ export async function callQboWriteTool(
   }
   if (name === 'qbo_import_jobber_invoices') {
     const result = await runJobberInvoiceImport(args, deps);
+    return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
+  }
+  if (name === 'qbo_relink_deposit') {
+    const result = await runRelinkDeposit(args, deps);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
   }
   const result = await runQboWrite(name, args, deps);

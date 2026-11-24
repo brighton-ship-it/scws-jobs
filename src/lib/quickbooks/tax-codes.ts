@@ -7,15 +7,21 @@
  *   (job 2503) use it. A query for Name = 'CA-San Diego-San Diego' returns nothing
  *   because the tax-code list stores a hash in Name.
  * - Id 30 is "CA-Riverside-Riverside-Menifee". Menifee invoice 5700 (job 3347) uses
- *   it. The manual codes "Riverside county" (65) and "San Diego Tax" (54) are not
- *   what those synced invoices used.
+ *   it. Sun City is the same city. The manual code "San Diego Tax" (54) is not
+ *   what synced San Diego invoices used.
+ * - Id 65 is the manual "Riverside county" code. Menifee stays on 30. The other
+ *   Riverside County cities Jobber uses, including Hemet, were blocking invoices
+ *   because they were not in this map. They use 65.
  * - Line TaxCodeRef stays TAX or NON. Only the header TxnTaxCodeRef changes by jobsite.
  *
  * Cities not in this map are resolved from the customer's last synced invoice, then
- * blocked one invoice at a time if that is missing too.
+ * blocked one invoice at a time if that is missing too. Pass txnTaxCodeId or
+ * taxCodeByCity to override a city, including when QBO's calculated tax must be
+ * replaced with the Jobber tax amount.
  */
 export const SAN_DIEGO_TAX_CODE_ID = '3';
 export const MENIFEE_TAX_CODE_ID = '30';
+export const RIVERSIDE_COUNTY_TAX_CODE_ID = '65';
 
 const SAN_DIEGO_COUNTY = [
   'san diego', 'ramona', 'escondido', 'poway', 'lakeside', 'santee', 'el cajon', 'la mesa',
@@ -28,10 +34,21 @@ const SAN_DIEGO_COUNTY = [
   'guatay', 'potrero',
 ];
 
-export const TAX_CODE_ID_BY_CITY: Record<string, string> = {
-  menifee: MENIFEE_TAX_CODE_ID,
-};
+const RIVERSIDE_COUNTY = [
+  'riverside', 'corona', 'norco', 'eastvale', 'jurupa valley', 'mira loma', 'pedley', 'rubidoux',
+  'glen avon', 'moreno valley', 'perris', 'mead valley', 'good hope', 'hemet', 'san jacinto',
+  'beaumont', 'banning', 'calimesa', 'cherry valley', 'cabazon', 'murrieta', 'temecula',
+  'french valley', 'winchester', 'lake elsinore', 'wildomar', 'canyon lake', 'lakeview',
+  'homeland', 'romoland', 'nuevo', 'anza', 'aguanga', 'idyllwild', 'mountain center',
+  'gilman hot springs', 'sage', 'whitewater',
+];
+
+const MENIFEE_CITIES = ['menifee', 'sun city'];
+
+export const TAX_CODE_ID_BY_CITY: Record<string, string> = {};
 for (const city of SAN_DIEGO_COUNTY) TAX_CODE_ID_BY_CITY[city] = SAN_DIEGO_TAX_CODE_ID;
+for (const city of RIVERSIDE_COUNTY) TAX_CODE_ID_BY_CITY[city] = RIVERSIDE_COUNTY_TAX_CODE_ID;
+for (const city of MENIFEE_CITIES) TAX_CODE_ID_BY_CITY[city] = MENIFEE_TAX_CODE_ID;
 
 export function normalizePlace(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');

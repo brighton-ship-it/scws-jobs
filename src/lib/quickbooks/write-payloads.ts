@@ -15,6 +15,7 @@ export const QBO_WRITE_TOOLS = [
   'qbo_closing_date',
   'qbo_void',
   'qbo_import_jobber_invoices',
+  'qbo_relink_deposit',
   'qbo_revert_batch',
 ] as const;
 
@@ -48,7 +49,7 @@ const ENTITY_PATH: Record<string, string> = {
   Vendor: 'vendor',
 };
 
-export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment';
+export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine';
 
 export type QboPlan = {
   tool: QboWriteTool;
@@ -122,11 +123,20 @@ export function resolveRequestId(tool: string, payload: unknown, given?: string)
 }
 
 function money(value: unknown, field: string): number {
+  return roundedMoney(value, field, false);
+}
+
+/** Deposit fee lines are negative. Zero is refused. Payment lines stay positive. */
+function signedMoney(value: unknown, field: string): number {
+  return roundedMoney(value, field, true);
+}
+
+function roundedMoney(value: unknown, field: string, allowNegative: boolean): number {
   const n = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN;
   if (!Number.isFinite(n)) throw new Error(`${field} must be a number`);
   const cents = Math.round(n * 100);
   if (Math.abs(n * 100 - cents) > 1e-6) throw new Error(`${field} must have at most 2 decimal places`);
-  if (cents <= 0) throw new Error(`${field} must be greater than 0`);
+  if (cents === 0 || (!allowNegative && cents < 0)) throw new Error(`${field} must be greater than 0`);
   return cents / 100;
 }
 
@@ -248,8 +258,8 @@ export function buildDeposit(args: Record<string, unknown>): QboPlan {
   const depositToAccountId = qboId(args.depositToAccountId, 'depositToAccountId');
   const lineRows = rows(args.lines, 'lines');
   const line = lineRows.map((row, index) => {
-    const amount = money(row.amount, `lines[${index}].amount`);
     const paymentId = row.paymentId === undefined || row.paymentId === '' ? undefined : qboId(row.paymentId, `lines[${index}].paymentId`);
+    const amount = paymentId ? money(row.amount, `lines[${index}].amount`) : signedMoney(row.amount, `lines[${index}].amount`);
     if (paymentId && row.accountId !== undefined && row.accountId !== '') {
       throw new Error(`lines[${index}] sets both paymentId and accountId. Use one.`);
     }
@@ -573,6 +583,73 @@ export function buildClosingDate(args: Record<string, unknown>): QboPlan {
   };
 }
 
+export type DepositSalesRelink = {
+  lineId?: string | null;
+  amount: number;
+  salesAccountId?: string | null;
+  paymentId: string;
+};
+
+function depositLines(deposit: Record<string, unknown>): Record<string, unknown>[] {
+  return Array.isArray(deposit.Line) ? (deposit.Line as Record<string, unknown>[]) : [];
+}
+
+function lineCents(line: Record<string, unknown>): number {
+  return Math.round(Number(line.Amount) * 100);
+}
+
+function isPaymentDepositLine(line: Record<string, unknown>): boolean {
+  const linked = line.LinkedTxn as Array<{ TxnType?: string }> | undefined;
+  return Array.isArray(linked) && linked.some((item) => item.TxnType === 'Payment');
+}
+
+/** The 4010 Sales line a payout booked directly to income, matched by id or by amount and account. */
+export function findDepositSalesLine(deposit: Record<string, unknown>, change: Pick<DepositSalesRelink, 'lineId' | 'amount' | 'salesAccountId'>): Record<string, unknown> {
+  if (!change.lineId && !change.salesAccountId) throw new Error('Pass lineId or salesAccountId so the sales line is explicit.');
+  const wanted = Math.round(Number(change.amount) * 100);
+  if (!Number.isFinite(wanted) || wanted <= 0) throw new Error('amount must be greater than 0');
+  const matches = depositLines(deposit).filter((line) => {
+    if (isPaymentDepositLine(line) || !line.DepositLineDetail) return false;
+    if (lineCents(line) !== wanted) return false;
+    if (change.lineId && String(line.Id) !== String(change.lineId)) return false;
+    if (change.salesAccountId) {
+      const detail = line.DepositLineDetail as { AccountRef?: { value?: string } };
+      if (String(detail.AccountRef?.value || '') !== change.salesAccountId) return false;
+    }
+    return true;
+  });
+  if (matches.length !== 1) {
+    throw new Error(matches.length === 0 ? 'No deposit sales line matches that amount and account.' : 'More than one deposit line matches. Pass lineId.');
+  }
+  return matches[0];
+}
+
+/**
+ * Remove one income line and link a ReceivePayment of the same amount.
+ * The deposit total does not change, so the bank reconciliation stays put.
+ */
+export function replaceDepositSalesLine(deposit: Record<string, unknown>, change: DepositSalesRelink): Record<string, unknown> {
+  const lines = depositLines(deposit);
+  const match = findDepositSalesLine(deposit, change);
+  if (!change.paymentId) throw new Error('paymentId is required to relink the deposit.');
+  const next = lines.filter((line) => line !== match);
+  const already = next.some((line) => {
+    const linked = line.LinkedTxn as Array<{ TxnId?: string; TxnType?: string }> | undefined;
+    return (linked || []).some((item) => item.TxnId === change.paymentId && item.TxnType === 'Payment');
+  });
+  if (!already) {
+    next.push({ Amount: Math.round(change.amount * 100) / 100, LinkedTxn: [{ TxnId: change.paymentId, TxnLineId: '0', TxnType: 'Payment' }] });
+  }
+  const before = lines.reduce((sum, line) => sum + lineCents(line), 0);
+  const after = next.reduce((sum, line) => sum + lineCents(line), 0);
+  if (before !== after) throw new Error('Deposit total would change. The sales line was not replaced.');
+  const syncToken = deposit.SyncToken == null ? '' : String(deposit.SyncToken);
+  if (!syncToken) throw new Error('Deposit is missing SyncToken.');
+  const body: Record<string, unknown> = { ...deposit, Id: String(deposit.Id), SyncToken: syncToken, Line: next };
+  delete body.MetaData;
+  return body;
+}
+
 export function linkPaymentOnDeposit(deposit: Record<string, unknown>, paymentId: string, amount: number): Record<string, unknown> {
   const lines = Array.isArray(deposit.Line) ? [...(deposit.Line as Record<string, unknown>[])] : [];
   const already = lines.some((line) => {
@@ -647,6 +724,8 @@ export function buildQboPlan(tool: string, args: Record<string, unknown>): QboPl
       return buildClosingDate(args);
     case 'qbo_void':
       return buildVoid(args);
+    case 'qbo_relink_deposit':
+      throw new Error('qbo_relink_deposit has its own preview and confirm path.');
     default:
       throw new Error(`Unknown QuickBooks write tool: ${tool}`);
   }
@@ -665,6 +744,9 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   if (plan.read?.apply === 'linkPayment') {
     const changes = plan.changes as { paymentId: string; amount: number };
     return linkPaymentOnDeposit(entity, changes.paymentId, changes.amount);
+  }
+  if (plan.read?.apply === 'relinkSalesLine') {
+    return replaceDepositSalesLine(entity, plan.changes as DepositSalesRelink);
   }
   const syncToken = typeof entity.SyncToken === 'string' ? entity.SyncToken : '';
   if (!syncToken) throw new Error(`${plan.entity} is missing SyncToken.`);
