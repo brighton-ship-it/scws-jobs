@@ -49,7 +49,7 @@ const ENTITY_PATH: Record<string, string> = {
   Vendor: 'vendor',
 };
 
-export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine';
+export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote';
 
 export type QboPlan = {
   tool: QboWriteTool;
@@ -160,13 +160,45 @@ function dateField(value: unknown, field: string, required: boolean): string | u
   return s;
 }
 
-function note(value: unknown, field: string, max = 4000): string | undefined {
+export const QBO_PRIVATE_NOTE_MAX = 4000;
+
+function note(value: unknown, field: string, max = QBO_PRIVATE_NOTE_MAX): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string') throw new Error(`${field} must be a string`);
   const s = value.trim();
   if (!s) return undefined;
   if (s.length > max) throw new Error(`${field} is longer than ${max} characters`);
   return s;
+}
+
+export function batchNoteTag(batchId: string): string {
+  return `[batch:${batchId}]`;
+}
+
+/**
+ * Append ` [batch:<id>]` unless that tag is already in the note.
+ * A second call with the same id does not add another tag.
+ */
+export function privateNoteWithBatch(value: string | null | undefined, batchId: string | null | undefined): string | undefined {
+  const id = batchId?.trim();
+  const base = (value || '').trim();
+  if (!id) return base || undefined;
+  const tag = batchNoteTag(id);
+  if (base.includes(tag)) return base;
+  const suffix = ` ${tag}`;
+  if (!base) return tag;
+  if (base.length + suffix.length <= QBO_PRIVATE_NOTE_MAX) return base + suffix;
+  const keep = QBO_PRIVATE_NOTE_MAX - suffix.length;
+  if (keep <= 0) return tag.slice(0, QBO_PRIVATE_NOTE_MAX);
+  return `${base.slice(0, keep).trimEnd()}${suffix}`;
+}
+
+/** Keep the note already on the invoice, append new text once, then the batch tag once. */
+export function appendPrivateNote(existing: string | null | undefined, addition: string | null | undefined, batchId: string | null | undefined): string | undefined {
+  const current = (existing || '').trim();
+  const extra = (addition || '').trim();
+  const combined = extra && !current.includes(extra) ? (current ? `${current}\n${extra}` : extra) : current;
+  return privateNoteWithBatch(combined, batchId);
 }
 
 function requiredNote(value: unknown, field: string): string {
@@ -352,12 +384,16 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   if (hasLines) body.Line = salesLines(args);
   const txnDate = dateField(args.txnDate, 'txnDate', false);
   const dueDate = dateField(args.dueDate, 'dueDate', false);
-  const privateNote = note(args.privateNote, 'privateNote');
+  const suppliedNote = note(args.privateNote, 'privateNote');
+  const batch = parseBatchId(args.batchId);
   const customerMemo = note(args.customerMemo, 'customerMemo');
   const number = docNumber(args.docNumber);
   if (txnDate) body.TxnDate = txnDate;
   if (dueDate) body.DueDate = dueDate;
-  if (privateNote) body.PrivateNote = privateNote;
+  if (!id) {
+    const privateNote = privateNoteWithBatch(suppliedNote, batch);
+    if (privateNote) body.PrivateNote = privateNote;
+  }
   if (customerMemo) body.CustomerMemo = { value: customerMemo };
   if (number) body.DocNumber = number;
   if (id) {
@@ -365,7 +401,8 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
     body.sparse = !hasLines;
     if (syncToken) body.SyncToken = syncToken;
   }
-  if (Object.keys(body).filter((key) => key !== 'Id' && key !== 'sparse' && key !== 'SyncToken').length === 0) {
+  const noteOnUpdate = Boolean(id && suppliedNote);
+  if (!noteOnUpdate && Object.keys(body).filter((key) => key !== 'Id' && key !== 'sparse' && key !== 'SyncToken').length === 0) {
     throw new Error('Invoice update needs at least one field to change.');
   }
   const plan: QboPlan = {
@@ -375,7 +412,12 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
     path: '/invoice',
     body,
   };
-  if (id && !syncToken) plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
+  if (noteOnUpdate) {
+    plan.read = { path: `/invoice/${id}`, apply: 'appendPrivateNote' };
+    plan.changes = { privateNote: suppliedNote, batchId: batch };
+  } else if (id && !syncToken) {
+    plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
+  }
   return plan;
 }
 
@@ -747,6 +789,18 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   }
   if (plan.read?.apply === 'relinkSalesLine') {
     return replaceDepositSalesLine(entity, plan.changes as DepositSalesRelink);
+  }
+  if (plan.read?.apply === 'appendPrivateNote') {
+    const changes = plan.changes as { privateNote?: string | null; batchId?: string | null };
+    const syncToken = typeof entity.SyncToken === 'string' ? entity.SyncToken : '';
+    if (!syncToken) throw new Error(`${plan.entity} is missing SyncToken.`);
+    const existing = typeof entity.PrivateNote === 'string' ? entity.PrivateNote : '';
+    const next = appendPrivateNote(existing, changes.privateNote, changes.batchId);
+    const body = { ...(plan.body || {}) };
+    body.Id = qboId(entity.Id ?? body.Id, 'Id');
+    body.SyncToken = syncToken;
+    if (next) body.PrivateNote = next;
+    return body;
   }
   const syncToken = typeof entity.SyncToken === 'string' ? entity.SyncToken : '';
   if (!syncToken) throw new Error(`${plan.entity} is missing SyncToken.`);

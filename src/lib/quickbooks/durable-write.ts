@@ -42,7 +42,7 @@ export type SbClient = {
 };
 
 /** preview and refused never post. pending is the pre-write row. failed is a QuickBooks error. */
-export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed';
+export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed' | 'tax_mismatch';
 
 export type QboAuditEntry = {
   actor: string;
@@ -228,6 +228,14 @@ export async function loadProductionRealmId(env: Env): Promise<string | null> {
   const rows = (data || []) as { realm_id?: string; environment?: string | null }[];
   const prod = rows.find((row) => row.environment === 'production') || rows[0];
   return prod?.realm_id || null;
+}
+
+export async function recordQboAudit(entry: QboAuditEntry, deps: QboWriteDeps = {}): Promise<void> {
+  if (deps.audit) {
+    await deps.audit(entry);
+    return;
+  }
+  await defaultAudit(entry, deps.env || process.env);
 }
 
 async function defaultAudit(entry: QboAuditEntry, env: Env): Promise<void> {
