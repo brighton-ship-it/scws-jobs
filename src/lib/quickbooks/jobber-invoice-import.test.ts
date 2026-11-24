@@ -5,11 +5,15 @@ import {
   classifyJobberInvoice,
   jobberPaymentLines,
   pacificDate,
+  qboShipAddress,
   runJobberInvoiceImport,
+  savedTaxReport,
   sliceInvoiceChunk,
+  type InvoiceTaxReport,
   type JobberInvoiceForQbo,
 } from './jobber-invoice-import.ts';
 import { taxCodeIdForCity } from './tax-codes.ts';
+import { privateNoteWithBatch } from './write-payloads.ts';
 
 const invoice: JobberInvoiceForQbo = {
   invoiceNumber: '5824',
@@ -416,4 +420,117 @@ test('createCustomers confirm posts the customer before the invoice', async () =
   );
   assert.equal(result.wrote, true);
   assert.deepEqual(order, ['customer:Colleen Baker', 'invoice:77']);
+});
+
+const escondido = {
+  ...invoice,
+  city: 'Escondido',
+  address: {
+    line1: '15842 Highland Valley Road',
+    line2: null,
+    city: 'Escondido',
+    province: 'California',
+    postalCode: '92025',
+    country: 'US',
+  },
+};
+
+test('jobsite address matches the old sync and the batch id stays inside PrivateNote', () => {
+  const ship = qboShipAddress({
+    line1: '15842 Highland Valley Road',
+    line2: 'Unit B',
+    city: 'Escondido',
+    province: 'CA',
+    postalCode: '92025',
+    country: null,
+  });
+  assert.deepEqual(ship, {
+    Line1: '15842 Highland Valley Road',
+    Line2: 'Unit B',
+    City: 'Escondido',
+    Country: 'United States',
+    CountrySubDivisionCode: 'CA',
+    PostalCode: '92025',
+  });
+  const built = buildJobberSyncedInvoice(escondido, '16110', { '1MS': '23', MISC: '5' }, '3', { batchId: 'oct-2026' });
+  assert.equal('BillAddr' in (built.body || {}), false);
+  assert.equal(built.body?.FreeFormAddress, false);
+  assert.deepEqual(built.body?.ShipAddr, {
+    Line1: '15842 Highland Valley Road',
+    City: 'Escondido',
+    Country: 'United States',
+    CountrySubDivisionCode: 'CA',
+    PostalCode: '92025',
+  });
+  assert.deepEqual(built.body?.ShipFromAddr, built.body?.ShipAddr);
+  assert.equal(built.body?.PrivateNote, '[batch:oct-2026]');
+  const note = privateNoteWithBatch('n'.repeat(3990), 'oct-2026');
+  assert.equal(note?.endsWith(' [batch:oct-2026]'), true);
+  assert.equal(note?.length, 4000);
+});
+
+test('preview reports the requested tax code and confirm flags a saved mismatch', async () => {
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '16110' }] } };
+    if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
+    if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+    return { QueryResponse: { TaxCode: [{ Id: '3' }] } };
+  };
+  const preview = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5824'], batchId: 'ast-check' },
+    { env, qboQuery, loadJobberInvoices: async () => [escondido], fetchImpl: async () => { throw new Error('preview posted'); } }
+  );
+  assert.equal(preview.dryRun, true);
+  assert.equal(preview.taxCodeMismatch, false);
+  const previewRow = (preview.invoices as Array<{ body: { PrivateNote: string; ShipAddr: { City: string } }; tax: InvoiceTaxReport }>)[0];
+  assert.equal(previewRow.body.PrivateNote, '[batch:ast-check]');
+  assert.equal(previewRow.body.ShipAddr.City, 'Escondido');
+  assert.equal(previewRow.tax.requestedTxnTaxCodeId, '3');
+  assert.equal(previewRow.tax.savedTxnTaxCodeId, null);
+  assert.equal(previewRow.tax.taxLines, null);
+  assert.equal(previewRow.tax.taxCodeMismatch, false);
+
+  const taxLines = [
+    { Amount: 6.25, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: '3' }, TaxPercent: 6.25, NetAmountTaxable: 100 } },
+    { Amount: 1, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: '20' }, TaxPercent: 1, NetAmountTaxable: 100 } },
+    { Amount: 0.5, DetailType: 'TaxLineDetail', TaxLineDetail: { TaxRateRef: { value: '5' }, TaxPercent: 0.5, NetAmountTaxable: 100 } },
+  ];
+  let postedBody: Record<string, unknown> | null = null;
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5824'], batchId: 'ast-check', confirm: true, payments: 'none' },
+    {
+      env,
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      audit: async () => {},
+      loadJobberInvoices: async () => [escondido],
+      qboQuery,
+      fetchImpl: async (_url, init) => {
+        postedBody = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({
+          Invoice: { Id: '39108', SyncToken: '0', DocNumber: '5824', TxnTaxDetail: { TxnTaxCodeRef: { value: '24' }, TaxLine: taxLines } },
+        }), { status: 200 });
+      },
+    }
+  );
+  assert.equal(postedBody?.PrivateNote, '[batch:ast-check]');
+  assert.equal((postedBody?.ShipFromAddr as { City: string }).City, 'Escondido');
+  assert.equal((postedBody?.ShipAddr as { CountrySubDivisionCode: string }).CountrySubDivisionCode, 'CA');
+  assert.equal(postedBody?.FreeFormAddress, false);
+  assert.equal('BillAddr' in (postedBody || {}), false);
+  assert.equal(result.wrote, true);
+  assert.equal(result.taxCodeMismatch, true);
+  const tax = (result.posted as Array<{ tax: InvoiceTaxReport }>)[0].tax;
+  assert.equal(tax.requestedTxnTaxCodeId, '3');
+  assert.equal(tax.savedTxnTaxCodeId, '24');
+  assert.equal(tax.taxCodeMismatch, true);
+  assert.deepEqual(tax.taxLines, taxLines);
+  assert.equal((result.invoices as Array<{ tax: InvoiceTaxReport }>)[0].tax.taxCodeMismatch, true);
+  assert.equal(savedTaxReport('3', { TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TaxLine: taxLines } }).taxCodeMismatch, false);
 });

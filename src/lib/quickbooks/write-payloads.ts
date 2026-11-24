@@ -160,13 +160,28 @@ function dateField(value: unknown, field: string, required: boolean): string | u
   return s;
 }
 
-function note(value: unknown, field: string, max = 4000): string | undefined {
+export const QBO_PRIVATE_NOTE_MAX = 4000;
+
+function note(value: unknown, field: string, max = QBO_PRIVATE_NOTE_MAX): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string') throw new Error(`${field} must be a string`);
   const s = value.trim();
   if (!s) return undefined;
   if (s.length > max) throw new Error(`${field} is longer than ${max} characters`);
   return s;
+}
+
+/** Append ` [batch:<id>]` and keep the result inside QuickBooks' PrivateNote limit. */
+export function privateNoteWithBatch(value: string | null | undefined, batchId: string | null | undefined): string | undefined {
+  const id = batchId?.trim();
+  const suffix = id ? ` [batch:${id}]` : '';
+  const base = (value || '').trim();
+  if (!suffix) return base || undefined;
+  if (!base) return suffix.trim();
+  if (base.length + suffix.length <= QBO_PRIVATE_NOTE_MAX) return base + suffix;
+  const keep = QBO_PRIVATE_NOTE_MAX - suffix.length;
+  if (keep <= 0) return suffix.trim().slice(0, QBO_PRIVATE_NOTE_MAX);
+  return `${base.slice(0, keep).trimEnd()}${suffix}`;
 }
 
 function requiredNote(value: unknown, field: string): string {
@@ -352,7 +367,7 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   if (hasLines) body.Line = salesLines(args);
   const txnDate = dateField(args.txnDate, 'txnDate', false);
   const dueDate = dateField(args.dueDate, 'dueDate', false);
-  const privateNote = note(args.privateNote, 'privateNote');
+  const privateNote = privateNoteWithBatch(note(args.privateNote, 'privateNote'), parseBatchId(args.batchId));
   const customerMemo = note(args.customerMemo, 'customerMemo');
   const number = docNumber(args.docNumber);
   if (txnDate) body.TxnDate = txnDate;

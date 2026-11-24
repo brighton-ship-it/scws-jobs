@@ -69,6 +69,14 @@ test('invoice body never asks QuickBooks to email', () => {
   assert.equal(body.DocNumber, '5830');
   assert.equal('EmailStatus' in body, false);
   assert.equal('BillEmail' in body, false);
+  const stamped = buildInvoice({
+    customerId: '10',
+    docNumber: '5831',
+    privateNote: 'shop copy',
+    batchId: 'oct-2026',
+    lines: [{ amount: 40, itemId: '3', quantity: 1, unitPrice: 40 }],
+  });
+  assert.equal(stamped.body?.PrivateNote, 'shop copy [batch:oct-2026]');
 });
 
 test('purchase account update and books close date are exact', () => {
