@@ -5,6 +5,7 @@
 import type { McpToolDefinition, McpToolResult } from './protocol.ts';
 import { runRelinkDeposit } from '../quickbooks/deposit-relink.ts';
 import { runQboWrite, type QboWriteDeps } from '../quickbooks/durable-write.ts';
+import { checkItemTaxCategory } from '../quickbooks/item-tax-category.ts';
 import { runJobberInvoiceImport } from '../quickbooks/jobber-invoice-import.ts';
 import { runBatchRevert } from '../quickbooks/revert-batch.ts';
 import { isQboWriteTool } from '../quickbooks/write-payloads.ts';
@@ -124,7 +125,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_invoice',
-    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax. Does not delete.',
+    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. Does not delete.',
     {
       customerId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -134,7 +135,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       customerMemo: { type: 'string', description: 'Customer-facing memo. This does not email the customer.' },
       id: { type: 'string' },
       syncToken: { type: 'string' },
-      totalTax: { type: 'number', description: 'Update only, without lines. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Lines, addresses and the tax code stay as saved.' },
+      totalTax: { type: 'number', description: 'Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines, addresses and the tax code stay as saved.' },
       txnTaxCodeId: { type: 'string', description: 'Required with totalTax: the TaxCode id to keep on TxnTaxDetail, for example 3.' },
       lines: {
         type: 'array',
@@ -248,13 +249,14 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_item_tax_category',
-    'Set the sales tax category (TaxClassificationRef) and optionally the Taxable flag on one QuickBooks item. Sparse update; name, price, accounts and type are unchanged. Preview is the default. confirm:true reads the item (audited as prior_state, so qbo_revert_batch can restore it) and posts to whatever environment the env vars select. Affects new and resaved transactions that use the item.',
+    'Set the sales tax category (TaxClassificationRef) and optionally the Taxable flag on one QuickBooks item. Sparse update; name, price, accounts and type are unchanged. Preview and confirm both refuse unless the class is on the QuickBooks TaxClassification list, the item Type is one the class applies to (Service classes such as EUC-99990202 for Service items, goods classes such as EUC-09020802 only for Inventory/NonInventory), and syncToken is the live one. confirm:true reads the item again (audited as prior_state, so qbo_revert_batch can restore it), refuses if the SyncToken or Type changed, and posts to whatever environment the env vars select. Affects new and resaved transactions that use the item.',
     {
       itemId: { type: 'string' },
-      taxClassificationId: { type: 'string', description: 'Tax category id, for example EUC-09020802-V1-00120000.' },
+      taxClassificationId: { type: 'string', description: 'Tax category id, for example EUC-99990202-V1-00020000 (Service marked taxable).' },
       taxable: { type: 'boolean' },
+      syncToken: { type: 'string', description: 'The item SyncToken you read. Refused when QuickBooks has a different one.' },
     },
-    ['itemId', 'taxClassificationId']
+    ['itemId', 'taxClassificationId', 'syncToken']
   ),
   tool(
     'qbo_void',
@@ -339,6 +341,15 @@ export async function callQboWriteTool(
   if (name === 'qbo_relink_deposit') {
     const result = await runRelinkDeposit(args, deps);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
+  }
+  if (name === 'qbo_item_tax_category') {
+    // Checked against the live TaxClassification list and item Type on preview and confirm.
+    const checked = await checkItemTaxCategory(args, deps);
+    if (!checked.ok) {
+      const refused = { ok: false, dryRun: true, wrote: false, refused: true, error: checked.error };
+      return { content: [{ type: 'text', text: JSON.stringify(refused, null, 2) }], isError: true };
+    }
+    args = { ...args, applicableTo: checked.applicableTo };
   }
   const result = await runQboWrite(name, args, deps);
   return {

@@ -177,17 +177,38 @@ test('qbo_invoice totalTax sparse-sets a tax override on an existing invoice onl
   const plan = buildInvoice({ id: '39144', syncToken: '0', totalTax: 413.15, txnTaxCodeId: '3' });
   assert.deepEqual(plan.body, { TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 413.15 }, Id: '39144', sparse: true, SyncToken: '0' });
   assert.deepEqual(plan.read, { path: '/invoice/39144', apply: 'syncToken' }, 'a tax override always reads the invoice first so prior_state is audited for revert');
+  assert.deepEqual(plan.changes, { expectedSyncToken: '0', totalTax: 413.15 });
   assert.throws(() => buildInvoice({ customerId: '1', lines: [{ amount: 1, itemId: '23' }], totalTax: 1, txnTaxCodeId: '3' }), /only for an invoice update/);
   assert.throws(() => buildInvoice({ id: '39144', lines: [{ amount: 1, itemId: '23' }], totalTax: 1, txnTaxCodeId: '3' }), /cannot be combined with lines/);
-  assert.throws(() => buildInvoice({ id: '39144', totalTax: 1 }), /txnTaxCodeId/);
+  assert.throws(() => buildInvoice({ id: '39144', syncToken: '0', totalTax: 1 }), /txnTaxCodeId/);
+  assert.throws(() => buildInvoice({ id: '39144', totalTax: 1, txnTaxCodeId: '3' }), /needs syncToken/);
+  assert.throws(() => buildInvoice({ id: '39144', syncToken: '0', totalTax: 1, txnTaxCodeId: '3', privateNote: 'x' }), /privateNote/);
+});
+
+test('qbo_invoice totalTax confirm refuses when the live SyncToken is not the one passed', () => {
+  const plan = buildInvoice({ id: '39144', syncToken: '0', totalTax: 413.15, txnTaxCodeId: '3' });
+  assert.throws(() => applyRead(plan, { Invoice: { Id: '39144', SyncToken: '1' } }), /SyncToken 1 in QuickBooks, not 0/);
+  const body = applyRead(plan, { Invoice: { Id: '39144', SyncToken: '0' } });
+  assert.equal(body.SyncToken, '0');
+  assert.deepEqual(body.TxnTaxDetail, { TxnTaxCodeRef: { value: '3' }, TotalTax: 413.15 });
 });
 
 test('qbo_item_tax_category is a sparse Item update that reads prior state first', () => {
-  const plan = buildItemTaxCategory({ itemId: '1010000474', taxClassificationId: 'EUC-09020802-V1-00120000', taxable: true });
+  const plan = buildItemTaxCategory({ itemId: '1010000474', taxClassificationId: 'EUC-99990202-V1-00020000', taxable: true, syncToken: '1', applicableTo: ['Service'] });
   assert.equal(plan.entity, 'Item');
   assert.equal(plan.action, 'update');
-  assert.deepEqual(plan.body, { Id: '1010000474', sparse: true, TaxClassificationRef: { value: 'EUC-09020802-V1-00120000' }, Taxable: true });
-  assert.deepEqual(plan.read, { path: '/item/1010000474', apply: 'syncToken' });
-  assert.throws(() => buildItemTaxCategory({ itemId: '1', taxClassificationId: 'goods' }), /taxClassificationId/);
-  assert.equal(buildQboPlan('qbo_item_tax_category', { itemId: '1', taxClassificationId: 'EUC-09020802-V1-00120000' }).tool, 'qbo_item_tax_category');
+  assert.deepEqual(plan.body, { Id: '1010000474', SyncToken: '1', sparse: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000' }, Taxable: true });
+  assert.deepEqual(plan.read, { path: '/item/1010000474', apply: 'itemTaxCategory' });
+  assert.throws(() => buildItemTaxCategory({ itemId: '1', taxClassificationId: 'goods', syncToken: '1', applicableTo: ['Service'] }), /taxClassificationId/);
+  assert.throws(() => buildItemTaxCategory({ itemId: '1', taxClassificationId: 'EUC-99990202-V1-00020000', applicableTo: ['Service'] }), /syncToken is required/);
+  assert.throws(() => buildItemTaxCategory({ itemId: '1', taxClassificationId: 'EUC-99990202-V1-00020000', syncToken: '1' }), /TaxClassification list/);
+  assert.equal(buildQboPlan('qbo_item_tax_category', { itemId: '1', taxClassificationId: 'EUC-99990202-V1-00020000', syncToken: '1', applicableTo: ['Service'] }).tool, 'qbo_item_tax_category');
+});
+
+test('qbo_item_tax_category confirm refuses a changed SyncToken or an item type the class does not apply to', () => {
+  const plan = buildItemTaxCategory({ itemId: '1010000474', taxClassificationId: 'EUC-99990202-V1-00020000', taxable: true, syncToken: '1', applicableTo: ['Service'] });
+  assert.throws(() => applyRead(plan, { Item: { Id: '1010000474', SyncToken: '2', Type: 'Service' } }), /SyncToken 2 in QuickBooks, not 1/);
+  assert.throws(() => applyRead(plan, { Item: { Id: '1010000474', SyncToken: '1', Type: 'NonInventory' } }), /type NonInventory/);
+  const body = applyRead(plan, { Item: { Id: '1010000474', SyncToken: '1', Type: 'Service' } });
+  assert.deepEqual(body, { Id: '1010000474', SyncToken: '1', sparse: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000' }, Taxable: true });
 });
