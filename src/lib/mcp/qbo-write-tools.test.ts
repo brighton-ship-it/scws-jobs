@@ -47,3 +47,21 @@ test('qbo_item_tax_category preview refuses a goods class on a Service item befo
   const schema = QBO_WRITE_MCP_TOOLS.find((tool) => tool.name === 'qbo_item_tax_category')?.inputSchema as { required?: string[] };
   assert.deepEqual(schema.required, ['itemId', 'taxClassificationId', 'syncToken']);
 });
+
+test('qbo_item_tax_category overwrites a caller-supplied applicableTo with the live TaxClassification value', async () => {
+  const { callQboWriteTool } = await import('./qbo-write-tools.ts');
+  const qboQuery = async (sql: string) => {
+    if (/TaxClassification/.test(sql)) {
+      return { QueryResponse: { TaxClassification: [{ Id: 'EUC-99990202-V1-00020000', Name: 'Service marked taxable', ApplicableTo: ['Service'] }] } };
+    }
+    return { QueryResponse: { Item: [{ Id: '1010000474', Type: 'Service', SyncToken: '1' }] } };
+  };
+  const got = await callQboWriteTool(
+    'qbo_item_tax_category',
+    { itemId: '1010000474', taxClassificationId: 'EUC-99990202-V1-00020000', taxable: true, syncToken: '1', applicableTo: ['Inventory', 'NonInventory', 'Service'] },
+    { qboQuery, env: {}, audit: async () => {} }
+  );
+  const body = JSON.parse(got.content[0].text as string);
+  assert.equal(body.wrote, false);
+  assert.deepEqual(body.changes?.applicableTo, ['Service']);
+});
