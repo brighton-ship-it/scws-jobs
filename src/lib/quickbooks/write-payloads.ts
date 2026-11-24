@@ -14,6 +14,7 @@ export const QBO_WRITE_TOOLS = [
   'qbo_attach_note',
   'qbo_closing_date',
   'qbo_void',
+  'qbo_item_tax_category',
   'qbo_import_jobber_invoices',
   'qbo_relink_deposit',
   'qbo_revert_batch',
@@ -49,7 +50,7 @@ const ENTITY_PATH: Record<string, string> = {
   Vendor: 'vendor',
 };
 
-export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote';
+export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote' | 'itemTaxCategory';
 
 export type QboPlan = {
   tool: QboWriteTool;
@@ -396,6 +397,13 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   }
   if (customerMemo) body.CustomerMemo = { value: customerMemo };
   if (number) body.DocNumber = number;
+  if (args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '') {
+    if (!id) throw new Error('totalTax is only for an invoice update. Use taxOverride on the import for a new invoice.');
+    if (hasLines) throw new Error('totalTax cannot be combined with lines. A full update would drop the saved addresses and tax detail.');
+    if (!syncToken) throw new Error('totalTax needs syncToken: the SyncToken you read. Confirm refuses when QuickBooks has a different one.');
+    if (suppliedNote) throw new Error('totalTax cannot be combined with privateNote. Send the note as its own update.');
+    body.TxnTaxDetail = { TxnTaxCodeRef: { value: qboId(args.txnTaxCodeId, 'txnTaxCodeId') }, TotalTax: money(args.totalTax, 'totalTax') };
+  }
   if (id) {
     body.Id = id;
     body.sparse = !hasLines;
@@ -415,6 +423,10 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   if (noteOnUpdate) {
     plan.read = { path: `/invoice/${id}`, apply: 'appendPrivateNote' };
     plan.changes = { privateNote: suppliedNote, batchId: batch };
+  } else if (id && body.TxnTaxDetail) {
+    // Always read so prior_state is audited, and refuse when the live SyncToken is not the one passed.
+    plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
+    plan.changes = { expectedSyncToken: syncToken, totalTax: (body.TxnTaxDetail as { TotalTax: number }).TotalTax };
   } else if (id && !syncToken) {
     plan.read = { path: `/invoice/${id}`, apply: 'syncToken' };
   }
@@ -611,6 +623,36 @@ export function buildAttachNote(args: Record<string, unknown>): QboPlan {
   return plan;
 }
 
+/**
+ * Sparse Item update of the sales tax category (TaxClassificationRef) and Taxable flag only.
+ * The read captures prior_state for revert. applicableTo is the item types the class allows,
+ * from QuickBooks' TaxClassification list (the tool handler reads it; see item-tax-category.ts).
+ * Confirm refuses when the live SyncToken differs from the one passed or the item type is not allowed.
+ */
+export function buildItemTaxCategory(args: Record<string, unknown>): QboPlan {
+  const itemId = qboId(args.itemId, 'itemId');
+  const raw = typeof args.taxClassificationId === 'string' ? args.taxClassificationId.trim() : '';
+  if (!/^EUC-\d{8}-V1-\d{8}$/.test(raw)) throw new Error('taxClassificationId must look like EUC-99990202-V1-00020000.');
+  const syncToken = optString(args, 'syncToken');
+  if (!syncToken) throw new Error('syncToken is required: the item SyncToken you read. Confirm refuses when QuickBooks has a different one.');
+  const applicableTo = Array.isArray(args.applicableTo) ? args.applicableTo.filter((t): t is string => typeof t === 'string' && t.length > 0) : [];
+  if (!applicableTo.length) throw new Error('taxClassificationId was not checked against the QuickBooks TaxClassification list.');
+  const body: Record<string, unknown> = { Id: itemId, SyncToken: syncToken, sparse: true, TaxClassificationRef: { value: raw } };
+  if (args.taxable !== undefined) {
+    if (typeof args.taxable !== 'boolean') throw new Error('taxable must be true or false');
+    body.Taxable = args.taxable;
+  }
+  return {
+    tool: 'qbo_item_tax_category',
+    entity: 'Item',
+    action: 'update',
+    path: '/item',
+    body,
+    read: { path: `/item/${itemId}`, apply: 'itemTaxCategory' },
+    changes: { expectedSyncToken: syncToken, taxClassificationId: raw, taxable: args.taxable ?? null, applicableTo },
+  };
+}
+
 export function buildClosingDate(args: Record<string, unknown>): QboPlan {
   const closeDate = dateField(args.closeDate, 'closeDate', true);
   return {
@@ -766,6 +808,8 @@ export function buildQboPlan(tool: string, args: Record<string, unknown>): QboPl
       return buildClosingDate(args);
     case 'qbo_void':
       return buildVoid(args);
+    case 'qbo_item_tax_category':
+      return buildItemTaxCategory(args);
     case 'qbo_relink_deposit':
       throw new Error('qbo_relink_deposit has its own preview and confirm path.');
     default:
@@ -804,6 +848,17 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   }
   const syncToken = typeof entity.SyncToken === 'string' ? entity.SyncToken : '';
   if (!syncToken) throw new Error(`${plan.entity} is missing SyncToken.`);
+  const expected = (plan.changes as { expectedSyncToken?: unknown } | undefined)?.expectedSyncToken;
+  if (typeof expected === 'string' && expected && syncToken !== expected) {
+    throw new Error(`${plan.entity} ${String(entity.Id ?? '')} has SyncToken ${syncToken} in QuickBooks, not ${expected}. It changed since it was read. Nothing was posted; re-read and preview again.`);
+  }
+  if (plan.read?.apply === 'itemTaxCategory') {
+    const allowed = (plan.changes as { applicableTo?: string[] }).applicableTo || [];
+    const type = typeof entity.Type === 'string' ? entity.Type : '';
+    if (!allowed.includes(type)) {
+      throw new Error(`Item ${String(entity.Id ?? '')} is type ${type || 'unknown'}; the tax category applies only to ${allowed.join(', ')}. Nothing was posted.`);
+    }
+  }
   const body = { ...(plan.body || {}) };
   body.Id = qboId(entity.Id ?? body.Id, 'Id');
   body.SyncToken = syncToken;

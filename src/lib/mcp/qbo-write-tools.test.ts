@@ -29,3 +29,21 @@ test('qbo_relink_deposit does not advertise requestId, and says retries must pas
   const journal = QBO_WRITE_MCP_TOOLS.find((item) => item.name === 'qbo_journal_entry');
   assert.equal('requestId' in (journal?.inputSchema as { properties: Record<string, unknown> }).properties, true);
 });
+
+test('qbo_item_tax_category preview refuses a goods class on a Service item before building a plan', async () => {
+  const { callQboWriteTool } = await import('./qbo-write-tools.ts');
+  const qboQuery = async (sql: string) => {
+    if (/TaxClassification/.test(sql)) {
+      return { QueryResponse: { TaxClassification: [{ Id: 'EUC-09020802-V1-00120000', Name: 'General taxable retail products', ApplicableTo: ['Inventory', 'NonInventory'] }] } };
+    }
+    return { QueryResponse: { Item: [{ Id: '1010000474', Type: 'Service', SyncToken: '1' }] } };
+  };
+  const got = await callQboWriteTool('qbo_item_tax_category', { itemId: '1010000474', taxClassificationId: 'EUC-09020802-V1-00120000', taxable: true, syncToken: '1' }, { qboQuery, env: {} });
+  assert.equal(got.isError, true);
+  const body = JSON.parse(got.content[0].text as string);
+  assert.equal(body.refused, true);
+  assert.equal(body.wrote, false);
+  assert.match(body.error, /type Service/);
+  const schema = QBO_WRITE_MCP_TOOLS.find((tool) => tool.name === 'qbo_item_tax_category')?.inputSchema as { required?: string[] };
+  assert.deepEqual(schema.required, ['itemId', 'taxClassificationId', 'syncToken']);
+});
