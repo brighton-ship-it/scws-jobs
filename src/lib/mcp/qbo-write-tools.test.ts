@@ -18,3 +18,14 @@ test('write tools describe the gated environment instead of sandbox only', () =>
   const schema = payment?.inputSchema as { properties?: { confirm?: { description?: string } } };
   assert.match(schema?.properties?.confirm?.description || '', /true posts to whatever environment the env vars select/);
 });
+
+test('qbo_relink_deposit does not advertise requestId, and says retries must pass identical arguments', () => {
+  const relink = QBO_WRITE_MCP_TOOLS.find((item) => item.name === 'qbo_relink_deposit');
+  const props = (relink?.inputSchema as { properties: Record<string, unknown> }).properties;
+  assert.equal('requestId' in props, false);
+  assert.equal('batchId' in props, true);
+  assert.match(String(relink?.description), /identical arguments/);
+  assert.doesNotMatch(String(relink?.description), /retry gets new keys/);
+  const journal = QBO_WRITE_MCP_TOOLS.find((item) => item.name === 'qbo_journal_entry');
+  assert.equal('requestId' in (journal?.inputSchema as { properties: Record<string, unknown> }).properties, true);
+});

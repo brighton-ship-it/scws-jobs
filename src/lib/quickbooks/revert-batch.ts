@@ -5,7 +5,9 @@
  * Pending, refused, preview, and failed rows are not writes. A pending row
  * is covered when the same request later recorded ok or failed. An unresolved
  * pending row is reported, because the batch id alone does not identify a
- * QuickBooks entity to undo.
+ * QuickBooks entity to undo. An unknown row (the POST was sent, no answer came
+ * back) may have posted: it is reported in couldNot unless the same request
+ * later recorded ok, and it is never treated as failed.
  */
 import { readBookCloseDate, runQboPlan, type QboAuditStatus, type QboWriteDeps } from './durable-write.ts';
 import { parseBatchId, type QboPlan } from './write-payloads.ts';
@@ -38,7 +40,7 @@ export type RevertStep = {
 };
 
 const PAYMENT_ENTITIES = new Set(['Payment', 'BillPayment']);
-const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed', 'tax_mismatch']);
+const NOT_A_WRITE = new Set<QboAuditStatus>(['pending', 'refused', 'preview', 'failed', 'tax_mismatch', 'unknown']);
 
 export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
   if (!closeDate || !txnDate) return false;
@@ -62,11 +64,35 @@ function settlesRequest(row: BatchAuditRow): boolean {
   return row.ok || Boolean(row.error);
 }
 
-export function planBatchRevert(rows: BatchAuditRow[], closeDate: string | null): { steps: RevertStep[]; couldNot: { entity: string; id: string | null; reason: string }[] } {
+export type DuplicateRow = { auditId: number; entity: string; qboId: string; sameAsAuditId: number; reason: string };
+
+export function planBatchRevert(
+  rows: BatchAuditRow[],
+  closeDate: string | null
+): { steps: RevertStep[]; couldNot: { entity: string; id: string | null; reason: string }[]; duplicates: DuplicateRow[] } {
   const steps: RevertStep[] = [];
+  const duplicates: DuplicateRow[] = [];
+  // A replayed Intuit requestid returns an entity an earlier row already created, so two
+  // ok rows can name the same QuickBooks id. Delete it once, from the earliest row.
+  const firstCreate = new Map<string, number>();
   const couldNot: { entity: string; id: string | null; reason: string }[] = [];
   const settled = new Set(rows.filter(settlesRequest).map((row) => row.requestId as string));
+  const okRequests = new Set(rows.filter((row) => row.status === 'ok' && row.requestId).map((row) => row.requestId as string));
+  const unknownRequests = new Set(rows.filter((row) => row.status === 'unknown' && row.requestId).map((row) => row.requestId as string));
   for (const row of rows) {
+    if (row.status === 'unknown') {
+      if (row.dryRun || !row.confirmed) continue;
+      // A later ok row for the same Intuit requestid is the real outcome, and revert uses that row.
+      if (row.requestId && okRequests.has(row.requestId)) continue;
+      couldNot.push({
+        entity: row.entity,
+        id: row.qboId,
+        reason: 'post outcome unknown (network error or timeout); it may have posted. Read QuickBooks for this entity before reverting',
+      });
+      continue;
+    }
+    // The pending row of an unknown post is reported once, through its unknown row.
+    if (row.status === 'pending' && row.requestId && unknownRequests.has(row.requestId) && !settled.has(row.requestId)) continue;
     if (row.status === 'pending') {
       if (row.dryRun || !row.confirmed) continue;
       const coveredByRequest = Boolean(row.requestId && settled.has(row.requestId));
@@ -101,6 +127,19 @@ export function planBatchRevert(rows: BatchAuditRow[], closeDate: string | null)
       continue;
     }
     if (row.created || row.action === 'create' || row.action === 'attach') {
+      const key = `${row.entity}:${row.qboId}`;
+      const earlier = firstCreate.get(key);
+      if (earlier !== undefined) {
+        duplicates.push({
+          auditId: row.id,
+          entity: row.entity,
+          qboId: row.qboId,
+          sameAsAuditId: earlier,
+          reason: `audit row ${earlier} already created ${row.entity} ${row.qboId}; this row is a replayed response and is not deleted again`,
+        });
+        continue;
+      }
+      firstCreate.set(key, row.id);
       steps.push({
         phase: PAYMENT_ENTITIES.has(row.entity) ? 'delete-payment' : 'delete',
         auditId: row.id,
@@ -126,7 +165,7 @@ export function planBatchRevert(rows: BatchAuditRow[], closeDate: string | null)
   }
   const phaseOrder = { restore: 0, 'delete-payment': 1, delete: 2 };
   steps.sort((a, b) => phaseOrder[a.phase] - phaseOrder[b.phase] || b.auditId - a.auditId);
-  return { steps, couldNot };
+  return { steps, couldNot, duplicates };
 }
 
 function entityPath(entity: string): string {
@@ -174,6 +213,7 @@ export async function runBatchRevert(
       closeDate,
       steps: plan.steps,
       couldNot: plan.couldNot,
+      duplicates: plan.duplicates,
       note: 'Preview only. confirm:true restores updates first, then deletes payments created by the batch, then deletes the other created entities. Closed-period rows are refused.',
     };
   }
@@ -209,7 +249,16 @@ export async function runBatchRevert(
     }
     results.push({ ...step, status: 'reverted', ids: result.ids });
   }
-  return { ok: couldNot.length === 0, dryRun: false, wrote: results.some((item) => item.status === 'reverted'), batchId, closeDate, results, couldNot };
+  return {
+    ok: couldNot.length === 0,
+    dryRun: false,
+    wrote: results.some((item) => item.status === 'reverted'),
+    batchId,
+    closeDate,
+    results,
+    couldNot,
+    duplicates: plan.duplicates,
+  };
 }
 
 function stripMeta(entity: Record<string, unknown>): Record<string, unknown> {
@@ -252,6 +301,6 @@ function rowFromDb(row: Record<string, unknown>): BatchAuditRow {
 }
 
 function auditStatus(value: unknown): QboAuditStatus | null {
-  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch') return value;
+  if (value === 'preview' || value === 'pending' || value === 'refused' || value === 'ok' || value === 'failed' || value === 'tax_mismatch' || value === 'unknown') return value;
   return null;
 }
