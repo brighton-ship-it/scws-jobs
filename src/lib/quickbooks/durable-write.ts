@@ -5,7 +5,11 @@
  * A real post requires confirm:true and QBO_WRITES_ENABLED=true.
  * Sandbox is the default. Production also requires QBO_WRITE_ENVIRONMENT=production
  * and QBO_WRITE_PRODUCTION_REALM_ID equal to the connected realm.
- * Every confirm is audited before the post. Deletes happen only inside qbo_revert_batch.
+ * Every confirm is audited before the post (status pending) and again with the
+ * response (status ok or failed). Both rows use the gate environment and the
+ * batch id. A refused confirm is status refused and does not post. ok=false
+ * on a pending or refused row is not a QuickBooks failure.
+ * Deletes happen only inside qbo_revert_batch.
  */
 import { createClient } from '@supabase/supabase-js';
 import { productionWriteAccessToken } from './durable-read.ts';
@@ -37,6 +41,9 @@ export type SbClient = {
   from(table: string): any;
 };
 
+/** preview and refused never post. pending is the pre-write row. failed is a QuickBooks error. */
+export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed';
+
 export type QboAuditEntry = {
   actor: string;
   tool: string;
@@ -45,6 +52,8 @@ export type QboAuditEntry = {
   confirmed: boolean;
   ok: boolean;
   refused: boolean;
+  /** Distinguishes a pre-write or refused row from a QuickBooks failure. ok=false is not enough. */
+  status: QboAuditStatus;
   realmId: string | null;
   environment: QboWriteEnvironment;
   entity: string;
@@ -171,6 +180,7 @@ export async function insertQboAudit(client: SbClient, entry: QboAuditEntry): Pr
     refused: entry.refused,
     realm_id: entry.realmId,
     environment: entry.environment,
+    status: entry.status,
     entity: entry.entity,
     payload: cap(entry.payload),
     qbo_response: cap(entry.qboResponse),
@@ -417,27 +427,32 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   const batchId = parseBatchId(args.batchId);
   base.batchId = batchId;
   const fetchImpl = deps.fetchImpl || fetch;
+  // environment and batchId are applied after the caller's fields so a pre-write
+  // row cannot be stored as sandbox, or without the batch id that was passed.
+  const logged = (status: QboAuditStatus, fields: Partial<QboAuditEntry> = {}): QboAuditEntry => ({
+    actor,
+    tool: plan.tool,
+    requestId,
+    dryRun: !confirm,
+    confirmed: confirm,
+    realmId: gate.realmId,
+    entity: plan.entity,
+    payload: null,
+    qboResponse: null,
+    qboIds: {},
+    error: null,
+    reason: plan.reason || null,
+    ...fields,
+    ok: status === 'ok' || status === 'preview',
+    refused: status === 'refused',
+    status,
+    environment: gate.environment,
+    batchId,
+  });
 
   if (!confirm) {
     const audit = await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: true,
-        confirmed: false,
-        ok: true,
-        refused: false,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        batchId,
-        payload: { http: base.http, changes: plan.changes ?? null, reason: plan.reason || null },
-        qboResponse: null,
-        qboIds: {},
-        error: null,
-        reason: plan.reason || null,
-      },
+      logged('preview', { payload: { http: base.http, changes: plan.changes ?? null, reason: plan.reason || null } }),
       deps,
       false
     );
@@ -447,24 +462,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   if (!gate.enabled || !gate.realmId) {
     const error = gate.blockedReason || 'QBO writes are off.';
     const audit = await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: true,
-        confirmed: true,
-        ok: false,
-        refused: true,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        batchId,
-        payload: { http: base.http, changes: plan.changes ?? null },
-        qboResponse: null,
-        qboIds: {},
-        error,
-        reason: plan.reason || null,
-      },
+      logged('refused', { dryRun: true, error, payload: { http: base.http, changes: plan.changes ?? null } }),
       deps,
       false
     );
@@ -477,101 +475,27 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   }
   if (!productionRealmId) {
     const error = 'Refusing QBO write until the production realm id can be read and compared.';
-    await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: true,
-        confirmed: true,
-        ok: false,
-        refused: true,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        batchId,
-        payload: { http: base.http },
-        qboResponse: null,
-        qboIds: {},
-        error,
-        reason: plan.reason || null,
-      },
-      deps,
-      false
-    );
+    await remember(logged('refused', { dryRun: true, error, payload: { http: base.http } }), deps, false);
     return { ...base, dryRun: true, refused: true, error, audit: { attempted: true } };
   }
   if (gate.environment === 'production' && productionRealmId !== gate.realmId) {
     const error = 'Refusing QBO write: QBO_WRITE_PRODUCTION_REALM_ID does not equal the connected realm.';
-    await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: true,
-        confirmed: true,
-        ok: false,
-        refused: true,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        payload: { http: base.http },
-        qboResponse: null,
-        qboIds: {},
-        error,
-        reason: plan.reason || null,
-        batchId,
-      },
-      deps,
-      false
-    );
+    await remember(logged('refused', { dryRun: true, error, payload: { http: base.http } }), deps, false);
     return { ...base, dryRun: true, refused: true, error, audit: { attempted: true } };
   }
   if (gate.environment !== 'production' && productionRealmId === gate.realmId) {
     const error = 'Refusing QBO write: QBO_WRITE_REALM_ID is the production company.';
-    await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: true,
-        confirmed: true,
-        ok: false,
-        refused: true,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        batchId,
-        payload: { http: base.http },
-        qboResponse: null,
-        qboIds: {},
-        error,
-        reason: plan.reason || null,
-      },
-      deps,
-      false
-    );
+    await remember(logged('refused', { dryRun: true, error, payload: { http: base.http } }), deps, false);
     return { ...base, dryRun: true, refused: true, error, audit: { attempted: true } };
   }
 
+  // Intent row, written before the post so a missing audit blocks the write.
+  // ok stays false until the response row. status pending keeps it from looking like a failure.
   await remember(
-    {
-      actor,
-      tool: plan.tool,
-      requestId,
-      dryRun: false,
-      confirmed: true,
-      ok: false,
-      refused: false,
-      realmId: gate.realmId,
-      environment: 'sandbox',
-      entity: plan.entity,
+    logged('pending', {
+      action: plan.action,
       payload: { http: base.http, changes: plan.changes ?? null, reason: plan.reason || null },
-      qboResponse: null,
-      qboIds: {},
-      error: null,
-      reason: plan.reason || null,
-    },
+    }),
     deps,
     true
   );
@@ -583,7 +507,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     const got = await qboFetch(writeUrl(gate.baseUrl, gate.realmId, plan.read.path, { minorversion: MINOR_VERSION }), token, fetchImpl);
     if (got.status < 200 || got.status >= 300) {
       const error = `QuickBooks read before write failed (${got.status}). Nothing was posted.`;
-      await remember(failEntry(base, error, got.json), deps, false);
+      await remember(failEntry(base, plan.entity, error, got.json), deps, false);
       return { ...base, error, qbo: slim(plan.entity, got.json), audit: { attempted: true } };
     }
     const fetchedEntity = (got.json && (got.json[plan.entity] || got.json)) || null;
@@ -598,24 +522,12 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   if (posted.status < 200 || posted.status >= 300) {
     const error = `QuickBooks ${plan.path} failed (${posted.status}).`;
     await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: false,
-        confirmed: true,
-        ok: false,
-        refused: false,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        batchId,
+      logged('failed', {
         payload: { http, reason: plan.reason || null },
         qboResponse: cap(posted.json),
         qboIds: ids,
         error,
-        reason: plan.reason || null,
-      },
+      }),
       deps,
       false
     );
@@ -624,18 +536,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   let auditError: string | undefined;
   try {
     await remember(
-      {
-        actor,
-        tool: plan.tool,
-        requestId,
-        dryRun: false,
-        confirmed: true,
-        ok: true,
-        refused: false,
-        realmId: gate.realmId,
-        environment: gate.environment,
-        entity: plan.entity,
-        batchId,
+      logged('ok', {
         action: plan.action,
         created: plan.action === 'create' || plan.action === 'attach',
         priorState,
@@ -644,9 +545,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
         payload: { http, reason: plan.reason || null },
         qboResponse: cap(posted.json),
         qboIds: ids,
-        error: null,
-        reason: plan.reason || null,
-      },
+      }),
       deps,
       true
     );
@@ -666,7 +565,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   };
 }
 
-function failEntry(base: QboWriteResult, error: string, qbo: unknown): QboAuditEntry {
+function failEntry(base: QboWriteResult, entity: string, error: string, qbo: unknown): QboAuditEntry {
   return {
     actor: base.actor,
     tool: base.tool,
@@ -675,9 +574,10 @@ function failEntry(base: QboWriteResult, error: string, qbo: unknown): QboAuditE
     confirmed: true,
     ok: false,
     refused: false,
+    status: 'failed',
     realmId: base.target.realmId,
     environment: base.target.environment,
-    entity: base.tool,
+    entity,
     batchId: base.batchId,
     payload: { http: base.http },
     qboResponse: cap(qbo),
