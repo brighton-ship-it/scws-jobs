@@ -23,12 +23,21 @@
  *   would otherwise tax the Anza shop. Two different properties on one invoice
  *   block it instead of picking the first.
  * - A Jobber discount is a negative line so the total is not the pre-discount sum.
- *   A negative line Jobber taxed (a warranty credit) is TaxCodeRef TAX. A discount
+ *   A negative line Jobber taxed (a warranty credit) stays TAX when that matches
+ *   Jobber within $0.01. Invoice 6030 is that case. When taxable would not match,
+ *   including a negative taxable sum or a Jobber tax of $0, the line is sent NON.
+ *   Invoice 5898 is a $200 untaxed line plus a taxable -$50 line and $0 tax, so
+ *   the -$50 is NON. negativeLinesNonTaxable forces NON on one invoice. A discount
  *   is TAX or NON, whichever makes the tax match Jobber within $0.01. Invoice 6072
  *   ($21,742.52, $1,000 discount, tax $1,685.05) stays NON. Invoice 6007
  *   ($6,356, $500 discount, tax $453.84) is TAX; a non-taxable discount would be
  *   $492.59. If neither side is within $0.01 the invoice is refused. discountTaxable
  *   forces one side. A discount on an invoice with no tax stays NON.
+ * - Before a create, each TAX line's QuickBooks item is read. An exempt tax
+ *   category (EUC-99990101, seller-exempt) or an item QuickBooks will not tax
+ *   blocks that invoice. The tax computed from the line flags and the tax code
+ *   rate must be within $0.01 of Jobber. Confirm uses the same checks and does
+ *   not create the invoice when they fail.
  * - EmailStatus is never set
  *
  * ServiceDate is not copied: the invoice line we can read does not carry the visit date.
@@ -161,6 +170,12 @@ export type ImportInvoicePlan = {
   absorb?: AbsorbTaxShortfall | null;
   /** Which discount tax treatment was used, and the tax each way. Null when there is no discount. */
   discountTax?: DiscountTaxPreview | null;
+  /** How negative lines Jobber marked taxable were sent. Null when there are none. */
+  negativeLineTax?: NegativeLineTaxPreview | null;
+  /** Sum of TAX line amounts QuickBooks will actually tax. Exempt and non-taxable items contribute 0. */
+  expectedTaxableAmount?: number | null;
+  /** Tax from expectedTaxableAmount and the tax code rate. Null when the rate is unknown and the base is not zero. */
+  expectedTax?: number | null;
   /** One entry per Jobber line. fallbackItemUsed is true only when the id came from a fallback rule. */
   lines?: ImportLinePreview[];
 };
@@ -176,11 +191,44 @@ export type DiscountTaxPreview = {
   forced: boolean;
 };
 
+export type NegativeLineTaxPreview = {
+  /** Side sent for negative lines Jobber marked taxable. */
+  taxable: boolean;
+  taxCode: 'TAX' | 'NON';
+  forced: boolean;
+  /** Tax on the positive taxable lines plus those negative lines, before the invoice-level discount. Null when no rate was available. */
+  taxIfTaxable: number | null;
+  /** Tax on the positive taxable lines only. */
+  taxIfNon: number | null;
+};
+
 export type ImportLinePreview = {
   name: string;
   itemId: string | null;
   fallbackItemUsed: boolean;
+  /** QuickBooks TaxClassificationRef value for this line's item. Null when the item was not read or has no category. */
+  itemTaxCategory: string | null;
+  /** Amount of this line included in the taxable base QuickBooks will compute. 0 when the line is NON or the item will not be taxed. */
+  expectedTaxableAmount: number;
 };
+
+/**
+ * Tax categories QuickBooks leaves out of the taxable base even on a TAX line.
+ * EUC-99990101 is the seller-exempt product. EUC-99990201 is the nontaxable service
+ * paired with taxable service EUC-99990202.
+ */
+export const EXEMPT_TAX_CATEGORY_PREFIXES = ['EUC-99990101', 'EUC-99990201'] as const;
+
+export type ItemTaxSnapshot = {
+  id: string;
+  name: string | null;
+  /** Null when QuickBooks did not return the Taxable flag. */
+  taxable: boolean | null;
+  taxClassificationId: string | null;
+  taxClassificationName: string | null;
+};
+
+const TAX_MATCH = 0.01 + 1e-9;
 
 const DEPOSIT_WARNING =
   'payments: "deposit" links onto a deposit that may already credit 4010 Sales. That records the invoice income a second time. Use qbo_relink_deposit to replace that sales line, or payments: "payout" to make a new deposit with a fee line.';
@@ -607,8 +655,8 @@ export function qboItemIdForLineName(name: string, itemIds: Record<string, strin
 
 /**
  * Pick TAX or NON for the synthetic discount line. taxableBase is the sum of
- * lines Jobber already marked taxable (negative credits included). rate is a
- * decimal such as 0.0775. Neither match within $0.01 is an error.
+ * lines that will be sent as TAX (negative credits only when they stay taxable).
+ * rate is a decimal such as 0.0775. Neither match within $0.01 is an error.
  */
 export function chooseDiscountTaxable(input: { taxableBase: number; discount: number; jobberTax: number; rate: number }): { taxable: boolean; taxIfNon: number; taxIfTaxable: number; bothMatch: boolean } | { error: string; taxIfNon: number; taxIfTaxable: number; bothMatch: false } {
   const taxIfNon = money(input.taxableBase * input.rate);
@@ -636,8 +684,160 @@ export function normalizeTaxRate(value: number | null | undefined): number | nul
   return value > 1 ? money(value) / 100 : value;
 }
 
-function taxableLineBase(invoice: JobberInvoiceForQbo): number {
-  return money(invoice.lines.reduce((sum, line) => (line.taxable ? sum + money(line.quantity * line.unitPrice) : sum), 0));
+/**
+ * Whether negative lines Jobber marked taxable should be sent as TAX.
+ * Same $0.01 rule as the invoice-level discount. A warranty credit on a
+ * taxable invoice stays TAX when that is what matches Jobber. A negative
+ * taxable sum, or any treatment that would not match, is sent NON.
+ */
+export function chooseNegativeLineTaxable(input: {
+  positiveTaxable: number;
+  negativeTaxable: number;
+  discount: number;
+  jobberTax: number;
+  rate: number | null;
+  forceNonTaxable?: boolean;
+  discountTaxable?: boolean | null;
+}): { taxable: boolean; forced: boolean; taxIfTaxable: number | null; taxIfNon: number | null } {
+  if (input.forceNonTaxable === true) {
+    return { taxable: false, forced: true, taxIfTaxable: null, taxIfNon: null };
+  }
+  const positive = money(input.positiveTaxable);
+  const negative = money(input.negativeTaxable);
+  const discount = money(Math.max(0, input.discount));
+  const jobber = money(input.jobberTax);
+  const rate = input.rate != null && Number.isFinite(input.rate) ? input.rate : null;
+  if (rate == null) {
+    const base = money(positive + negative);
+    if (base < -0.009) return { taxable: false, forced: false, taxIfTaxable: null, taxIfNon: null };
+    if (jobber <= 0 && base > 0.009) return { taxable: false, forced: false, taxIfTaxable: null, taxIfNon: null };
+    return { taxable: true, forced: false, taxIfTaxable: null, taxIfNon: null };
+  }
+  const taxOn = (base: number) => money(base * rate);
+  const taxIfTaxable = taxOn(money(positive + negative));
+  const taxIfNon = taxOn(positive);
+  const discountSides: boolean[] = input.discountTaxable === true
+    ? [true]
+    : input.discountTaxable === false
+      ? [false]
+      : discount > 0 ? [true, false] : [false];
+  const fitting: Array<{ taxable: boolean; tax: number }> = [];
+  for (const taxable of [true, false]) {
+    for (const discountTaxable of discountSides) {
+      const base = money(positive + (taxable ? negative : 0) - (discountTaxable ? discount : 0));
+      const tax = taxOn(base);
+      if (Math.abs(tax - jobber) <= TAX_MATCH) fitting.push({ taxable, tax });
+    }
+  }
+  if (!fitting.length) return { taxable: false, forced: false, taxIfTaxable, taxIfNon };
+  fitting.sort((a, b) => {
+    const delta = Math.abs(a.tax - jobber) - Math.abs(b.tax - jobber);
+    if (Math.abs(delta) > 1e-9) return delta;
+    if (a.taxable !== b.taxable) return a.taxable ? -1 : 1;
+    return 0;
+  });
+  return { taxable: fitting[0].taxable, forced: false, taxIfTaxable, taxIfNon };
+}
+
+export function isExemptTaxCategory(id: string | null | undefined, name?: string | null): boolean {
+  const code = (id || '').trim().toUpperCase();
+  if (EXEMPT_TAX_CATEGORY_PREFIXES.some((prefix) => code.startsWith(prefix))) return true;
+  return /exempt|non-?taxable|nontaxable/i.test(name || '');
+}
+
+/** Why QuickBooks would ignore TAX on a line that uses this item. Null when the line can be taxed. */
+export function taxLineItemProblem(item: ItemTaxSnapshot): string | null {
+  const who = `QuickBooks item ${item.id}${item.name ? ` (${item.name})` : ''}`;
+  if (isExemptTaxCategory(item.taxClassificationId, item.taxClassificationName)) {
+    const id = item.taxClassificationId || 'unspecified';
+    const category = item.taxClassificationName ? `${id} (${item.taxClassificationName})` : id;
+    return `${who} has exempt tax category ${category}. QuickBooks will leave a TAX line that uses it out of the taxable base.`;
+  }
+  if (item.taxable === false) {
+    return `${who} is non-taxable. QuickBooks will not tax a line that uses it.`;
+  }
+  return null;
+}
+
+export type PlannedTaxCheck = {
+  lines: ImportLinePreview[];
+  expectedTaxableAmount: number;
+  expectedTax: number | null;
+  reason: string | null;
+};
+
+/** Tax QuickBooks will compute from the lines we would send, after exempt and non-taxable items are left out. */
+export function assessImportTax(input: {
+  invoiceLines: Array<{ name: string; amount: number; itemId: string | null; fallbackItemUsed: boolean }>;
+  bodyLines: Array<{ amount: number; taxCode: string | null; itemId: string | null }>;
+  items: Map<string, ItemTaxSnapshot | null>;
+  jobberTax: number;
+  rate: number | null;
+  taxOverride: boolean;
+  absorbExpectedTax: number | null;
+}): PlannedTaxCheck {
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  const push = (text: string) => {
+    if (seen.has(text)) return;
+    seen.add(text);
+    problems.push(text);
+  };
+  const problemFor = (itemId: string | null, taxCode: string | null): string | null => {
+    if (taxCode !== 'TAX' || !itemId) return null;
+    const item = input.items.get(itemId);
+    return item ? taxLineItemProblem(item) : null;
+  };
+  const lines = input.invoiceLines.map((line, index) => {
+    const body = input.bodyLines[index];
+    const taxCode = body?.taxCode ?? null;
+    const item = line.itemId ? input.items.get(line.itemId) ?? null : null;
+    const problem = problemFor(line.itemId, taxCode);
+    if (problem) push(problem);
+    const amount = body ? body.amount : line.amount;
+    return {
+      name: line.name,
+      itemId: line.itemId,
+      fallbackItemUsed: line.fallbackItemUsed,
+      itemTaxCategory: item?.taxClassificationId ?? null,
+      expectedTaxableAmount: taxCode === 'TAX' && !problem ? money(amount) : 0,
+    };
+  });
+  let base = 0;
+  for (const body of input.bodyLines) {
+    if (body.taxCode !== 'TAX') continue;
+    const problem = problemFor(body.itemId, body.taxCode);
+    if (problem) {
+      push(problem);
+      continue;
+    }
+    base = money(base + body.amount);
+  }
+  const absorb = input.absorbExpectedTax != null;
+  const target = absorb ? money(input.absorbExpectedTax || 0) : money(input.jobberTax);
+  const targetLabel = absorb ? 'expected QuickBooks tax' : 'Jobber tax';
+  let expectedTax: number | null = null;
+  if (base < -0.009) {
+    push(`Taxable amount ${money(base)} is negative, so QuickBooks would not match ${targetLabel} ${target}.`);
+    expectedTax = input.rate != null ? money(base * input.rate) : null;
+  } else if (Math.abs(base) <= 0.009) {
+    expectedTax = 0;
+  } else if (input.rate != null) {
+    expectedTax = money(base * input.rate);
+  }
+  if (!input.taxOverride && expectedTax != null && Math.abs(expectedTax - target) > TAX_MATCH) {
+    push(`Computed tax ${expectedTax} on taxable amount ${money(base)} does not match ${targetLabel} ${target} within $0.01.`);
+  }
+  return { lines, expectedTaxableAmount: money(base), expectedTax, reason: problems.length ? problems.join(' ') : null };
+}
+
+function taxableLineBase(invoice: JobberInvoiceForQbo, negativeTaxable: boolean): number {
+  return money(invoice.lines.reduce((sum, line) => {
+    const amount = money(line.quantity * line.unitPrice);
+    if (!line.taxable) return sum;
+    if (amount < 0 && !negativeTaxable) return sum;
+    return sum + amount;
+  }, 0));
 }
 
 function previewFromChoice(choice: { taxable?: boolean; taxIfNon: number; taxIfTaxable: number; bothMatch: boolean }, forced: boolean, code: 'TAX' | 'NON' | null): DiscountTaxPreview {
@@ -655,13 +855,14 @@ function discountTaxCode(
   invoice: JobberInvoiceForQbo,
   discountAmount: number,
   discountTaxable: boolean | null | undefined,
-  taxRate: number | null | undefined
+  taxRate: number | null | undefined,
+  taxableBase: number
 ): { code: 'TAX' | 'NON'; preview: DiscountTaxPreview } | { error: string; preview: DiscountTaxPreview } {
   const rate = normalizeTaxRate(taxRate);
   const computed = rate == null
     ? null
     : chooseDiscountTaxable({
-      taxableBase: taxableLineBase(invoice),
+      taxableBase,
       discount: discountAmount,
       jobberTax: money(invoice.taxAmount),
       rate,
@@ -694,24 +895,73 @@ function discountTaxCode(
   return { code, preview: previewFromChoice(computed, false, code) };
 }
 
+type InvoiceBuildOptions = {
+  taxOverride?: boolean;
+  discountItemId?: string | null;
+  batchId?: string | null;
+  holdTaxCode?: boolean;
+  absorb?: AbsorbTaxShortfall | null;
+  discountTaxable?: boolean | null;
+  taxRate?: number | null;
+  negativeLinesNonTaxable?: boolean | null;
+};
+
+type BuiltInvoice = {
+  body: Record<string, unknown> | null;
+  missingItems: string[];
+  negativeTaxableLines: number;
+  discountAmount: number;
+  memo: MemoReport;
+  error?: string;
+  discountTax: DiscountTaxPreview | null;
+  negativeLineTax: NegativeLineTaxPreview | null;
+};
+
 export function buildJobberSyncedInvoice(
   invoice: JobberInvoiceForQbo,
   customerId: string,
   itemsByName: Record<string, string>,
   txnTaxCodeId: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; batchId?: string | null; holdTaxCode?: boolean; absorb?: AbsorbTaxShortfall | null; discountTaxable?: boolean | null; taxRate?: number | null } = {}
-): { body: Record<string, unknown> | null; missingItems: string[]; negativeTaxableLines: number; discountAmount: number; memo: MemoReport; error?: string; discountTax: DiscountTaxPreview | null } {
+  options: InvoiceBuildOptions = {}
+): BuiltInvoice {
   const memo = memoReport(invoice.message);
   const missing = [...new Set(invoice.lines.map((line) => line.name).filter((name) => name && !qboItemIdForLineName(name, itemsByName)))];
   if (missing.length || !invoice.lines.length) {
-    return { body: null, missingItems: missing.length ? missing : ['(no lines)'], negativeTaxableLines: 0, discountAmount: 0, memo, discountTax: null };
+    return { body: null, missingItems: missing.length ? missing : ['(no lines)'], negativeTaxableLines: 0, discountAmount: 0, memo, discountTax: null, negativeLineTax: null };
   }
+  const lineAmounts = invoice.lines.map((line) => money(line.quantity * line.unitPrice));
+  const statedDiscount = money(Math.max(0, invoice.discountAmount || 0));
+  const negativeAlready = money(lineAmounts.filter((amount) => amount < 0).reduce((sum, amount) => sum + amount, 0));
+  const discountAmount = statedDiscount > 0 && Math.abs(negativeAlready + statedDiscount) > 0.009 ? statedDiscount : 0;
+  const positiveTaxable = money(lineAmounts.reduce((sum, amount, index) => (invoice.lines[index].taxable && amount > 0 ? sum + amount : sum), 0));
+  const negativeTaxable = money(lineAmounts.reduce((sum, amount, index) => (invoice.lines[index].taxable && amount < 0 ? sum + amount : sum), 0));
+  const hasNegativeTaxable = negativeTaxable < -0.009;
+  const negativeDecision = hasNegativeTaxable
+    ? chooseNegativeLineTaxable({
+      positiveTaxable,
+      negativeTaxable,
+      discount: discountAmount,
+      jobberTax: money(invoice.taxAmount),
+      rate: normalizeTaxRate(options.taxRate),
+      forceNonTaxable: options.negativeLinesNonTaxable === true,
+      discountTaxable: options.discountTaxable,
+    })
+    : null;
+  const negativeLineTax: NegativeLineTaxPreview | null = negativeDecision
+    ? {
+      taxable: negativeDecision.taxable,
+      taxCode: negativeDecision.taxable ? 'TAX' : 'NON',
+      forced: negativeDecision.forced,
+      taxIfTaxable: negativeDecision.taxIfTaxable,
+      taxIfNon: negativeDecision.taxIfNon,
+    }
+    : null;
+  const negativeIsTaxable = negativeDecision ? negativeDecision.taxable : true;
   let negativeTaxableLines = 0;
-  const lineAmounts: number[] = [];
-  const lines = invoice.lines.map((line) => {
-    const amount = money(line.quantity * line.unitPrice);
-    lineAmounts.push(amount);
+  const lines = invoice.lines.map((line, index) => {
+    const amount = lineAmounts[index];
     if (line.taxable && amount < 0) negativeTaxableLines += 1;
+    const sendTaxable = line.taxable && (amount < 0 ? negativeIsTaxable : true);
     const itemId = qboItemIdForLineName(line.name, itemsByName);
     return {
       Amount: amount,
@@ -721,28 +971,25 @@ export function buildJobberSyncedInvoice(
         ItemRef: { value: itemId || '' },
         Qty: line.quantity,
         UnitPrice: money(line.unitPrice),
-        TaxCodeRef: { value: line.taxable ? 'TAX' : 'NON' },
+        TaxCodeRef: { value: sendTaxable ? 'TAX' : 'NON' },
       },
     };
   });
-  const statedDiscount = money(Math.max(0, invoice.discountAmount || 0));
-  const negativeAlready = money(lineAmounts.filter((amount) => amount < 0).reduce((sum, amount) => sum + amount, 0));
-  const discountAmount = statedDiscount > 0 && Math.abs(negativeAlready + statedDiscount) > 0.009 ? statedDiscount : 0;
   let discountTax: DiscountTaxPreview | null = null;
   if (discountAmount > 0) {
     const discountKey = Object.keys(itemsByName).find((name) => name.trim().toLowerCase() === 'discount');
     const positive = invoice.lines.find((line) => line.quantity * line.unitPrice > 0);
     const discountItem = options.discountItemId || (discountKey ? itemsByName[discountKey] : '') || (positive ? qboItemIdForLineName(positive.name, itemsByName) : '') || '';
     if (!discountItem) {
-      return { body: null, missingItems: ['Discount'], negativeTaxableLines, discountAmount, memo, discountTax: null };
+      return { body: null, missingItems: ['Discount'], negativeTaxableLines, discountAmount, memo, discountTax: null, negativeLineTax };
     }
     if (money(lineAmounts.reduce((sum, amount) => sum + amount, 0) - discountAmount) < 0) {
-      return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax: null, error: 'Discount is larger than the line total.' };
+      return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax: null, negativeLineTax, error: 'Discount is larger than the line total.' };
     }
-    const decided = discountTaxCode(invoice, discountAmount, options.discountTaxable, options.taxRate);
+    const decided = discountTaxCode(invoice, discountAmount, options.discountTaxable, options.taxRate, taxableLineBase(invoice, negativeIsTaxable));
     discountTax = decided.preview;
     if ('error' in decided) {
-      return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax, error: decided.error };
+      return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax, negativeLineTax, error: decided.error };
     }
     lines.push({
       Amount: money(-discountAmount),
@@ -794,7 +1041,7 @@ export function buildJobberSyncedInvoice(
   }
   const privateNote = privateNoteWithBatch(undefined, options.batchId);
   if (privateNote) body.PrivateNote = privateNote;
-  return { body, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax };
+  return { body, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax, negativeLineTax };
 }
 
 export function classifyJobberInvoice(
@@ -804,7 +1051,7 @@ export function classifyJobberInvoice(
   itemsByName: Record<string, string>,
   txnTaxCodeId: string | null,
   taxReason?: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; countyRates?: CountyRateIds; holdTaxCode?: boolean; absorb?: AbsorbTaxShortfall | null; discountTaxable?: boolean | null; taxRate?: number | null } = {}
+  options: InvoiceBuildOptions & { createCustomer?: boolean; countyRates?: CountyRateIds } = {}
 ): ImportInvoicePlan {
   const paymentLines = jobberPaymentLines(invoice);
   const base = {
@@ -854,10 +1101,10 @@ export function classifyJobberInvoice(
   }
   const built = buildJobberSyncedInvoice(invoice, customerId || '', itemsByName, txnTaxCodeId, options);
   if (built.error) {
-    return { ...base, status: 'blocked', reason: built.error, body: null, negativeTaxableLines: built.negativeTaxableLines, discountAmount: built.discountAmount, memo: built.memo, discountTax: built.discountTax };
+    return { ...base, status: 'blocked', reason: built.error, body: null, negativeTaxableLines: built.negativeTaxableLines, discountAmount: built.discountAmount, memo: built.memo, discountTax: built.discountTax, negativeLineTax: built.negativeLineTax };
   }
   if (!built.body) {
-    return { ...base, status: 'blocked', reason: `Missing QuickBooks items: ${built.missingItems.join(', ')}`, body: null, negativeTaxableLines: built.negativeTaxableLines, memo: built.memo, discountTax: built.discountTax };
+    return { ...base, status: 'blocked', reason: `Missing QuickBooks items: ${built.missingItems.join(', ')}`, body: null, negativeTaxableLines: built.negativeTaxableLines, memo: built.memo, discountTax: built.discountTax, negativeLineTax: built.negativeLineTax };
   }
   return {
     ...base,
@@ -871,6 +1118,7 @@ export function classifyJobberInvoice(
     holdTaxCode: options.holdTaxCode === true,
     absorb: options.absorb || null,
     discountTax: built.discountTax,
+    negativeLineTax: built.negativeLineTax,
   };
 }
 
@@ -919,6 +1167,13 @@ function optionalDiscountTaxable(value: unknown): boolean | null {
   if (value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')) return true;
   if (value === false || (typeof value === 'string' && value.trim().toLowerCase() === 'false')) return false;
   throw new Error('discountTaxable must be true or false.');
+}
+
+function optionalNegativeLinesNonTaxable(value: unknown): boolean | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true')) return true;
+  if (value === false || (typeof value === 'string' && value.trim().toLowerCase() === 'false')) return false;
+  throw new Error('negativeLinesNonTaxable must be true or false.');
 }
 
 function optionalTaxRate(value: unknown): number | null {
@@ -981,6 +1236,51 @@ export async function absorbItemProblem(itemId: string, query: (sql: string) => 
   return null;
 }
 
+function salesTaxLines(body: Record<string, unknown> | null): Array<{ amount: number; taxCode: string | null; itemId: string | null }> {
+  const lines = Array.isArray(body?.Line) ? body.Line as Array<Record<string, unknown>> : [];
+  return lines.filter((line) => line.DetailType === 'SalesItemLineDetail').map((line) => {
+    const detail = line.SalesItemLineDetail as { ItemRef?: { value?: unknown }; TaxCodeRef?: { value?: unknown } } | undefined;
+    const rawId = detail?.ItemRef?.value;
+    const rawCode = detail?.TaxCodeRef?.value;
+    return {
+      amount: money(Number(line.Amount) || 0),
+      taxCode: rawCode == null || String(rawCode).trim() === '' ? null : String(rawCode),
+      itemId: rawId == null || String(rawId).trim() === '' ? null : String(rawId).trim(),
+    };
+  });
+}
+
+function itemTaxSnapshot(row: Record<string, unknown>): ItemTaxSnapshot {
+  const ref = row.TaxClassificationRef;
+  const refObj = ref && typeof ref === 'object' ? ref as { value?: unknown; name?: unknown } : null;
+  const taxClassificationId = typeof refObj?.value === 'string' && refObj.value.trim() ? refObj.value.trim() : null;
+  const taxClassificationName = typeof refObj?.name === 'string' && refObj.name.trim() ? refObj.name.trim() : null;
+  return {
+    id: String(row.Id),
+    name: typeof row.Name === 'string' && row.Name.trim() ? row.Name.trim() : null,
+    taxable: typeof row.Taxable === 'boolean' ? row.Taxable : null,
+    taxClassificationId,
+    taxClassificationName,
+  };
+}
+
+async function loadItemTaxSnapshots(
+  ids: string[],
+  query: (sql: string) => Promise<unknown>,
+  cache: Map<string, ItemTaxSnapshot | null>
+): Promise<void> {
+  for (const id of ids) {
+    if (cache.has(id)) continue;
+    if (!/^\d{1,20}$/.test(id)) {
+      cache.set(id, null);
+      continue;
+    }
+    const rows = rowsOf(await query(`select * from Item where Id = '${id}'`), 'Item');
+    const row = rows.find((item) => String(item.Id) === id) || null;
+    cache.set(id, row ? itemTaxSnapshot(row) : null);
+  }
+}
+
 function nonNegativeMoney(value: unknown, field: string): number {
   if (value === undefined || value === null || value === '') return 0;
   const n = Number(value);
@@ -1019,9 +1319,10 @@ export async function runJobberInvoiceImport(
   }
   if (absorb && numbers.length !== 1) throw new Error('absorbTaxShortfall applies to one invoice. Pass a single invoiceNumbers entry.');
   const discountTaxable = optionalDiscountTaxable(args.discountTaxable);
+  const negativeLinesNonTaxable = optionalNegativeLinesNonTaxable(args.negativeLinesNonTaxable);
   const explicitTaxRate = optionalTaxRate(args.taxRate);
-  if ((discountTaxable != null || explicitTaxRate != null) && numbers.length !== 1) {
-    throw new Error('discountTaxable and taxRate apply to one invoice. Pass a single invoiceNumbers entry.');
+  if ((discountTaxable != null || explicitTaxRate != null || negativeLinesNonTaxable != null) && numbers.length !== 1) {
+    throw new Error('discountTaxable, taxRate, and negativeLinesNonTaxable apply to one invoice. Pass a single invoiceNumbers entry.');
   }
   const customerIds = idMap(args.customerIds);
   const itemIds = idMap(args.itemIds);
@@ -1050,6 +1351,7 @@ export async function runJobberInvoiceImport(
     if (problem) throw new Error(problem);
   }
   const rateCache = new Map<string, number | null>();
+  const itemTaxCache = new Map<string, ItemTaxSnapshot | null>();
   const plans: ImportInvoicePlan[] = [];
   for (const number of chunk) {
     try {
@@ -1097,8 +1399,7 @@ export async function runJobberInvoiceImport(
       }
       const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, qbo);
       const holdTaxCode = shouldHoldAutomatedSalesTax(invoice.city, cdtfaCities);
-      const needsRate = discountTaxable == null && explicitTaxRate == null && money(invoice.taxAmount) > 0 && money(Math.max(0, invoice.discountAmount || 0)) > 0;
-      const taxRate = needsRate ? await cachedCombinedTaxRate(tax.id, qbo, rateCache) : explicitTaxRate;
+      const taxRate = explicitTaxRate ?? await cachedCombinedTaxRate(tax.id, qbo, rateCache);
       let plan = classifyJobberInvoice(
         invoice,
         new Set(existing.map((row) => String(row.DocNumber))),
@@ -1106,21 +1407,53 @@ export async function runJobberInvoiceImport(
         items,
         tax.id,
         tax.reason,
-        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode, absorb, discountTaxable, taxRate }
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode, absorb, discountTaxable, taxRate, negativeLinesNonTaxable }
       );
       if (ambiguousCustomer) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
       } else if (ambiguousItems.length) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks item matches: ${ambiguousItems.join(', ')}. Pass itemIds.`, body: null };
       }
-      plan = {
-        ...plan,
-        lines: invoice.lines.map((line: { name: string }) => ({
-          name: line.name,
-          itemId: explicitItemId(line.name, items),
-          fallbackItemUsed: fallbackNames.has(line.name),
-        })),
-      };
+      const previewLines = invoice.lines.map((line) => ({
+        name: line.name,
+        amount: money(line.quantity * line.unitPrice),
+        itemId: explicitItemId(line.name, items),
+        fallbackItemUsed: fallbackNames.has(line.name),
+      }));
+      if (plan.status === 'create' && plan.body) {
+        const bodyLines = salesTaxLines(plan.body);
+        const ids = new Set<string>();
+        for (const line of previewLines) if (line.itemId) ids.add(line.itemId);
+        for (const line of bodyLines) if (line.taxCode === 'TAX' && line.itemId) ids.add(line.itemId);
+        await loadItemTaxSnapshots([...ids], qbo, itemTaxCache);
+        const assessed = assessImportTax({
+          invoiceLines: previewLines,
+          bodyLines,
+          items: itemTaxCache,
+          jobberTax: invoice.taxAmount,
+          rate: taxRate,
+          taxOverride,
+          absorbExpectedTax: absorb ? absorb.expectedQboTax : null,
+        });
+        plan = {
+          ...plan,
+          lines: assessed.lines,
+          expectedTaxableAmount: assessed.expectedTaxableAmount,
+          expectedTax: assessed.expectedTax,
+          ...(assessed.reason ? { status: 'blocked' as const, reason: assessed.reason, body: null } : {}),
+        };
+      } else {
+        plan = {
+          ...plan,
+          lines: previewLines.map((line) => ({
+            name: line.name,
+            itemId: line.itemId,
+            fallbackItemUsed: line.fallbackItemUsed,
+            itemTaxCategory: null,
+            expectedTaxableAmount: 0,
+          })),
+        };
+      }
       plans.push(plan);
     } catch (error) {
       if (!isQboRateLimit(error)) throw error;
@@ -1202,7 +1535,12 @@ export async function runJobberInvoiceImport(
         createdCustomers.set(row.customerCreate.displayName, customerId);
       }
     }
-    const invoiceBody = { ...(row.body || {}), ...(customerId ? { CustomerRef: { value: customerId } } : {}) };
+    if (!row.body) {
+      entry.invoice = { wrote: false, id: null, error: row.reason || 'Invoice was refused before create.' };
+      posted.push(entry);
+      continue;
+    }
+    const invoiceBody = { ...row.body, ...(customerId ? { CustomerRef: { value: customerId } } : {}) };
     const invoicePlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Invoice', action: 'create', path: '/invoice', body: invoiceBody };
     const invoiceResult = await runQboPlan(invoicePlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'inv') }, deps);
     if (invoiceResult.wrote) {

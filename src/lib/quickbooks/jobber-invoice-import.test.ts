@@ -297,6 +297,10 @@ test('explicit customer and item ids skip name lookup, and two customers block t
       qboQuery: async (sql: string) => {
         queries.push(sql);
         if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (/Item where Id/i.test(sql)) {
+          const id = sql.match(/Id = '(\d+)'/)?.[1] || '0';
+          return { QueryResponse: { Item: [{ Id: id, Taxable: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000' } }] } };
+        }
         if (sql.includes('DisplayName') || sql.includes('Item')) throw new Error('name lookup');
         return { QueryResponse: {} };
       },
@@ -304,7 +308,7 @@ test('explicit customer and item ids skip name lookup, and two customers block t
     }
   );
   assert.equal((result.invoices as Array<{ status: string }>)[0].status, 'create');
-  assert.equal(queries.some((sql) => sql.includes('DisplayName') || sql.includes('Item')), false);
+  assert.equal(queries.some((sql) => sql.includes('DisplayName') || /Item where Name/i.test(sql)), false);
 
   const ambiguous = await runJobberInvoiceImport(
     { invoiceNumbers: ['5824'] },
@@ -999,6 +1003,50 @@ test('a taxed negative warranty line is TAX, and a discount is chosen per invoic
   assert.equal(warrantyLines[1].Amount, -2314);
   assert.equal(warrantyLines[1].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
 
+  // Same credit with the 7.75% rate: taxable base is $186 and Jobber tax is $14.42. NON would be $193.75.
+  const ratedWarranty = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6030',
+      city: 'Testville',
+      address: testStreet,
+      lines: [
+        { name: '1MS', description: 'Service', quantity: 1, unitPrice: 2500, taxable: true },
+        { name: 'Warranty', description: 'warranty credit', quantity: 1, unitPrice: -2314, taxable: true },
+      ],
+      taxAmount: 14.42,
+      total: 200.42,
+    },
+    '15',
+    { '1MS': '23', Warranty: '5' },
+    '23',
+    { taxRate: 0.0775 }
+  );
+  const ratedLines = (ratedWarranty.body?.Line || []) as Array<{ SalesItemLineDetail: { TaxCodeRef: { value: string } } }>;
+  assert.equal(ratedWarranty.negativeLineTax?.taxCode, 'TAX');
+  assert.equal(ratedLines[1].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
+  const forcedWarranty = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6030',
+      city: 'Testville',
+      address: testStreet,
+      lines: [
+        { name: '1MS', description: 'Service', quantity: 1, unitPrice: 2500, taxable: true },
+        { name: 'Warranty', description: 'warranty credit', quantity: 1, unitPrice: -2314, taxable: true },
+      ],
+      taxAmount: 14.42,
+      total: 200.42,
+    },
+    '15',
+    { '1MS': '23', Warranty: '5' },
+    '23',
+    { taxRate: 0.0775, negativeLinesNonTaxable: true }
+  );
+  const forcedWarrantyLine = (forcedWarranty.body?.Line || []) as Array<{ SalesItemLineDetail: { TaxCodeRef: { value: string } } }>;
+  assert.equal(forcedWarranty.negativeLineTax?.forced, true);
+  assert.equal(forcedWarrantyLine[1].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+
   // #6007: $6,356 taxable, $500 discount, 7.75%. NON would be $492.59. Jobber taxed $453.84, so the discount is TAX.
   const beforeTax = chooseDiscountTaxable({ taxableBase: 6356, discount: 500, jobberTax: 453.84, rate: 0.0775 });
   assert.equal('taxable' in beforeTax && beforeTax.taxable, true);
@@ -1230,7 +1278,8 @@ test('exact item names win over hoist, parts, and labor fallbacks', async () => 
     ['LABOR', '30', true],
   ]);
   assert.equal(queried.some((sql) => sql.includes('Hoist cable')), true);
-  assert.equal(queried.some((sql) => sql.includes("Id = '1519'")), false);
+  const hoistItemReads = queried.filter((sql) => sql.includes("Id = '1519'"));
+  assert.deepEqual(hoistItemReads, ["select * from Item where Id = '1519'"]);
 });
 
 test('an explicit item map is used before the exact-name lookup and the fallback', async () => {
@@ -1409,6 +1458,10 @@ test('discountTaxable and taxRate are refused on a multi-invoice run', async () 
     () => runJobberInvoiceImport({ invoiceNumbers: ['6072', '6007'], discountTaxable: true }, deps),
     /apply to one invoice/
   );
+  await assert.rejects(
+    () => runJobberInvoiceImport({ invoiceNumbers: ['6072', '6007'], negativeLinesNonTaxable: true }, deps),
+    /apply to one invoice/
+  );
 });
 
 test('preview shows the discount choice and fallback lines', async () => {
@@ -1460,4 +1513,200 @@ test('preview shows the discount choice and fallback lines', async () => {
   ]);
   const discount = row.body.Line.find((line) => line.Description === 'Jobber discount');
   assert.equal(discount?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
+});
+
+test('invoice 5898 sends the taxable -$50 discount line as non-taxable and tax 0', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '5898',
+    lines: [
+      { name: '1MS', description: 'service', quantity: 1, unitPrice: 200, taxable: false },
+      { name: 'DISCOUNT', description: 'DISCOUNT', quantity: 1, unitPrice: -50, taxable: true },
+    ],
+    discountAmount: 0,
+    taxAmount: 0,
+    total: 150,
+    paymentsTotal: 0,
+  };
+  const built = buildJobberSyncedInvoice(job, '15', { '1MS': '23', DISCOUNT: '5' }, '3', { taxRate: 0.0775 });
+  const builtLines = (built.body?.Line || []) as Array<{ Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }>;
+  assert.equal(builtLines[1].Amount, -50);
+  assert.equal(builtLines[1].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.equal(built.negativeLineTax?.taxCode, 'NON');
+  assert.equal(built.negativeLineTax?.forced, false);
+  assert.equal(built.negativeTaxableLines, 1);
+
+  const taxableCategory = 'EUC-99990202-V1-00020000';
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('SalesTaxRateList')) return countyCodes;
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (/Item where Id = '23'/.test(sql)) {
+      return { QueryResponse: { Item: [{ Id: '23', Name: '1MS', Taxable: true, TaxClassificationRef: { value: taxableCategory, name: 'Taxable service' } }] } };
+    }
+    if (/Item where Id = '5'/.test(sql)) {
+      return { QueryResponse: { Item: [{ Id: '5', Name: 'MISC', Taxable: true, TaxClassificationRef: { value: taxableCategory, name: 'Taxable service' } }] } };
+    }
+    return { QueryResponse: {} };
+  };
+  const preview = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5898'], taxRate: 0.0775, customerIds: { 'Colleen Baker': '15' }, itemIds: { '1MS': '23', DISCOUNT: '5' } },
+    { qboQuery, loadJobberInvoices: async () => [job], fetchImpl: async () => { throw new Error('preview posted'); } }
+  );
+  const row = (preview.invoices as Array<{
+    status: string;
+    reason: string | null;
+    expectedTax: number | null;
+    expectedTaxableAmount: number;
+    negativeLineTax: { taxCode: string } | null;
+    lines: Array<{ name: string; itemTaxCategory: string | null; expectedTaxableAmount: number }>;
+    body: { Line: Array<{ Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }> };
+  }>)[0];
+  assert.equal(row.status, 'create', row.reason || '');
+  assert.equal(row.negativeLineTax?.taxCode, 'NON');
+  assert.equal(row.expectedTaxableAmount, 0);
+  assert.equal(row.expectedTax, 0);
+  assert.deepEqual(row.lines.map((line) => [line.name, line.itemTaxCategory, line.expectedTaxableAmount]), [
+    ['1MS', taxableCategory, 0],
+    ['DISCOUNT', taxableCategory, 0],
+  ]);
+  assert.equal(row.body.Line[1].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  let posted: Record<string, unknown> | null = null;
+  const confirm = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5898'], taxRate: 0.0775, customerIds: { 'Colleen Baker': '15' }, itemIds: { '1MS': '23', DISCOUNT: '5' }, confirm: true, batchId: 'tax-5898', payments: 'none' },
+    {
+      env,
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      audit: async () => {},
+      qboQuery,
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async (_url, init) => {
+        posted = JSON.parse(String(init?.body));
+        return new Response(JSON.stringify({ Invoice: { Id: '1', SyncToken: '0', DocNumber: '5898', TxnTaxDetail: taxDetail(0, '4') } }), { status: 200 });
+      },
+    }
+  );
+  assert.equal(confirm.wrote, true);
+  const sent = (posted as { Line?: Array<{ Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }> } | null)?.Line || [];
+  assert.equal(sent[1].Amount, -50);
+  assert.equal(sent[1].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+});
+
+test('an exempt tax category on a TAX line is refused before any write', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6038',
+    lines: [
+      { name: '1MS', description: 'service', quantity: 1, unitPrice: 2500, taxable: true },
+      { name: 'Equipment', description: 'pump', quantity: 1, unitPrice: 40000, taxable: true },
+    ],
+    taxAmount: 3293.75,
+    total: 45793.75,
+    paymentsTotal: 0,
+  };
+  const exempt = 'EUC-99990101-V1-00020000';
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('SalesTaxRateList')) return countyCodes;
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (/Item where Id = '844'/.test(sql)) {
+      return { QueryResponse: { Item: [{ Id: '844', Name: 'Equipment', Taxable: true, TaxClassificationRef: { value: exempt, name: 'Seller-exempt product' } }] } };
+    }
+    if (/Item where Id = '23'/.test(sql)) {
+      return { QueryResponse: { Item: [{ Id: '23', Name: '1MS', Taxable: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000', name: 'Taxable service' } }] } };
+    }
+    return { QueryResponse: {} };
+  };
+  const args = {
+    invoiceNumbers: ['6038'],
+    taxRate: 0.0775,
+    customerIds: { 'Colleen Baker': '15' },
+    itemIds: { '1MS': '23', Equipment: '844' },
+  };
+  let posts = 0;
+  const preview = await runJobberInvoiceImport(args, {
+    qboQuery,
+    loadJobberInvoices: async () => [job],
+    fetchImpl: async () => { posts += 1; throw new Error('preview posted'); },
+  });
+  const row = (preview.invoices as Array<{
+    status: string;
+    reason: string | null;
+    body: unknown;
+    expectedTax: number | null;
+    expectedTaxableAmount: number;
+    lines: Array<{ name: string; itemTaxCategory: string | null; expectedTaxableAmount: number }>;
+  }>)[0];
+  assert.equal(posts, 0);
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.body, null);
+  assert.match(row.reason || '', /EUC-99990101/);
+  assert.match(row.reason || '', /3293\.75/);
+  assert.equal(row.expectedTaxableAmount, 2500);
+  assert.equal(row.expectedTax, 193.75);
+  assert.deepEqual(row.lines.map((line) => [line.name, line.itemTaxCategory, line.expectedTaxableAmount]), [
+    ['1MS', 'EUC-99990202-V1-00020000', 2500],
+    ['Equipment', exempt, 0],
+  ]);
+
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  const confirm = await runJobberInvoiceImport(
+    { ...args, confirm: true, batchId: 'tax-6038', payments: 'none' },
+    {
+      env,
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      audit: async () => {},
+      qboQuery,
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { posts += 1; return new Response('{}', { status: 500 }); },
+    }
+  );
+  assert.equal(posts, 0);
+  assert.equal(confirm.wrote, false);
+  assert.equal(confirm.ok, false);
+  assert.equal((confirm.invoices as Array<{ status: string }>)[0].status, 'blocked');
+});
+
+test('a non-taxable QuickBooks item on a TAX line is refused before any write', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6039',
+    lines: [{ name: 'Equipment', description: 'pump', quantity: 1, unitPrice: 1000, taxable: true }],
+    taxAmount: 77.5,
+    total: 1077.5,
+    paymentsTotal: 0,
+  };
+  let posts = 0;
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['6039'], taxRate: 0.0775, customerIds: { 'Colleen Baker': '15' }, itemIds: { Equipment: '844' } },
+    {
+      qboQuery: async (sql: string) => {
+        if (sql.includes('SalesTaxRateList')) return countyCodes;
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (/Item where Id = '844'/.test(sql)) {
+          return { QueryResponse: { Item: [{ Id: '844', Name: 'Equipment', Taxable: false, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000', name: 'Service' } }] } };
+        }
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { posts += 1; throw new Error('preview posted'); },
+    }
+  );
+  const row = (result.invoices as Array<{ status: string; reason: string | null; body: unknown; lines: Array<{ itemTaxCategory: string | null; expectedTaxableAmount: number }> }>)[0];
+  assert.equal(posts, 0);
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.body, null);
+  assert.match(row.reason || '', /non-taxable/);
+  assert.equal(row.lines[0].itemTaxCategory, 'EUC-99990202-V1-00020000');
+  assert.equal(row.lines[0].expectedTaxableAmount, 0);
 });
