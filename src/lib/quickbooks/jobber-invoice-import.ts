@@ -488,7 +488,8 @@ export function buildJobberSyncedInvoice(
   const negativeAlready = money(lineAmounts.filter((amount) => amount < 0).reduce((sum, amount) => sum + amount, 0));
   const discountAmount = statedDiscount > 0 && Math.abs(negativeAlready + statedDiscount) > 0.009 ? statedDiscount : 0;
   if (discountAmount > 0) {
-    const discountItem = options.discountItemId || itemsByName.Discount || itemsByName[invoice.lines.find((line) => line.quantity * line.unitPrice > 0)?.name || ''] || '';
+    const discountKey = Object.keys(itemsByName).find((name) => name.trim().toLowerCase() === 'discount');
+    const discountItem = options.discountItemId || (discountKey ? itemsByName[discountKey] : '') || itemsByName[invoice.lines.find((line) => line.quantity * line.unitPrice > 0)?.name || ''] || '';
     if (!discountItem) {
       return { body: null, missingItems: ['Discount'], negativeTaxableLines, discountAmount, memo };
     }
@@ -691,6 +692,7 @@ export async function runJobberInvoiceImport(
   const overrideId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : null;
   const overrideExists = overrideId ? await taxCodeIdExists(overrideId, qbo) : false;
   const customerTax = new Map<string, string | null>();
+  let discountLookup: string | null | undefined;
   const countyRates = await loadCountyRateIds(qbo);
   const plans: ImportInvoicePlan[] = [];
   for (const number of chunk) {
@@ -716,6 +718,10 @@ export async function runJobberInvoiceImport(
         const found = rowsOf(await qbo(`select Id, Name from Item where Name = ${sqlString(name)}`), 'Item');
         if (found.length > 1) ambiguousItems.push(name);
         else if (found[0]?.Id != null) items[name] = String(found[0].Id);
+      }
+      if (!discountItemId && (invoice.discountAmount || 0) > 0 && !Object.keys(items).some((name) => name.trim().toLowerCase() === 'discount')) {
+        if (discountLookup === undefined) discountLookup = await findDiscountItem(qbo);
+        if (discountLookup) items.Discount = discountLookup;
       }
       const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, qbo);
       let plan = classifyJobberInvoice(
@@ -1122,4 +1128,11 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
     });
   }
   return out;
+}
+
+/** The one active QuickBooks item named "discount" in any case (QBO's Name filter ignores case), or null. */
+export async function findDiscountItem(qbo: (sql: string) => Promise<unknown>): Promise<string | null> {
+  const found = rowsOf(await qbo(`select Id, Name, Active from Item where Name = 'Discount'`), 'Item')
+    .filter((row) => typeof row.Name === 'string' && row.Name.trim().toLowerCase() === 'discount' && row.Active !== false);
+  return found.length === 1 && found[0].Id != null ? String(found[0].Id) : null;
 }

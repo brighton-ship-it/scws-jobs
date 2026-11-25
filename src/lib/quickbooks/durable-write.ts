@@ -21,8 +21,11 @@ import {
   idempotencyPayload,
   parseBatchId,
   resolveRequestId,
+  savedTaxCode,
+  taxableAmountOfBody,
   type QboPlan,
 } from './write-payloads.ts';
+import { COUNTY_RATE_ID_BY_TAX_CODE, COUNTY_RATE_IDS } from './tax-codes.ts';
 
 const MINOR_VERSION = '75';
 const TOKEN_URL = 'https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer';
@@ -47,7 +50,7 @@ export type SbClient = {
  * 408/500/502/503/504 status). QuickBooks may have saved it. Revert and
  * reconciliation must treat it as possibly written, never as failed.
  */
-export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed' | 'tax_mismatch' | 'unknown';
+export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed' | 'tax_mismatch' | 'unknown' | 'tax_code_changed';
 
 /**
  * HTTP statuses where the request may have reached QuickBooks and been saved.
@@ -130,7 +133,20 @@ export type QboWriteResult = {
   reason?: string;
   /** The POST was sent but the result is not known. QuickBooks may have saved it. */
   outcomeUnknown?: boolean;
+  /** Invoice writes with plan.expectTaxCode: what was saved differs from what was asked (Automated Sales Tax re-picked the code, the county rate, or the taxable amount). The write happened; ok is false and status is tax_code_changed. */
+  taxCodeChanged?: TaxCodeChange | null;
+  status?: 'tax_code_changed';
   audit: { attempted: boolean; error?: string };
+};
+
+export type TaxCodeChange = {
+  requested: string;
+  saved: string | null;
+  expectedCountyRateId: string | null;
+  savedRateIds: string[];
+  expectedNetAmountTaxable: number | null;
+  savedNetAmountTaxable: number[];
+  reasons: string[];
 };
 
 export function sandboxTokenRecord(row: SandboxTokenRow, nowIso = new Date().toISOString()) {
@@ -641,17 +657,20 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     return { ...base, http, error, ids, qbo: slim(plan.entity, posted.json), audit: { attempted: true } };
   }
   let auditError: string | undefined;
+  const taxCodeChanged = taxCodeChangeOf(plan, posted.json, body);
+  const changedText = taxCodeChanged ? `tax_code_changed: ${taxCodeChanged.reasons.join(' ')}` : '';
   try {
     await remember(
-      logged('ok', {
+      logged(taxCodeChanged ? 'tax_code_changed' : 'ok', {
         action: plan.action,
         created: plan.action === 'create' || plan.action === 'attach',
         priorState,
         syncToken: ids.syncToken,
         txnDate: typeof body.TxnDate === 'string' ? body.TxnDate : null,
-        payload: { http, reason: plan.reason || null },
+        payload: { http, reason: plan.reason || null, ...(plan.expectTaxCode ? { taxCodeChanged } : {}) },
         qboResponse: cap(posted.json),
         qboIds: ids,
+        ...(taxCodeChanged ? { error: changedText } : {}),
       }),
       deps,
       true
@@ -659,18 +678,51 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   } catch (error) {
     auditError = error instanceof Error ? error.message : String(error);
   }
+  const errors = [changedText ? `Posted, but ${changedText}` : '', auditError ? `Posted, but the audit log failed: ${auditError}` : ''].filter(Boolean);
   return {
     ...base,
-    ok: true,
+    ok: !taxCodeChanged,
     dryRun: false,
     wrote: true,
     http,
     ids,
     qbo: slim(plan.entity, posted.json),
-    error: auditError ? `Posted, but the audit log failed: ${auditError}` : undefined,
+    error: errors.length ? errors.join(' ') : undefined,
+    ...(plan.expectTaxCode ? { taxCodeChanged } : {}),
+    ...(taxCodeChanged ? { status: 'tax_code_changed' as const } : {}),
     audit: { attempted: true, error: auditError },
   };
   }
+}
+
+/**
+ * Compare a saved invoice with plan.expectTaxCode: the header code, the county TaxRate id that code
+ * must carry (4 San Diego, 25 Riverside; the other must be absent), and NetAmountTaxable on every
+ * TaxLine when plan.expectNetAmountTaxable is set. Null when everything matches or nothing was expected.
+ */
+export function taxCodeChangeOf(plan: QboPlan, json: unknown, body?: Record<string, unknown> | null): TaxCodeChange | null {
+  if (!plan.expectTaxCode || plan.entity !== 'Invoice') return null;
+  const root = (json && typeof json === 'object' ? json : {}) as Record<string, any>;
+  const detail = (root.Invoice || root)?.TxnTaxDetail || {};
+  const taxLines: any[] = Array.isArray(detail.TaxLine) ? detail.TaxLine : [];
+  const saved = savedTaxCode(json);
+  const savedRateIds = taxLines.map((line) => String(line?.TaxLineDetail?.TaxRateRef?.value ?? '')).filter(Boolean);
+  const savedNet = taxLines.map((line) => Number(line?.TaxLineDetail?.NetAmountTaxable)).filter((n) => Number.isFinite(n));
+  const expectedCounty = COUNTY_RATE_ID_BY_TAX_CODE[plan.expectTaxCode] || null;
+  const expectedNet = plan.expectNetAmountTaxable === 'body' ? taxableAmountOfBody(body) : typeof plan.expectNetAmountTaxable === 'number' ? plan.expectNetAmountTaxable : null;
+  const reasons: string[] = [];
+  if (saved !== plan.expectTaxCode) reasons.push(`Requested TxnTaxCodeRef ${plan.expectTaxCode}, QuickBooks saved ${saved ?? 'none'}.`);
+  if (expectedCounty) {
+    if (!savedRateIds.includes(expectedCounty)) reasons.push(`Saved tax lines do not include county rate ${expectedCounty}.`);
+    for (const other of COUNTY_RATE_IDS) {
+      if (other !== expectedCounty && savedRateIds.includes(other)) reasons.push(`Saved tax lines include the other county rate ${other}.`);
+    }
+  }
+  if (expectedNet !== null && (!savedNet.length || savedNet.some((n) => Math.abs(n - expectedNet) > 0.009))) {
+    reasons.push(`NetAmountTaxable is ${savedNet.length ? savedNet.filter((n, i) => savedNet.indexOf(n) === i).join(', ') : 'missing'}, expected ${expectedNet}.`);
+  }
+  if (!reasons.length) return null;
+  return { requested: plan.expectTaxCode, saved, expectedCountyRateId: expectedCounty, savedRateIds, expectedNetAmountTaxable: expectedNet, savedNetAmountTaxable: savedNet, reasons };
 }
 
 function failEntry(base: QboWriteResult, entity: string, error: string, qbo: unknown): QboAuditEntry {

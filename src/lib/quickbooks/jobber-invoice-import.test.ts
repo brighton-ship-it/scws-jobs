@@ -92,9 +92,10 @@ test('tax codes resolve by id from the jobsite, and a chunk returns a cursor', (
   assert.equal(taxCodeIdForCity('Ramona'), '3');
   assert.equal(taxCodeIdForCity('Menifee'), '30');
   assert.equal(taxCodeIdForCity('Sun City'), '30');
-  assert.equal(taxCodeIdForCity('Hemet'), '65');
-  assert.equal(taxCodeIdForCity('Murrieta'), '65');
-  assert.equal(taxCodeIdForCity('Temecula'), '65');
+  assert.equal(taxCodeIdForCity('Hemet'), '23');
+  assert.equal(taxCodeIdForCity('Murrieta'), '25', 'Murrieta has its own city-district code 25');
+  assert.equal(taxCodeIdForCity('Temecula'), '23');
+  assert.equal(taxCodeIdForCity('Anza'), '23', 'Riverside County defaults to AST code 23, not manual code 65');
   assert.equal(taxCodeIdForCity('Hemet', { Hemet: '99' }), '99');
   assert.equal(taxCodeIdForCity('Portland'), null);
   const numbers = Array.from({ length: 20 }, (_, i) => String(5826 + i));
@@ -718,4 +719,15 @@ test('confirm stops the chunk on a tax mismatch before payments', async () => {
   assert.equal(tax.tax.taxMismatch, true);
   assert.equal(audits.some((row) => row.status === 'tax_mismatch'), true);
   assert.equal(audits.some((row) => row.status === 'ok'), true);
+});
+
+test('findDiscountItem matches one active item named discount in any case', async () => {
+  const { findDiscountItem } = await import('./jobber-invoice-import.ts');
+  const seen: string[] = [];
+  const one = await findDiscountItem(async (sql) => { seen.push(sql); return { QueryResponse: { Item: [{ Id: '526', Name: 'discount', Active: true }] } }; });
+  assert.equal(one, '526');
+  assert.match(seen[0], /from Item where Name = 'Discount'/);
+  assert.equal(await findDiscountItem(async () => ({ QueryResponse: { Item: [{ Id: '1', Name: 'Discount' }, { Id: '2', Name: 'DISCOUNT' }] } })), null, 'two matches are ambiguous');
+  assert.equal(await findDiscountItem(async () => ({ QueryResponse: { Item: [{ Id: '9', Name: 'Discounted pump', Active: true }] } })), null);
+  assert.equal(await findDiscountItem(async () => ({ QueryResponse: {} })), null);
 });

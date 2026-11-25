@@ -313,3 +313,113 @@ test('an unknown post outcome is reported as possibly written, not treated as fa
   assert.deepEqual(resolved.steps.map((step) => [step.qboId, step.auditId]), [['39200', 3]]);
   assert.equal(resolved.couldNot.length, 0);
 });
+
+test('revert restores an item tax category update and an invoice tax override from prior state, and deletes neither', async () => {
+  const calls: string[] = [];
+  const posted: Record<string, unknown>[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const method = init?.method || 'GET';
+    const full = String(url);
+    calls.push(`${method} ${full.split('?')[0].split('/v3/company/')[1]}${full.includes('operation=delete') ? '?operation=delete' : ''}`);
+    if (method === 'POST') posted.push(JSON.parse(String(init?.body)));
+    const entity = full.includes('/item') ? 'Item' : 'Invoice';
+    const tax = entity === 'Invoice' ? { TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 401.53, TaxLine: ['3', '4', '5'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id }, NetAmountTaxable: 5181 } })) } } : {};
+    return new Response(JSON.stringify({ [entity]: { Id: full.includes('/item') ? '1010000474' : '39144', SyncToken: '2', TxnDate: '2026-11-09', ...tax } }), { status: 200 });
+  };
+  const result = await runBatchRevert(
+    { batchId: 'fix-item-1010000474', confirm: true },
+    {
+      env: {
+        QBO_WRITES_ENABLED: 'true',
+        QBO_WRITE_REALM_ID: '2222222222222222',
+        QBO_PRODUCTION_REALM_ID: '9130349321543166',
+      },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl,
+      audit: async () => {},
+      readCloseDate: async () => null,
+      loadBatch: async () => [
+        row({
+          id: 1,
+          entity: 'Item',
+          tool: 'qbo_item_tax_category',
+          created: false,
+          action: 'update',
+          qboId: '1010000474',
+          txnDate: null,
+          priorState: { Id: '1010000474', SyncToken: '1', Name: 'Electrical Equipment Pump Panel', Taxable: false, TaxClassificationRef: { value: 'EUC-99990201-V1-00020000' } },
+        }),
+        row({
+          id: 2,
+          entity: 'Invoice',
+          tool: 'qbo_invoice',
+          created: false,
+          action: 'update',
+          qboId: '39144',
+          txnDate: '2026-11-09',
+          priorState: { Id: '39144', SyncToken: '0', TotalAmt: 7132.53, TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 401.53 } },
+        }),
+      ],
+    }
+  );
+  assert.equal(result.wrote, true);
+  assert.equal(calls.some((call) => call.includes('operation=delete')), false);
+  assert.deepEqual(calls.filter((call) => call.startsWith('POST')).sort(), ['POST 2222222222222222/invoice', 'POST 2222222222222222/item']);
+  const item = posted.find((body) => body.Id === '1010000474') as { Taxable: boolean; TaxClassificationRef: { value: string } };
+  assert.equal(item.Taxable, false);
+  assert.equal(item.TaxClassificationRef.value, 'EUC-99990201-V1-00020000');
+  const invoice = posted.find((body) => body.Id === '39144') as { TxnTaxDetail: { TotalTax: number } };
+  assert.equal(invoice.TxnTaxDetail.TotalTax, 401.53);
+  const invoiceStep = (result.results as any[]).find((step: any) => step.entity === 'Invoice') as any;
+  assert.equal(invoiceStep.status, 'reverted');
+  assert.equal(invoiceStep.taxCodeChanged, null, 'the restore saved code 3, as in prior state');
+  const itemStep = (result.results as any[]).find((step: any) => step.entity === 'Item') as any;
+  assert.equal('taxCodeChanged' in itemStep, false);
+});
+
+test('an invoice restore that QuickBooks re-codes is reported as tax_code_changed, not reverted', async () => {
+  const audits: any[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const method = init?.method || 'GET';
+    const body = { Invoice: { Id: '39144', SyncToken: method === 'POST' ? '3' : '2', TxnDate: '2026-11-09', TxnTaxDetail: { TxnTaxCodeRef: { value: '24' }, TotalTax: 401.53, TaxLine: [{ TaxLineDetail: { TaxRateRef: { value: '25' }, NetAmountTaxable: 5181 } }] } } };
+    return new Response(JSON.stringify(body), { status: 200 });
+  };
+  const result = await runBatchRevert(
+    { batchId: 'fix-39144-tax', confirm: true },
+    {
+      env: { QBO_WRITES_ENABLED: 'true', QBO_WRITE_REALM_ID: '2222222222222222', QBO_PRODUCTION_REALM_ID: '9130349321543166' },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl,
+      audit: async (entry) => { audits.push(entry); },
+      readCloseDate: async () => null,
+      loadBatch: async () => [
+        row({
+          id: 2, entity: 'Invoice', tool: 'qbo_invoice', created: false, action: 'update', qboId: '39144', txnDate: '2026-11-09',
+          priorState: { Id: '39144', SyncToken: '0', TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 401.53, TaxLine: [{ TaxLineDetail: { TaxRateRef: { value: '4' }, NetAmountTaxable: 5181 } }] } },
+        }),
+      ],
+    }
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.wrote, true);
+  const step = (result.results as any[])[0];
+  assert.equal(step.status, 'tax_code_changed');
+  assert.equal(step.taxCodeChanged.saved, '24');
+  assert.equal((result.couldNot as any[]).length, 1);
+  assert.equal(audits.some((entry) => entry.status === 'tax_code_changed' && entry.ok === false), true);
+});
+
+test('a tax_code_changed row (ok:false) is a revert target and settles its pending row', () => {
+  const prior = { Id: '39144', SyncToken: '1', TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 413.15 } };
+  const plan = planBatchRevert(
+    [
+      row({ id: 10, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'pending', requestId: 'fix-39144-tax-02-r1', qboId: '39144', priorState: prior }),
+      row({ id: 11, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'tax_code_changed', requestId: 'fix-39144-tax-02-r1', qboId: '39144', priorState: prior, error: 'tax_code_changed: saved 24' }),
+    ],
+    null
+  );
+  assert.deepEqual(plan.steps.map((step) => [step.action, step.entity, step.qboId, step.auditId]), [['restore', 'Invoice', '39144', 11]]);
+  assert.equal(plan.couldNot.length, 0, 'the pending row is settled by the tax_code_changed outcome');
+});
