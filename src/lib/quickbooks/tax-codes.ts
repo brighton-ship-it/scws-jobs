@@ -27,15 +27,33 @@ export const MENIFEE_TAX_CODE_ID = '30';
 export const RIVERSIDE_COUNTY_TAX_CODE_ID = '23';
 /** "CA-Riverside-Riverside-Murrieta" (TaxRateRefs 3, 9, 16 Murrieta city district, 25). */
 export const MURRIETA_TAX_CODE_ID = '25';
+/** Riverside County city codes (each carries county rate 25 plus a city district rate). */
+export const LA_QUINTA_TAX_CODE_ID = '59';
+export const DESERT_HOT_SPRINGS_TAX_CODE_ID = '34';
+export const INDIO_TAX_CODE_ID = '35';
+/**
+ * San Bernardino County codes, read live 2026-11-24 by Id: 31 "CA-San Bernardino-San Bernardino"
+ * (TaxRateRefs 3, 7, 26 San Bernardino County; 7.75%), 46 Yucaipa (3, 7, 26, 40),
+ * 55 San Bernardino city (3, 7, 26, 46).
+ */
+export const SAN_BERNARDINO_COUNTY_TAX_CODE_ID = '31';
+export const YUCAIPA_TAX_CODE_ID = '46';
+export const SAN_BERNARDINO_CITY_TAX_CODE_ID = '55';
 
-/** County TaxRate id each jobsite tax code must carry: 4 San Diego County, 25 Riverside County. */
+/** County TaxRate id each jobsite tax code must carry: 4 San Diego County, 25 Riverside County, 26 San Bernardino County. */
 export const COUNTY_RATE_ID_BY_TAX_CODE: Record<string, string> = {
   [SAN_DIEGO_TAX_CODE_ID]: '4',
   [RIVERSIDE_COUNTY_TAX_CODE_ID]: '25',
   [MURRIETA_TAX_CODE_ID]: '25',
   [MENIFEE_TAX_CODE_ID]: '25',
+  [LA_QUINTA_TAX_CODE_ID]: '25',
+  [DESERT_HOT_SPRINGS_TAX_CODE_ID]: '25',
+  [INDIO_TAX_CODE_ID]: '25',
+  [SAN_BERNARDINO_COUNTY_TAX_CODE_ID]: '26',
+  [YUCAIPA_TAX_CODE_ID]: '26',
+  [SAN_BERNARDINO_CITY_TAX_CODE_ID]: '26',
 };
-export const COUNTY_RATE_IDS = ['4', '25'];
+export const COUNTY_RATE_IDS = ['4', '25', '26'];
 
 const SAN_DIEGO_COUNTY = [
   'san diego', 'ramona', 'escondido', 'poway', 'lakeside', 'santee', 'el cajon', 'la mesa',
@@ -53,9 +71,30 @@ const RIVERSIDE_COUNTY = [
   'glen avon', 'moreno valley', 'perris', 'mead valley', 'good hope', 'hemet', 'san jacinto',
   'beaumont', 'banning', 'calimesa', 'cherry valley', 'cabazon', 'murrieta', 'temecula',
   'french valley', 'winchester', 'lake elsinore', 'wildomar', 'canyon lake', 'lakeview',
-  'homeland', 'romoland', 'nuevo', 'anza', 'aguanga', 'idyllwild', 'mountain center',
-  'gilman hot springs', 'sage', 'whitewater',
+  'homeland', 'romoland', 'nuevo', 'anza', 'aguanga', 'idyllwild', 'idyllwild pine cove', 'pine cove',
+  'mountain center', 'gilman hot springs', 'sage', 'whitewater', 'la quinta', 'desert hot springs', 'indio',
 ];
+
+/**
+ * Riverside County cities whose default header code is their own city code instead of 23.
+ * A jobsite outside city limits (CDTFA says unincorporated) needs taxCodeByCity {"<city>": "23"}.
+ */
+const RIVERSIDE_CITY_CODES: Record<string, string> = {
+  'la quinta': LA_QUINTA_TAX_CODE_ID,
+  'desert hot springs': DESERT_HOT_SPRINGS_TAX_CODE_ID,
+  indio: INDIO_TAX_CODE_ID,
+};
+
+/** San Bernardino County places. Unincorporated mountain communities default to 31. */
+const SAN_BERNARDINO_COUNTY = [
+  'san bernardino', 'yucaipa', 'fawnskin', 'oak glen', 'lake arrowhead', 'running springs', 'crestline',
+  'twin peaks', 'blue jay', 'cedar glen', 'big bear city', 'angelus oaks', 'forest falls', 'mentone',
+];
+
+const SAN_BERNARDINO_CITY_CODES: Record<string, string> = {
+  'san bernardino': SAN_BERNARDINO_CITY_TAX_CODE_ID,
+  yucaipa: YUCAIPA_TAX_CODE_ID,
+};
 
 const MENIFEE_CITIES = ['menifee', 'sun city'];
 
@@ -64,6 +103,8 @@ for (const city of SAN_DIEGO_COUNTY) TAX_CODE_ID_BY_CITY[city] = SAN_DIEGO_TAX_C
 for (const city of RIVERSIDE_COUNTY) TAX_CODE_ID_BY_CITY[city] = RIVERSIDE_COUNTY_TAX_CODE_ID;
 for (const city of MENIFEE_CITIES) TAX_CODE_ID_BY_CITY[city] = MENIFEE_TAX_CODE_ID;
 TAX_CODE_ID_BY_CITY.murrieta = MURRIETA_TAX_CODE_ID;
+Object.assign(TAX_CODE_ID_BY_CITY, RIVERSIDE_CITY_CODES);
+for (const city of SAN_BERNARDINO_COUNTY) TAX_CODE_ID_BY_CITY[city] = SAN_BERNARDINO_CITY_CODES[city] || SAN_BERNARDINO_COUNTY_TAX_CODE_ID;
 
 export function normalizePlace(value: string): string {
   return value.trim().toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
@@ -80,11 +121,14 @@ export function taxCodeIdForCity(city: string | null | undefined, overrides?: Re
 }
 
 /** County for the 1% county rate. Menifee is Riverside County even though its tax code id is 30. */
-export function countyNameForCity(city: string | null | undefined): 'San Diego' | 'Riverside' | null {
+export type CountyName = 'San Diego' | 'Riverside' | 'San Bernardino';
+
+export function countyNameForCity(city: string | null | undefined): CountyName | null {
   if (!city) return null;
   const key = normalizePlace(city);
   if ((MENIFEE_CITIES as readonly string[]).includes(key) || (RIVERSIDE_COUNTY as readonly string[]).includes(key)) return 'Riverside';
   if ((SAN_DIEGO_COUNTY as readonly string[]).includes(key)) return 'San Diego';
+  if ((SAN_BERNARDINO_COUNTY as readonly string[]).includes(key)) return 'San Bernardino';
   return null;
 }
 

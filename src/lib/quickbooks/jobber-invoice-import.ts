@@ -31,7 +31,7 @@
  */
 import { recordQboAudit, runQboPlan, writeRealmQuery, type QboAuditEntry, type QboWriteDeps } from './durable-write.ts';
 import { isQboRateLimit, withQboBackoff } from './qbo-backoff.ts';
-import { countyNameForCity, taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
+import { countyNameForCity, taxCodeIdForCity, taxCodeMissingReason, type CountyName } from './tax-codes.ts';
 import { describeQboWriteGate } from './write-gate.ts';
 import { buildDeposit, parseBatchId, privateNoteWithBatch, type QboPlan } from './write-payloads.ts';
 
@@ -58,7 +58,7 @@ export type InvoiceTaxReport = {
   requestedTxnTaxCodeId: string | null;
   savedTxnTaxCodeId: string | null;
   taxLines: unknown[] | null;
-  county: 'San Diego' | 'Riverside' | null;
+  county: CountyName | null;
   expectedCountyRateId: string | null;
   savedCountyRateId: string | null;
   jobberTax: number | null;
@@ -72,14 +72,18 @@ export type InvoiceTaxReport = {
 /** Automated Sales Tax county rates. TaxRate.Name is a hash, so these ids are fixed. */
 export const SAN_DIEGO_COUNTY_RATE_ID = '4';
 export const RIVERSIDE_COUNTY_RATE_ID = '25';
+export const SAN_BERNARDINO_COUNTY_RATE_ID = '26';
 /** TaxCode whose rate list must include the San Diego county rate when QuickBooks returns it. */
 export const SAN_DIEGO_COUNTY_TAX_CODE_ID = '3';
 /** TaxCode whose rate list must include the Riverside county rate when QuickBooks returns it. */
 export const RIVERSIDE_COUNTY_TAX_CODE_ID = '23';
+/** TaxCode whose rate list must include the San Bernardino county rate when QuickBooks returns it. */
+export const SAN_BERNARDINO_COUNTY_TAX_CODE_ID = '31';
 
 export type CountyRateIds = {
   sanDiego: string;
   riverside: string;
+  sanBernardino: string;
   /** Set when a TaxCode rate list was returned and did not contain the fixed county id. */
   unresolvedReason: string | null;
 };
@@ -307,30 +311,44 @@ export function emptyTaxReport(requestedTxnTaxCodeId: string | null): InvoiceTax
 }
 
 export function fixedCountyRateIds(): CountyRateIds {
-  return { sanDiego: SAN_DIEGO_COUNTY_RATE_ID, riverside: RIVERSIDE_COUNTY_RATE_ID, unresolvedReason: null };
+  return { sanDiego: SAN_DIEGO_COUNTY_RATE_ID, riverside: RIVERSIDE_COUNTY_RATE_ID, sanBernardino: SAN_BERNARDINO_COUNTY_RATE_ID, unresolvedReason: null };
 }
 
-export function countyRateIdFor(county: 'San Diego' | 'Riverside', ids: CountyRateIds = fixedCountyRateIds()): string | null {
+export function countyRateIdFor(county: CountyName, ids: CountyRateIds = fixedCountyRateIds()): string | null {
   if (ids.unresolvedReason) return null;
-  return county === 'San Diego' ? ids.sanDiego : ids.riverside;
+  if (county === 'San Diego') return ids.sanDiego;
+  if (county === 'San Bernardino') return ids.sanBernardino;
+  return ids.riverside;
+}
+
+const COUNTY_NAMES: CountyName[] = ['San Diego', 'Riverside', 'San Bernardino'];
+
+/** The county rate ids that must be absent for a jobsite in this county. */
+function otherCountyRates(county: CountyName | null, ids: CountyRateIds): Array<{ county: CountyName; id: string }> {
+  if (!county || ids.unresolvedReason) return [];
+  return COUNTY_NAMES.filter((name) => name !== county)
+    .map((name) => ({ county: name, id: countyRateIdFor(name, ids) || '' }))
+    .filter((other) => other.id);
 }
 
 /**
- * TaxRate names are 64-character hashes, so the county ids stay 4 and 25.
+ * TaxRate names are 64-character hashes, so the county ids stay 4, 25 and 26.
  * When TaxCode 3 and TaxCode 23 both include a rate list, those lists must contain 4 and 25.
+ * When TaxCode 31 includes a rate list, it must contain 26.
  * A missing list is not a contradiction; the fixed ids are used.
  */
 export function verifyCountyRateIds(taxCodes: Array<{ id: string; rateIds: string[] | null }>): CountyRateIds {
   const fixed = fixedCountyRateIds();
   const sanDiego = taxCodes.find((code) => code.id === SAN_DIEGO_COUNTY_TAX_CODE_ID);
   const riverside = taxCodes.find((code) => code.id === RIVERSIDE_COUNTY_TAX_CODE_ID);
+  const sanBernardino = taxCodes.find((code) => code.id === SAN_BERNARDINO_COUNTY_TAX_CODE_ID);
+  const unresolved = (reason: string): CountyRateIds => ({ sanDiego: '', riverside: '', sanBernardino: '', unresolvedReason: reason });
+  if (sanBernardino?.rateIds && !sanBernardino.rateIds.includes(fixed.sanBernardino)) {
+    return unresolved('TaxCode 31 does not include San Bernardino County rate 26.');
+  }
   if (!sanDiego?.rateIds || !riverside?.rateIds) return fixed;
-  if (!sanDiego.rateIds.includes(fixed.sanDiego)) {
-    return { sanDiego: '', riverside: '', unresolvedReason: 'TaxCode 3 does not include San Diego County rate 4.' };
-  }
-  if (!riverside.rateIds.includes(fixed.riverside)) {
-    return { sanDiego: '', riverside: '', unresolvedReason: 'TaxCode 23 does not include Riverside County rate 25.' };
-  }
+  if (!sanDiego.rateIds.includes(fixed.sanDiego)) return unresolved('TaxCode 3 does not include San Diego County rate 4.');
+  if (!riverside.rateIds.includes(fixed.riverside)) return unresolved('TaxCode 23 does not include Riverside County rate 25.');
   return fixed;
 }
 
@@ -393,7 +411,7 @@ function savedTxnTax(qbo: unknown): { code: string | null; total: number | null;
 function countyBlockReason(city: string | null, ids?: CountyRateIds): string | null {
   if (ids?.unresolvedReason) return ids.unresolvedReason;
   if (!countyNameForCity(city)) {
-    return `No county rate for jobsite city ${city ? `"${city}"` : '(missing)'}. San Diego County is rate 4 and Riverside County is rate 25.`;
+    return `No county rate for jobsite city ${city ? `"${city}"` : '(missing)'}. San Diego County is rate 4, Riverside County is rate 25 and San Bernardino County is rate 26.`;
   }
   return null;
 }
@@ -412,7 +430,7 @@ export function assessSavedTax(input: {
 }): InvoiceTaxReport {
   const ids = input.countyRates || fixedCountyRateIds();
   const county = countyNameForCity(input.city);
-  const otherCountyRateId = county === 'San Diego' ? ids.riverside : county === 'Riverside' ? ids.sanDiego : null;
+  const others = otherCountyRates(county, ids);
   const expectedCountyRateId = county && !ids.unresolvedReason ? countyRateIdFor(county, ids) : null;
   const base: InvoiceTaxReport = {
     ...emptyTaxReport(input.requestedTxnTaxCodeId),
@@ -424,19 +442,18 @@ export function assessSavedTax(input: {
   if (!input.qbo) return base;
   const saved = savedTxnTax(input.qbo);
   const savedIds = savedRateIds(saved.lines);
+  const wrongCounty = others.filter((other) => savedIds.includes(other.id));
   const savedCounty = expectedCountyRateId && savedIds.includes(expectedCountyRateId)
     ? expectedCountyRateId
-    : otherCountyRateId && savedIds.includes(otherCountyRateId)
-      ? otherCountyRateId
-      : null;
+    : wrongCounty[0]?.id ?? null;
   const reasons: string[] = [];
   if (ids.unresolvedReason) reasons.push(ids.unresolvedReason);
   else if (!county) reasons.push(`No county for jobsite city ${input.city ? `"${input.city}"` : '(missing)'}.`);
   else if (expectedCountyRateId && !savedIds.includes(expectedCountyRateId)) {
     reasons.push(`Saved tax lines do not include ${county} County rate ${expectedCountyRateId}.`);
   }
-  if (otherCountyRateId && savedIds.includes(otherCountyRateId)) {
-    reasons.push(`Saved tax lines include ${county === 'San Diego' ? 'Riverside' : 'San Diego'} County rate ${otherCountyRateId}.`);
+  for (const other of wrongCounty) {
+    reasons.push(`Saved tax lines include ${other.county} County rate ${other.id}.`);
   }
   if (!taxWithinCent(saved.total, money(input.jobberTax))) {
     reasons.push(`Saved tax ${saved.total ?? 'missing'} does not match Jobber tax ${money(input.jobberTax)} within $0.01.`);
@@ -1027,7 +1044,7 @@ function rateIdsFromTaxCode(row: Record<string, unknown>): string[] | null {
 async function loadCountyRateIds(query: (sql: string) => Promise<unknown>): Promise<CountyRateIds> {
   try {
     const rows = rowsOf(
-      await query(`select Id, SalesTaxRateList from TaxCode where Id in ('${SAN_DIEGO_COUNTY_TAX_CODE_ID}', '${RIVERSIDE_COUNTY_TAX_CODE_ID}')`),
+      await query(`select Id, SalesTaxRateList from TaxCode where Id in ('${SAN_DIEGO_COUNTY_TAX_CODE_ID}', '${RIVERSIDE_COUNTY_TAX_CODE_ID}', '${SAN_BERNARDINO_COUNTY_TAX_CODE_ID}')`),
       'TaxCode'
     );
     return verifyCountyRateIds(rows.map((row) => ({ id: row.Id == null ? '' : String(row.Id), rateIds: rateIdsFromTaxCode(row) })));
