@@ -15,6 +15,7 @@ import {
   retaxInvoiceBody,
   savedTaxCode,
   inspectSavedInvoiceTax,
+  inspectSavedLineTax,
 } from './write-payloads.ts';
 
 const lines = [
@@ -399,4 +400,66 @@ test('the ship-address post-check requires code 23, rates 3/25/9 only, the tax a
   const changed = inspectSavedInvoiceTax(saved({ Line: [{ ...line, Amount: 1 }] }), expected, prior);
   assert.equal(changed.linesUnchanged, false);
   assert.match(changed.reasons.join(' '), /lines changed/i);
+});
+
+const invoice39354 = {
+  Id: '39354',
+  SyncToken: '4',
+  CustomerRef: { value: '88', name: 'Example' },
+  TxnDate: '2026-11-01',
+  DueDate: '2026-11-15',
+  BillAddr: { Id: '10', Line1: '1 Bill St', City: 'Anza', CountrySubDivisionCode: 'CA', PostalCode: '92539' },
+  ShipAddr: { Id: '11', Line1: '1 Job St', City: 'Anza', CountrySubDivisionCode: 'CA', PostalCode: '92539' },
+  ShipFromAddr: { Id: '12', Line1: '1 Job St', City: 'Anza', CountrySubDivisionCode: 'CA', PostalCode: '92539' },
+  TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, UseAutomatedSalesTax: false, TotalTax: 4192.75 },
+  Line: [
+    { Id: '1', LineNum: 1, Description: 'Mobilization', Amount: 14100, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '436' }, Qty: 1, UnitPrice: 14100, TaxCodeRef: { value: 'TAX' }, TaxClassificationRef: { value: 'EUC-99990201-V1-00020000' } } },
+    { Id: '3', LineNum: 3, Description: 'Equipment', Amount: 40000, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '844' }, Qty: 1, UnitPrice: 40000, TaxCodeRef: { value: 'TAX' }, TaxClassificationRef: { value: 'EUC-99990101-V1-00020000' } } },
+    { Id: '4', LineNum: 4, Amount: 54100, DetailType: 'SubTotalLineDetail', SubTotalLineDetail: {} },
+  ],
+};
+
+test('setLineTaxCodes resends invoice 39354 with lines 1 and 3 NON, code 23, and AST off', () => {
+  const plan = buildInvoice({
+    id: '39354',
+    syncToken: '4',
+    setLineTaxCodes: [{ lineId: '1', taxCode: 'NON' }, { lineId: '3', taxCode: 'NON' }],
+    expectedTotalTax: 0,
+    liveInvoice: invoice39354,
+  });
+  const body = plan.body as any;
+  assert.equal(body.sparse, true);
+  assert.equal(body.SyncToken, '4');
+  assert.equal('TotalTax' in body.TxnTaxDetail, false);
+  assert.deepEqual(body.TxnTaxDetail, { TxnTaxCodeRef: { value: '23' }, UseAutomatedSalesTax: false });
+  assert.equal(body.CustomerRef.value, '88');
+  assert.equal(body.TxnDate, '2026-11-01');
+  assert.equal(body.DueDate, '2026-11-15');
+  assert.equal(body.BillAddr.Line1, '1 Bill St');
+  assert.equal(body.ShipAddr.Line1, '1 Job St');
+  assert.equal(body.ShipFromAddr.Id, '12');
+  assert.deepEqual(body.Line.map((line: any) => [line.Id, line.Amount, line.SalesItemLineDetail?.ItemRef?.value, line.SalesItemLineDetail?.TaxCodeRef?.value]), [
+    ['1', 14100, '436', 'NON'],
+    ['3', 40000, '844', 'NON'],
+    ['4', 54100, undefined, undefined],
+  ]);
+  assert.equal(body.Line[0].SalesItemLineDetail.TaxClassificationRef.value, 'EUC-99990201-V1-00020000');
+  assert.equal(body.Line[2].DetailType, 'SubTotalLineDetail');
+  assert.equal(plan.expectLineTax?.totalTax, 0);
+  assert.throws(() => buildInvoice({ id: '39354', syncToken: '4', setLineTaxCodes: [{ lineId: '9', taxCode: 'NON' }], expectedTotalTax: 0, liveInvoice: invoice39354 }), /no line 9/);
+  assert.throws(() => buildInvoice({ id: '39354', syncToken: '4', setLineTaxCodes: [{ lineId: '1', taxCode: 'NON' }] }), /expectedTotalTax/);
+  const prior = invoice39354;
+  const savedLines = prior.Line.map((line) => line.DetailType === 'SalesItemLineDetail'
+    ? { ...line, SalesItemLineDetail: { ...line.SalesItemLineDetail, TaxCodeRef: { value: 'NON' } } }
+    : line);
+  const ok = inspectSavedLineTax({
+    Invoice: { ...prior, SyncToken: '5', TotalAmt: 54100, Line: savedLines, TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, UseAutomatedSalesTax: false, TotalTax: 0 } },
+  }, { totalTax: 0, lines: [{ lineId: '1', taxCode: 'NON' }, { lineId: '3', taxCode: 'NON' }] }, prior);
+  assert.equal(ok.ok, true, ok.reasons.join(' '));
+  const missed = inspectSavedLineTax({
+    Invoice: { ...prior, SyncToken: '5', Line: savedLines, TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, TotalTax: 193.75, TaxReviewStatus: 'AST_TAX_OVERRIDE' } },
+  }, { totalTax: 0, lines: [{ lineId: '1', taxCode: 'NON' }, { lineId: '3', taxCode: 'NON' }] }, prior);
+  assert.equal(missed.ok, false);
+  assert.match(missed.reasons.join(' '), /AST_TAX_OVERRIDE/);
+  assert.match(missed.reasons.join(' '), /193\.75/);
 });

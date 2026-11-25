@@ -602,6 +602,56 @@ test('a ship-address write that comes back with rate 13 is tax_code_changed and 
   assert.equal(audits.at(-1)?.ok, false);
 });
 
+test('setLineTaxCodes confirm keeps code 23 and audits a TotalTax that is not the expected 0', async () => {
+  const prior = {
+    Id: '39354',
+    SyncToken: '4',
+    TxnDate: '2026-11-01',
+    CustomerRef: { value: '88' },
+    BillAddr: { Line1: '1 Bill St' },
+    ShipAddr: { Line1: '1 Job St' },
+    TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, UseAutomatedSalesTax: false, TotalTax: 4192.75 },
+    Line: [
+      { Id: '1', Amount: 14100, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '436' }, TaxCodeRef: { value: 'TAX' } } },
+      { Id: '3', Amount: 40000, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '844' }, TaxCodeRef: { value: 'TAX' } } },
+      { Id: '4', Amount: 54100, DetailType: 'SubTotalLineDetail', SubTotalLineDetail: {} },
+    ],
+  };
+  const savedLine = (tax: string) => prior.Line.map((line) => line.DetailType === 'SalesItemLineDetail'
+    ? { ...line, SalesItemLineDetail: { ...line.SalesItemLineDetail, TaxCodeRef: { value: tax } } }
+    : line);
+  const audits: QboAuditEntry[] = [];
+  let posted: Record<string, unknown> | null = null;
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    if ((init?.method || 'GET') === 'GET') return json({ Invoice: prior });
+    posted = JSON.parse(String(init?.body));
+    return json({
+      Invoice: {
+        ...prior,
+        SyncToken: '5',
+        TotalAmt: 54100,
+        Line: savedLine('NON'),
+        TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, UseAutomatedSalesTax: false, TotalTax: 193.75 },
+      },
+    });
+  };
+  const result = await runQboWrite(
+    'qbo_invoice',
+    { id: '39354', syncToken: '4', confirm: true, batchId: 'tax-39354', setLineTaxCodes: [{ lineId: '1', taxCode: 'NON' }, { lineId: '3', taxCode: 'NON' }], expectedTotalTax: 0 },
+    { env: SANDBOX, productionRealmId: '9130349321543166', accessToken: 'tok', fetchImpl, audit: async (entry) => { audits.push(entry); } }
+  );
+  assert.equal(result.wrote, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'tax_mismatch');
+  assert.match(result.error || '', /193\.75/);
+  assert.equal((posted?.TxnTaxDetail as { TxnTaxCodeRef: { value: string }; UseAutomatedSalesTax?: boolean }).TxnTaxCodeRef.value, '23');
+  assert.equal((posted?.TxnTaxDetail as { UseAutomatedSalesTax?: boolean }).UseAutomatedSalesTax, false);
+  assert.equal((posted?.Line as Array<{ Amount: number; SalesItemLineDetail?: { TaxCodeRef: { value: string } } }>)[0].SalesItemLineDetail?.TaxCodeRef.value, 'NON');
+  assert.equal((posted?.Line as Array<{ Amount: number }>)[1].Amount, 40000);
+  assert.equal(audits.at(-1)?.status, 'tax_mismatch');
+  assert.equal(audits.at(-1)?.ok, false);
+});
+
 function auditRow(entry: QboAuditEntry, index: number): BatchAuditRow {
   const prior = entry.priorState && typeof entry.priorState === 'object' ? (entry.priorState as Record<string, unknown>) : null;
   return {

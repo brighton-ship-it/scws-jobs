@@ -127,7 +127,7 @@ export type JobberInvoiceForQbo = {
   city: string | null;
   address?: JobberPropertyAddress | null;
   addressConflict?: string | null;
-  lines: Array<{ name: string; description: string | null; quantity: number; unitPrice: number; taxable: boolean }>;
+  lines: Array<{ id?: string | null; name: string; description: string | null; quantity: number; unitPrice: number; taxable: boolean }>;
   total: number;
   taxAmount: number;
   paymentsTotal: number;
@@ -176,6 +176,8 @@ export type ImportInvoicePlan = {
   expectedTaxableAmount?: number | null;
   /** Tax from expectedTaxableAmount and the tax code rate. Null when the rate is unknown and the base is not zero. */
   expectedTax?: number | null;
+  /** Set when this invoice is allowed to tax a QuickBooks item marked Taxable false. The reason is stored on the write audit. */
+  allowTaxOnNonTaxableItems?: { allowed: true; reason: string } | null;
   /** One entry per Jobber line. fallbackItemUsed is true only when the id came from a fallback rule. */
   lines?: ImportLinePreview[];
 };
@@ -775,6 +777,10 @@ export function assessImportTax(input: {
   rate: number | null;
   taxOverride: boolean;
   absorbExpectedTax: number | null;
+  /** Skip only the Taxable:false refusal. Exempt categories still block. */
+  allowTaxOnNonTaxableItems?: boolean;
+  /** Refuse when the computed tax cannot be shown to match Jobber, including when the rate is missing. */
+  requireTaxMatch?: boolean;
 }): PlannedTaxCheck {
   const problems: string[] = [];
   const seen = new Set<string>();
@@ -786,7 +792,11 @@ export function assessImportTax(input: {
   const problemFor = (itemId: string | null, taxCode: string | null): string | null => {
     if (taxCode !== 'TAX' || !itemId) return null;
     const item = input.items.get(itemId);
-    return item ? taxLineItemProblem(item) : null;
+    if (!item) return null;
+    const problem = taxLineItemProblem(item);
+    if (!problem) return null;
+    if (input.allowTaxOnNonTaxableItems && item.taxable === false && !isExemptTaxCategory(item.taxClassificationId, item.taxClassificationName)) return null;
+    return problem;
   };
   const lines = input.invoiceLines.map((line, index) => {
     const body = input.bodyLines[index];
@@ -825,19 +835,46 @@ export function assessImportTax(input: {
   } else if (input.rate != null) {
     expectedTax = money(base * input.rate);
   }
-  if (!input.taxOverride && expectedTax != null && Math.abs(expectedTax - target) > TAX_MATCH) {
+  const mustMatch = !input.taxOverride || input.requireTaxMatch === true;
+  if (mustMatch && input.requireTaxMatch && expectedTax == null && base > 0.009) {
+    push(`Cannot check forced non-taxable lines against ${targetLabel} ${target} without a tax rate.`);
+  }
+  if (mustMatch && expectedTax != null && Math.abs(expectedTax - target) > TAX_MATCH) {
     push(`Computed tax ${expectedTax} on taxable amount ${money(base)} does not match ${targetLabel} ${target} within $0.01.`);
   }
   return { lines, expectedTaxableAmount: money(base), expectedTax, reason: problems.length ? problems.join(' ') : null };
 }
 
-function taxableLineBase(invoice: JobberInvoiceForQbo, negativeTaxable: boolean): number {
-  return money(invoice.lines.reduce((sum, line) => {
+function taxableLineBase(invoice: JobberInvoiceForQbo, negativeTaxable: boolean, forcedNon: Set<number>): number {
+  return money(invoice.lines.reduce((sum, line, index) => {
+    if (forcedNon.has(index)) return sum;
     const amount = money(line.quantity * line.unitPrice);
     if (!line.taxable) return sum;
     if (amount < 0 && !negativeTaxable) return sum;
     return sum + amount;
   }, 0));
+}
+
+/** Jobber line id, or a 0-based index when the token is not an id on this invoice. */
+export function resolveForceNonTaxableLineIndexes(lines: Array<{ id?: string | null }>, tokens: string[]): number[] {
+  const indexes: number[] = [];
+  const seen = new Set<number>();
+  for (const token of tokens) {
+    const byId = lines.findIndex((line) => line.id != null && String(line.id) !== '' && String(line.id) === token);
+    let index = byId;
+    if (index < 0) {
+      if (!/^\d+$/.test(token)) throw new Error(`forceNonTaxableLineIds entry "${token}" is not a Jobber line id or a 0-based line index.`);
+      index = Number(token);
+      if (!Number.isInteger(index) || index < 0 || index >= lines.length) {
+        throw new Error(`forceNonTaxableLineIds index ${token} is outside this invoice (${lines.length} lines).`);
+      }
+    }
+    if (!seen.has(index)) {
+      seen.add(index);
+      indexes.push(index);
+    }
+  }
+  return indexes;
 }
 
 function previewFromChoice(choice: { taxable?: boolean; taxIfNon: number; taxIfTaxable: number; bothMatch: boolean }, forced: boolean, code: 'TAX' | 'NON' | null): DiscountTaxPreview {
@@ -904,6 +941,7 @@ type InvoiceBuildOptions = {
   discountTaxable?: boolean | null;
   taxRate?: number | null;
   negativeLinesNonTaxable?: boolean | null;
+  forceNonTaxableLineIndexes?: number[] | null;
 };
 
 type BuiltInvoice = {
@@ -930,11 +968,13 @@ export function buildJobberSyncedInvoice(
     return { body: null, missingItems: missing.length ? missing : ['(no lines)'], negativeTaxableLines: 0, discountAmount: 0, memo, discountTax: null, negativeLineTax: null };
   }
   const lineAmounts = invoice.lines.map((line) => money(line.quantity * line.unitPrice));
+  const forcedNon = new Set(options.forceNonTaxableLineIndexes || []);
   const statedDiscount = money(Math.max(0, invoice.discountAmount || 0));
   const negativeAlready = money(lineAmounts.filter((amount) => amount < 0).reduce((sum, amount) => sum + amount, 0));
   const discountAmount = statedDiscount > 0 && Math.abs(negativeAlready + statedDiscount) > 0.009 ? statedDiscount : 0;
-  const positiveTaxable = money(lineAmounts.reduce((sum, amount, index) => (invoice.lines[index].taxable && amount > 0 ? sum + amount : sum), 0));
-  const negativeTaxable = money(lineAmounts.reduce((sum, amount, index) => (invoice.lines[index].taxable && amount < 0 ? sum + amount : sum), 0));
+  const countsAsTaxable = (index: number) => invoice.lines[index].taxable && !forcedNon.has(index);
+  const positiveTaxable = money(lineAmounts.reduce((sum, amount, index) => (countsAsTaxable(index) && amount > 0 ? sum + amount : sum), 0));
+  const negativeTaxable = money(lineAmounts.reduce((sum, amount, index) => (countsAsTaxable(index) && amount < 0 ? sum + amount : sum), 0));
   const hasNegativeTaxable = negativeTaxable < -0.009;
   const negativeDecision = hasNegativeTaxable
     ? chooseNegativeLineTaxable({
@@ -961,7 +1001,7 @@ export function buildJobberSyncedInvoice(
   const lines = invoice.lines.map((line, index) => {
     const amount = lineAmounts[index];
     if (line.taxable && amount < 0) negativeTaxableLines += 1;
-    const sendTaxable = line.taxable && (amount < 0 ? negativeIsTaxable : true);
+    const sendTaxable = !forcedNon.has(index) && line.taxable && (amount < 0 ? negativeIsTaxable : true);
     const itemId = qboItemIdForLineName(line.name, itemsByName);
     return {
       Amount: amount,
@@ -986,7 +1026,7 @@ export function buildJobberSyncedInvoice(
     if (money(lineAmounts.reduce((sum, amount) => sum + amount, 0) - discountAmount) < 0) {
       return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax: null, negativeLineTax, error: 'Discount is larger than the line total.' };
     }
-    const decided = discountTaxCode(invoice, discountAmount, options.discountTaxable, options.taxRate, taxableLineBase(invoice, negativeIsTaxable));
+    const decided = discountTaxCode(invoice, discountAmount, options.discountTaxable, options.taxRate, taxableLineBase(invoice, negativeIsTaxable, forcedNon));
     discountTax = decided.preview;
     if ('error' in decided) {
       return { body: null, missingItems: [], negativeTaxableLines, discountAmount, memo, discountTax, negativeLineTax, error: decided.error };
@@ -1176,6 +1216,28 @@ function optionalNegativeLinesNonTaxable(value: unknown): boolean | null {
   throw new Error('negativeLinesNonTaxable must be true or false.');
 }
 
+function forceNonTaxableTokens(value: unknown): string[] | null {
+  if (value === undefined || value === null || value === '') return null;
+  if (!Array.isArray(value) || !value.length) throw new Error('forceNonTaxableLineIds must list at least one Jobber line id or 0-based index.');
+  return value.map((item, index) => {
+    const text = String(item ?? '').trim();
+    if (!text) throw new Error(`forceNonTaxableLineIds[${index}] is empty.`);
+    return text;
+  });
+}
+
+function parseTaxOnNonTaxableItems(args: Record<string, unknown>): { allowed: true; reason: string } | null {
+  const allowed = flagOn(args.allowTaxOnNonTaxableItems);
+  const reason = typeof args.reason === 'string' ? args.reason.trim() : '';
+  if (!allowed) {
+    if (reason) throw new Error('reason requires allowTaxOnNonTaxableItems: true.');
+    return null;
+  }
+  if (!reason) throw new Error('allowTaxOnNonTaxableItems requires a reason.');
+  if (reason.length > 500) throw new Error('reason must be 500 characters or fewer.');
+  return { allowed: true, reason };
+}
+
 function optionalTaxRate(value: unknown): number | null {
   if (value === undefined || value === null || value === '') return null;
   const n = Number(value);
@@ -1320,9 +1382,11 @@ export async function runJobberInvoiceImport(
   if (absorb && numbers.length !== 1) throw new Error('absorbTaxShortfall applies to one invoice. Pass a single invoiceNumbers entry.');
   const discountTaxable = optionalDiscountTaxable(args.discountTaxable);
   const negativeLinesNonTaxable = optionalNegativeLinesNonTaxable(args.negativeLinesNonTaxable);
+  const forceNonTaxableLineIds = forceNonTaxableTokens(args.forceNonTaxableLineIds);
+  const taxOnNonTaxableItems = parseTaxOnNonTaxableItems(args);
   const explicitTaxRate = optionalTaxRate(args.taxRate);
-  if ((discountTaxable != null || explicitTaxRate != null || negativeLinesNonTaxable != null) && numbers.length !== 1) {
-    throw new Error('discountTaxable, taxRate, and negativeLinesNonTaxable apply to one invoice. Pass a single invoiceNumbers entry.');
+  if ((discountTaxable != null || explicitTaxRate != null || negativeLinesNonTaxable != null || forceNonTaxableLineIds != null || taxOnNonTaxableItems != null) && numbers.length !== 1) {
+    throw new Error('discountTaxable, taxRate, negativeLinesNonTaxable, forceNonTaxableLineIds, and allowTaxOnNonTaxableItems apply to one invoice. Pass a single invoiceNumbers entry.');
   }
   const customerIds = idMap(args.customerIds);
   const itemIds = idMap(args.itemIds);
@@ -1400,6 +1464,7 @@ export async function runJobberInvoiceImport(
       const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, qbo);
       const holdTaxCode = shouldHoldAutomatedSalesTax(invoice.city, cdtfaCities);
       const taxRate = explicitTaxRate ?? await cachedCombinedTaxRate(tax.id, qbo, rateCache);
+      const forceNonTaxableLineIndexes = forceNonTaxableLineIds ? resolveForceNonTaxableLineIndexes(invoice.lines, forceNonTaxableLineIds) : null;
       let plan = classifyJobberInvoice(
         invoice,
         new Set(existing.map((row) => String(row.DocNumber))),
@@ -1407,7 +1472,7 @@ export async function runJobberInvoiceImport(
         items,
         tax.id,
         tax.reason,
-        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode, absorb, discountTaxable, taxRate, negativeLinesNonTaxable }
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode, absorb, discountTaxable, taxRate, negativeLinesNonTaxable, forceNonTaxableLineIndexes }
       );
       if (ambiguousCustomer) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
@@ -1434,12 +1499,15 @@ export async function runJobberInvoiceImport(
           rate: taxRate,
           taxOverride,
           absorbExpectedTax: absorb ? absorb.expectedQboTax : null,
+          allowTaxOnNonTaxableItems: taxOnNonTaxableItems != null,
+          requireTaxMatch: Boolean(forceNonTaxableLineIndexes?.length),
         });
         plan = {
           ...plan,
           lines: assessed.lines,
           expectedTaxableAmount: assessed.expectedTaxableAmount,
           expectedTax: assessed.expectedTax,
+          ...(taxOnNonTaxableItems ? { allowTaxOnNonTaxableItems: taxOnNonTaxableItems } : {}),
           ...(assessed.reason ? { status: 'blocked' as const, reason: assessed.reason, body: null } : {}),
         };
       } else {
@@ -1452,6 +1520,7 @@ export async function runJobberInvoiceImport(
             itemTaxCategory: null,
             expectedTaxableAmount: 0,
           })),
+          ...(taxOnNonTaxableItems ? { allowTaxOnNonTaxableItems: taxOnNonTaxableItems } : {}),
         };
       }
       plans.push(plan);
@@ -1541,7 +1610,15 @@ export async function runJobberInvoiceImport(
       continue;
     }
     const invoiceBody = { ...row.body, ...(customerId ? { CustomerRef: { value: customerId } } : {}) };
-    const invoicePlan: QboPlan = { tool: 'qbo_import_jobber_invoices', entity: 'Invoice', action: 'create', path: '/invoice', body: invoiceBody };
+    const allowance = row.allowTaxOnNonTaxableItems;
+    const invoicePlan: QboPlan = {
+      tool: 'qbo_import_jobber_invoices',
+      entity: 'Invoice',
+      action: 'create',
+      path: '/invoice',
+      body: invoiceBody,
+      ...(allowance ? { reason: allowance.reason, changes: { allowTaxOnNonTaxableItems: true, reason: allowance.reason } } : {}),
+    };
     const invoiceResult = await runQboPlan(invoicePlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'inv') }, deps);
     if (invoiceResult.wrote) {
       row.tax = assessSavedTax({
@@ -1814,7 +1891,9 @@ function taxMismatchAudit(
     realmId: gate.realmId,
     environment: gate.environment,
     entity: 'Invoice',
-    payload: row.tax,
+    payload: row.allowTaxOnNonTaxableItems
+      ? { ...row.tax, allowTaxOnNonTaxableItems: true, allowReason: row.allowTaxOnNonTaxableItems.reason }
+      : row.tax,
     qboResponse: null,
     qboIds: { id: qboId, syncToken: null, docNumber: row.invoiceNumber },
     error: reason,
@@ -1844,7 +1923,7 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
             paymentRecords(first: 20) { nodes { id amount entryDate adjustmentType } }
             client { name }
             jobs(first: 3) { nodes { property { address { street street1 street2 city province postalCode country } } } }
-            lineItems(first: 40) { nodes { name description quantity unitPrice taxable } }
+            lineItems(first: 40) { nodes { id name description quantity unitPrice taxable } }
           }
         }
       }`,
@@ -1876,6 +1955,7 @@ async function loadJobberInvoices(numbers: string[], deps: QboWriteDeps): Promis
         adjustmentType: record.adjustmentType ? String(record.adjustmentType) : null,
       })),
       lines: (match.lineItems?.nodes || []).map((line: Record<string, unknown>) => ({
+        id: line.id ? String(line.id) : null,
         name: String(line.name || ''),
         description: line.description ? String(line.description) : null,
         quantity: Number(line.quantity || 0),

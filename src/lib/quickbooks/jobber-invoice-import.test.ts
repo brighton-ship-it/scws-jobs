@@ -1710,3 +1710,143 @@ test('a non-taxable QuickBooks item on a TAX line is refused before any write', 
   assert.equal(row.lines[0].itemTaxCategory, 'EUC-99990202-V1-00020000');
   assert.equal(row.lines[0].expectedTaxableAmount, 0);
 });
+
+test('forceNonTaxableLineIds sends stale taxable lines as NON and refuses a tax that still differs', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '5899',
+    lines: [
+      { id: 'li-svc', name: '1MS', description: 'service', quantity: 1, unitPrice: 200, taxable: true },
+      { id: 'li-part', name: 'MISC', description: 'part', quantity: 1, unitPrice: 50, taxable: true },
+    ],
+    taxAmount: 0,
+    total: 250,
+    paymentsTotal: 0,
+  };
+  const args = { invoiceNumbers: ['5899'], taxRate: 0.0775, customerIds: { 'Colleen Baker': '15' }, itemIds: { '1MS': '23', MISC: '5' } };
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('SalesTaxRateList')) return countyCodes;
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (/Item where Id/.test(sql)) {
+      const id = sql.match(/Id = '(\d+)'/)?.[1] || '0';
+      return { QueryResponse: { Item: [{ Id: id, Taxable: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000' } }] } };
+    }
+    return { QueryResponse: {} };
+  };
+  const open = await runJobberInvoiceImport(args, { qboQuery, loadJobberInvoices: async () => [job], fetchImpl: async () => { throw new Error('posted'); } });
+  const openRow = (open.invoices as Array<{ status: string; reason: string | null }>)[0];
+  assert.equal(openRow.status, 'blocked');
+  assert.match(openRow.reason || '', /19\.38/);
+  const forced = await runJobberInvoiceImport(
+    { ...args, forceNonTaxableLineIds: ['li-svc', '1'] },
+    { qboQuery, loadJobberInvoices: async () => [job], fetchImpl: async () => { throw new Error('posted'); } }
+  );
+  const row = (forced.invoices as Array<{ status: string; reason: string | null; expectedTax: number | null; body: { Line: Array<{ SalesItemLineDetail: { TaxCodeRef: { value: string } } }> } }>)[0];
+  assert.equal(row.status, 'create', row.reason || '');
+  assert.equal(row.expectedTax, 0);
+  assert.deepEqual(row.body.Line.map((line) => line.SalesItemLineDetail.TaxCodeRef.value), ['NON', 'NON']);
+  const partial = await runJobberInvoiceImport(
+    { ...args, forceNonTaxableLineIds: ['li-part'] },
+    { qboQuery, loadJobberInvoices: async () => [job], fetchImpl: async () => { throw new Error('posted'); } }
+  );
+  const partialRow = (partial.invoices as Array<{ status: string; reason: string | null }>)[0];
+  assert.equal(partialRow.status, 'blocked');
+  assert.match(partialRow.reason || '', /15\.5/);
+  await assert.rejects(
+    () => runJobberInvoiceImport({ ...args, invoiceNumbers: ['5899', '5900'], forceNonTaxableLineIds: ['0'] }, { loadJobberInvoices: async () => { throw new Error('should not load'); }, qboQuery: async () => { throw new Error('should not query'); } }),
+    /apply to one invoice/
+  );
+});
+
+test('invoice 6110 can tax Mobilization item 436 only with allowTaxOnNonTaxableItems and a reason', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6110',
+    lines: [
+      { name: 'Mobilization', description: 'Mobilization', quantity: 1, unitPrice: 2500, taxable: true },
+      { name: 'Drilling', description: 'drilling', quantity: 1, unitPrice: 10000, taxable: false },
+    ],
+    taxAmount: 193.75,
+    total: 12693.75,
+    paymentsTotal: 0,
+  };
+  const reason = 'Jobber 6110 collected mobilization tax and it will be remitted.';
+  const item = (taxable: boolean, category: string) => ({ Id: '436', Name: 'Mobilization', Taxable: taxable, TaxClassificationRef: { value: category, name: 'Service' } });
+  const qboQuery = (category: string) => async (sql: string) => {
+    if (sql.includes('SalesTaxRateList')) return countyCodes;
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (/Item where Id = '436'/.test(sql)) return { QueryResponse: { Item: [item(false, category)] } };
+    if (/Item where Id = '30'/.test(sql)) return { QueryResponse: { Item: [{ Id: '30', Name: 'Drilling', Taxable: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000', name: 'Service' } }] } };
+    return { QueryResponse: {} };
+  };
+  const baseArgs = { invoiceNumbers: ['6110'], taxRate: 0.0775, customerIds: { 'Colleen Baker': '15' }, itemIds: { Mobilization: '436', Drilling: '30' } };
+  let posts = 0;
+  const blocked = await runJobberInvoiceImport(baseArgs, {
+    qboQuery: qboQuery('EUC-99990202-V1-00020000'),
+    loadJobberInvoices: async () => [job],
+    fetchImpl: async () => { posts += 1; throw new Error('posted'); },
+  });
+  const blockedRow = (blocked.invoices as Array<{ status: string; reason: string | null; body: unknown }>)[0];
+  assert.equal(posts, 0);
+  assert.equal(blockedRow.status, 'blocked');
+  assert.equal(blockedRow.body, null);
+  assert.match(blockedRow.reason || '', /non-taxable/);
+  const exempt = await runJobberInvoiceImport(
+    { ...baseArgs, allowTaxOnNonTaxableItems: true, reason },
+    { qboQuery: qboQuery('EUC-99990101-V1-00020000'), loadJobberInvoices: async () => [job], fetchImpl: async () => { posts += 1; throw new Error('posted'); } }
+  );
+  const exemptRow = (exempt.invoices as Array<{ status: string; reason: string | null }>)[0];
+  assert.equal(exemptRow.status, 'blocked');
+  assert.match(exemptRow.reason || '', /EUC-99990101/);
+  const allowed = await runJobberInvoiceImport(
+    { ...baseArgs, allowTaxOnNonTaxableItems: true, reason },
+    { qboQuery: qboQuery('EUC-99990202-V1-00020000'), loadJobberInvoices: async () => [job], fetchImpl: async () => { posts += 1; throw new Error('posted'); } }
+  );
+  const row = (allowed.invoices as Array<{
+    status: string;
+    reason: string | null;
+    expectedTax: number | null;
+    allowTaxOnNonTaxableItems: { allowed: boolean; reason: string } | null;
+    body: { Line: Array<{ SalesItemLineDetail: { ItemRef: { value: string }; TaxCodeRef: { value: string } } }> };
+    lines: Array<{ name: string; expectedTaxableAmount: number }>;
+  }>)[0];
+  assert.equal(posts, 0);
+  assert.equal(row.status, 'create', row.reason || '');
+  assert.equal(row.expectedTax, 193.75);
+  assert.equal(row.allowTaxOnNonTaxableItems?.reason, reason);
+  assert.equal(row.body.Line[0].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
+  assert.equal(row.body.Line[0].SalesItemLineDetail.ItemRef.value, '436');
+  assert.equal(row.body.Line[1].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.equal(row.lines[0].expectedTaxableAmount, 2500);
+  assert.equal(row.lines[1].expectedTaxableAmount, 0);
+  await assert.rejects(
+    () => runJobberInvoiceImport({ ...baseArgs, allowTaxOnNonTaxableItems: true }, { loadJobberInvoices: async () => { throw new Error('should not load'); }, qboQuery: async () => ({}) }),
+    /requires a reason/
+  );
+
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  const audits: Array<{ status: string; reason: string | null; payload: any }> = [];
+  const confirm = await runJobberInvoiceImport(
+    { ...baseArgs, allowTaxOnNonTaxableItems: true, reason, confirm: true, batchId: 'tax-6110', payments: 'none' },
+    {
+      env,
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      audit: async (entry) => { audits.push({ status: entry.status, reason: entry.reason, payload: entry.payload }); },
+      qboQuery: qboQuery('EUC-99990202-V1-00020000'),
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => new Response(JSON.stringify({
+        Invoice: { Id: '9', SyncToken: '0', DocNumber: '6110', TxnTaxDetail: taxDetail(193.75, '4') },
+      }), { status: 200 }),
+    }
+  );
+  assert.equal(confirm.wrote, true, JSON.stringify(confirm.invoices));
+  const pending = audits.find((entry) => entry.status === 'pending');
+  assert.equal(pending?.reason, reason);
+  assert.equal(pending?.payload?.changes?.allowTaxOnNonTaxableItems, true);
+  assert.equal(pending?.payload?.changes?.reason, reason);
+});

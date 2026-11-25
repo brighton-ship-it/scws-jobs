@@ -80,3 +80,53 @@ test('qbo_invoice retaxLineIds ignores a caller-supplied liveInvoice and uses th
   assert.equal(out.http.body.Line[0].Amount, 150);
   assert.equal(out.http.body.Line[0].Description, 'live');
 });
+
+test('setLineTaxCodes preview refuses a missing line and shows the sparse body for invoice 39354', async () => {
+  const { callQboWriteTool } = await import('./qbo-write-tools.ts');
+  const invoice = {
+    Id: '39354',
+    SyncToken: '4',
+    CustomerRef: { value: '88' },
+    TxnDate: '2026-11-01',
+    BillAddr: { Line1: '1 Bill St' },
+    ShipAddr: { Line1: '1 Job St' },
+    TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, UseAutomatedSalesTax: false, TotalTax: 4192.75 },
+    Line: [
+      { Id: '1', LineNum: 1, Amount: 14100, Description: 'Mobilization', DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '436' }, TaxCodeRef: { value: 'TAX' } } },
+      { Id: '3', LineNum: 3, Amount: 40000, Description: 'Equipment', DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '844' }, TaxCodeRef: { value: 'TAX' } } },
+      { Id: '4', Amount: 54100, DetailType: 'SubTotalLineDetail', SubTotalLineDetail: {} },
+    ],
+  };
+  const qboQuery = async (sql: string) => (/from Invoice/.test(sql) ? { QueryResponse: { Invoice: [invoice] } } : { QueryResponse: {} });
+  let fetched = 0;
+  const missing = await callQboWriteTool(
+    'qbo_invoice',
+    { id: '39354', syncToken: '4', setLineTaxCodes: [{ lineId: '9', taxCode: 'NON' }], expectedTotalTax: 0 },
+    { qboQuery, env: {}, audit: async () => {}, fetchImpl: async () => { fetched += 1; throw new Error('posted'); } }
+  );
+  assert.equal(missing.isError, true);
+  assert.equal(fetched, 0);
+  const refused = JSON.parse(missing.content[0].text as string);
+  assert.equal(refused.wrote, false);
+  assert.equal(refused.refused, true);
+  assert.match(refused.error, /no line 9/);
+  const stale = await callQboWriteTool(
+    'qbo_invoice',
+    { id: '39354', syncToken: '3', setLineTaxCodes: [{ lineId: '1', taxCode: 'NON' }], expectedTotalTax: 0 },
+    { qboQuery, env: {}, audit: async () => {} }
+  );
+  assert.match(JSON.parse(stale.content[0].text as string).error, /SyncToken 4/);
+  const got = await callQboWriteTool(
+    'qbo_invoice',
+    { id: '39354', syncToken: '4', setLineTaxCodes: [{ lineId: '1', taxCode: 'NON' }, { lineId: '3', taxCode: 'NON' }], expectedTotalTax: 0 },
+    { qboQuery, env: {}, audit: async () => {} }
+  );
+  const out = JSON.parse(got.content[0].text as string);
+  assert.equal(out.wrote, false);
+  assert.equal(out.http.body.TxnTaxDetail.TxnTaxCodeRef.value, '23');
+  assert.equal(out.http.body.TxnTaxDetail.UseAutomatedSalesTax, false);
+  assert.equal(out.http.body.Line[0].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.equal(out.http.body.Line[1].Amount, 40000);
+  assert.equal(out.http.body.BillAddr.Line1, '1 Bill St');
+  assert.equal(out.http.body.ShipAddr.Line1, '1 Job St');
+});
