@@ -9,6 +9,8 @@ import {
   ADDRESS_CONFIRM_RETRY_LIMIT,
   ADDRESS_ON_FILE_RULE,
   LOST_PRESSURE_HEADING,
+  OWNER_CALLBACK_REASON,
+  OWNER_PERSON_HEADING,
   MIKE_SPANISH_RULE,
   PRESSURE_EMERGENCY_TAG,
   SPANISH_HEADING,
@@ -202,6 +204,207 @@ test('booking confirms street and city even for an existing customer', () => {
     assert.equal(giveUp.result.fallback, 'createCallback');
     assert.match(String(giveUp.result.message), /Do not call book_job again/);
   }
+
+  // Mark Hanson, 11/16: "Right" to the Yerba read-back, then "That's correct" after ASR wrote Yuba.
+  const markRight = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside' },
+    [
+      { role: 'bot', text: "You're in Lakeside at 1 2 4 5 3. Yerba Valley Road. Right?" },
+      { role: 'user', text: 'Right.' },
+    ],
+  );
+  assert.equal(markRight.ok, true);
+  const markYuba = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 1 2 4 5 3 Yuba Valley Road out in Lakeside. Is that correct?' },
+      { role: 'user', text: "That's correct." },
+    ],
+  );
+  assert.equal(markYuba.ok, true);
+
+  const flagOnly = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside', addressConfirmed: true },
+    [],
+  );
+  assert.equal(flagOnly.ok, true);
+  const flagWithoutReadBack = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'I can do Monday between 1 and 3.' },
+      { role: 'user', text: 'Yes, book it.' },
+    ],
+  );
+  assert.equal(flagWithoutReadBack.ok, false);
+  const flagAfterReadBack = checkServiceAddressConfirmation(
+    { address: '12453 Yerba Valley Road', city: 'Lakeside', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 12453 Yerba Valley Road in Lakeside?' },
+      { role: 'user', text: 'mm-hmm' },
+    ],
+  );
+  assert.equal(flagAfterReadBack.ok, false);
+  const wrongStreet = checkServiceAddressConfirmation(
+    { address: '12 Maple Street', city: 'Escondido', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 12 Apple Street in Escondido?' },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  assert.equal(wrongStreet.ok, false);
+
+  const corino = checkServiceAddressConfirmation(
+    { address: '24445 Fern Valley Road', city: 'Idyllwild' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 2 4 4 4 5 Fern Valley Road in Edelwild. Is that right?' },
+      { role: 'user', text: 'Idyllwild. Idyllwild pine cone. Yes.' },
+    ],
+  );
+  assert.equal(corino.ok, true);
+});
+
+test('addressConfirmed never overrides a transcript no, correction, or empty reply', () => {
+  const readBack = { role: 'bot' as const, text: 'Just to confirm, the well is at 12 Main St in Ramona?' };
+  const cases: Array<{ reply?: string; extra?: string }> = [
+    {},
+    { reply: 'No.' },
+    { reply: "No, it's on Oak Street" },
+    { reply: "No, not that one, it's the other property", extra: 'Yes, book it' },
+  ];
+  for (const item of cases) {
+    const turns = [readBack];
+    if (item.reply) turns.push({ role: 'user', text: item.reply });
+    if (item.extra) turns.push({ role: 'user', text: item.extra });
+    const decision = checkServiceAddressConfirmation(
+      { address: '12 Main St', city: 'Ramona', addressConfirmed: true },
+      turns,
+    );
+    assert.equal(decision.ok, false, item.reply || 'empty reply');
+  }
+  assert.equal(checkServiceAddressConfirmation(
+    { address: '12 Main St', city: 'Ramona' },
+    [readBack, { role: 'user', text: "that's not correct" }],
+  ).ok, false);
+  assert.equal(checkServiceAddressConfirmation(
+    { address: '12 Main St', city: 'Ramona', addressConfirmed: true },
+    [readBack, { role: 'user', text: 'No, that is not correct' }],
+  ).ok, false);
+});
+
+test('street slips are only Yerba/Yuba and Tierra/Tiara, and house numbers are exact', () => {
+  const yes = (address: string, spoken: string, city = 'Ramona') => checkServiceAddressConfirmation(
+    { address, city, addressConfirmed: true },
+    [
+      { role: 'bot', text: `Just to confirm, the well is at ${spoken} in ${city}?` },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  const refuse: Array<[string, string]> = [
+    ['10 Pine Road', '10 Pike Road'],
+    ['10 Lake Street', '10 Lane Street'],
+    ['10 Hill Drive', '10 Hall Drive'],
+    ['10 Rose Court', '10 Ross Court'],
+    ['10 Main Street', '10 Mann Street'],
+    ['10 Olive Avenue', '10 Olivia Avenue'],
+    ['10 Vista Drive', '10 Vesta Drive'],
+    ['10 Cedar Lane', '10 Cedro Lane'],
+    ['10 Highland Road', '10 Highlands Road'],
+    ['10 Palm Way', '10 Palo Way'],
+    ['1234 Pine Road', '1243 Pine Road'],
+  ];
+  for (const [booked, heard] of refuse) {
+    assert.equal(yes(booked, heard).ok, false, `${booked} vs ${heard}`);
+  }
+  assert.equal(yes('12453 Yerba Valley Road', '12453 Yuba Valley Road', 'Lakeside').ok, true);
+  assert.equal(yes('24510 Tierra Lane', '24510 Tiara Lane', 'Hemet').ok, true);
+
+  const spaced = checkServiceAddressConfirmation(
+    { address: '2 4 5 1 0 Tierra Ln', city: 'Hemet' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 24510 Tierra Lane in Hemet?' },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  assert.equal(spaced.ok, true);
+  const spokenDigits = checkServiceAddressConfirmation(
+    { address: '24510 Tierra Ln', city: 'Hemet, CA' },
+    [
+      { role: 'bot', text: 'The well is at two four five one zero Tierra Lane.' },
+      { role: 'bot', text: 'in Hemet?' },
+      { role: 'user', text: 'Yes, that is the one.' },
+    ],
+  );
+  assert.equal(spokenDigits.ok, true);
+  const routeNumber = checkServiceAddressConfirmation(
+    { address: '14000 Highway 78', city: 'Ramona' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 14000 Highway 7 8 in Ramona?' },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  assert.equal(routeNumber.ok, true);
+  const wrongNumber = checkServiceAddressConfirmation(
+    { address: '24510 Tierra Ln', city: 'Hemet', addressConfirmed: true },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at 14001 Tiara Lane in Hemet?' },
+      { role: 'user', text: 'Yes.' },
+    ],
+  );
+  assert.equal(wrongNumber.ok, false);
+  const natalie = checkServiceAddressConfirmation(
+    { address: 'Natalie Blvd', city: 'Hemet' },
+    [
+      { role: 'bot', text: 'Just to confirm, the well is at Natalie Boulevard in Hemet?' },
+      { role: 'user', text: 'Yes, the address is Natalie Boulevard in Hemet.' },
+    ],
+  );
+  assert.equal(natalie.ok, true);
+});
+
+test('Mark, Corino, and Nayeli book only after a clear yes, with the flag off or on', () => {
+  const markBefore = [
+    { role: 'bot' as const, text: "You're in Lakeside at 1 2 4 5 3. Yerba Valley Road. Right?" },
+  ];
+  const markYes = [...markBefore, { role: 'user' as const, text: 'Right.' }];
+  const markYuba = [
+    { role: 'bot' as const, text: 'Just to confirm, the well is at 1 2 4 5 3 Yuba Valley Road out in Lakeside. Is that correct?' },
+    { role: 'user' as const, text: "That's correct." },
+  ];
+  const mark = { address: '12453 Yerba Valley Road', city: 'Lakeside' };
+  for (const flag of [false, true]) {
+    assert.equal(checkServiceAddressConfirmation({ ...mark, addressConfirmed: flag }, markBefore).ok, false, `mark before flag=${flag}`);
+    assert.equal(checkServiceAddressConfirmation({ ...mark, addressConfirmed: flag }, markYes).ok, true, `mark right flag=${flag}`);
+    assert.equal(checkServiceAddressConfirmation({ ...mark, addressConfirmed: flag }, markYuba).ok, true, `mark yuba flag=${flag}`);
+  }
+
+  const corinoBefore = [
+    { role: 'bot' as const, text: 'Just to confirm, the well is at 1 2 4 4 4 5 Fern Valley Road in Edelwild?' },
+    { role: 'user' as const, text: 'No. No. The address is 2 4 4 4 5 Fern Valley Road.' },
+  ];
+  const corinoYes = [
+    { role: 'bot' as const, text: 'Just to confirm, the well is at 2 4 4 4 5 Fern Valley Road in Edelwild. Is that right?' },
+    { role: 'user' as const, text: 'Idyllwild. Idyllwild pine cone. Yes.' },
+  ];
+  const corino = { address: '24445 Fern Valley Road', city: 'Idyllwild' };
+  for (const flag of [false, true]) {
+    assert.equal(checkServiceAddressConfirmation({ ...corino, addressConfirmed: flag }, corinoBefore).ok, false, `corino before flag=${flag}`);
+    assert.equal(checkServiceAddressConfirmation({ ...corino, addressConfirmed: flag }, corinoYes).ok, true, `corino yes flag=${flag}`);
+  }
+
+  const nayeliBefore = [
+    { role: 'bot' as const, text: 'I have the address as 1 9 4 8 6 Elena Lane, Jamul. Which window works?' },
+    { role: 'user' as const, text: 'The 1 o\'clock would work best for me.' },
+  ];
+  const nayeliYes = [
+    ...nayeliBefore,
+    { role: 'bot' as const, text: 'Just to confirm, the well is at 1 9 4 8 6 Elena Lane and Jamul. Is that correct?' },
+    { role: 'user' as const, text: 'Yes.' },
+  ];
+  const nayeli = { address: '19486 Elena Lane', city: 'Jamul' };
+  for (const flag of [false, true]) {
+    assert.equal(checkServiceAddressConfirmation({ ...nayeli, addressConfirmed: flag }, nayeliBefore).ok, false, `nayeli before flag=${flag}`);
+    assert.equal(checkServiceAddressConfirmation({ ...nayeli, addressConfirmed: flag }, nayeliYes).ok, true, `nayeli yes flag=${flag}`);
+  }
 });
 
 test('prompt patch leaves greeting, voice, and routing alone and stays idempotent', () => {
@@ -211,6 +414,10 @@ test('prompt patch leaves greeting, voice, and routing alone and stays idempoten
   assert.match(once, new RegExp(LOST_PRESSURE_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(once, new RegExp(SPANISH_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
   assert.match(once, new RegExp(ADDRESS_CONFIRM_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(OWNER_PERSON_HEADING.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.match(once, new RegExp(OWNER_CALLBACK_REASON));
+  assert.match(once, /addressConfirmed/);
+  assert.match(once, /Do not place an outbound call/);
   assert.equal(once.includes(SPANISH_ONLY_LINE), true);
   assert.match(once, /Hey, this is Mike with Southern California Well Service\. Just a heads up, this call's recorded\./);
   assert.match(once, /Routing stays on the shop leg, then Mike\./);

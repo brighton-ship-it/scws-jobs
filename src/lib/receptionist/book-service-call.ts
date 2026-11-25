@@ -48,7 +48,7 @@ import {
   isBlockedAssignee,
 } from './tech-assignment.ts';
 import { jobberClientProperties, type JobberProperties } from '../jobber/quotes.ts';
-import { decideBookingArea, type ServiceAreaResult } from './service-area.ts';
+import { canonicalServiceCity, decideBookingArea, type ServiceAreaResult } from './service-area.ts';
 
 const FORBIDDEN_SARAH_JOB = /\b(drill|drilling|pump|quote|estimate|rehab|rehabilitation|crew)\b/i;
 
@@ -1058,8 +1058,10 @@ export async function handleBookServiceCall(
   input: BookServiceCallInput,
   deps: BookServiceCallDeps = {}
 ): Promise<BookServiceCallResponse> {
+  const city = canonicalServiceCity(input.city);
+  const booked = city && city !== String(input.city || '').trim() ? { ...input, city } : input;
   try {
-    return { result: await bookServiceCall(input, deps) };
+    return { result: await bookServiceCall(booked, deps) };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'Unknown error';
     return { result: errorResult(message) };

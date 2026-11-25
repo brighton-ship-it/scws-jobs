@@ -146,11 +146,15 @@ export function buildMissedServiceFlag(input: {
   transcript?: string | null;
   isTestCall: boolean;
   callbackAttempt: boolean;
+  /** An owner/person callback was already saved on this call, so do not also auto-flag. */
+  callbackAlreadyLogged?: boolean;
   vapiCallId: string;
   phone: string;
 }): MissedServiceFlag {
+  const outcome = toolOutcomes(input.messages || []);
+  if (input.callbackAlreadyLogged) outcome.callbackLogged = true;
   const flag = needsCallbackFlag(
-    toolOutcomes(input.messages || []),
+    outcome,
     isServiceIntent(input),
     { isTestCall: input.isTestCall, callbackAttempt: input.callbackAttempt },
   );

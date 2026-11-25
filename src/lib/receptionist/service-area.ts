@@ -339,10 +339,21 @@ const NORMALIZED_TOWNS = SERVICE_TOWNS.map((town) => ({
   key: normalizePlace(town),
 })).filter((entry) => entry.key);
 
+/**
+ * Speech-to-text mishears of a town we already serve.
+ * "Palomar Mountain" is a real town and is not in this map.
+ */
+const TOWN_ALIASES: Record<string, string> = {
+  'palma valley': 'Pauma Valley',
+  'palomar valley': 'Pauma Valley',
+};
+
+const ALIAS_TOWNS = Object.entries(TOWN_ALIASES).map(([key, town]) => ({ town, key }));
+
 /** Exact town name, such as "Alpine" or "Ramona". Not a county phrase or ZIP. */
 export function isKnownTown(value: string | null | undefined): boolean {
   const key = normalizePlace(value || '');
-  return Boolean(key) && NORMALIZED_TOWNS.some((entry) => entry.key === key);
+  return Boolean(key) && (NORMALIZED_TOWNS.some((entry) => entry.key === key) || key in TOWN_ALIASES);
 }
 
 export function isCountyPhrase(value: string | null | undefined): boolean {
@@ -350,13 +361,31 @@ export function isCountyPhrase(value: string | null | undefined): boolean {
   return Boolean(key) && COUNTY_PHRASES.some((phrase) => phrase === key || placeContains(key, phrase));
 }
 
-/** Longest known town contained in the text, or null. "Ramona, CA" → "Ramona". */
+/**
+ * City to store on a job. "Palma Valley" and "Palomar Valley" become Pauma Valley.
+ * A real town such as Palomar Mountain is unchanged.
+ */
+export function canonicalServiceCity(value: string | null | undefined): string {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const key = normalizePlace(raw)
+    .replace(/\b(?:california|calif|ca)\b/g, ' ')
+    .replace(/\b\d{5}(?:\d{4})?\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (TOWN_ALIASES[key]) return TOWN_ALIASES[key];
+  return raw;
+}
+
+/** Longest known town contained in the text, or null. "Ramona, CA" → "Ramona". Aliases return the town we serve. */
 export function matchedTownName(value: string | null | undefined): string | null {
   const loc = normalizePlace(value || '');
   if (!loc) return null;
   const exact = NORMALIZED_TOWNS.find((entry) => entry.key === loc);
   if (exact) return exact.town;
-  const contained = NORMALIZED_TOWNS
+  const alias = TOWN_ALIASES[loc];
+  if (alias) return alias;
+  const contained = [...NORMALIZED_TOWNS, ...ALIAS_TOWNS]
     .filter((entry) => placeContains(loc, entry.key))
     .sort((a, b) => b.key.length - a.key.length)[0];
   return contained?.town ?? null;
@@ -418,6 +447,15 @@ function placeIndex(): PlaceHit[] {
     if (isBookableCounty(county)) add(name, county);
   }
   for (const [key, county] of Object.entries(EXTRA_COUNTY)) add(key, county);
+  for (const [alias, canonical] of Object.entries(TOWN_ALIASES)) {
+    if (byKey.has(alias)) continue;
+    const canon = byKey.get(normalizePlace(canonical));
+    byKey.set(alias, {
+      name: canon?.name || canonical,
+      key: alias,
+      county: canon?.county ?? countyForPlaceName(canonical),
+    });
+  }
   placeIndexCache = [...byKey.values()];
   return placeIndexCache;
 }

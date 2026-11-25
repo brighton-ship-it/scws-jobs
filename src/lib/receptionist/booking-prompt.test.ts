@@ -19,6 +19,9 @@ describe('booking prompt text', () => {
     assert.match(all, /confirm the street address and the city/i);
     assert.match(all, /even for an existing customer/i);
     assert.match(all, /do not assume the city from the line they called/i);
+    assert.equal(BOOK_JOB_TOOL.parameters.properties.addressConfirmed.type, 'boolean');
+    assert.equal(BOOK_JOB_TOOL.parameters.required.includes('addressConfirmed'), false);
+    assert.match(BOOK_JOB_TOOL.parameters.properties.addressConfirmed.description, /true only after/i);
   });
 
   it('tells Mike how to handle a declined slot', () => {
