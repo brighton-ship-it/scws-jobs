@@ -10,6 +10,7 @@ import {
   missingJobsiteAddressReason,
   pacificDate,
   qboShipAddress,
+  qboItemIdForLineName,
   resolveJobProperties,
   runJobberInvoiceImport,
   sliceInvoiceChunk,
@@ -262,7 +263,7 @@ test('a Jobber discount stays on the invoice and a long memo is measured', () =>
     { taxOverride: true }
   );
   const taxLines = (negative.body?.Line || []) as Array<{ Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }>;
-  assert.equal(taxLines[0].SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.equal(taxLines[0].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
   assert.equal(taxLines[1].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
   assert.equal(negative.negativeTaxableLines, 1);
   assert.equal((negative.body?.TxnTaxDetail as { TotalTax: number }).TotalTax, 12.4);
@@ -931,4 +932,158 @@ test('preview no longer blocks a Yucaipa or La Quinta jobsite on the county map'
   assert.equal(q.status, 'create', q.reason || '');
   assert.equal(q.body.TxnTaxDetail.TxnTaxCodeRef.value, '59');
   assert.equal(q.tax.expectedCountyRateId, '25');
+});
+
+const testStreet = { line1: '123 Test St', line2: null, city: 'Testville', province: 'CA', postalCode: '00000', country: 'US' };
+
+test('county map uses existing codes for the new cities and refuses an unknown tax code', async () => {
+  assert.equal(taxCodeIdForCity('Thousand Palms'), '23');
+  assert.equal(taxCodeIdForCity('Homeland'), '23');
+  assert.equal(countyNameForCity('Thousand Palms'), 'Riverside');
+  assert.equal(countyNameForCity('Homeland'), 'Riverside');
+  for (const city of ['Upland', 'Highland', 'Twentynine Palms']) {
+    assert.equal(countyNameForCity(city), 'San Bernardino', city);
+    assert.equal(taxCodeIdForCity(city), '31', city);
+  }
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6101',
+    city: 'Testville',
+    address: testStreet,
+    clientName: 'Test Client',
+  };
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['6101'], taxCodeByCity: { Testville: '999' } },
+    {
+      qboQuery: async (sql: string) => {
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
+        if (sql.includes("Id = '999'")) return { QueryResponse: {} };
+        if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23', Name: '1MS' }] } };
+        if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5', Name: 'MISC' }] } };
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { throw new Error('preview posted'); },
+    }
+  );
+  const row = (result.invoices as Array<{ status: string; reason: string | null }>)[0];
+  assert.equal(row.status, 'blocked');
+  assert.match(row.reason || '', /Refusing to create a tax code/);
+  assert.match(row.reason || '', /999/);
+});
+
+test('a taxed negative line and a discount before tax are TAX', () => {
+  const warranty = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6030',
+      city: 'Testville',
+      address: testStreet,
+      lines: [
+        { name: '1MS', description: 'Service', quantity: 1, unitPrice: 2500, taxable: true },
+        { name: 'Warranty', description: 'warranty credit', quantity: 1, unitPrice: -2314, taxable: true },
+      ],
+      taxAmount: 2.71,
+      total: 188.71,
+    },
+    '15',
+    { '1MS': '23', Warranty: '5' },
+    '23'
+  );
+  const warrantyLines = (warranty.body?.Line || []) as Array<{ Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }>;
+  assert.equal(warrantyLines[1].Amount, -2314);
+  assert.equal(warrantyLines[1].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
+
+  const discount = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6007',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 6359.23, taxable: true }],
+      discountAmount: 500,
+      taxAmount: 453.84,
+      total: 6313.07,
+    },
+    '15',
+    { '1MS': '23', Discount: '526' },
+    '23'
+  );
+  const discountLine = ((discount.body?.Line || []) as Array<{ Description?: string; Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }>).find((line) => line.Description === 'Jobber discount');
+  assert.equal(discountLine?.Amount, -500);
+  assert.equal(discountLine?.SalesItemLineDetail.TaxCodeRef.value, 'TAX');
+});
+
+test('absorbTaxShortfall adds a non-taxable line and the confirm check matches total, tax, and the shortfall', () => {
+  const built = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6007',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 5860, taxable: true }],
+      taxAmount: 453.84,
+      total: 6313.84,
+      discountAmount: 0,
+    },
+    '15',
+    { '1MS': '23' },
+    '23',
+    { absorb: { expectedQboTax: 492.59, jobberTax: 453.84, expenseAccountId: '18', itemId: '9001' } }
+  );
+  const lines = (built.body?.Line || []) as Array<{ Description?: string; Amount: number; SalesItemLineDetail: { ItemRef: { value: string }; TaxCodeRef: { value: string } } }>;
+  const absorbed = lines.find((line) => line.Description === 'Sales tax absorbed by SCWS');
+  assert.equal(absorbed?.Amount, -38.75);
+  assert.equal(absorbed?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.equal(absorbed?.SalesItemLineDetail.ItemRef.value, '9001');
+  const ok = assessSavedTax({
+    requestedTxnTaxCodeId: '23',
+    city: 'Homeland',
+    jobberTax: 453.84,
+    absorb: { expectedQboTax: 492.59, jobberTax: 453.84, jobberTotal: 6313.84 },
+    qbo: {
+      TotalAmt: 6313.84,
+      Line: [{ Description: 'Sales tax absorbed by SCWS', Amount: -38.75, DetailType: 'SalesItemLineDetail' }],
+      TxnTaxDetail: { ...taxLines(['3', '9', '25'], [6, 0.75, 1], 492.59), TxnTaxCodeRef: { value: '23' } },
+    },
+  });
+  assert.equal(ok.taxMismatch, false, ok.taxMismatchReasons.join(' '));
+  const bad = assessSavedTax({
+    requestedTxnTaxCodeId: '23',
+    city: 'Homeland',
+    jobberTax: 453.84,
+    absorb: { expectedQboTax: 492.59, jobberTax: 453.84, jobberTotal: 6313.84 },
+    qbo: {
+      TotalAmt: 6352.59,
+      Line: [],
+      TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, TotalTax: 492.59, TaxLine: [] },
+    },
+  });
+  assert.equal(bad.taxMismatch, true);
+  assert.match(bad.taxMismatchReasons.join(' '), /Jobber total/);
+  assert.match(bad.taxMismatchReasons.join(' '), /Absorbed line/);
+});
+
+test('6T pump Hoist matches the hoist item without regard to case', () => {
+  assert.equal(qboItemIdForLineName('6T pump Hoist'), '1519');
+  assert.equal(qboItemIdForLineName('6T PUMP HOIST'), '1519');
+  assert.equal(qboItemIdForLineName('6T pump Hoist', { '6t pump hoist': '42' }), '42');
+  const built = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6102',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '6T pump Hoist', description: 'Hoist', quantity: 1, unitPrice: 1000, taxable: true }],
+      taxAmount: 77.5,
+      total: 1077.5,
+    },
+    '15',
+    {},
+    '23'
+  );
+  const line = (built.body?.Line as Array<{ SalesItemLineDetail: { ItemRef: { value: string } } }>)[0];
+  assert.equal(line.SalesItemLineDetail.ItemRef.value, '1519');
+  assert.equal(built.missingItems.length, 0);
 });

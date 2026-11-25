@@ -23,6 +23,9 @@
  *   would otherwise tax the Anza shop. Two different properties on one invoice
  *   block it instead of picking the first.
  * - A Jobber discount is a negative line so the total is not the pre-discount sum.
+ *   On an invoice Jobber taxed, that discount and any other negative line Jobber
+ *   taxed are TaxCodeRef TAX, so QuickBooks tax matches Jobber. A discount on an
+ *   invoice with no tax stays NON.
  * - EmailStatus is never set
  *
  * ServiceDate is not copied: the invoice line we can read does not carry the visit date.
@@ -31,7 +34,7 @@
  */
 import { recordQboAudit, runQboPlan, writeRealmQuery, type QboAuditEntry, type QboWriteDeps } from './durable-write.ts';
 import { isQboRateLimit, withQboBackoff } from './qbo-backoff.ts';
-import { TAX_RATE_IDS_BY_TAX_CODE, countyNameForCity, normalizePlace, taxCodeIdForCity, taxCodeMissingReason, type CountyName } from './tax-codes.ts';
+import { KNOWN_QBO_TAX_CODE_IDS, TAX_RATE_IDS_BY_TAX_CODE, countyNameForCity, normalizePlace, taxCodeIdForCity, taxCodeMissingReason, unknownTaxCodeReason, type CountyName } from './tax-codes.ts';
 import { describeQboWriteGate } from './write-gate.ts';
 import { buildDeposit, parseBatchId, privateNoteWithBatch, type QboPlan } from './write-payloads.ts';
 
@@ -79,6 +82,18 @@ export const SAN_DIEGO_COUNTY_TAX_CODE_ID = '3';
 export const RIVERSIDE_COUNTY_TAX_CODE_ID = '23';
 /** TaxCode whose rate list must include the San Bernardino county rate when QuickBooks returns it. */
 export const SAN_BERNARDINO_COUNTY_TAX_CODE_ID = '31';
+
+/** QBO item for a Jobber line whose name contains "hoist", any case. */
+export const HOIST_ITEM_ID = '1519';
+export const ABSORBED_TAX_DESCRIPTION = 'Sales tax absorbed by SCWS';
+export const TAXES_EXPENSE_ACCOUNT_ID = '18';
+
+export type AbsorbTaxShortfall = {
+  expectedQboTax: number;
+  jobberTax: number;
+  expenseAccountId: string;
+  itemId: string;
+};
 
 export type CountyRateIds = {
   sanDiego: string;
@@ -137,6 +152,7 @@ export type ImportInvoicePlan = {
   tax: InvoiceTaxReport;
   /** True when this create asks QuickBooks to keep the tax code instead of letting AST geocode it. */
   holdTaxCode?: boolean;
+  absorb?: AbsorbTaxShortfall | null;
 };
 
 const DEPOSIT_WARNING =
@@ -403,6 +419,21 @@ function taxReviewStatusOf(qbo: unknown): string | null {
   return typeof detail?.TaxReviewStatus === 'string' && detail.TaxReviewStatus ? detail.TaxReviewStatus : null;
 }
 
+function savedInvoiceBits(qbo: unknown): { totalAmt: number | null; lines: Array<{ description: string | null; amount: number | null }> } {
+  const entity = qbo && typeof qbo === 'object' ? (qbo as Record<string, unknown>) : null;
+  const invoice = entity && entity.Invoice && typeof entity.Invoice === 'object' ? (entity.Invoice as Record<string, unknown>) : entity;
+  const totalRaw = invoice?.TotalAmt;
+  const totalAmt = totalRaw == null || totalRaw === '' || !Number.isFinite(Number(totalRaw)) ? null : money(Number(totalRaw));
+  const lines = Array.isArray(invoice?.Line) ? invoice.Line as Array<Record<string, unknown>> : [];
+  return {
+    totalAmt,
+    lines: lines.map((line) => ({
+      description: typeof line.Description === 'string' ? line.Description : null,
+      amount: line.Amount == null || line.Amount === '' || !Number.isFinite(Number(line.Amount)) ? null : money(Number(line.Amount)),
+    })),
+  };
+}
+
 function savedTxnTax(qbo: unknown): { code: string | null; total: number | null; lines: unknown[] | null } {
   const entity = qbo && typeof qbo === 'object' ? (qbo as Record<string, unknown>) : null;
   const invoice = entity && entity.Invoice && typeof entity.Invoice === 'object' ? (entity.Invoice as Record<string, unknown>) : entity;
@@ -445,6 +476,8 @@ export function assessSavedTax(input: {
   countyRates?: CountyRateIds;
   /** When set, the saved code, its exact rate set, and the override flag are checked too. */
   holdTaxCode?: boolean;
+  /** CDTFA tax stays on the invoice. The customer total is brought back to Jobber with a non-taxable absorbed line. */
+  absorb?: { expectedQboTax: number; jobberTax: number; jobberTotal: number } | null;
 }): InvoiceTaxReport {
   const ids = input.countyRates || fixedCountyRateIds();
   const county = countyNameForCity(input.city);
@@ -473,7 +506,25 @@ export function assessSavedTax(input: {
   for (const other of wrongCounty) {
     reasons.push(`Saved tax lines include ${other.county} County rate ${other.id}.`);
   }
-  if (!taxWithinCent(saved.total, money(input.jobberTax))) {
+  if (input.absorb) {
+    if (!taxWithinCent(saved.total, money(input.absorb.expectedQboTax))) {
+      reasons.push(`Saved tax ${saved.total ?? 'missing'} does not match expected QBO tax ${money(input.absorb.expectedQboTax)} within $0.01.`);
+    }
+    const savedInvoice = savedInvoiceBits(input.qbo);
+    if (!taxWithinCent(savedInvoice.totalAmt, money(input.absorb.jobberTotal))) {
+      reasons.push(`Saved total ${savedInvoice.totalAmt ?? 'missing'} does not match Jobber total ${money(input.absorb.jobberTotal)} within $0.01.`);
+    }
+    const shortfall = money(input.absorb.expectedQboTax - input.absorb.jobberTax);
+    const absorbed = savedInvoice.lines.filter((line) => line.description === ABSORBED_TAX_DESCRIPTION);
+    if (shortfall > 0.009) {
+      const expectedAmount = money(-shortfall);
+      if (absorbed.length !== 1 || !taxWithinCent(absorbed[0].amount, expectedAmount)) {
+        reasons.push(`Absorbed line ${absorbed.length === 1 ? absorbed[0].amount : 'missing'} does not equal ${expectedAmount} (jobber tax minus expected QBO tax). The shortfall is ${shortfall}.`);
+      }
+    } else if (absorbed.length) {
+      reasons.push('No tax shortfall, but a Sales tax absorbed by SCWS line was saved.');
+    }
+  } else if (!taxWithinCent(saved.total, money(input.jobberTax))) {
     reasons.push(`Saved tax ${saved.total ?? 'missing'} does not match Jobber tax ${money(input.jobberTax)} within $0.01.`);
   }
   if (input.holdTaxCode && input.qbo) {
@@ -504,15 +555,27 @@ export function assessSavedTax(input: {
   };
 }
 
+/** Explicit itemIds win. Otherwise a name containing "hoist" (any case) is item 1519. */
+export function qboItemIdForLineName(name: string, itemIds: Record<string, string> = {}): string | null {
+  const key = name.trim().toLowerCase();
+  if (!key) return null;
+  if (itemIds[name]?.trim()) return itemIds[name].trim();
+  for (const [label, id] of Object.entries(itemIds)) {
+    if (label.trim().toLowerCase() === key && String(id).trim()) return String(id).trim();
+  }
+  if (/\bhoist\b/i.test(name)) return HOIST_ITEM_ID;
+  return null;
+}
+
 export function buildJobberSyncedInvoice(
   invoice: JobberInvoiceForQbo,
   customerId: string,
   itemsByName: Record<string, string>,
   txnTaxCodeId: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; batchId?: string | null; holdTaxCode?: boolean } = {}
+  options: { taxOverride?: boolean; discountItemId?: string | null; batchId?: string | null; holdTaxCode?: boolean; absorb?: AbsorbTaxShortfall | null } = {}
 ): { body: Record<string, unknown> | null; missingItems: string[]; negativeTaxableLines: number; discountAmount: number; memo: MemoReport; error?: string } {
   const memo = memoReport(invoice.message);
-  const missing = [...new Set(invoice.lines.map((line) => line.name).filter((name) => name && !itemsByName[name]))];
+  const missing = [...new Set(invoice.lines.map((line) => line.name).filter((name) => name && !qboItemIdForLineName(name, itemsByName)))];
   if (missing.length || !invoice.lines.length) {
     return { body: null, missingItems: missing.length ? missing : ['(no lines)'], negativeTaxableLines: 0, discountAmount: 0, memo };
   }
@@ -521,17 +584,17 @@ export function buildJobberSyncedInvoice(
   const lines = invoice.lines.map((line) => {
     const amount = money(line.quantity * line.unitPrice);
     lineAmounts.push(amount);
-    const taxable = line.taxable && amount >= 0;
     if (line.taxable && amount < 0) negativeTaxableLines += 1;
+    const itemId = qboItemIdForLineName(line.name, itemsByName);
     return {
       Amount: amount,
       DetailType: 'SalesItemLineDetail',
       ...(line.description ? { Description: line.description } : {}),
       SalesItemLineDetail: {
-        ItemRef: { value: itemsByName[line.name] },
+        ItemRef: { value: itemId || '' },
         Qty: line.quantity,
         UnitPrice: money(line.unitPrice),
-        TaxCodeRef: { value: taxable ? 'TAX' : 'NON' },
+        TaxCodeRef: { value: line.taxable ? 'TAX' : 'NON' },
       },
     };
   });
@@ -540,7 +603,8 @@ export function buildJobberSyncedInvoice(
   const discountAmount = statedDiscount > 0 && Math.abs(negativeAlready + statedDiscount) > 0.009 ? statedDiscount : 0;
   if (discountAmount > 0) {
     const discountKey = Object.keys(itemsByName).find((name) => name.trim().toLowerCase() === 'discount');
-    const discountItem = options.discountItemId || (discountKey ? itemsByName[discountKey] : '') || itemsByName[invoice.lines.find((line) => line.quantity * line.unitPrice > 0)?.name || ''] || '';
+    const positive = invoice.lines.find((line) => line.quantity * line.unitPrice > 0);
+    const discountItem = options.discountItemId || (discountKey ? itemsByName[discountKey] : '') || (positive ? qboItemIdForLineName(positive.name, itemsByName) : '') || '';
     if (!discountItem) {
       return { body: null, missingItems: ['Discount'], negativeTaxableLines, discountAmount, memo };
     }
@@ -555,9 +619,25 @@ export function buildJobberSyncedInvoice(
         ItemRef: { value: discountItem },
         Qty: 1,
         UnitPrice: money(-discountAmount),
-        TaxCodeRef: { value: 'NON' },
+        TaxCodeRef: { value: money(invoice.taxAmount) > 0 ? 'TAX' : 'NON' },
       },
     });
+  }
+  if (options.absorb) {
+    const shortfall = money(options.absorb.expectedQboTax - options.absorb.jobberTax);
+    if (shortfall > 0.009) {
+      lines.push({
+        Amount: money(-shortfall),
+        DetailType: 'SalesItemLineDetail',
+        Description: ABSORBED_TAX_DESCRIPTION,
+        SalesItemLineDetail: {
+          ItemRef: { value: options.absorb.itemId },
+          Qty: 1,
+          UnitPrice: money(-shortfall),
+          TaxCodeRef: { value: 'NON' },
+        },
+      });
+    }
   }
   const txnDate = pacificDate(invoice.issuedDate);
   const due = invoice.dueDate ? pacificDate(invoice.dueDate) : txnDate;
@@ -591,7 +671,7 @@ export function classifyJobberInvoice(
   itemsByName: Record<string, string>,
   txnTaxCodeId: string | null,
   taxReason?: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; countyRates?: CountyRateIds; holdTaxCode?: boolean } = {}
+  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; countyRates?: CountyRateIds; holdTaxCode?: boolean; absorb?: AbsorbTaxShortfall | null } = {}
 ): ImportInvoicePlan {
   const paymentLines = jobberPaymentLines(invoice);
   const base = {
@@ -656,6 +736,7 @@ export function classifyJobberInvoice(
     memo: built.memo,
     customerCreate: createCustomer ? { displayName: invoice.clientName.trim() } : null,
     holdTaxCode: options.holdTaxCode === true,
+    absorb: options.absorb || null,
   };
 }
 
@@ -699,6 +780,30 @@ function flagOn(value: unknown): boolean {
   return value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
 }
 
+function numberField(value: unknown, field: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error(`${field} must be a number.`);
+  return money(n);
+}
+
+export function parseAbsorbTaxShortfall(value: unknown): AbsorbTaxShortfall | null {
+  if (value == null || value === '') return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('absorbTaxShortfall must be an object.');
+  const row = value as Record<string, unknown>;
+  const expectedQboTax = numberField(row.expectedQboTax, 'absorbTaxShortfall.expectedQboTax');
+  const jobberTax = numberField(row.jobberTax, 'absorbTaxShortfall.jobberTax');
+  const expenseAccountId = String(row.expenseAccountId ?? '').trim();
+  const itemId = String(row.itemId ?? '').trim();
+  if (expenseAccountId !== TAXES_EXPENSE_ACCOUNT_ID) {
+    throw new Error('absorbTaxShortfall.expenseAccountId must be 18 (Taxes expense). The absorbed line uses an existing item mapped to that account.');
+  }
+  if (!/^\d{1,20}$/.test(itemId)) throw new Error('absorbTaxShortfall.itemId is required. Pass the QuickBooks item id for Sales tax absorbed by SCWS. The item is not created.');
+  if (expectedQboTax + 0.009 < jobberTax) {
+    throw new Error('absorbTaxShortfall.expectedQboTax is less than jobberTax, so there is no shortfall to absorb.');
+  }
+  return { expectedQboTax, jobberTax, expenseAccountId, itemId };
+}
+
 function nonNegativeMoney(value: unknown, field: string): number {
   if (value === undefined || value === null || value === '') return 0;
   const n = Number(value);
@@ -731,6 +836,8 @@ export async function runJobberInvoiceImport(
   const payoutDate = typeof args.payoutDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(args.payoutDate.trim()) ? args.payoutDate.trim() : null;
   const createCustomers = flagOn(args.createCustomers);
   const taxOverride = flagOn(args.taxOverride);
+  const absorb = parseAbsorbTaxShortfall(args.absorbTaxShortfall);
+  if (absorb && numbers.length !== 1) throw new Error('absorbTaxShortfall applies to one invoice. Pass a single invoiceNumbers entry.');
   const customerIds = idMap(args.customerIds);
   const itemIds = idMap(args.itemIds);
   const discountItemId = typeof args.discountItemId === 'string' && args.discountItemId.trim() ? args.discountItemId.trim() : null;
@@ -773,9 +880,17 @@ export async function runJobberInvoiceImport(
       const items: Record<string, string> = { ...itemIds };
       const ambiguousItems: string[] = [];
       for (const name of [...new Set(invoice.lines.map((line) => line.name).filter(Boolean))]) {
-        if (items[name]) continue;
+        const ruled = qboItemIdForLineName(name, itemIds);
+        if (ruled) {
+          items[name] = ruled;
+          continue;
+        }
         const found = rowsOf(await qbo(`select Id, Name from Item where Name = ${sqlString(name)}`), 'Item');
-        if (found.length > 1) ambiguousItems.push(name);
+        const wanted = name.trim().toLowerCase();
+        const matches = found.filter((row) => typeof row.Name === 'string' && row.Name.trim().toLowerCase() === wanted);
+        if (matches.length > 1) ambiguousItems.push(name);
+        else if (matches[0]?.Id != null) items[name] = String(matches[0].Id);
+        else if (found.length > 1) ambiguousItems.push(name);
         else if (found[0]?.Id != null) items[name] = String(found[0].Id);
       }
       if (!discountItemId && (invoice.discountAmount || 0) > 0 && !Object.keys(items).some((name) => name.trim().toLowerCase() === 'discount')) {
@@ -791,7 +906,7 @@ export async function runJobberInvoiceImport(
         items,
         tax.id,
         tax.reason,
-        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode }
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode, absorb }
       );
       if (ambiguousCustomer) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
@@ -890,6 +1005,7 @@ export async function runJobberInvoiceImport(
         qbo: invoiceResult.qbo,
         countyRates,
         holdTaxCode: row.holdTaxCode,
+        absorb: row.absorb ? { expectedQboTax: row.absorb.expectedQboTax, jobberTax: row.absorb.jobberTax, jobberTotal: row.total } : null,
       });
     }
     entry.tax = row.tax;
@@ -1021,7 +1137,13 @@ async function taxForInvoice(
       : { id: null, reason: `txnTaxCodeId ${overrideId} is not a QuickBooks TaxCode id.` };
   }
   const fromCity = taxCodeIdForCity(invoice.city, cityOverrides);
-  if (fromCity) return { id: fromCity, reason: '' };
+  if (fromCity) {
+    if (!KNOWN_QBO_TAX_CODE_IDS.has(fromCity)) {
+      const exists = await taxCodeIdExists(fromCity, query);
+      if (!exists) return { id: null, reason: unknownTaxCodeReason(fromCity, invoice.city) };
+    }
+    return { id: fromCity, reason: '' };
+  }
   if (customerId) {
     if (!customerTax.has(customerId)) customerTax.set(customerId, await taxCodeFromCustomer(customerId, query));
     const prior = customerTax.get(customerId);
