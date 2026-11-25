@@ -1609,6 +1609,15 @@ export async function runJobberInvoiceImport(
       posted.push(entry);
       continue;
     }
+    // Computed tax is compared to Jobber before any create. taxOverride is the opt-in that sets TotalTax instead.
+    if (!taxOverride && row.expectedTax != null) {
+      const target = row.absorb ? row.absorb.expectedQboTax : money(row.taxAmount);
+      if (Math.abs(row.expectedTax - target) > 0.01 + 1e-9) {
+        entry.invoice = { wrote: false, id: null, error: row.reason || `Computed tax ${row.expectedTax} does not match Jobber tax ${money(row.taxAmount)} within $0.01. Nothing was posted.` };
+        posted.push(entry);
+        continue;
+      }
+    }
     const invoiceBody = { ...row.body, ...(customerId ? { CustomerRef: { value: customerId } } : {}) };
     const allowance = row.allowTaxOnNonTaxableItems;
     const invoicePlan: QboPlan = {
@@ -1621,6 +1630,7 @@ export async function runJobberInvoiceImport(
     };
     const invoiceResult = await runQboPlan(invoicePlan, { confirm: true, batchId, requestId: requestKey(batchId!, row.invoiceNumber, 'inv') }, deps);
     if (invoiceResult.wrote) {
+      // What QuickBooks actually saved (county rate, AST). The computed-vs-Jobber check already ran above.
       row.tax = assessSavedTax({
         requestedTxnTaxCodeId: row.tax.requestedTxnTaxCodeId,
         city: row.city,

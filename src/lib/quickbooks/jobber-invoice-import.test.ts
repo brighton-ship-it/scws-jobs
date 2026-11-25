@@ -1850,3 +1850,56 @@ test('invoice 6110 can tax Mobilization item 436 only with allowTaxOnNonTaxableI
   assert.equal(pending?.payload?.changes?.allowTaxOnNonTaxableItems, true);
   assert.equal(pending?.payload?.changes?.reason, reason);
 });
+
+test('confirm refuses a computed tax mismatch before creating the invoice', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6201',
+    lines: [{ name: '1MS', description: 'service', quantity: 1, unitPrice: 1000, taxable: true }],
+    taxAmount: 50,
+    total: 1050,
+    paymentsTotal: 0,
+  };
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  let posts = 0;
+  const result = await runJobberInvoiceImport(
+    {
+      invoiceNumbers: ['6201'],
+      taxRate: 0.0775,
+      confirm: true,
+      batchId: 'tax-before-create',
+      payments: 'none',
+      customerIds: { 'Colleen Baker': '15' },
+      itemIds: { '1MS': '23' },
+    },
+    {
+      env,
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      audit: async () => {},
+      qboQuery: async (sql: string) => {
+        if (sql.includes('SalesTaxRateList')) return countyCodes;
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (/Item where Id = '23'/.test(sql)) {
+          return { QueryResponse: { Item: [{ Id: '23', Name: '1MS', Taxable: true, TaxClassificationRef: { value: 'EUC-99990202-V1-00020000', name: 'Service' } }] } };
+        }
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { posts += 1; throw new Error('invoice was created'); },
+    }
+  );
+  const row = (result.invoices as Array<{ status: string; reason: string | null; body: unknown; expectedTax: number | null }>)[0];
+  assert.equal(posts, 0);
+  assert.equal(result.wrote, false);
+  assert.equal(result.ok, false);
+  assert.equal(row.status, 'blocked');
+  assert.equal(row.body, null);
+  assert.equal(row.expectedTax, 77.5);
+  assert.match(row.reason || '', /77\.5/);
+  assert.match(row.reason || '', /50/);
+});
