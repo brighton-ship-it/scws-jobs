@@ -368,8 +368,74 @@ export function isVisitDayAllowed(
   if (!startAt) return false;
   const date = typeof startAt === 'string' ? new Date(startAt) : startAt;
   if (Number.isNaN(date.getTime())) return false;
+  if (isShopClosedOn(ptCalendarDate(date), env)) return false;
   if (techIsOffOn(techName, ptCalendarDate(date), env)) return false;
   return isWeekdayVisitStart(date) || techWorksWeekends(techName, env);
+}
+
+/** Expand "YYYY-MM-DD" or inclusive "a..b" parts (comma-separated) into PT calendar days. */
+function expandDateList(raw: string, label: string): Set<string> {
+  const days = new Set<string>();
+  for (const part of String(raw || '').split(/[,;\s]+/)) {
+    if (!part.trim()) continue;
+    const [a, b] = part.split('..').map((x) => x.trim());
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(a || '')) {
+      console.warn(`[Receptionist] ${label}: ignoring bad date "${part.trim()}"`);
+      continue;
+    }
+    if (b === undefined) {
+      days.add(a);
+      continue;
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(b) || b < a) {
+      console.warn(`[Receptionist] ${label}: ignoring bad range "${part.trim()}"`);
+      continue;
+    }
+    const cur = new Date(`${a}T12:00:00Z`);
+    for (let n = 0; n < 62 && cur.toISOString().slice(0, 10) <= b; n++) {
+      days.add(cur.toISOString().slice(0, 10));
+      cur.setUTCDate(cur.getUTCDate() + 1);
+    }
+  }
+  return days;
+}
+
+/**
+ * Shop-wide closed days (holidays), Nov 25 2026. RECEPTIONIST_CLOSED_DATES (alias
+ * CLOSED_DATES): comma-separated PT calendar days "YYYY-MM-DD", or "a..b" inclusive
+ * ranges, e.g. "2026-11-26,2026-11-27". No tech is offered or booked on these days,
+ * whatever their roster. Past dates are harmless, so the list expires on its own.
+ */
+export function shopClosedDates(env: NodeJS.ProcessEnv = process.env): Set<string> {
+  const raw = [env.RECEPTIONIST_CLOSED_DATES, env.CLOSED_DATES].filter(Boolean).join(',');
+  return expandDateList(raw, 'RECEPTIONIST_CLOSED_DATES');
+}
+
+export function isShopClosedOn(dateStr: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (!dateStr) return false;
+  return shopClosedDates(env).has(dateStr);
+}
+
+/** Closed days from today (PT) through the slot lookahead, sorted. */
+export function upcomingClosedDates(now: Date, env: NodeJS.ProcessEnv = process.env): string[] {
+  const today = ptCalendarDate(now);
+  const last = addPtDays(now, SLOT_LOOKAHEAD_DAYS);
+  return Array.from(shopClosedDates(env))
+    .filter((d) => d >= today && d <= last)
+    .sort();
+}
+
+/**
+ * Spoken-rule note for checkSchedule/bookJob when the shop has closed days coming up.
+ * RECEPTIONIST_CLOSED_REASON (optional, e.g. "for Thanksgiving") is appended to the day list.
+ */
+export function shopClosedNote(now: Date, env: NodeJS.ProcessEnv = process.env): string {
+  const days = upcomingClosedDates(now, env);
+  if (days.length === 0) return '';
+  const names = days.map((d) => formatPtDate(zonedDate(d, 12, 0)));
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  const reason = String(env.RECEPTIONIST_CLOSED_REASON || '').trim();
+  return `The shop is closed ${list}${reason ? ` ${reason}` : ''}. Do not offer or book those days. If the caller asks for one, say we're closed then and offer the earliest open slot listed. For no water, take the details and use flagEmergency so the on-call team calls back.`;
 }
 
 /**
@@ -573,6 +639,7 @@ export function computeOpenSlots(options: {
     const dateStr = addPtDays(options.now, day);
     const weekdayDate = zonedDate(dateStr, 12, 0);
     if (!dayOk(weekdayDate)) continue;
+    if (isShopClosedOn(dateStr, options.env ?? process.env)) continue;
     if (techIsOffOn(options.technicianName, dateStr, options.env ?? process.env)) continue;
 
     // Whole-day closers: all-day drill/install (or unidentified all-day) visits.

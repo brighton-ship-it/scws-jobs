@@ -27,11 +27,14 @@ import {
   formatPtDate,
   formatVisitTime,
   normalizePhone10,
+  ptCalendarDate,
   resolveReceptionistJobberToken,
 } from './check-schedule.ts';
 import {
+  isShopClosedOn,
   isVisitDayAllowed,
   isWeekdayVisitStart,
+  shopClosedNote,
   lookupOpenSlots,
   weekendTechNames,
   slotMatchesRequest,
@@ -795,6 +798,21 @@ export async function bookServiceCall(
       : [];
   const requestedStartAt =
     input.startAt || resolveSlotFromPreference(slots.openSlots, input.preferredDate, input.preferredTime);
+  // Shop-wide closed day (RECEPTIONIST_CLOSED_DATES, e.g. Thanksgiving): never book it.
+  const requestedDate = requestedStartAt ? new Date(requestedStartAt) : null;
+  if (
+    requestedDate &&
+    !Number.isNaN(requestedDate.getTime()) &&
+    isShopClosedOn(ptCalendarDate(requestedDate), bookingEnv)
+  ) {
+    const openOnly = slots.openSlots.filter((slot) => isVisitDayAllowed(slot.startAt, slot.technician, bookingEnv));
+    return blockedResult(
+      'shop_closed',
+      `We're closed that day, so I can't book it. ${shopClosedNote(now, bookingEnv) || ''}`.trim(),
+      NO_VISIT_CONFIRMATION_RULE,
+      { openSlots: openOnly, assignedTechName: slots.assignedTechName }
+    );
+  }
   const chosen = slots.openSlots.find((slot) => slotMatchesRequest(slot, requestedStartAt));
   if (chosen && !isAllowlistedTechId(chosen.technicianId, allowlistedIds)) {
     return blockedResult(
