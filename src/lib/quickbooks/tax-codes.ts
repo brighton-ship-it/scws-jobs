@@ -55,6 +55,20 @@ export const COUNTY_RATE_ID_BY_TAX_CODE: Record<string, string> = {
 };
 export const COUNTY_RATE_IDS = ['4', '25', '26'];
 
+/** TaxCode ids already in QuickBooks. The import never creates a tax code. */
+export const KNOWN_QBO_TAX_CODE_IDS = new Set<string>([
+  SAN_DIEGO_TAX_CODE_ID,
+  MENIFEE_TAX_CODE_ID,
+  RIVERSIDE_COUNTY_TAX_CODE_ID,
+  MURRIETA_TAX_CODE_ID,
+  LA_QUINTA_TAX_CODE_ID,
+  DESERT_HOT_SPRINGS_TAX_CODE_ID,
+  INDIO_TAX_CODE_ID,
+  SAN_BERNARDINO_COUNTY_TAX_CODE_ID,
+  YUCAIPA_TAX_CODE_ID,
+  SAN_BERNARDINO_CITY_TAX_CODE_ID,
+]);
+
 /**
  * Exact TaxRate ids on a code that must not pick up an extra city rate.
  * Code 23 is unincorporated Riverside: 3 California, 9 Riverside County
@@ -83,6 +97,7 @@ const RIVERSIDE_COUNTY = [
   'french valley', 'winchester', 'lake elsinore', 'wildomar', 'canyon lake', 'lakeview',
   'homeland', 'romoland', 'nuevo', 'anza', 'aguanga', 'idyllwild', 'idyllwild pine cove', 'pine cove',
   'mountain center', 'gilman hot springs', 'sage', 'whitewater', 'la quinta', 'desert hot springs', 'indio',
+  'thousand palms',
 ];
 
 /**
@@ -95,10 +110,11 @@ const RIVERSIDE_CITY_CODES: Record<string, string> = {
   indio: INDIO_TAX_CODE_ID,
 };
 
-/** San Bernardino County places. Unincorporated mountain communities default to 31. */
+/** San Bernardino County places. Unincorporated communities and cities without their own code use 31. */
 const SAN_BERNARDINO_COUNTY = [
   'san bernardino', 'yucaipa', 'fawnskin', 'oak glen', 'lake arrowhead', 'running springs', 'crestline',
   'twin peaks', 'blue jay', 'cedar glen', 'big bear city', 'angelus oaks', 'forest falls', 'mentone',
+  'upland', 'highland', 'twentynine palms',
 ];
 
 const SAN_BERNARDINO_CITY_CODES: Record<string, string> = {
@@ -144,5 +160,10 @@ export function countyNameForCity(city: string | null | undefined): CountyName |
 
 export function taxCodeMissingReason(city: string | null | undefined): string {
   const where = city ? `city "${city}"` : 'this invoice (no jobsite city)';
-  return `No QuickBooks tax code id for ${where}. Pass txnTaxCodeId (an id such as 3) or taxCodeByCity. Synced examples: San Diego County id 3, Menifee id 30.`;
+  return `No QuickBooks tax code id for ${where}. Pass txnTaxCodeId (an id such as 3) or taxCodeByCity using a TaxCode that already exists. The import does not create tax codes. Synced examples: San Diego County id 3, Menifee id 30, Riverside unincorporated id 23, San Bernardino County id 31.`;
+}
+
+export function unknownTaxCodeReason(id: string, city: string | null | undefined): string {
+  const where = city ? ` for city "${city}"` : '';
+  return `QuickBooks has no TaxCode ${id}${where}. Refusing to create a tax code.`;
 }
