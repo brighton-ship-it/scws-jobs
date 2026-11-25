@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { callJobberMcpTool, jobberMcpHealthBody } from '../mcp/jobber-tools.ts';
-import { insertQboAudit, loadSandboxToken, runQboWrite, saveSandboxToken, type QboAuditEntry, type SbClient } from './durable-write.ts';
+import { auditTxnDate, insertQboAudit, isQboTransactionEntity, loadSandboxToken, runQboWrite, saveSandboxToken, type QboAuditEntry, type SbClient } from './durable-write.ts';
 import { planBatchRevert, type BatchAuditRow } from './revert-batch.ts';
 
 const SANDBOX = {
@@ -48,6 +48,7 @@ test('preview is the default and does not call QuickBooks', async () => {
   assert.equal(audits.length, 1);
   assert.equal(audits[0].status, 'preview');
   assert.equal(audits[0].ok, true);
+  assert.equal(audits[0].txnDate, '2026-10-31');
   assert.equal(audits[0].environment, 'sandbox');
   assert.equal(audits[0].batchId, 'oct-2026');
 });
@@ -157,6 +158,7 @@ test('confirm posts once to the sandbox company and retries reuse requestid', as
   assert.equal(posted.length, 2);
   assert.equal(posted[0].actor, 'bookkeeper');
   assert.equal(posted[0].tool, 'qbo_journal_entry');
+  assert.equal(posted[0].txnDate, '2026-10-31');
   assert.equal(posted[0].confirmed, true);
   assert.equal(posted[0].dryRun, false);
   assert.equal(posted[0].status, 'ok');
@@ -480,6 +482,55 @@ test('health keeps writes off when the flag is unset', async () => {
   assert.equal(health.safety.quickbooksReadOnly, true);
   assert.equal(health.tools.includes('qbo_void'), true);
   assert.equal(health.tools.some((name) => name.startsWith('qbo_delete')), false);
+});
+
+test('audit TxnDate comes from the response, then the prior read, and is omitted for items', () => {
+  assert.equal(isQboTransactionEntity('Invoice'), true);
+  assert.equal(isQboTransactionEntity('Item'), false);
+  assert.equal(isQboTransactionEntity('Customer'), false);
+  const response = { Invoice: { Id: '39170', TxnDate: '2026-10-02' } };
+  const prior = { Id: '39170', TxnDate: '2026-10-01' };
+  assert.equal(auditTxnDate('Invoice', { response, prior, body: {} }), '2026-10-02');
+  assert.equal(auditTxnDate('Invoice', { prior, body: { TxnDate: '2026-09-01' } }), '2026-10-01');
+  assert.equal(auditTxnDate('Invoice', { body: { PrivateNote: 'x' } }), null);
+  assert.equal(auditTxnDate('Item', { response: { Item: { Id: '1', TxnDate: '2026-10-01' } }, body: { TxnDate: '2026-10-01' } }), null);
+});
+
+test('a sparse invoice update stores TxnDate from the read when the body omits it', async () => {
+  const audits: QboAuditEntry[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    if ((init?.method || 'GET') === 'GET') {
+      return json({ Invoice: { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01', TxnTaxDetail: { TxnTaxCodeRef: { value: '29' }, TotalTax: 200 } } });
+    }
+    const saved = { Invoice: { Id: '39170', SyncToken: '1', TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 193.75, TaxLine: [{ TaxLineDetail: { TaxRateRef: { value: '4' }, NetAmountTaxable: 2500 } }] } } };
+    return json(saved);
+  };
+  const result = await runQboWrite(
+    'qbo_invoice',
+    { id: '39170', syncToken: '0', totalTax: 193.75, txnTaxCodeId: '3', confirm: true, batchId: 'tax-39170' },
+    { env: SANDBOX, productionRealmId: '9130349321543166', accessToken: 'tok', fetchImpl, audit: async (entry) => { audits.push(entry); } }
+  );
+  assert.equal(result.wrote, true);
+  assert.equal(result.ok, true);
+  assert.equal(audits.find((entry) => entry.status === 'pending')?.txnDate, null);
+  assert.equal(audits.find((entry) => entry.status === 'ok')?.txnDate, '2026-10-01');
+  assert.equal('TxnDate' in ((result.http.body || {}) as object), false);
+});
+
+test('the write response TxnDate wins over the prior entity', async () => {
+  const audits: QboAuditEntry[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    if ((init?.method || 'GET') === 'GET') {
+      return json({ Invoice: { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01' } });
+    }
+    return json({ Invoice: { Id: '39170', SyncToken: '1', TxnDate: '2026-10-02', TxnTaxDetail: { TxnTaxCodeRef: { value: '3' }, TotalTax: 193.75, TaxLine: [{ TaxLineDetail: { TaxRateRef: { value: '4' } } }] } } });
+  };
+  await runQboWrite(
+    'qbo_invoice',
+    { id: '39170', syncToken: '0', totalTax: 193.75, txnTaxCodeId: '3', confirm: true },
+    { env: SANDBOX, productionRealmId: '9130349321543166', accessToken: 'tok', fetchImpl, audit: async (entry) => { audits.push(entry); } }
+  );
+  assert.equal(audits.find((entry) => entry.status === 'ok')?.txnDate, '2026-10-02');
 });
 
 function auditRow(entry: QboAuditEntry, index: number): BatchAuditRow {

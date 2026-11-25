@@ -149,6 +149,51 @@ export type TaxCodeChange = {
   reasons: string[];
 };
 
+/** Entities that carry TxnDate. Items, customers, vendors, and preferences do not. */
+const TRANSACTION_ENTITIES = new Set([
+  'Invoice',
+  'SalesReceipt',
+  'CreditMemo',
+  'RefundReceipt',
+  'Estimate',
+  'Payment',
+  'BillPayment',
+  'Purchase',
+  'Bill',
+  'VendorCredit',
+  'JournalEntry',
+  'Deposit',
+  'Transfer',
+  'CreditCardPayment',
+]);
+
+export function isQboTransactionEntity(entity: string): boolean {
+  return TRANSACTION_ENTITIES.has(entity);
+}
+
+/** TxnDate from a transaction body or a QBO entity response, as YYYY-MM-DD. */
+export function txnDateFromQbo(value: unknown): string | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, any>;
+  if (typeof record.TxnDate === 'string' && record.TxnDate) return record.TxnDate.slice(0, 10);
+  for (const nested of Object.values(record)) {
+    if (!nested || typeof nested !== 'object' || Array.isArray(nested)) continue;
+    const txn = (nested as { TxnDate?: unknown }).TxnDate;
+    if (typeof txn === 'string' && txn) return txn.slice(0, 10);
+  }
+  return null;
+}
+
+/**
+ * Audit date for a transaction: the write response, then the entity read before
+ * the post, then the request body. Sparse edits omit TxnDate on the body.
+ * Non-transaction entities (Item, Customer, Preferences) store no date.
+ */
+export function auditTxnDate(entity: string, sources: { response?: unknown; prior?: unknown; body?: unknown }): string | null {
+  if (!isQboTransactionEntity(entity)) return null;
+  return txnDateFromQbo(sources.response) || txnDateFromQbo(sources.prior) || txnDateFromQbo(sources.body);
+}
+
 export function sandboxTokenRecord(row: SandboxTokenRow, nowIso = new Date().toISOString()) {
   return {
     realm_id: row.realmId,
@@ -511,6 +556,9 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   const fetchImpl = deps.fetchImpl || fetch;
   // environment and batchId are applied after the caller's fields so a pre-write
   // row cannot be stored as sandbox, or without the batch id that was passed.
+  // txnSources grows as the read and the response arrive. Sparse updates do not
+  // put TxnDate on the body, so the outcome row uses the response or the prior entity.
+  const txnSources: { response?: unknown; prior?: unknown; body?: unknown } = { body: plan.body };
   const logged = (status: QboAuditStatus, fields: Partial<QboAuditEntry> = {}): QboAuditEntry => ({
     actor,
     tool: plan.tool,
@@ -525,6 +573,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     error: null,
     reason: plan.reason || null,
     ...fields,
+    txnDate: auditTxnDate(plan.entity, txnSources),
     ok: status === 'ok' || status === 'preview',
     refused: status === 'refused',
     status,
@@ -618,7 +667,9 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     }
     const fetchedEntity = (got.json && (got.json[plan.entity] || got.json)) || null;
     if (plan.action !== 'create' && plan.action !== 'attach') priorState = cap(fetchedEntity);
+    txnSources.prior = fetchedEntity;
     body = applyRead(plan, got.json || {});
+    txnSources.body = body;
   }
   if (!body) throw new Error('QuickBooks write had no body to post.');
   const query = queryOf(requestId, plan.operation);
@@ -632,6 +683,8 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     await remember(logged('unknown', { action: plan.action, payload: { http, reason: plan.reason || null }, error: unknownError }), deps, false);
     throw new PostOutcomeUnknownError(unknownError);
   }
+  txnSources.response = posted.json;
+  txnSources.body = body;
   const ids = idsFrom(plan.entity, posted.json);
   if (OUTCOME_UNKNOWN_STATUSES.has(posted.status)) {
     const error = `QuickBooks ${plan.path} returned ${posted.status}, so the outcome is unknown. It may have posted. Read QuickBooks before any retry or revert.`;
@@ -666,7 +719,6 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
         created: plan.action === 'create' || plan.action === 'attach',
         priorState,
         syncToken: ids.syncToken,
-        txnDate: typeof body.TxnDate === 'string' ? body.TxnDate : null,
         payload: { http, reason: plan.reason || null, ...(plan.expectTaxCode ? { taxCodeChanged } : {}) },
         qboResponse: cap(posted.json),
         qboIds: ids,
