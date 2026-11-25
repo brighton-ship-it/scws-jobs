@@ -10,6 +10,7 @@ import {
   missingJobsiteAddressReason,
   pacificDate,
   qboShipAddress,
+  absorbItemProblem,
   chooseDiscountTaxable,
   explicitItemId,
   fallbackItemId,
@@ -1145,13 +1146,13 @@ test('6T pump Hoist matches the hoist item without regard to case', () => {
   assert.equal(fallbackItemId('6T pump Hoist'), '1519');
   assert.equal(fallbackItemId('6T PUMP HOIST'), '1519');
   assert.equal(fallbackItemId('Parts'), '391');
-  assert.equal(fallbackItemId('LABOR'), '030');
+  assert.equal(fallbackItemId('LABOR'), '30');
   assert.equal(qboItemIdForLineName('6T pump Hoist'), '1519');
   assert.equal(qboItemIdForLineName('6T PUMP HOIST'), '1519');
   assert.equal(qboItemIdForLineName('6T pump Hoist', { '6t pump hoist': '42' }), '42');
   assert.equal(qboItemIdForLineName('Hoist cable 1/4"', { 'Hoist cable 1/4"': '4242' }), '4242');
   assert.equal(qboItemIdForLineName('pump parts'), '391');
-  assert.equal(qboItemIdForLineName('Labor'), '030');
+  assert.equal(qboItemIdForLineName('Labor'), '30');
   const built = buildJobberSyncedInvoice(
     {
       ...invoice,
@@ -1212,10 +1213,22 @@ test('exact item names win over hoist, parts, and labor fallbacks', async () => 
       fetchImpl: async () => { throw new Error('preview posted'); },
     }
   );
-  const row = (result.invoices as Array<{ status: string; reason: string | null; body: { Line: Array<{ SalesItemLineDetail: { ItemRef: { value: string } } }> } }>)[0];
+  const row = (result.invoices as Array<{
+    status: string;
+    reason: string | null;
+    body: { Line: Array<{ SalesItemLineDetail: { ItemRef: { value: string } } }> };
+    lines: Array<{ name: string; itemId: string | null; fallbackItemUsed: boolean }>;
+  }>)[0];
   assert.equal(row.status, 'create', row.reason || '');
   const ids = row.body.Line.map((line) => line.SalesItemLineDetail.ItemRef.value);
-  assert.deepEqual(ids, ['4242', '1519', '391', '030']);
+  assert.deepEqual(ids, ['4242', '1519', '391', '30']);
+  const previewLines = row.lines;
+  assert.deepEqual(previewLines.map((line) => [line.name, line.itemId, line.fallbackItemUsed]), [
+    ['Hoist cable 1/4"', '4242', false],
+    ['6T pump Hoist', '1519', true],
+    ['Parts', '391', true],
+    ['LABOR', '30', true],
+  ]);
   assert.equal(queried.some((sql) => sql.includes('Hoist cable')), true);
   assert.equal(queried.some((sql) => sql.includes("Id = '1519'")), false);
 });
@@ -1292,7 +1305,7 @@ test('absorb item 526 discount is refused because it posts to Sales', async () =
         loadJobberInvoices: async () => [job],
       }
     ),
-    /item 526 \(discount\) posts to account 35, not 18/
+    /income account 35, not 18/
   );
 
   const ok = await runJobberInvoiceImport(
@@ -1304,7 +1317,7 @@ test('absorb item 526 discount is refused because it posts to Sales', async () =
         if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
         if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23', Name: '1MS' }] } };
         if (sql.includes("Id = '9001'")) {
-          return { QueryResponse: { Item: [{ Id: '9001', Name: 'Taxes', Active: true, Taxable: false, ExpenseAccountRef: { value: '18', name: 'Taxes' } }] } };
+          return { QueryResponse: { Item: [{ Id: '9001', Name: 'Taxes', Active: true, Taxable: false, IncomeAccountRef: { value: '18', name: 'Taxes' } }] } };
         }
         return { QueryResponse: {} };
       },
@@ -1318,4 +1331,133 @@ test('absorb item 526 discount is refused because it posts to Sales', async () =
   assert.equal(absorbed?.Amount, -2.5);
   assert.equal(absorbed?.SalesItemLineDetail.ItemRef.value, '9001');
   assert.equal(absorbed?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
+});
+
+test('an absorb item with income account 25 and expense account 18 is refused', async () => {
+  const problem = await absorbItemProblem('9002', async () => ({
+    QueryResponse: {
+      Item: [{
+        Id: '9002',
+        Name: 'Taxes',
+        Active: true,
+        Taxable: false,
+        IncomeAccountRef: { value: '25', name: 'Sales' },
+        ExpenseAccountRef: { value: '18', name: 'Taxes' },
+      }],
+    },
+  }));
+  assert.match(problem || '', /income account 25, not 18/);
+  assert.match(problem || '', /Expense account 18/);
+  const accepted = await absorbItemProblem('9001', async () => ({
+    QueryResponse: {
+      Item: [{ Id: '9001', Name: 'Taxes', Active: true, Taxable: false, IncomeAccountRef: { value: '18', name: 'Taxes' } }],
+    },
+  }));
+  assert.equal(accepted, null);
+});
+
+test('a small discount flags both tax treatments and a tie stays non-taxable', () => {
+  const boundary = chooseDiscountTaxable({ taxableBase: 100, discount: 0.26, jobberTax: 7.74, rate: 0.0775 });
+  assert.equal('bothMatch' in boundary && boundary.bothMatch, true);
+  assert.equal('taxable' in boundary && boundary.taxable, false);
+  assert.equal('taxIfNon' in boundary && boundary.taxIfNon, 7.75);
+  assert.equal('taxIfTaxable' in boundary && boundary.taxIfTaxable, 7.73);
+
+  const closerTaxable = chooseDiscountTaxable({ taxableBase: 1000, discount: 1, jobberTax: 9.992, rate: 0.01 });
+  assert.equal('bothMatch' in closerTaxable && closerTaxable.bothMatch, true);
+  assert.equal('taxable' in closerTaxable && closerTaxable.taxable, true);
+
+  const tie = chooseDiscountTaxable({ taxableBase: 1000, discount: 1, jobberTax: 9.995, rate: 0.01 });
+  assert.equal('bothMatch' in tie && tie.bothMatch, true);
+  assert.equal('taxable' in tie && tie.taxable, false);
+
+  const built = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6074',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 100, taxable: true }],
+      discountAmount: 0.26,
+      taxAmount: 7.74,
+      total: 107.48,
+    },
+    '15',
+    { '1MS': '23', Discount: '526' },
+    '23',
+    { taxRate: 0.0775 }
+  );
+  assert.equal(built.discountTax?.bothMatch, true);
+  assert.equal(built.discountTax?.taxable, false);
+  assert.equal(built.discountTax?.taxCode, 'NON');
+  assert.equal(built.discountTax?.taxIfNon, 7.75);
+  assert.equal(built.discountTax?.taxIfTaxable, 7.73);
+  const line = ((built.body?.Line || []) as Array<{ SalesItemLineDetail: { TaxCodeRef: { value: string } } }>).at(-1);
+  assert.equal(line?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
+});
+
+test('discountTaxable and taxRate are refused on a multi-invoice run', async () => {
+  const deps = {
+    loadJobberInvoices: async () => { throw new Error('should not load'); },
+    qboQuery: async () => { throw new Error('should not query'); },
+  };
+  await assert.rejects(
+    () => runJobberInvoiceImport({ invoiceNumbers: ['6072', '6007'], taxRate: 0.0775 }, deps),
+    /apply to one invoice/
+  );
+  await assert.rejects(
+    () => runJobberInvoiceImport({ invoiceNumbers: ['6072', '6007'], discountTaxable: true }, deps),
+    /apply to one invoice/
+  );
+});
+
+test('preview shows the discount choice and fallback lines', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6072',
+    city: 'Ramona',
+    address: { line1: '123 Test St', line2: null, city: 'Ramona', province: 'CA', postalCode: '92065', country: 'US' },
+    lines: [
+      { name: 'Labor and materials to date', description: 'labor', quantity: 1, unitPrice: 21742.52, taxable: true },
+      { name: 'Labor & parts', description: 'parts', quantity: 1, unitPrice: 0, taxable: false },
+      { name: 'Pump labor (hoist)', description: 'hoist', quantity: 1, unitPrice: 0, taxable: false },
+    ],
+    discountAmount: 1000,
+    taxAmount: 1685.05,
+    total: 21742.52,
+    paymentsTotal: 0,
+  };
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['6072'], taxRate: 0.0775, discountItemId: '526' },
+    {
+      qboQuery: async (sql: string) => {
+        if (sql.includes('SalesTaxRateList')) return countyCodes;
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { throw new Error('preview posted'); },
+    }
+  );
+  const row = (result.invoices as Array<{
+    status: string;
+    reason: string | null;
+    discountTax: { taxable: boolean; taxCode: string; taxIfNon: number; taxIfTaxable: number; bothMatch: boolean } | null;
+    lines: Array<{ name: string; itemId: string | null; fallbackItemUsed: boolean }>;
+    body: { Line: Array<{ Description?: string; SalesItemLineDetail: { TaxCodeRef: { value: string }; ItemRef: { value: string } } }> };
+  }>)[0];
+  assert.equal(row.status, 'create', row.reason || '');
+  assert.equal(row.discountTax?.taxable, false);
+  assert.equal(row.discountTax?.taxCode, 'NON');
+  assert.equal(row.discountTax?.taxIfNon, 1685.05);
+  assert.equal(row.discountTax?.taxIfTaxable, 1607.55);
+  assert.equal(row.discountTax?.bothMatch, false);
+  assert.deepEqual(row.lines.map((line) => [line.name, line.itemId, line.fallbackItemUsed]), [
+    ['Labor and materials to date', '30', true],
+    ['Labor & parts', '391', true],
+    ['Pump labor (hoist)', '1519', true],
+  ]);
+  const discount = row.body.Line.find((line) => line.Description === 'Jobber discount');
+  assert.equal(discount?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
 });
