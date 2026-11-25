@@ -10,6 +10,9 @@ import {
   missingJobsiteAddressReason,
   pacificDate,
   qboShipAddress,
+  chooseDiscountTaxable,
+  explicitItemId,
+  fallbackItemId,
   qboItemIdForLineName,
   resolveJobProperties,
   runJobberInvoiceImport,
@@ -973,7 +976,7 @@ test('county map uses existing codes for the new cities and refuses an unknown t
   assert.match(row.reason || '', /999/);
 });
 
-test('a taxed negative line and a discount before tax are TAX', () => {
+test('a taxed negative warranty line is TAX, and a discount is chosen per invoice', () => {
   const warranty = buildJobberSyncedInvoice(
     {
       ...invoice,
@@ -995,31 +998,103 @@ test('a taxed negative line and a discount before tax are TAX', () => {
   assert.equal(warrantyLines[1].Amount, -2314);
   assert.equal(warrantyLines[1].SalesItemLineDetail.TaxCodeRef.value, 'TAX');
 
+  // #6007: $6,356 taxable, $500 discount, 7.75%. NON would be $492.59. Jobber taxed $453.84, so the discount is TAX.
+  const beforeTax = chooseDiscountTaxable({ taxableBase: 6356, discount: 500, jobberTax: 453.84, rate: 0.0775 });
+  assert.equal('taxable' in beforeTax && beforeTax.taxable, true);
+  assert.equal('taxIfNon' in beforeTax && beforeTax.taxIfNon, 492.59);
+  assert.equal('taxIfTaxable' in beforeTax && beforeTax.taxIfTaxable, 453.84);
   const discount = buildJobberSyncedInvoice(
     {
       ...invoice,
       invoiceNumber: '6007',
       city: 'Testville',
       address: testStreet,
-      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 6359.23, taxable: true }],
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 6356, taxable: true }],
       discountAmount: 500,
       taxAmount: 453.84,
       total: 6313.07,
     },
     '15',
     { '1MS': '23', Discount: '526' },
-    '23'
+    '23',
+    { taxRate: 0.0775 }
   );
   const discountLine = ((discount.body?.Line || []) as Array<{ Description?: string; Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }>).find((line) => line.Description === 'Jobber discount');
   assert.equal(discountLine?.Amount, -500);
   assert.equal(discountLine?.SalesItemLineDetail.TaxCodeRef.value, 'TAX');
+
+  // #6072: $21,742.52 with a $1,000 discount. Jobber taxed $1,685.05. A taxable discount would be $1,607.55.
+  const afterTax = chooseDiscountTaxable({ taxableBase: 21742.52, discount: 1000, jobberTax: 1685.05, rate: 0.0775 });
+  assert.equal('taxable' in afterTax && afterTax.taxable, false);
+  assert.equal('taxIfNon' in afterTax && afterTax.taxIfNon, 1685.05);
+  assert.equal('taxIfTaxable' in afterTax && afterTax.taxIfTaxable, 1607.55);
+  const kept = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6072',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 21742.52, taxable: true }],
+      discountAmount: 1000,
+      taxAmount: 1685.05,
+      total: 21742.52,
+    },
+    '15',
+    { '1MS': '23', Discount: '526' },
+    '23',
+    { taxRate: 7.75 }
+  );
+  const keptLine = ((kept.body?.Line || []) as Array<{ Description?: string; Amount: number; SalesItemLineDetail: { TaxCodeRef: { value: string } } }>).find((line) => line.Description === 'Jobber discount');
+  assert.equal(kept.error, undefined);
+  assert.equal(keptLine?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
+  assert.equal(keptLine?.Amount, -1000);
+  const taxableBase = 21742.52;
+  assert.equal(Math.round(taxableBase * 0.0775 * 100) / 100, 1685.05);
+
+  const neither = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6073',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 1000, taxable: true }],
+      discountAmount: 100,
+      taxAmount: 50,
+      total: 950,
+    },
+    '15',
+    { '1MS': '23', Discount: '526' },
+    '23',
+    { taxRate: 0.0775 }
+  );
+  assert.equal(neither.body, null);
+  assert.match(neither.error || '', /Neither a taxable nor a non-taxable discount/);
+
+  const forced = buildJobberSyncedInvoice(
+    {
+      ...invoice,
+      invoiceNumber: '6073',
+      city: 'Testville',
+      address: testStreet,
+      lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 1000, taxable: true }],
+      discountAmount: 100,
+      taxAmount: 50,
+      total: 950,
+    },
+    '15',
+    { '1MS': '23', Discount: '526' },
+    '23',
+    { discountTaxable: false }
+  );
+  const forcedLine = ((forced.body?.Line || []) as Array<{ SalesItemLineDetail: { TaxCodeRef: { value: string } } }>).at(-1);
+  assert.equal(forcedLine?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
 });
 
 test('absorbTaxShortfall adds a non-taxable line and the confirm check matches total, tax, and the shortfall', () => {
   const built = buildJobberSyncedInvoice(
     {
       ...invoice,
-      invoiceNumber: '6007',
+      invoiceNumber: '6108',
       city: 'Testville',
       address: testStreet,
       lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 5860, taxable: true }],
@@ -1066,9 +1141,17 @@ test('absorbTaxShortfall adds a non-taxable line and the confirm check matches t
 });
 
 test('6T pump Hoist matches the hoist item without regard to case', () => {
+  assert.equal(explicitItemId('6T pump Hoist', { '6t pump hoist': '42' }), '42');
+  assert.equal(fallbackItemId('6T pump Hoist'), '1519');
+  assert.equal(fallbackItemId('6T PUMP HOIST'), '1519');
+  assert.equal(fallbackItemId('Parts'), '391');
+  assert.equal(fallbackItemId('LABOR'), '030');
   assert.equal(qboItemIdForLineName('6T pump Hoist'), '1519');
   assert.equal(qboItemIdForLineName('6T PUMP HOIST'), '1519');
   assert.equal(qboItemIdForLineName('6T pump Hoist', { '6t pump hoist': '42' }), '42');
+  assert.equal(qboItemIdForLineName('Hoist cable 1/4"', { 'Hoist cable 1/4"': '4242' }), '4242');
+  assert.equal(qboItemIdForLineName('pump parts'), '391');
+  assert.equal(qboItemIdForLineName('Labor'), '030');
   const built = buildJobberSyncedInvoice(
     {
       ...invoice,
@@ -1086,4 +1169,153 @@ test('6T pump Hoist matches the hoist item without regard to case', () => {
   const line = (built.body?.Line as Array<{ SalesItemLineDetail: { ItemRef: { value: string } } }>)[0];
   assert.equal(line.SalesItemLineDetail.ItemRef.value, '1519');
   assert.equal(built.missingItems.length, 0);
+});
+
+const countyCodes = {
+  QueryResponse: {
+    TaxCode: [
+      { Id: '3', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '4' } }, { TaxRateRef: { value: '5' } }] } },
+      { Id: '23', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '9' } }, { TaxRateRef: { value: '25' } }] } },
+      { Id: '31', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '7' } }, { TaxRateRef: { value: '26' } }] } },
+    ],
+  },
+};
+
+test('exact item names win over hoist, parts, and labor fallbacks', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6104',
+    lines: [
+      { name: 'Hoist cable 1/4"', description: 'cable', quantity: 1, unitPrice: 40, taxable: true },
+      { name: '6T pump Hoist', description: 'hoist', quantity: 1, unitPrice: 1000, taxable: true },
+      { name: 'Parts', description: 'parts', quantity: 1, unitPrice: 20, taxable: true },
+      { name: 'LABOR', description: 'labor', quantity: 1, unitPrice: 80, taxable: false },
+    ],
+    taxAmount: 10,
+    total: 1150,
+    paymentsTotal: 0,
+  };
+  const queried: string[] = [];
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['6104'] },
+    {
+      qboQuery: async (sql: string) => {
+        queried.push(sql);
+        if (sql.includes('SalesTaxRateList')) return countyCodes;
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
+        if (sql.includes('Hoist cable')) return { QueryResponse: { Item: [{ Id: '4242', Name: 'Hoist cable 1/4"' }] } };
+        if (sql.includes('6T pump Hoist') || sql.includes('Parts') || sql.includes('LABOR')) return { QueryResponse: {} };
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { throw new Error('preview posted'); },
+    }
+  );
+  const row = (result.invoices as Array<{ status: string; reason: string | null; body: { Line: Array<{ SalesItemLineDetail: { ItemRef: { value: string } } }> } }>)[0];
+  assert.equal(row.status, 'create', row.reason || '');
+  const ids = row.body.Line.map((line) => line.SalesItemLineDetail.ItemRef.value);
+  assert.deepEqual(ids, ['4242', '1519', '391', '030']);
+  assert.equal(queried.some((sql) => sql.includes('Hoist cable')), true);
+  assert.equal(queried.some((sql) => sql.includes("Id = '1519'")), false);
+});
+
+test('an explicit item map is used before the exact-name lookup and the fallback', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6105',
+    lines: [{ name: 'Hoist cable 1/4"', description: 'cable', quantity: 1, unitPrice: 40, taxable: true }],
+    taxAmount: 3,
+    total: 43,
+    paymentsTotal: 0,
+  };
+  const queried: string[] = [];
+  const result = await runJobberInvoiceImport(
+    { invoiceNumbers: ['6105'], itemIds: { 'hoist cable 1/4"': '77' } },
+    {
+      qboQuery: async (sql: string) => {
+        queried.push(sql);
+        if (sql.includes('SalesTaxRateList')) return countyCodes;
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
+        if (sql.includes('Hoist cable')) return { QueryResponse: { Item: [{ Id: '4242', Name: 'Hoist cable 1/4"' }] } };
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { throw new Error('preview posted'); },
+    }
+  );
+  const row = (result.invoices as Array<{ status: string; reason: string | null; body: { Line: Array<{ SalesItemLineDetail: { ItemRef: { value: string } } }> } }>)[0];
+  assert.equal(row.status, 'create', row.reason || '');
+  assert.equal(row.body.Line[0].SalesItemLineDetail.ItemRef.value, '77');
+  assert.equal(queried.some((sql) => sql.includes('Hoist cable')), false);
+});
+
+test('absorbTaxShortfall combined with taxOverride is refused', async () => {
+  await assert.rejects(
+    () => runJobberInvoiceImport(
+      {
+        invoiceNumbers: ['6106'],
+        taxOverride: true,
+        absorbTaxShortfall: { expectedQboTax: 80, jobberTax: 70, expenseAccountId: '18', itemId: '9001' },
+      },
+      {
+        loadJobberInvoices: async () => { throw new Error('should not load'); },
+        qboQuery: async () => { throw new Error('should not query'); },
+      }
+    ),
+    /cannot be combined with taxOverride/
+  );
+});
+
+test('absorb item 526 discount is refused because it posts to Sales', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '6106',
+    lines: [{ name: '1MS', description: 'Service', quantity: 1, unitPrice: 1000, taxable: true }],
+    taxAmount: 77.5,
+    total: 1077.5,
+    paymentsTotal: 0,
+  };
+  const absorb = { expectedQboTax: 80, jobberTax: 77.5, expenseAccountId: '18', itemId: '526' };
+  await assert.rejects(
+    () => runJobberInvoiceImport(
+      { invoiceNumbers: ['6106'], absorbTaxShortfall: absorb },
+      {
+        qboQuery: async (sql: string) => {
+          if (sql.includes('SalesTaxRateList')) return countyCodes;
+          if (sql.includes("Id = '526'")) {
+            return { QueryResponse: { Item: [{ Id: '526', Name: 'discount', Active: true, Taxable: false, IncomeAccountRef: { value: '35', name: 'Sales' } }] } };
+          }
+          return { QueryResponse: {} };
+        },
+        loadJobberInvoices: async () => [job],
+      }
+    ),
+    /item 526 \(discount\) posts to account 35, not 18/
+  );
+
+  const ok = await runJobberInvoiceImport(
+    { invoiceNumbers: ['6106'], absorbTaxShortfall: { ...absorb, itemId: '9001' } },
+    {
+      qboQuery: async (sql: string) => {
+        if (sql.includes('SalesTaxRateList')) return countyCodes;
+        if (sql.includes('DocNumber')) return { QueryResponse: {} };
+        if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
+        if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23', Name: '1MS' }] } };
+        if (sql.includes("Id = '9001'")) {
+          return { QueryResponse: { Item: [{ Id: '9001', Name: 'Taxes', Active: true, Taxable: false, ExpenseAccountRef: { value: '18', name: 'Taxes' } }] } };
+        }
+        return { QueryResponse: {} };
+      },
+      loadJobberInvoices: async () => [job],
+      fetchImpl: async () => { throw new Error('preview posted'); },
+    }
+  );
+  const row = (ok.invoices as Array<{ status: string; reason: string | null; body: { Line: Array<{ Description?: string; Amount: number; SalesItemLineDetail: { ItemRef: { value: string }; TaxCodeRef: { value: string } } }> } }>)[0];
+  assert.equal(row.status, 'create', row.reason || '');
+  const absorbed = row.body.Line.find((line) => line.Description === 'Sales tax absorbed by SCWS');
+  assert.equal(absorbed?.Amount, -2.5);
+  assert.equal(absorbed?.SalesItemLineDetail.ItemRef.value, '9001');
+  assert.equal(absorbed?.SalesItemLineDetail.TaxCodeRef.value, 'NON');
 });
