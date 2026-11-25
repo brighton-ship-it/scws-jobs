@@ -49,6 +49,15 @@ export function closedPeriod(txnDate: string | null, closeDate: string | null): 
   return txnDate <= closeDate;
 }
 
+/** TxnDate a restore would write back. A full prior entity includes the old transaction date. */
+function priorTxnDate(row: BatchAuditRow): string | null {
+  const prior = row.priorState;
+  if (!prior || typeof prior !== 'object') return null;
+  const txn = (prior as { TxnDate?: unknown }).TxnDate;
+  if (typeof txn !== 'string' || !txn) return null;
+  return txn.slice(0, 10);
+}
+
 /** A row that recorded a QuickBooks change revert can undo. Legacy rows have no status and use ok. */
 function isRevertTarget(row: BatchAuditRow): boolean {
   if (row.dryRun || !row.confirmed) return false;
@@ -124,12 +133,20 @@ export function planBatchRevert(
     // Items, customers, and other non-transactions have no TxnDate. Only a
     // transaction on or before the close date is refused. A transaction row
     // that never stored TxnDate is refused here; runBatchRevert fills that
-    // date from the live entity before planning.
-    if (isQboTransactionEntity(row.entity) && (closedPeriod(row.txnDate, closeDate) || (closeDate && !row.txnDate))) {
+    // date from the live entity before planning. A restore posts the whole
+    // prior entity, so a prior TxnDate inside the closed period is refused
+    // even when the current row or live invoice is dated after it.
+    const priorDate = row.action === 'update' ? priorTxnDate(row) : null;
+    const priorClosed = Boolean(priorDate && closedPeriod(priorDate, closeDate));
+    if (priorClosed || (isQboTransactionEntity(row.entity) && (closedPeriod(row.txnDate, closeDate) || (closeDate && !row.txnDate)))) {
       couldNot.push({
         entity: row.entity,
         id: row.qboId,
-        reason: row.txnDate ? `TxnDate ${row.txnDate} is on or before the books close date ${closeDate}` : `books are closed through ${closeDate} and this row has no TxnDate`,
+        reason: priorClosed
+          ? `prior TxnDate ${priorDate} is on or before the books close date ${closeDate}`
+          : row.txnDate
+            ? `TxnDate ${row.txnDate} is on or before the books close date ${closeDate}`
+            : `books are closed through ${closeDate} and this row has no TxnDate`,
       });
       continue;
     }

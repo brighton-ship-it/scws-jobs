@@ -41,6 +41,39 @@ test('revert restores updates, then deletes payments, then deletes invoices', ()
   assert.equal(plan.couldNot.length, 0);
 });
 
+test('a restore is refused when the prior TxnDate is on or before the close date', () => {
+  const blocked = planBatchRevert(
+    [
+      row({
+        id: 1,
+        entity: 'Invoice',
+        action: 'update',
+        qboId: '39170',
+        txnDate: '2026-10-01',
+        priorState: { Id: '39170', SyncToken: '1', TxnDate: '2024-12-31', Line: [] },
+      }),
+    ],
+    '2024-12-31'
+  );
+  assert.equal(blocked.steps.length, 0);
+  assert.match(blocked.couldNot[0].reason, /prior TxnDate 2024-12-31/);
+  const allowed = planBatchRevert(
+    [
+      row({
+        id: 2,
+        entity: 'Invoice',
+        action: 'update',
+        qboId: '39170',
+        txnDate: '2026-10-01',
+        priorState: { Id: '39170', SyncToken: '1', TxnDate: '2026-10-01', Line: [] },
+      }),
+    ],
+    '2024-12-31'
+  );
+  assert.equal(allowed.couldNot.length, 0);
+  assert.equal(allowed.steps.length, 1);
+});
+
 test('a missing TxnDate blocks a transaction when the books are closed, and does not block an item', () => {
   const closed = planBatchRevert(
     [
