@@ -47,13 +47,16 @@ export type SbClient = {
 /** preview and refused never post. pending is the pre-write row. failed is a QuickBooks error. */
 /**
  * unknown = the POST was sent but no answer came back (network error, timeout, or a
- * 408/502/503/504 gateway status). QuickBooks may have saved it. Revert and
+ * 408/500/502/503/504 status). QuickBooks may have saved it. Revert and
  * reconciliation must treat it as possibly written, never as failed.
  */
 export type QboAuditStatus = 'preview' | 'pending' | 'refused' | 'ok' | 'failed' | 'tax_mismatch' | 'unknown' | 'tax_code_changed';
 
-/** HTTP statuses where the request may have reached QuickBooks and been saved. */
-const OUTCOME_UNKNOWN_STATUSES = new Set([408, 502, 503, 504]);
+/**
+ * HTTP statuses where the request may have reached QuickBooks and been saved.
+ * An Intuit 500 is included: it can come back after the entity was committed.
+ */
+const OUTCOME_UNKNOWN_STATUSES = new Set([408, 500, 502, 503, 504]);
 
 class PostOutcomeUnknownError extends Error {
   logged = true;
@@ -278,6 +281,46 @@ async function defaultAudit(entry: QboAuditEntry, env: Env): Promise<void> {
     return;
   }
   await insertQboAudit(client, entry);
+}
+
+/**
+ * Audit a confirm that a tool refused before any pending row or QuickBooks post
+ * (for example the relink duplicate-payment check). Status refused is not a write,
+ * so revert ignores it. An audit failure is returned, not thrown, so the caller's
+ * own refusal error still reaches the user.
+ */
+export async function auditRefusal(
+  fields: { tool: string; entity: string; requestId: string; batchId: string | null; error: string; payload?: unknown; reason?: string | null },
+  deps: QboWriteDeps = {}
+): Promise<{ ok: boolean; error?: string }> {
+  const env = deps.env || process.env;
+  const gate = describeQboWriteGate(env);
+  const entry: QboAuditEntry = {
+    actor: deps.actor?.trim() || 'unknown',
+    tool: fields.tool,
+    requestId: fields.requestId,
+    dryRun: true,
+    confirmed: true,
+    ok: false,
+    refused: true,
+    status: 'refused',
+    realmId: gate.realmId,
+    environment: gate.environment,
+    entity: fields.entity,
+    payload: fields.payload ?? null,
+    qboResponse: null,
+    qboIds: {},
+    error: fields.error,
+    reason: fields.reason ?? null,
+    batchId: fields.batchId,
+  };
+  try {
+    if (deps.audit) await deps.audit(entry);
+    else await defaultAudit(entry, env);
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function oauthCreds(env: Env) {

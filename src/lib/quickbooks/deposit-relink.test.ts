@@ -73,7 +73,7 @@ test('relink confirm creates the payment and replaces the sales line without cha
 });
 
 /** A live-ish QuickBooks double: one deposit with two 4010 lines, payments keyed by Intuit requestid. */
-function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; driftDepositAfterFirstRead?: boolean; paymentPost?: 'throw' | 504 | 'noLine' } = {}) {
+function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; driftDepositAfterFirstRead?: boolean; paymentPost?: 'throw' | 504 | 500 | 'noLine' } = {}) {
   const state = {
     deposit: {
       Id: '38114',
@@ -110,6 +110,7 @@ function fakeQbo(options: { replayPayments?: boolean; replayDeposits?: boolean; 
     state.posts.push(path);
     if (path === 'payment' && options.paymentPost === 'throw') throw new TypeError('fetch failed (socket hang up)');
     if (path === 'payment' && options.paymentPost === 504) return json({ Fault: { type: 'GatewayTimeout' } }, 504);
+    if (path === 'payment' && options.paymentPost === 500) return json({ Fault: { type: 'SystemFault' } }, 500);
     if (path === 'payment' && options.paymentPost === 'noLine') return json({ Payment: { Id: '39300', SyncToken: '0', TotalAmt: body.TotalAmt, CustomerRef: body.CustomerRef } });
     const replay = path === 'payment' ? options.replayPayments : options.replayDeposits;
     if (replay && state.byRequest.size > 0 && Array.from(state.byRequest.keys()).some((key) => key.startsWith(path))) {
@@ -296,4 +297,47 @@ test('a throw after the pending row writes a failed audit row instead of leaving
   assert.equal(failed.requestId, audit[2].requestId);
   assert.match(String(failed.error), /Stopped after the pending row: No deposit sales line matches/);
   assert.deepEqual(qbo.state.posts, ['payment']);
+});
+
+test('a 500 from the payment post is logged unknown, not failed', async () => {
+  const qbo = fakeQbo({ paymentPost: 500 });
+  const audit: QboAuditEntry[] = [];
+  const result = await runRelinkDeposit(relinkA, relinkDeps(qbo.fetchImpl, audit));
+  assert.equal(result.ok, false);
+  assert.equal(result.outcomeUnknown, true);
+  assert.match(String(result.error), /returned 500[\s\S]*may have posted/);
+  assert.deepEqual(audit.map((entry) => entry.status), ['pending', 'unknown']);
+  assert.deepEqual(qbo.state.posts, ['payment']);
+});
+
+test('the duplicate-payment refusal writes a refused audit row and no pending row', async () => {
+  const retry = fakeQbo();
+  retry.state.payments.push({ Id: '39200', TotalAmt: 1083.05, CustomerRef: { value: '21' }, DepositToAccountRef: { value: '36' }, Line: [{ Amount: 1083.05, LinkedTxn: [{ TxnId: '35369', TxnType: 'Invoice' }] }] });
+  const audit: QboAuditEntry[] = [];
+  await assert.rejects(() => runRelinkDeposit(relinkA, relinkDeps(retry.fetchImpl, audit)), /Refusing to create a payment[\s\S]*payment 39200/);
+  assert.equal(audit.length, 1);
+  const [row] = audit;
+  assert.equal(row.status, 'refused');
+  assert.equal(row.refused, true);
+  assert.equal(row.ok, false);
+  assert.equal(row.entity, 'Payment');
+  assert.equal(row.batchId, 'relink-older-02');
+  assert.match(row.requestId, /^relpay-38114-L3-/);
+  assert.match(String(row.error), /Refusing to create a payment/);
+  assert.deepEqual((row.payload as { existingPaymentIds: string[] }).existingPaymentIds, ['39200']);
+  assert.deepEqual(retry.state.posts, []);
+});
+
+test('a payment received straight into a bank account counts as deposited', () => {
+  const applied = [{ Amount: 1083.05, LinkedTxn: [{ TxnId: '35369', TxnType: 'Invoice' }] }];
+  const want = { invoiceId: '35369', customerId: '21', amountCents: 108305 };
+  const payments = [
+    { Id: 'bank', TotalAmt: 1083.05, CustomerRef: { value: '21' }, DepositToAccountRef: { value: '29' }, Line: applied },
+    { Id: 'uf', TotalAmt: 1083.05, CustomerRef: { value: '21' }, DepositToAccountRef: { value: '36' }, Line: applied },
+    { Id: 'uf-named', TotalAmt: 1083.05, CustomerRef: { value: '21' }, DepositToAccountRef: { value: '99', name: 'Undeposited Funds' }, Line: applied },
+    { Id: 'no-ref', TotalAmt: 1083.05, CustomerRef: { value: '21' }, Line: applied },
+  ];
+  assert.deepEqual(unlinkedMatchingPayments(payments, want), ['uf', 'uf-named', 'no-ref']);
+  // Another company's Undeposited Funds id can be passed (QBO_UNDEPOSITED_FUNDS_ACCOUNT_ID).
+  assert.deepEqual(unlinkedMatchingPayments(payments, want, '29'), ['bank', 'uf-named', 'no-ref']);
 });
