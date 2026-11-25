@@ -92,6 +92,10 @@ export type ScheduleLookupResult = {
   driveSurchargeUsd?: number;
   nearerShop?: 'ramona' | 'anza' | null;
   driveSpoken?: string;
+  /** Upcoming shop-wide closed days (RECEPTIONIST_CLOSED_DATES), PT YYYY-MM-DD. */
+  shopClosedDates?: string[];
+  /** Rule for Mike when shopClosedDates is set: never offer/book those days. */
+  shopClosedNote?: string;
 };
 
 export type CheckScheduleInput = {
@@ -641,7 +645,10 @@ export async function handleCheckSchedule(
     }
 
     const { decideSarahBooking } = await import('./after-hours.ts');
-    const { lookupOpenSlots } = await import('./open-slots.ts');
+    const { lookupOpenSlots, shopClosedNote, upcomingClosedDates } = await import('./open-slots.ts');
+    const closedEnv = deps.env ?? process.env;
+    const closedNote = shopClosedNote(deps.now ?? new Date(), closedEnv);
+    const closedDays = upcomingClosedDates(deps.now ?? new Date(), closedEnv);
     const booking = decideSarahBooking(deps.now ?? new Date(), input);
 
     if (!booking.mayBook) {
@@ -752,7 +759,9 @@ export async function handleCheckSchedule(
           (slots.openSlots.length > 0
             ? `I have ${slots.openSlots.length} open Jobber slot${slots.openSlots.length === 1 ? '' : 's'} for a $200 service call.${driveSpoken ? ` ${driveSpoken}` : ''}`
             : "I don't see an open Jobber slot I can book. I'll have the office call you back.")
-          + sameAsNoWaterBookingSuffix(scheduleUrgencyText(input), slots.openSlots),
+          + sameAsNoWaterBookingSuffix(scheduleUrgencyText(input), slots.openSlots)
+          + (closedNote ? ` ${closedNote}` : ''),
+        ...(closedDays.length ? { shopClosedDates: closedDays, shopClosedNote: closedNote } : {}),
         emergencySameAsNoWater: isSameAsNoWaterEmergency(scheduleUrgencyText(input)) || undefined,
         bookingBlockReason: slots.openSlots.length === 0 ? 'no_slots' : undefined,
       },

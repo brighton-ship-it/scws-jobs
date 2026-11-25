@@ -1366,3 +1366,116 @@ describe('initial-service drive surcharge on the Jobber booking', () => {
     assert.doesNotMatch(result.message, /\$100 per hour/);
   });
 });
+
+describe('shop closed dates (RECEPTIONIST_CLOSED_DATES, Thanksgiving 2026)', () => {
+  const jeremiah = {
+    id: 'user-jeremiah',
+    name: { full: 'Jeremiah Biliunas' },
+    email: { raw: 'jeremiah@scwellservice.com' },
+  };
+  const env = {
+    ...process.env,
+    RECEPTIONIST_WEEKEND_TECHS: 'Jeremiah Biliunas',
+    RECEPTIONIST_CLOSED_DATES: '2026-11-26,2026-11-27',
+    RECEPTIONIST_CLOSED_REASON: 'for Thanksgiving',
+  } as NodeJS.ProcessEnv;
+  /** Wed Nov 25 2026 7:00 AM PT */
+  const WED_7AM = new Date('2026-11-25T15:00:00.000Z');
+  const THU_8AM = '2026-11-26T16:00:00.000Z';
+  const FRI_1PM = '2026-11-27T21:00:00.000Z';
+  const MON_8AM = '2026-11-30T16:00:00.000Z';
+
+  async function book(startAt: string, now: Date = WED_7AM) {
+    const bodies: GraphqlBody[] = [];
+    const inner = mockJobber({
+      users: [BRIAN, COWIN, DOUG, TRAVIS, jeremiah],
+      occupied: [],
+      createdJob: {
+        id: 'job-1',
+        title: SERVICE_CALL_TITLE,
+        visits: {
+          nodes: [
+            {
+              id: 'visit-1',
+              startAt,
+              endAt: new Date(new Date(startAt).getTime() + 2 * 3_600_000).toISOString(),
+              assignedUsers: { nodes: [{ id: 'user-brian', name: { full: 'Brian Eads' } }] },
+            },
+          ],
+        },
+      },
+    });
+    const { result } = await handleBookServiceCall(
+      { phone: '7605550100', name: 'Pat Wells', address: '100 Well Rd', city: 'Ramona', startAt, urgency: 'normal' },
+      {
+        now,
+        accessToken: 'test-token',
+        env,
+        fetchFn: async (url, init) => {
+          bodies.push(JSON.parse(String(init?.body || '{}')) as GraphqlBody);
+          return inner(url, init);
+        },
+      }
+    );
+    const mutated = bodies.some((b) => /JobCreate|VisitCreate|clientCreate|propertyCreate/i.test(b.query || ''));
+    return { result, mutated };
+  }
+
+  it('refuses Thursday 11/26 and Friday 11/27 without any Jobber write', async () => {
+    for (const startAt of [THU_8AM, FRI_1PM]) {
+      const { result, mutated } = await book(startAt);
+      assert.equal(result.booked, false, startAt);
+      assert.equal(result.canConfirm, false);
+      assert.equal(result.bookingBlockReason, 'shop_closed');
+      assert.match(result.message || '', /closed/i);
+      assert.match(result.message || '', /Thursday, November 26 and Friday, November 27 for Thanksgiving/);
+      assert.equal(mutated, false, 'no Jobber mutation on a closed day');
+      for (const slot of result.openSlots || []) {
+        assert.ok(!/^2026-11-2[67]/.test(new Date(slot.startAt).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })));
+      }
+    }
+  });
+
+  it('still books Monday 11/30 (closed list leaves other days alone)', async () => {
+    // Sun 11/29 6 PM PT: the earliest 6 merged slots reach Monday morning.
+    const { result } = await book(MON_8AM, new Date('2026-11-30T02:00:00.000Z'));
+    assert.equal(result.booked, true, result.message);
+    assert.match(result.visit?.date || '', /Monday/i);
+  });
+
+  it('computeOpenSlots skips closed days for every tech, weekend roster included', () => {
+    const ptDay = (iso: string) => new Date(iso).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' });
+    const brian = computeOpenSlots({ occupied: [], now: WED_7AM, technicianId: 'user-brian', technicianName: 'Brian Eads', maxSlots: 12, env });
+    const jer = computeOpenSlots({ occupied: [], now: WED_7AM, technicianId: 'user-jeremiah', technicianName: 'Jeremiah Biliunas', maxSlots: 12, env });
+    for (const slot of [...brian, ...jer]) {
+      assert.ok(!['2026-11-26', '2026-11-27'].includes(ptDay(slot.startAt)), slot.startAt);
+    }
+    // Wed 11/25 is still open today; Jeremiah's next after that is Sat 11/28.
+    assert.ok(brian.some((s) => ptDay(s.startAt) === '2026-11-25'));
+    assert.ok(jer.some((s) => ptDay(s.startAt) === '2026-11-28'));
+  });
+
+  it('checkSchedule carries the closed-day rule for Mike', async () => {
+    const inner = mockJobber({ users: [BRIAN, COWIN, DOUG, TRAVIS, jeremiah], occupied: [] });
+    const { result } = await handleCheckSchedule(
+      { phone: '7605550100', city: 'Ramona', intent: 'book' },
+      { now: WED_7AM, accessToken: 'test-token', env, fetchFn: inner }
+    );
+    assert.deepEqual(result.shopClosedDates, ['2026-11-26', '2026-11-27']);
+    assert.match(result.bookingMessage || '', /closed Thursday, November 26 and Friday, November 27 for Thanksgiving/);
+    for (const slot of result.openSlots || []) {
+      assert.ok(!/2026-11-2[67]/.test(new Date(slot.startAt).toLocaleDateString('en-CA', { timeZone: 'America/Los_Angeles' })));
+    }
+  });
+
+  it('no closed dates → no note, and past dates expire on their own', async () => {
+    const { shopClosedNote, upcomingClosedDates, isShopClosedOn, shopClosedDates } = await import('./open-slots.ts');
+    assert.equal(shopClosedNote(WED_7AM, { RECEPTIONIST_CLOSED_DATES: '' } as unknown as NodeJS.ProcessEnv), '');
+    assert.deepEqual(upcomingClosedDates(new Date('2026-11-28T18:00:00Z'), env), []);
+    assert.equal(isShopClosedOn('2026-11-26', { CLOSED_DATES: '2026-11-26' } as unknown as NodeJS.ProcessEnv), true);
+    assert.deepEqual(
+      Array.from(shopClosedDates({ RECEPTIONIST_CLOSED_DATES: '2026-12-24..2026-12-26, bogus' } as unknown as NodeJS.ProcessEnv)),
+      ['2026-12-24', '2026-12-25', '2026-12-26']
+    );
+  });
+});
