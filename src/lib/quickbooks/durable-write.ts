@@ -20,6 +20,7 @@ import {
   confirmRequested,
   idempotencyPayload,
   inspectSavedInvoiceTax,
+  inspectSavedLineTax,
   parseBatchId,
   resolveRequestId,
   savedTaxCode,
@@ -714,7 +715,13 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     return { ...base, http, error, ids, qbo: slim(plan.entity, posted.json), audit: { attempted: true } };
   }
   let auditError: string | undefined;
-  const savedTax = plan.expectSavedTax && plan.entity === 'Invoice' ? inspectSavedInvoiceTax(posted.json, plan.expectSavedTax, priorState) : null;
+  const savedTax = plan.entity !== 'Invoice'
+    ? null
+    : plan.expectSavedTax
+      ? inspectSavedInvoiceTax(posted.json, plan.expectSavedTax, priorState)
+      : plan.expectLineTax
+        ? inspectSavedLineTax(posted.json, plan.expectLineTax, priorState)
+        : null;
   const taxCodeChanged = savedTax ? null : taxCodeChangeOf(plan, posted.json, body);
   const heldBad = savedTax && !savedTax.ok ? savedTax : null;
   const changedText = heldBad
@@ -733,6 +740,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
         payload: {
           http,
           reason: plan.reason || null,
+          ...(plan.changes != null ? { changes: plan.changes } : {}),
           ...(plan.expectTaxCode ? { taxCodeChanged } : {}),
           ...(savedTax ? { savedTax } : {}),
         },

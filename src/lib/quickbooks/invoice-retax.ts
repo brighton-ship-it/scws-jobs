@@ -1,4 +1,5 @@
 import { writeRealmQuery, type QboWriteDeps } from './durable-write.ts';
+import { parseSetLineTaxCodes } from './write-payloads.ts';
 
 export type InvoiceRetaxCheck =
   | { ok: true; invoice: Record<string, unknown>; items: { lineId: string; itemId: string; taxable: boolean; taxClassificationId: string | null }[] }
@@ -47,4 +48,41 @@ export async function checkInvoiceRetax(args: Record<string, unknown>, deps: Qbo
     items.push({ lineId, itemId, taxable: true, taxClassificationId });
   }
   return { ok: true, invoice, items };
+}
+
+export type SetLineTaxCheck =
+  | { ok: true; invoice: Record<string, unknown> }
+  | { ok: false; error: string };
+
+/** Read the live invoice for setLineTaxCodes. Preview and confirm both refuse a missing line or a stale SyncToken. */
+export async function checkSetLineTax(args: Record<string, unknown>, deps: QboWriteDeps = {}): Promise<SetLineTaxCheck> {
+  const id = typeof args.id === 'string' ? args.id.trim() : '';
+  const syncToken = typeof args.syncToken === 'string' ? args.syncToken.trim() : '';
+  if (!/^\d+$/.test(id)) return { ok: false, error: 'id must be a QuickBooks invoice id.' };
+  if (!syncToken) return { ok: false, error: 'setLineTaxCodes needs syncToken: the SyncToken you read.' };
+  if (Array.isArray(args.retaxLineIds)) return { ok: false, error: 'setLineTaxCodes cannot be combined with retaxLineIds.' };
+  let changes;
+  try {
+    changes = parseSetLineTaxCodes(args.setLineTaxCodes);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  if (args.expectedTotalTax === undefined || args.expectedTotalTax === null || args.expectedTotalTax === '') {
+    return { ok: false, error: 'setLineTaxCodes requires expectedTotalTax. 0 is allowed.' };
+  }
+  const query = deps.qboQuery || ((sql: string) => writeRealmQuery(sql, deps));
+  const invoice = rows(await query(`select * from Invoice where Id = '${id}'`), 'Invoice').find((row) => String(row?.Id) === id);
+  if (!invoice) return { ok: false, error: `Invoice ${id} was not found in QuickBooks.` };
+  if (String(invoice.SyncToken ?? '') !== syncToken) {
+    return { ok: false, error: `Invoice ${id} has SyncToken ${String(invoice.SyncToken ?? 'none')} in QuickBooks, not ${syncToken}. Re-read it before changing it.` };
+  }
+  const lines = Array.isArray(invoice.Line) ? invoice.Line : [];
+  for (const change of changes) {
+    const line = lines.find((row: any) => String(row?.Id ?? '') === change.lineId);
+    if (!line) return { ok: false, error: `Invoice ${id} has no line ${change.lineId}.` };
+    if (line.DetailType !== 'SalesItemLineDetail') return { ok: false, error: `Invoice ${id} line ${change.lineId} is not a sales line.` };
+  }
+  const taxCode = invoice.TxnTaxDetail?.TxnTaxCodeRef?.value;
+  if (taxCode == null || String(taxCode).trim() === '') return { ok: false, error: `Invoice ${id} has no TxnTaxCodeRef to keep.` };
+  return { ok: true, invoice };
 }

@@ -50,7 +50,7 @@ const ENTITY_PATH: Record<string, string> = {
   Vendor: 'vendor',
 };
 
-export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote' | 'itemTaxCategory' | 'retaxLines';
+export type QboReadApply = 'syncToken' | 'purchaseAccounts' | 'closeDate' | 'privateNote' | 'customerMemo' | 'void' | 'linkPayment' | 'relinkSalesLine' | 'appendPrivateNote' | 'itemTaxCategory' | 'retaxLines' | 'setLineTax';
 
 export type QboPlan = {
   tool: QboWriteTool;
@@ -72,7 +72,14 @@ export type QboPlan = {
    * set and no others, this TotalTax, no AST_TAX_OVERRIDE, and the same lines.
    */
   expectSavedTax?: { taxCodeId: string; rateIds: string[]; totalTax: number };
+  /**
+   * setLineTaxCodes update: header code stays, no AST_TAX_OVERRIDE, line amounts and
+   * items stay, the named lines have these tax codes, and TotalTax matches (0 allowed).
+   */
+  expectLineTax?: { totalTax: number; lines: LineTaxCodeChange[] };
 };
+
+export type LineTaxCodeChange = { lineId: string; taxCode: 'TAX' | 'NON' };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const ID_RE = /^\d{1,20}$/;
@@ -134,6 +141,17 @@ export function resolveRequestId(tool: string, payload: unknown, given?: string)
 
 function money(value: unknown, field: string): number {
   return roundedMoney(value, field, false);
+}
+
+/** expectedTotalTax on a line-tax update. Zero is a real total, not a missing value. */
+function moneyAllowZero(value: unknown, field: string): number {
+  if (value === undefined || value === null || value === '') throw new Error(`${field} is required.`);
+  const n = typeof value === 'number' ? value : typeof value === 'string' && String(value).trim() ? Number(value) : NaN;
+  if (!Number.isFinite(n)) throw new Error(`${field} must be a number`);
+  const cents = Math.round(n * 100);
+  if (Math.abs(n * 100 - cents) > 1e-6) throw new Error(`${field} must have at most 2 decimal places`);
+  if (cents < 0) throw new Error(`${field} must be 0 or greater`);
+  return cents / 100;
 }
 
 /** Deposit fee lines are negative. Zero is refused. Payment lines stay positive. */
@@ -384,7 +402,11 @@ function salesLines(args: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 export function buildInvoice(args: Record<string, unknown>): QboPlan {
-  if (hasShipAddress(args) || flagTrue(args.cdtfaVerified) || flagTrue(args.reuseLiveAddress)) return buildInvoiceShipHold(args);
+  const settingLineTax = Array.isArray(args.setLineTaxCodes);
+  if (settingLineTax && (hasShipAddress(args) || flagTrue(args.cdtfaVerified) || flagTrue(args.reuseLiveAddress))) {
+    throw new Error('setLineTaxCodes cannot be combined with a ship-address update.');
+  }
+  if (!settingLineTax && (hasShipAddress(args) || flagTrue(args.cdtfaVerified) || flagTrue(args.reuseLiveAddress))) return buildInvoiceShipHold(args);
   const id = args.id === undefined || args.id === null || args.id === '' ? undefined : qboId(args.id, 'id');
   const syncToken = optString(args, 'syncToken');
   const hasLines = Array.isArray(args.lines) && args.lines.length > 0;
@@ -408,6 +430,7 @@ export function buildInvoice(args: Record<string, unknown>): QboPlan {
   if (customerMemo) body.CustomerMemo = { value: customerMemo };
   if (number) body.DocNumber = number;
   const retax = Array.isArray(args.retaxLineIds) ? args.retaxLineIds : null;
+  if (settingLineTax) return buildInvoiceSetLineTax(args, id, syncToken, hasLines, suppliedNote, retax);
   if (retax) return buildInvoiceRetax(args, id, syncToken, hasLines, suppliedNote);
   if (args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '') {
     if (!id) throw new Error('totalTax is only for an invoice update. Use taxOverride on the import for a new invoice.');
@@ -893,6 +916,10 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
     const changes = plan.changes as { retaxLineIds: string[]; txnTaxCodeId: string };
     return { ...retaxInvoiceBody(entity, changes.retaxLineIds, changes.txnTaxCodeId), SyncToken: syncToken };
   }
+  if (plan.read?.apply === 'setLineTax') {
+    const changes = plan.changes as { setLineTaxCodes: LineTaxCodeChange[] };
+    return { ...setLineTaxInvoiceBody(entity, changes.setLineTaxCodes), SyncToken: syncToken };
+  }
   return body;
 }
 
@@ -1117,12 +1144,174 @@ export function inspectSavedInvoiceTax(json: unknown, expected: { taxCodeId: str
   return { ok: status === 'ok', status, reasons, savedTaxCodeId, savedRateIds, savedTotalTax, taxReviewStatus, linesUnchanged };
 }
 
+/** Post-write check for setLineTaxCodes. TotalTax may be 0. Line amounts and items must match the invoice that was read. */
+export function inspectSavedLineTax(json: unknown, expected: { totalTax: number; lines: LineTaxCodeChange[] }, prior: unknown): SavedTaxInspection {
+  const saved = invoiceEntity(json);
+  const before = invoiceEntity(prior);
+  const detail = saved?.TxnTaxDetail || {};
+  const priorDetail = before?.TxnTaxDetail || {};
+  const savedTaxCodeId = savedTaxCode(json);
+  const priorCodeRaw = priorDetail?.TxnTaxCodeRef?.value;
+  const priorTaxCodeId = priorCodeRaw == null || String(priorCodeRaw).trim() === '' ? null : String(priorCodeRaw);
+  const totalRaw = detail.TotalTax;
+  const savedTotalTax = totalRaw == null || totalRaw === '' || !Number.isFinite(Number(totalRaw)) ? null : Math.round(Number(totalRaw) * 100) / 100;
+  const taxReviewStatus = typeof detail.TaxReviewStatus === 'string' && detail.TaxReviewStatus ? detail.TaxReviewStatus : null;
+  const codeReasons: string[] = [];
+  if (!priorTaxCodeId || savedTaxCodeId !== priorTaxCodeId) {
+    codeReasons.push(`TxnTaxCodeRef changed from ${priorTaxCodeId ?? 'none'} to ${savedTaxCodeId ?? 'none'}.`);
+  }
+  if (taxReviewStatus === 'AST_TAX_OVERRIDE') codeReasons.push('TaxReviewStatus is AST_TAX_OVERRIDE.');
+  if (priorDetail.UseAutomatedSalesTax === false && detail.UseAutomatedSalesTax === true) {
+    codeReasons.push('UseAutomatedSalesTax was turned on.');
+  }
+  const priorLines: any[] = Array.isArray(before?.Line) ? before.Line : [];
+  const savedLines: any[] = Array.isArray(saved?.Line) ? saved.Line : [];
+  const savedById = new Map(savedLines.filter((line) => line?.Id != null && String(line.Id) !== '').map((line) => [String(line.Id), line]));
+  let linesUnchanged = priorLines.length === savedLines.length;
+  for (const line of priorLines) {
+    if (line?.Id == null || String(line.Id) === '') continue;
+    const id = String(line.Id);
+    const after = savedById.get(id);
+    if (!after) {
+      linesUnchanged = false;
+      codeReasons.push(`Line ${id} is missing after the update.`);
+      continue;
+    }
+    const beforeAmount = Number(line.Amount);
+    const afterAmount = Number(after.Amount);
+    if (!Number.isFinite(beforeAmount) || !Number.isFinite(afterAmount) || Math.abs(beforeAmount - afterAmount) > 0.009) {
+      linesUnchanged = false;
+      codeReasons.push(`Line ${id} amount changed from ${line.Amount} to ${after.Amount}.`);
+    }
+    const beforeItem = line?.SalesItemLineDetail?.ItemRef?.value;
+    const afterItem = after?.SalesItemLineDetail?.ItemRef?.value;
+    if (beforeItem != null && String(beforeItem) !== String(afterItem ?? '')) {
+      linesUnchanged = false;
+      codeReasons.push(`Line ${id} item changed from ${beforeItem} to ${afterItem ?? 'none'}.`);
+    }
+  }
+  for (const change of expected.lines) {
+    const after = savedById.get(change.lineId);
+    const code = after?.SalesItemLineDetail?.TaxCodeRef?.value;
+    if (code !== change.taxCode) codeReasons.push(`Line ${change.lineId} tax code is ${code ?? 'none'}, expected ${change.taxCode}.`);
+  }
+  const amountReasons: string[] = [];
+  if (savedTotalTax == null || Math.abs(savedTotalTax - expected.totalTax) > 0.01) {
+    amountReasons.push(`Saved TotalTax ${savedTotalTax ?? 'missing'} does not match expected ${expected.totalTax}.`);
+  }
+  const reasons = [...codeReasons, ...amountReasons];
+  const status = !reasons.length ? 'ok' : codeReasons.length ? 'tax_code_changed' : 'tax_mismatch';
+  return { ok: status === 'ok', status, reasons, savedTaxCodeId, savedRateIds: [], savedTotalTax, taxReviewStatus, linesUnchanged };
+}
+
 /** Saved header TxnTaxCodeRef on an Invoice response, or null. */
 export function savedTaxCode(json: unknown): string | null {
   const root = (json && typeof json === 'object' ? json : {}) as Record<string, any>;
   const entity = root.Invoice || root;
   const value = entity?.TxnTaxDetail?.TxnTaxCodeRef?.value;
   return typeof value === 'string' && value ? value : null;
+}
+
+export function parseSetLineTaxCodes(value: unknown): LineTaxCodeChange[] {
+  if (!Array.isArray(value) || !value.length) throw new Error('setLineTaxCodes needs at least one line.');
+  const seen = new Set<string>();
+  return value.map((row, index) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error(`setLineTaxCodes[${index}] must be { lineId, taxCode }.`);
+    const source = row as { lineId?: unknown; taxCode?: unknown };
+    const lineId = qboId(source.lineId, `setLineTaxCodes[${index}].lineId`);
+    const taxCode = String(source.taxCode ?? '').trim().toUpperCase();
+    if (taxCode !== 'TAX' && taxCode !== 'NON') throw new Error(`setLineTaxCodes[${index}].taxCode must be TAX or NON.`);
+    if (seen.has(lineId)) throw new Error(`setLineTaxCodes lists line ${lineId} more than once.`);
+    seen.add(lineId);
+    return { lineId, taxCode };
+  });
+}
+
+/**
+ * Sparse update that resends the full Line array and changes only TaxCodeRef on the named lines.
+ * TxnTaxCodeRef is the code already on the invoice. UseAutomatedSalesTax false is resent when the
+ * invoice was saved that way. BillAddr, ShipAddr, ShipFromAddr, the customer, and the dates are
+ * resent as read. TotalTax is not sent; QuickBooks computes it, and 0 is a valid expected total.
+ */
+export function setLineTaxInvoiceBody(invoice: Record<string, unknown>, changes: LineTaxCodeChange[]): Record<string, unknown> {
+  const lines = Array.isArray(invoice.Line) ? (invoice.Line as Record<string, any>[]) : [];
+  const wanted = new Map(changes.map((change) => [change.lineId, change.taxCode]));
+  const id = String(invoice.Id ?? '');
+  for (const lineId of wanted.keys()) {
+    const line = lines.find((row) => String(row?.Id ?? '') === lineId);
+    if (!line) throw new Error(`Invoice ${id} has no line ${lineId}.`);
+    if (line.DetailType !== 'SalesItemLineDetail') throw new Error(`Invoice ${id} line ${lineId} is not a sales line.`);
+  }
+  const outLines = lines.map((line) => copyInvoiceLine(line, wanted.get(String(line?.Id ?? '')) || null));
+  const detail = (invoice.TxnTaxDetail || {}) as { TxnTaxCodeRef?: { value?: unknown }; UseAutomatedSalesTax?: unknown };
+  const taxCodeId = detail.TxnTaxCodeRef?.value;
+  if (taxCodeId == null || String(taxCodeId).trim() === '') throw new Error(`Invoice ${id} has no TxnTaxCodeRef to keep.`);
+  const taxDetail: Record<string, unknown> = { TxnTaxCodeRef: { value: String(taxCodeId) } };
+  if (detail.UseAutomatedSalesTax === false) taxDetail.UseAutomatedSalesTax = false;
+  const body: Record<string, unknown> = {
+    Id: qboId(invoice.Id, 'Id'),
+    sparse: true,
+    Line: outLines,
+    TxnTaxDetail: taxDetail,
+  };
+  if (invoice.CustomerRef && typeof invoice.CustomerRef === 'object') body.CustomerRef = { ...(invoice.CustomerRef as Record<string, unknown>) };
+  if (typeof invoice.TxnDate === 'string' && invoice.TxnDate) body.TxnDate = invoice.TxnDate;
+  if (typeof invoice.DueDate === 'string' && invoice.DueDate) body.DueDate = invoice.DueDate;
+  const bill = addressAsRead(invoice.BillAddr);
+  const ship = addressAsRead(invoice.ShipAddr);
+  const shipFrom = addressAsRead(invoice.ShipFromAddr);
+  if (bill) body.BillAddr = bill;
+  if (ship) body.ShipAddr = ship;
+  if (shipFrom) body.ShipFromAddr = shipFrom;
+  return body;
+}
+
+function copyInvoiceLine(line: Record<string, any>, taxCode: 'TAX' | 'NON' | null): Record<string, unknown> {
+  const detailName = typeof line.DetailType === 'string' ? line.DetailType : '';
+  const source = detailName && line[detailName] && typeof line[detailName] === 'object' ? { ...line[detailName] } : null;
+  if (taxCode && source && detailName === 'SalesItemLineDetail') source.TaxCodeRef = { value: taxCode };
+  const out: Record<string, unknown> = { DetailType: line.DetailType };
+  if (line.Id != null && String(line.Id) !== '') out.Id = String(line.Id);
+  if (line.LineNum != null) out.LineNum = line.LineNum;
+  if (line.Amount != null) out.Amount = line.Amount;
+  if (typeof line.Description === 'string') out.Description = line.Description;
+  if (source && detailName) out[detailName] = source;
+  return out;
+}
+
+function buildInvoiceSetLineTax(
+  args: Record<string, unknown>,
+  id: string | undefined,
+  syncToken: string | undefined,
+  hasLines: boolean,
+  noteText: string | undefined,
+  retax: unknown[] | null
+): QboPlan {
+  if (!id) throw new Error('setLineTaxCodes is only for an invoice update.');
+  if (!syncToken) throw new Error('setLineTaxCodes needs syncToken: the SyncToken you read.');
+  if (hasLines) throw new Error('setLineTaxCodes cannot be combined with lines. The lines are resent from the live invoice.');
+  if (noteText) throw new Error('setLineTaxCodes cannot be combined with privateNote.');
+  if (retax) throw new Error('setLineTaxCodes cannot be combined with retaxLineIds.');
+  if (args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '') {
+    throw new Error('setLineTaxCodes cannot be combined with totalTax. Pass expectedTotalTax for the check. 0 is allowed.');
+  }
+  for (const key of ['customerId', 'txnDate', 'dueDate', 'customerMemo', 'docNumber', 'txnTaxCodeId']) {
+    if (args[key] !== undefined && args[key] !== '') throw new Error(`setLineTaxCodes cannot be combined with ${key}. The saved customer, dates, and tax code are kept.`);
+  }
+  const changes = parseSetLineTaxCodes(args.setLineTaxCodes);
+  const totalTax = moneyAllowZero(args.expectedTotalTax, 'expectedTotalTax');
+  const live = args.liveInvoice && typeof args.liveInvoice === 'object' ? (args.liveInvoice as Record<string, unknown>) : null;
+  const body = live ? { ...setLineTaxInvoiceBody(live, changes), SyncToken: syncToken } : null;
+  return {
+    tool: 'qbo_invoice',
+    entity: 'Invoice',
+    action: 'update',
+    path: '/invoice',
+    body,
+    read: { path: `/invoice/${id}`, apply: 'setLineTax' },
+    changes: { expectedSyncToken: syncToken, setLineTaxCodes: changes, expectedTotalTax: totalTax },
+    expectLineTax: { totalTax, lines: changes },
+  };
 }
 
 /**
