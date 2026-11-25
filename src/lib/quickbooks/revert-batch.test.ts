@@ -41,6 +41,123 @@ test('revert restores updates, then deletes payments, then deletes invoices', ()
   assert.equal(plan.couldNot.length, 0);
 });
 
+test('a restore is refused when the prior TxnDate is on or before the close date', () => {
+  const blocked = planBatchRevert(
+    [
+      row({
+        id: 1,
+        entity: 'Invoice',
+        action: 'update',
+        qboId: '39170',
+        txnDate: '2026-10-01',
+        priorState: { Id: '39170', SyncToken: '1', TxnDate: '2024-12-31', Line: [] },
+      }),
+    ],
+    '2024-12-31'
+  );
+  assert.equal(blocked.steps.length, 0);
+  assert.match(blocked.couldNot[0].reason, /prior TxnDate 2024-12-31/);
+  const allowed = planBatchRevert(
+    [
+      row({
+        id: 2,
+        entity: 'Invoice',
+        action: 'update',
+        qboId: '39170',
+        txnDate: '2026-10-01',
+        priorState: { Id: '39170', SyncToken: '1', TxnDate: '2026-10-01', Line: [] },
+      }),
+    ],
+    '2024-12-31'
+  );
+  assert.equal(allowed.couldNot.length, 0);
+  assert.equal(allowed.steps.length, 1);
+});
+
+test('a missing TxnDate blocks a transaction when the books are closed, and does not block an item', () => {
+  const closed = planBatchRevert(
+    [
+      row({ id: 1, entity: 'Invoice', created: false, action: 'update', qboId: '39170', txnDate: null, priorState: { Id: '39170', SyncToken: '0' } }),
+      row({ id: 2, entity: 'Item', tool: 'qbo_item_tax_category', created: false, action: 'update', qboId: '1010000474', txnDate: null, priorState: { Id: '1010000474', SyncToken: '1' } }),
+      row({ id: 3, entity: 'Customer', created: true, action: 'create', qboId: '8', txnDate: null }),
+    ],
+    '2024-12-31'
+  );
+  assert.equal(closed.steps.length, 2);
+  assert.deepEqual(closed.steps.map((step) => step.entity), ['Item', 'Customer']);
+  assert.match(closed.couldNot[0].reason, /no TxnDate/);
+});
+
+test('confirm revert reads the live TxnDate when the audit row has none', async () => {
+  const calls: string[] = [];
+  const fetchImpl: typeof fetch = async (url, init) => {
+    const method = init?.method || 'GET';
+    calls.push(method);
+    const posted = method === 'POST';
+    return new Response(JSON.stringify({
+      Invoice: {
+        Id: '39170',
+        SyncToken: posted ? '2' : '1',
+        TxnDate: '2026-10-01',
+        TxnTaxDetail: { TxnTaxCodeRef: { value: '29' }, TotalTax: 200, TaxLine: [{ TaxLineDetail: { TaxRateRef: { value: '13' }, NetAmountTaxable: 2500 } }] },
+      },
+    }), { status: 200 });
+  };
+  const result = await runBatchRevert(
+    { batchId: 'tax-39170', confirm: true },
+    {
+      env: { QBO_WRITES_ENABLED: 'true', QBO_WRITE_REALM_ID: '2222222222222222', QBO_PRODUCTION_REALM_ID: '9130349321543166' },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl,
+      audit: async () => {},
+      readCloseDate: async () => '2024-12-31',
+      loadBatch: async () => [
+        row({
+          id: 4,
+          entity: 'Invoice',
+          tool: 'qbo_invoice',
+          action: 'update',
+          qboId: '39170',
+          txnDate: null,
+          priorState: { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01', TxnTaxDetail: { TxnTaxCodeRef: { value: '29' }, TotalTax: 200, TaxLine: [{ TaxLineDetail: { TaxRateRef: { value: '13' }, NetAmountTaxable: 2500 } }] } },
+        }),
+      ],
+    }
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.couldNot));
+  assert.equal(result.wrote, true);
+  assert.equal(calls.filter((method) => method === 'POST').length, 1);
+  const step = (result.results as Array<{ txnDate: string | null; status: string }>)[0];
+  assert.equal(step.txnDate, '2026-10-01');
+  assert.equal(step.status, 'reverted');
+});
+
+test('a live TxnDate inside the closed period is still refused and nothing is posted', async () => {
+  const calls: string[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    calls.push(init?.method || 'GET');
+    return new Response(JSON.stringify({ Invoice: { Id: '39170', SyncToken: '1', TxnDate: '2024-06-01' } }), { status: 200 });
+  };
+  const result = await runBatchRevert(
+    { batchId: 'old-39170', confirm: true },
+    {
+      env: { QBO_WRITES_ENABLED: 'true', QBO_WRITE_REALM_ID: '2222222222222222', QBO_PRODUCTION_REALM_ID: '9130349321543166' },
+      productionRealmId: '9130349321543166',
+      accessToken: 'tok',
+      fetchImpl,
+      audit: async () => {},
+      readCloseDate: async () => '2024-12-31',
+      loadBatch: async () => [
+        row({ id: 4, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', qboId: '39170', txnDate: null, priorState: { Id: '39170', SyncToken: '0' } }),
+      ],
+    }
+  );
+  assert.equal(result.wrote, false);
+  assert.equal(calls.includes('POST'), false);
+  assert.match((result.couldNot as Array<{ reason: string }>)[0].reason, /2024-06-01/);
+});
+
 test('revert refuses a closed period, a void, and a row this gateway did not create', () => {
   const plan = planBatchRevert(
     [

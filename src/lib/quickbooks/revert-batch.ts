@@ -9,7 +9,7 @@
  * back) may have posted: it is reported in couldNot unless the same request
  * later recorded ok, and it is never treated as failed.
  */
-import { readBookCloseDate, runQboPlan, type QboAuditStatus, type QboWriteDeps } from './durable-write.ts';
+import { isQboTransactionEntity, readBookCloseDate, readWriteRealm, runQboPlan, txnDateFromQbo, type QboAuditStatus, type QboWriteDeps } from './durable-write.ts';
 import { parseBatchId, type QboPlan } from './write-payloads.ts';
 
 export type BatchAuditRow = {
@@ -47,6 +47,15 @@ const FLAGGED_WRITE = new Set<QboAuditStatus>(['tax_code_changed']);
 export function closedPeriod(txnDate: string | null, closeDate: string | null): boolean {
   if (!closeDate || !txnDate) return false;
   return txnDate <= closeDate;
+}
+
+/** TxnDate a restore would write back. A full prior entity includes the old transaction date. */
+function priorTxnDate(row: BatchAuditRow): string | null {
+  const prior = row.priorState;
+  if (!prior || typeof prior !== 'object') return null;
+  const txn = (prior as { TxnDate?: unknown }).TxnDate;
+  if (typeof txn !== 'string' || !txn) return null;
+  return txn.slice(0, 10);
 }
 
 /** A row that recorded a QuickBooks change revert can undo. Legacy rows have no status and use ok. */
@@ -121,11 +130,23 @@ export function planBatchRevert(
       couldNot.push({ entity: row.entity, id: row.qboId, reason: 'a void cannot be undone' });
       continue;
     }
-    if (closedPeriod(row.txnDate, closeDate) || (closeDate && !row.txnDate)) {
+    // Items, customers, and other non-transactions have no TxnDate. Only a
+    // transaction on or before the close date is refused. A transaction row
+    // that never stored TxnDate is refused here; runBatchRevert fills that
+    // date from the live entity before planning. A restore posts the whole
+    // prior entity, so a prior TxnDate inside the closed period is refused
+    // even when the current row or live invoice is dated after it.
+    const priorDate = row.action === 'update' ? priorTxnDate(row) : null;
+    const priorClosed = Boolean(priorDate && closedPeriod(priorDate, closeDate));
+    if (priorClosed || (isQboTransactionEntity(row.entity) && (closedPeriod(row.txnDate, closeDate) || (closeDate && !row.txnDate)))) {
       couldNot.push({
         entity: row.entity,
         id: row.qboId,
-        reason: row.txnDate ? `TxnDate ${row.txnDate} is on or before the books close date ${closeDate}` : `books are closed through ${closeDate} and this row has no TxnDate`,
+        reason: priorClosed
+          ? `prior TxnDate ${priorDate} is on or before the books close date ${closeDate}`
+          : row.txnDate
+            ? `TxnDate ${row.txnDate} is on or before the books close date ${closeDate}`
+            : `books are closed through ${closeDate} and this row has no TxnDate`,
       });
       continue;
     }
@@ -196,7 +217,7 @@ export async function runBatchRevert(
 ): Promise<Record<string, unknown>> {
   const batchId = parseBatchId(args.batchId, true);
   const confirm = args.confirm === true || (typeof args.confirm === 'string' && args.confirm.trim().toLowerCase() === 'true');
-  const rows = deps.loadBatch ? await deps.loadBatch(batchId!) : await loadBatchFromSupabase(deps, batchId!);
+  let rows = deps.loadBatch ? await deps.loadBatch(batchId!) : await loadBatchFromSupabase(deps, batchId!);
   let closeDate: string | null = null;
   let closeError: string | null = null;
   if (confirm) {
@@ -206,6 +227,7 @@ export async function runBatchRevert(
       closeError = error instanceof Error ? error.message : String(error);
     }
   }
+  if (confirm && closeDate) rows = await fillMissingTxnDates(rows, deps);
   const plan = planBatchRevert(rows, closeDate);
   if (!confirm) {
     return {
@@ -274,6 +296,25 @@ export async function runBatchRevert(
     couldNot,
     duplicates: plan.duplicates,
   };
+}
+
+/** Old audit rows omitted TxnDate on sparse edits. Read the live transaction before applying the close date. */
+async function fillMissingTxnDates(rows: BatchAuditRow[], deps: QboWriteDeps): Promise<BatchAuditRow[]> {
+  const out: BatchAuditRow[] = [];
+  for (const row of rows) {
+    if (!isRevertTarget(row) || row.txnDate || !row.qboId || !isQboTransactionEntity(row.entity)) {
+      out.push(row);
+      continue;
+    }
+    try {
+      const json = await readWriteRealm(`/${entityPath(row.entity)}/${row.qboId}`, deps);
+      const txnDate = txnDateFromQbo(json);
+      out.push(txnDate ? { ...row, txnDate } : row);
+    } catch {
+      out.push(row);
+    }
+  }
+  return out;
 }
 
 function stripMeta(entity: Record<string, unknown>): Record<string, unknown> {
