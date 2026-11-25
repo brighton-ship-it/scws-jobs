@@ -430,16 +430,11 @@ function taxWithinCent(saved: number | null, expected: number): boolean {
   return Math.abs(saved - expected) <= 0.01 + 1e-9;
 }
 
-/** A CDTFA-verified mailing city, or an explicit taxCodeByCity entry, must keep its tax code. */
-export function shouldHoldAutomatedSalesTax(
-  city: string | null | undefined,
-  cdtfaVerifiedCities: readonly string[],
-  cityOverrides: Record<string, string>
-): boolean {
+/** A mailing city the caller has verified with CDTFA. A plain taxCodeByCity override does not hold. */
+export function shouldHoldAutomatedSalesTax(city: string | null | undefined, cdtfaVerifiedCities: readonly string[]): boolean {
   if (!city) return false;
   const key = normalizePlace(city);
-  if (cdtfaVerifiedCities.some((name) => normalizePlace(name) === key)) return true;
-  return Object.keys(cityOverrides).some((name) => normalizePlace(name) === key);
+  return cdtfaVerifiedCities.some((name) => normalizePlace(name) === key);
 }
 
 export function assessSavedTax(input: {
@@ -788,7 +783,7 @@ export async function runJobberInvoiceImport(
         if (discountLookup) items.Discount = discountLookup;
       }
       const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, qbo);
-      const holdTaxCode = shouldHoldAutomatedSalesTax(invoice.city, cdtfaCities, cityOverrides);
+      const holdTaxCode = shouldHoldAutomatedSalesTax(invoice.city, cdtfaCities);
       let plan = classifyJobberInvoice(
         invoice,
         new Set(existing.map((row) => String(row.DocNumber))),

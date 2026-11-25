@@ -738,7 +738,7 @@ test('a CDTFA-verified Temecula mailing city pins code 23 and a plain Temecula i
     ...invoice,
     invoiceNumber: '5901',
     city: 'Temecula',
-    address: { line1: '100 Remuda Drive', line2: null, city: 'Temecula', province: 'CA', postalCode: '92592', country: 'US' },
+    address: { line1: '123 Test St', line2: null, city: 'Testville', province: 'CA', postalCode: '00000', country: 'US' },
     taxAmount: 193.75,
     total: 34693.75,
   };
@@ -749,9 +749,10 @@ test('a CDTFA-verified Temecula mailing city pins code 23 and a plain Temecula i
   assert.equal('TotalTax' in detail, false);
   const plain = buildJobberSyncedInvoice(temecula, '15', { '1MS': '23', MISC: '5' }, '23');
   assert.equal('UseAutomatedSalesTax' in (plain.body?.TxnTaxDetail as object), false);
-  assert.equal(shouldHoldAutomatedSalesTax('Temecula', ['Temecula'], {}), true);
-  assert.equal(shouldHoldAutomatedSalesTax('Murrieta', ['Temecula'], {}), false);
-  assert.equal(shouldHoldAutomatedSalesTax('Temecula', [], { Temecula: '23' }), true);
+  assert.equal(shouldHoldAutomatedSalesTax('Temecula', ['Temecula']), true);
+  assert.equal(shouldHoldAutomatedSalesTax('Murrieta', ['Temecula']), false);
+  assert.equal(shouldHoldAutomatedSalesTax('Temecula', []), false);
+  assert.equal(shouldHoldAutomatedSalesTax('Anza', []), false);
   const good = assessSavedTax({
     requestedTxnTaxCodeId: '23',
     city: 'Temecula',
@@ -777,6 +778,34 @@ test('a CDTFA-verified Temecula mailing city pins code 23 and a plain Temecula i
     qbo: { TxnTaxDetail: taxLines(['3', '9', '25'], [6, 0.75, 1], 193.75) },
   });
   assert.equal(ignored.taxMismatch, false);
+});
+
+test('a taxCodeByCity override leaves the invoice payload unchanged when the code matches', async () => {
+  const job: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '5902',
+    city: 'Temecula',
+    address: { line1: '123 Test St', line2: null, city: 'Temecula', province: 'CA', postalCode: '00000', country: 'US' },
+  };
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (sql.includes('DisplayName')) return { QueryResponse: { Customer: [{ Id: '15' }] } };
+    if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23', Name: '1MS' }] } };
+    if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5', Name: 'MISC' }] } };
+    if (sql.includes('TaxCode')) return { QueryResponse: {} };
+    return { QueryResponse: {} };
+  };
+  const deps = { qboQuery, loadJobberInvoices: async () => [job], fetchImpl: async () => { throw new Error('preview posted'); } };
+  const plain = await runJobberInvoiceImport({ invoiceNumbers: ['5902'] }, deps);
+  const overridden = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5902'], taxCodeByCity: { Temecula: '23', 'San Marcos': '40', Wildomar: '33', Anza: '23', Murrieta: '25', Hemet: '23' } },
+    deps
+  );
+  const plainRow = (plain.invoices as Array<{ status: string; body: Record<string, unknown> }>)[0];
+  const overRow = (overridden.invoices as Array<{ status: string; body: Record<string, unknown> }>)[0];
+  assert.equal(plainRow.status, 'create');
+  assert.deepEqual(overRow.body, plainRow.body);
+  assert.equal('UseAutomatedSalesTax' in (overRow.body.TxnTaxDetail as object), false);
 });
 
 test('out-of-county map: Riverside desert cities and San Bernardino County resolve to existing codes', () => {

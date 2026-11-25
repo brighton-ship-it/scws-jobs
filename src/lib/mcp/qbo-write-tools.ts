@@ -4,7 +4,7 @@
  */
 import type { McpToolDefinition, McpToolResult } from './protocol.ts';
 import { runRelinkDeposit } from '../quickbooks/deposit-relink.ts';
-import { runQboWrite, type QboWriteDeps } from '../quickbooks/durable-write.ts';
+import { runQboWrite, writeRealmQuery, type QboWriteDeps } from '../quickbooks/durable-write.ts';
 import { checkInvoiceRetax } from '../quickbooks/invoice-retax.ts';
 import { checkItemTaxCategory } from '../quickbooks/item-tax-category.ts';
 import { runJobberInvoiceImport } from '../quickbooks/jobber-invoice-import.ts';
@@ -126,7 +126,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_invoice',
-    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. retaxLineIds re-saves the live lines so QuickBooks recomputes tax with no override. After a totalTax or retaxLineIds write the saved invoice is checked: header TxnTaxCodeRef, the county rate that code must carry (4 San Diego, 25 Riverside, the other absent), and for retax NetAmountTaxable equal to the TAX lines. A difference returns ok:false with status tax_code_changed and taxCodeChanged reasons (the write did happen; read it back), and the audit row gets status tax_code_changed (still revertible). retaxLineIds refuses an invoice with any line other than sales and subtotal lines. cdtfaVerified with shipAddr and/or shipFromAddr (full postal address, no coordinates in the lines) sparse-updates those addresses and sets TxnTaxDetail.UseAutomatedSalesTax false plus TxnTaxCodeRef to expectedTaxCodeId, so a Temecula mailing city cannot replace unincorporated Riverside code 23 with city code 29. Lines are not sent. Optional totalTax is an explicit amount on that same payload. The saved invoice must have that code, expectedTaxRateIds and no others, expectedTotalTax, no AST_TAX_OVERRIDE, and the same lines, or the result is ok:false with status tax_code_changed or tax_mismatch. Does not delete.',
+    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. retaxLineIds re-saves the live lines so QuickBooks recomputes tax with no override. After a totalTax or retaxLineIds write the saved invoice is checked: header TxnTaxCodeRef, the county rate that code must carry (4 San Diego, 25 Riverside, the other absent), and for retax NetAmountTaxable equal to the TAX lines. A difference returns ok:false with status tax_code_changed and taxCodeChanged reasons (the write did happen; read it back), and the audit row gets status tax_code_changed (still revertible). retaxLineIds refuses an invoice with any line other than sales and subtotal lines. cdtfaVerified with shipAddr and/or shipFromAddr (full postal address, no coordinates in the lines), or with reuseLiveAddress: true, sets TxnTaxDetail.UseAutomatedSalesTax false plus TxnTaxCodeRef to expectedTaxCodeId, so a Temecula mailing city cannot replace unincorporated Riverside code 23 with city code 29. reuseLiveAddress resends ShipAddr and ShipFromAddr exactly as read, so the address the customer sees does not change. Lines are not sent. Optional totalTax is an explicit amount on that same payload. The saved invoice must have that code, expectedTaxRateIds and no others, expectedTotalTax, no AST_TAX_OVERRIDE, and the same lines, or the result is ok:false with status tax_code_changed or tax_mismatch. Does not delete.',
     {
       customerId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -143,7 +143,8 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       },
       totalTax: { type: 'number', description: 'Under Automated Sales Tax QuickBooks prorates this over the code it assigns and may replace TxnTaxCodeRef (saved code is checked and flagged as taxCodeChanged); prefer retaxLineIds. Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines and addresses stay as saved. On a cdtfaVerified ship-address update this is optional: it sets TotalTax on the partner tax code. Omit it so QuickBooks applies that code\'s rates. A TotalTax-only payload leaves AST_TAX_OVERRIDE and fails the ship-address post-check.' },
       txnTaxCodeId: { type: 'string', description: 'Required with totalTax: the TaxCode id to keep on TxnTaxDetail, for example 3.' },
-      cdtfaVerified: { type: 'boolean', description: 'Required with shipAddr or shipFromAddr. The caller has checked CDTFA that this jobsite is unincorporated even though the mailing city is a city QuickBooks geocodes inside city limits (Temecula). Pins expectedTaxCodeId with UseAutomatedSalesTax false.' },
+      cdtfaVerified: { type: 'boolean', description: 'Required to pin expectedTaxCodeId with UseAutomatedSalesTax false. The caller has checked CDTFA that this jobsite is unincorporated even though the mailing city is a city QuickBooks geocodes inside city limits (Temecula). Pass shipAddr and/or shipFromAddr, or reuseLiveAddress.' },
+      reuseLiveAddress: { type: 'boolean', description: 'With cdtfaVerified, resend ShipAddr and ShipFromAddr exactly as they were read. Do not pass shipAddr or shipFromAddr. The customer-visible address stays as it is; only the tax hold is applied.' },
       shipAddr: {
         type: 'object',
         additionalProperties: false,
@@ -335,7 +336,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       taxCodeByCity: {
         type: 'object',
         additionalProperties: { type: 'string' },
-        description: 'City to TaxCode id overrides, for example {"Temecula":"23"}. An entry also sets UseAutomatedSalesTax false so Automated Sales Tax does not replace that code. Use it only where CDTFA says the mailing city is the wrong jurisdiction.',
+        description: 'City to TaxCode id overrides, for example {"Anza":"23","San Marcos":"40","Wildomar":"33"}. This only changes the header code that is sent. Automated Sales Tax stays on, so an already-working preview is unchanged. To keep the code against AST, pass the city in cdtfaVerifiedCities.',
       },
       cdtfaVerifiedCities: {
         type: 'array',
@@ -388,6 +389,23 @@ export async function callQboWriteTool(
   if (name === 'qbo_relink_deposit') {
     const result = await runRelinkDeposit(args, deps);
     return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }], isError: result.ok === false };
+  }
+  if (name === 'qbo_invoice' && (args.reuseLiveAddress === true || (typeof args.reuseLiveAddress === 'string' && args.reuseLiveAddress.trim().toLowerCase() === 'true'))) {
+    const id = typeof args.id === 'string' ? args.id.trim() : '';
+    if (!/^\d+$/.test(id)) {
+      const refused = { ok: false, dryRun: true, wrote: false, refused: true, error: 'id must be a QuickBooks invoice id.' };
+      return { content: [{ type: 'text', text: JSON.stringify(refused, null, 2) }], isError: true };
+    }
+    const query = deps?.qboQuery || ((sql: string) => writeRealmQuery(sql, deps || {}));
+    const json = (await query(`select * from Invoice where Id = '${id}'`)) as { QueryResponse?: { Invoice?: unknown } };
+    const list = json?.QueryResponse?.Invoice;
+    const rows = Array.isArray(list) ? list : list ? [list] : [];
+    const invoice = rows.find((row) => String((row as { Id?: unknown })?.Id) === id) as Record<string, unknown> | undefined;
+    if (!invoice) {
+      const refused = { ok: false, dryRun: true, wrote: false, refused: true, error: `Invoice ${id} was not found in QuickBooks.` };
+      return { content: [{ type: 'text', text: JSON.stringify(refused, null, 2) }], isError: true };
+    }
+    args = { ...args, liveInvoice: invoice };
   }
   if (name === 'qbo_invoice' && Array.isArray(args.retaxLineIds)) {
     // The body is built from the live invoice, so the preview shows exactly what confirm will send.

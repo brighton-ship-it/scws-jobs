@@ -560,7 +560,7 @@ test('a CDTFA ship-address confirm keeps code 23 and audits TxnDate from the inv
       },
     });
   };
-  const ship = { Line1: '100 Remuda Drive', City: 'Temecula', CountrySubDivisionCode: 'CA', PostalCode: '92592' };
+  const ship = { Line1: '123 Test St', City: 'Testville', CountrySubDivisionCode: 'CA', PostalCode: '00000' };
   const result = await runQboWrite(
     'qbo_invoice',
     { id: '39170', syncToken: '0', confirm: true, cdtfaVerified: true, shipAddr: ship, shipFromAddr: ship, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 193.75, batchId: 'cdtfa-39170' },
@@ -587,7 +587,7 @@ test('a ship-address write that comes back with rate 13 is tax_code_changed and 
     };
     return json({ Invoice: invoice });
   };
-  const ship = { Line1: '100 Stage Road', City: 'Temecula', CountrySubDivisionCode: 'CA', PostalCode: '92592' };
+  const ship = { Line1: '123 Test St', City: 'Testville', CountrySubDivisionCode: 'CA', PostalCode: '00000' };
   const result = await runQboWrite(
     'qbo_invoice',
     { id: '39193', syncToken: '0', confirm: true, cdtfaVerified: true, shipAddr: ship, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 193.75 },

@@ -384,7 +384,7 @@ function salesLines(args: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 export function buildInvoice(args: Record<string, unknown>): QboPlan {
-  if (hasShipAddress(args) || flagTrue(args.cdtfaVerified)) return buildInvoiceShipHold(args);
+  if (hasShipAddress(args) || flagTrue(args.cdtfaVerified) || flagTrue(args.reuseLiveAddress)) return buildInvoiceShipHold(args);
   const id = args.id === undefined || args.id === null || args.id === '' ? undefined : qboId(args.id, 'id');
   const syncToken = optString(args, 'syncToken');
   const hasLines = Array.isArray(args.lines) && args.lines.length > 0;
@@ -879,6 +879,15 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   const body = { ...(plan.body || {}) };
   body.Id = qboId(entity.Id ?? body.Id, 'Id');
   body.SyncToken = syncToken;
+  if ((plan.changes as { reuseLiveAddress?: boolean } | undefined)?.reuseLiveAddress) {
+    const ship = addressAsRead(entity.ShipAddr);
+    const shipFrom = addressAsRead(entity.ShipFromAddr);
+    if (!ship && !shipFrom) {
+      throw new Error(`${plan.entity} ${String(entity.Id ?? '')} has no ShipAddr or ShipFromAddr to reuse. Nothing was posted.`);
+    }
+    if (ship) body.ShipAddr = ship;
+    if (shipFrom) body.ShipFromAddr = shipFrom;
+  }
   if (plan.read?.apply === 'void') body.sparse = true;
   if (plan.read?.apply === 'retaxLines') {
     const changes = plan.changes as { retaxLineIds: string[]; txnTaxCodeId: string };
@@ -958,6 +967,13 @@ export function postalAddress(value: unknown, label: string): Record<string, str
   return out;
 }
 
+/** Shallow copy of a QuickBooks address, including Id, Lat, and Long. Nothing is rewritten. */
+export function addressAsRead(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out = { ...(value as Record<string, unknown>) };
+  return Object.keys(out).length ? out : null;
+}
+
 function rateIdList(value: unknown): string[] {
   if (!Array.isArray(value) || !value.length) throw new Error('expectedTaxRateIds must list the TaxRate ids and no others, for example ["3","25","9"].');
   const ids = value.map((item, index) => {
@@ -996,9 +1012,17 @@ function buildInvoiceShipHold(args: Record<string, unknown>): QboPlan {
   for (const key of ['customerId', 'txnDate', 'dueDate', 'customerMemo', 'docNumber']) {
     if (args[key] !== undefined && args[key] !== '') throw new Error(`shipAddr cannot be combined with ${key}.`);
   }
-  const ship = args.shipAddr != null && args.shipAddr !== '' ? postalAddress(args.shipAddr, 'shipAddr') : null;
-  const shipFrom = args.shipFromAddr != null && args.shipFromAddr !== '' ? postalAddress(args.shipFromAddr, 'shipFromAddr') : null;
-  if (!ship && !shipFrom) throw new Error('Pass shipAddr and/or shipFromAddr. cdtfaVerified does not change an invoice by itself.');
+  const reuse = flagTrue(args.reuseLiveAddress);
+  if (reuse && hasShipAddress(args)) throw new Error('reuseLiveAddress cannot be combined with shipAddr or shipFromAddr.');
+  let ship: Record<string, unknown> | null = !reuse && args.shipAddr != null && args.shipAddr !== '' ? postalAddress(args.shipAddr, 'shipAddr') : null;
+  let shipFrom: Record<string, unknown> | null = !reuse && args.shipFromAddr != null && args.shipFromAddr !== '' ? postalAddress(args.shipFromAddr, 'shipFromAddr') : null;
+  if (reuse && args.liveInvoice && typeof args.liveInvoice === 'object') {
+    const live = args.liveInvoice as Record<string, unknown>;
+    ship = addressAsRead(live.ShipAddr);
+    shipFrom = addressAsRead(live.ShipFromAddr);
+    if (!ship && !shipFrom) throw new Error(`Invoice ${id} has no ShipAddr or ShipFromAddr to reuse.`);
+  }
+  if (!reuse && !ship && !shipFrom) throw new Error('Pass shipAddr and/or shipFromAddr, or reuseLiveAddress: true to resend the addresses already on the invoice.');
   const taxCodeId = qboId(args.expectedTaxCodeId, 'expectedTaxCodeId');
   const rateIds = rateIdList(args.expectedTaxRateIds);
   const totalTax = money(args.expectedTotalTax, 'expectedTotalTax');
@@ -1024,7 +1048,7 @@ function buildInvoiceShipHold(args: Record<string, unknown>): QboPlan {
     path: '/invoice',
     body,
     read: { path: `/invoice/${id}`, apply: 'syncToken' },
-    changes: { expectedSyncToken: syncToken, holdTaxCode: taxCodeId, shipAddr: ship, shipFromAddr: shipFrom },
+    changes: { expectedSyncToken: syncToken, holdTaxCode: taxCodeId, shipAddr: ship, shipFromAddr: shipFrom, ...(reuse ? { reuseLiveAddress: true } : {}) },
     expectSavedTax: { taxCodeId, rateIds, totalTax },
   };
 }

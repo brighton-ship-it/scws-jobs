@@ -542,7 +542,7 @@ test('a tax_code_changed row (ok:false) is a revert target and settles its pendi
 });
 
 test('a ship-address tax_mismatch update can be restored, and an import tax_mismatch row cannot', () => {
-  const prior = { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01', ShipAddr: { Line1: 'Remuda Drive', City: 'Temecula', PostalCode: '92592' } };
+  const prior = { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01', ShipAddr: { Line1: '123 Test St', City: 'Testville', PostalCode: '00000' } };
   const plan = planBatchRevert(
     [
       row({ id: 1, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'pending', requestId: 'ship-39170', qboId: '39170', priorState: prior, txnDate: null }),

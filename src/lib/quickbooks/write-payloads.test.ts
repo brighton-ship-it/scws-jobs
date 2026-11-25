@@ -279,10 +279,10 @@ test('retaxInvoiceBody resends every sales line, clears the class only on retaxe
 });
 
 const remuda = {
-  Line1: '100 Remuda Drive',
-  City: 'Temecula',
+  Line1: '123 Test St',
+  City: 'Testville',
   CountrySubDivisionCode: 'CA',
-  PostalCode: '92592',
+  PostalCode: '00000',
   Country: 'United States',
 };
 
@@ -324,8 +324,43 @@ test('cdtfaVerified resends the full postal address and pins the tax code withou
   assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, expectedTaxCodeId: '23', expectedTaxRateIds: ['3'], expectedTotalTax: 1 }), /shipAddr/);
   assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { ...remuda, Line2: '33.4936, -117.1484' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /Coordinates/);
   assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { ...remuda, Lat: '33.49', Long: '-117.14' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /Lat/);
-  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { Line1: 'Remuda Drive', City: 'Temecula' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /full postal address/);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { Line1: '123 Test St', City: 'Testville' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /full postal address/);
   assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: remuda, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1, lines: [{ amount: 1, itemId: '23' }] }), /lines/);
+  const live = {
+    Id: '39170',
+    SyncToken: '0',
+    ShipAddr: { Id: '501', Line1: '123 Test St', City: 'Testville', CountrySubDivisionCode: 'CA', PostalCode: '00000', Country: 'United States', Lat: '33.1000', Long: '-117.1000' },
+    ShipFromAddr: { Id: '502', Line1: '123 Test St', City: 'Testville', CountrySubDivisionCode: 'CA', PostalCode: '00000' },
+  };
+  const reused = buildInvoice({
+    id: '39170',
+    syncToken: '0',
+    cdtfaVerified: true,
+    reuseLiveAddress: true,
+    liveInvoice: live,
+    expectedTaxCodeId: '23',
+    expectedTaxRateIds: ['3', '25', '9'],
+    expectedTotalTax: 193.75,
+  });
+  assert.deepEqual(reused.body?.ShipAddr, live.ShipAddr);
+  assert.deepEqual(reused.body?.ShipFromAddr, live.ShipFromAddr);
+  assert.equal(reused.body && 'Line' in reused.body, false);
+  assert.equal((reused.body?.TxnTaxDetail as { UseAutomatedSalesTax: boolean }).UseAutomatedSalesTax, false);
+  const pending = buildInvoice({
+    id: '39170',
+    syncToken: '0',
+    cdtfaVerified: true,
+    reuseLiveAddress: true,
+    expectedTaxCodeId: '23',
+    expectedTaxRateIds: ['3', '25', '9'],
+    expectedTotalTax: 193.75,
+  });
+  assert.equal(pending.body && 'ShipAddr' in pending.body, false);
+  const applied = applyRead(pending, { Invoice: live });
+  assert.deepEqual(applied.ShipAddr, live.ShipAddr);
+  assert.deepEqual(applied.ShipFromAddr, live.ShipFromAddr);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, reuseLiveAddress: true, shipAddr: remuda, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /cannot be combined/);
+  assert.throws(() => applyRead(pending, { Invoice: { Id: '39170', SyncToken: '0' } }), /no ShipAddr or ShipFromAddr/);
 });
 
 test('the ship-address post-check requires code 23, rates 3/25/9 only, the tax amount, no override, and the same lines', () => {
