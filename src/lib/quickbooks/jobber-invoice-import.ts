@@ -31,7 +31,7 @@
  */
 import { recordQboAudit, runQboPlan, writeRealmQuery, type QboAuditEntry, type QboWriteDeps } from './durable-write.ts';
 import { isQboRateLimit, withQboBackoff } from './qbo-backoff.ts';
-import { countyNameForCity, taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
+import { TAX_RATE_IDS_BY_TAX_CODE, countyNameForCity, normalizePlace, taxCodeIdForCity, taxCodeMissingReason } from './tax-codes.ts';
 import { describeQboWriteGate } from './write-gate.ts';
 import { buildDeposit, parseBatchId, privateNoteWithBatch, type QboPlan } from './write-payloads.ts';
 
@@ -131,6 +131,8 @@ export type ImportInvoicePlan = {
   payment: ImportPaymentLine | null;
   paymentLines: ImportPaymentLine[];
   tax: InvoiceTaxReport;
+  /** True when this create asks QuickBooks to keep the tax code instead of letting AST geocode it. */
+  holdTaxCode?: boolean;
 };
 
 const DEPOSIT_WARNING =
@@ -376,6 +378,13 @@ function savedRateIds(lines: unknown[] | null): string[] {
   return ids;
 }
 
+function taxReviewStatusOf(qbo: unknown): string | null {
+  const entity = qbo && typeof qbo === 'object' ? (qbo as Record<string, unknown>) : null;
+  const invoice = entity && entity.Invoice && typeof entity.Invoice === 'object' ? (entity.Invoice as Record<string, unknown>) : entity;
+  const detail = invoice?.TxnTaxDetail as { TaxReviewStatus?: unknown } | undefined;
+  return typeof detail?.TaxReviewStatus === 'string' && detail.TaxReviewStatus ? detail.TaxReviewStatus : null;
+}
+
 function savedTxnTax(qbo: unknown): { code: string | null; total: number | null; lines: unknown[] | null } {
   const entity = qbo && typeof qbo === 'object' ? (qbo as Record<string, unknown>) : null;
   const invoice = entity && entity.Invoice && typeof entity.Invoice === 'object' ? (entity.Invoice as Record<string, unknown>) : entity;
@@ -403,12 +412,26 @@ function taxWithinCent(saved: number | null, expected: number): boolean {
   return Math.abs(saved - expected) <= 0.01 + 1e-9;
 }
 
+/** A CDTFA-verified mailing city, or an explicit taxCodeByCity entry, must keep its tax code. */
+export function shouldHoldAutomatedSalesTax(
+  city: string | null | undefined,
+  cdtfaVerifiedCities: readonly string[],
+  cityOverrides: Record<string, string>
+): boolean {
+  if (!city) return false;
+  const key = normalizePlace(city);
+  if (cdtfaVerifiedCities.some((name) => normalizePlace(name) === key)) return true;
+  return Object.keys(cityOverrides).some((name) => normalizePlace(name) === key);
+}
+
 export function assessSavedTax(input: {
   requestedTxnTaxCodeId: string | null;
   city: string | null;
   jobberTax: number;
   qbo: unknown;
   countyRates?: CountyRateIds;
+  /** When set, the saved code, its exact rate set, and the override flag are checked too. */
+  holdTaxCode?: boolean;
 }): InvoiceTaxReport {
   const ids = input.countyRates || fixedCountyRateIds();
   const county = countyNameForCity(input.city);
@@ -441,6 +464,22 @@ export function assessSavedTax(input: {
   if (!taxWithinCent(saved.total, money(input.jobberTax))) {
     reasons.push(`Saved tax ${saved.total ?? 'missing'} does not match Jobber tax ${money(input.jobberTax)} within $0.01.`);
   }
+  if (input.holdTaxCode && input.qbo) {
+    if (saved.code !== input.requestedTxnTaxCodeId) {
+      reasons.push(`Requested TxnTaxCodeRef ${input.requestedTxnTaxCodeId ?? 'none'}, QuickBooks saved ${saved.code ?? 'none'}.`);
+    }
+    const expectedRates = input.requestedTxnTaxCodeId ? TAX_RATE_IDS_BY_TAX_CODE[input.requestedTxnTaxCodeId] : undefined;
+    if (expectedRates) {
+      const savedIds = [...new Set(savedRateIds(saved.lines))];
+      const extra = savedIds.filter((id) => !expectedRates.includes(id));
+      const missing = expectedRates.filter((id) => !savedIds.includes(id));
+      if (extra.length || missing.length) {
+        reasons.push(`Saved tax rates ${savedIds.join(', ') || 'none'}, expected only ${expectedRates.join(', ')}.`);
+      }
+    }
+    const review = taxReviewStatusOf(input.qbo);
+    if (review === 'AST_TAX_OVERRIDE') reasons.push('TaxReviewStatus is AST_TAX_OVERRIDE.');
+  }
   return {
     ...base,
     savedTxnTaxCodeId: saved.code,
@@ -458,7 +497,7 @@ export function buildJobberSyncedInvoice(
   customerId: string,
   itemsByName: Record<string, string>,
   txnTaxCodeId: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; batchId?: string | null } = {}
+  options: { taxOverride?: boolean; discountItemId?: string | null; batchId?: string | null; holdTaxCode?: boolean } = {}
 ): { body: Record<string, unknown> | null; missingItems: string[]; negativeTaxableLines: number; discountAmount: number; memo: MemoReport; error?: string } {
   const memo = memoReport(invoice.message);
   const missing = [...new Set(invoice.lines.map((line) => line.name).filter((name) => name && !itemsByName[name]))];
@@ -511,6 +550,7 @@ export function buildJobberSyncedInvoice(
   const txnDate = pacificDate(invoice.issuedDate);
   const due = invoice.dueDate ? pacificDate(invoice.dueDate) : txnDate;
   const taxDetail: Record<string, unknown> = { TxnTaxCodeRef: { value: txnTaxCodeId } };
+  if (options.holdTaxCode) taxDetail.UseAutomatedSalesTax = false;
   if (options.taxOverride) taxDetail.TotalTax = money(invoice.taxAmount);
   const body: Record<string, unknown> = {
     DocNumber: invoice.invoiceNumber,
@@ -539,7 +579,7 @@ export function classifyJobberInvoice(
   itemsByName: Record<string, string>,
   txnTaxCodeId: string | null,
   taxReason?: string,
-  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; countyRates?: CountyRateIds } = {}
+  options: { taxOverride?: boolean; discountItemId?: string | null; createCustomer?: boolean; batchId?: string | null; countyRates?: CountyRateIds; holdTaxCode?: boolean } = {}
 ): ImportInvoicePlan {
   const paymentLines = jobberPaymentLines(invoice);
   const base = {
@@ -603,6 +643,7 @@ export function classifyJobberInvoice(
     discountAmount: built.discountAmount,
     memo: built.memo,
     customerCreate: createCustomer ? { displayName: invoice.clientName.trim() } : null,
+    holdTaxCode: options.holdTaxCode === true,
   };
 }
 
@@ -635,6 +676,11 @@ function blockedPlan(number: string, reason: string): ImportInvoicePlan {
     paymentLines: [],
     tax: emptyTaxReport(null),
   };
+}
+
+function stringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item ?? '').trim()).filter(Boolean);
 }
 
 function flagOn(value: unknown): boolean {
@@ -689,6 +735,7 @@ export async function runJobberInvoiceImport(
   const invoices = await load(chunk);
   const byNumber = new Map(invoices.map((invoice) => [invoice.invoiceNumber, invoice]));
   const cityOverrides = cityOverrideMap(args.taxCodeByCity);
+  const cdtfaCities = stringList(args.cdtfaVerifiedCities);
   const overrideId = typeof args.txnTaxCodeId === 'string' && args.txnTaxCodeId.trim() ? args.txnTaxCodeId.trim() : null;
   const overrideExists = overrideId ? await taxCodeIdExists(overrideId, qbo) : false;
   const customerTax = new Map<string, string | null>();
@@ -724,6 +771,7 @@ export async function runJobberInvoiceImport(
         if (discountLookup) items.Discount = discountLookup;
       }
       const tax = await taxForInvoice(invoice, customerId, overrideId, overrideExists, cityOverrides, customerTax, qbo);
+      const holdTaxCode = shouldHoldAutomatedSalesTax(invoice.city, cdtfaCities, cityOverrides);
       let plan = classifyJobberInvoice(
         invoice,
         new Set(existing.map((row) => String(row.DocNumber))),
@@ -731,7 +779,7 @@ export async function runJobberInvoiceImport(
         items,
         tax.id,
         tax.reason,
-        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates }
+        { taxOverride, discountItemId, createCustomer: createCustomers && !customerId && !ambiguousCustomer, batchId, countyRates, holdTaxCode }
       );
       if (ambiguousCustomer) {
         plan = { ...plan, status: 'blocked', reason: `More than one QuickBooks customer is named "${invoice.clientName}". Pass customerIds.`, body: null, customerCreate: null };
@@ -829,6 +877,7 @@ export async function runJobberInvoiceImport(
         jobberTax: row.taxAmount,
         qbo: invoiceResult.qbo,
         countyRates,
+        holdTaxCode: row.holdTaxCode,
       });
     }
     entry.tax = row.tax;

@@ -126,7 +126,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_invoice',
-    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. retaxLineIds re-saves the live lines so QuickBooks recomputes tax with no override. After a totalTax or retaxLineIds write the saved invoice is checked: header TxnTaxCodeRef, the county rate that code must carry (4 San Diego, 25 Riverside, the other absent), and for retax NetAmountTaxable equal to the TAX lines. A difference returns ok:false with status tax_code_changed and taxCodeChanged reasons (the write did happen; read it back), and the audit row gets status tax_code_changed (still revertible). retaxLineIds refuses an invoice with any line other than sales and subtotal lines. Does not delete.',
+    'Create or update a QuickBooks invoice, including a DocNumber backfill when Jobber sync missed one. Preview is the default and returns the exact Invoice body. confirm:true posts to whatever environment the env vars select. Never sets EmailStatus and never sends the invoice. Pass id to update. totalTax with txnTaxCodeId and syncToken (update only, no lines) sparse-sets a tax override on TxnTaxDetail; confirm reads the invoice first so prior_state is audited and qbo_revert_batch restores the old tax, and refuses when the live SyncToken is not the one passed. retaxLineIds re-saves the live lines so QuickBooks recomputes tax with no override. After a totalTax or retaxLineIds write the saved invoice is checked: header TxnTaxCodeRef, the county rate that code must carry (4 San Diego, 25 Riverside, the other absent), and for retax NetAmountTaxable equal to the TAX lines. A difference returns ok:false with status tax_code_changed and taxCodeChanged reasons (the write did happen; read it back), and the audit row gets status tax_code_changed (still revertible). retaxLineIds refuses an invoice with any line other than sales and subtotal lines. cdtfaVerified with shipAddr and/or shipFromAddr (full postal address, no coordinates in the lines) sparse-updates those addresses and sets TxnTaxDetail.UseAutomatedSalesTax false plus TxnTaxCodeRef to expectedTaxCodeId, so a Temecula mailing city cannot replace unincorporated Riverside code 23 with city code 29. Lines are not sent. Optional totalTax is an explicit amount on that same payload. The saved invoice must have that code, expectedTaxRateIds and no others, expectedTotalTax, no AST_TAX_OVERRIDE, and the same lines, or the result is ok:false with status tax_code_changed or tax_mismatch. Does not delete.',
     {
       customerId: { type: 'string' },
       txnDate: { type: 'string' },
@@ -141,8 +141,44 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
         items: { type: 'string' },
         description: 'Update only, with syncToken and txnTaxCodeId, without lines, totalTax or other fields. Re-saves the invoice so QuickBooks computes the tax itself (no override): resends the live Line array sparse with these line ids set TAX (their TaxClassificationRef is dropped, a harmless defensive step since QuickBooks takes the class from the item), plus the live ShipAddr/ShipFromAddr and TxnTaxCodeRef. Refused when a listed line item is not Taxable, the SyncToken changed, the invoice has no ShipFromAddr, or it has any line other than sales and subtotal lines (a sparse Line array would delete discount, description-only or group lines). If the saved code, county rate or NetAmountTaxable is not what was asked, the result is ok:false with status tax_code_changed.',
       },
-      totalTax: { type: 'number', description: 'Under Automated Sales Tax QuickBooks prorates this over the code it assigns and may replace TxnTaxCodeRef (saved code is checked and flagged as taxCodeChanged); prefer retaxLineIds. Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines and addresses stay as saved.' },
+      totalTax: { type: 'number', description: 'Under Automated Sales Tax QuickBooks prorates this over the code it assigns and may replace TxnTaxCodeRef (saved code is checked and flagged as taxCodeChanged); prefer retaxLineIds. Update only, without lines or privateNote, and requires syncToken. Sparse-sets TxnTaxDetail.TotalTax (a tax override) so the saved tax matches the billed tax. Confirm refuses when the live SyncToken differs. Lines and addresses stay as saved. On a cdtfaVerified ship-address update this is optional: it sets TotalTax on the partner tax code. Omit it so QuickBooks applies that code\'s rates. A TotalTax-only payload leaves AST_TAX_OVERRIDE and fails the ship-address post-check.' },
       txnTaxCodeId: { type: 'string', description: 'Required with totalTax: the TaxCode id to keep on TxnTaxDetail, for example 3.' },
+      cdtfaVerified: { type: 'boolean', description: 'Required with shipAddr or shipFromAddr. The caller has checked CDTFA that this jobsite is unincorporated even though the mailing city is a city QuickBooks geocodes inside city limits (Temecula). Pins expectedTaxCodeId with UseAutomatedSalesTax false.' },
+      shipAddr: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'Ship-to postal address to resend in full. Line1, City, CountrySubDivisionCode, and PostalCode are required. No coordinates in the lines.',
+        properties: {
+          Line1: { type: 'string' },
+          Line2: { type: 'string' },
+          Line3: { type: 'string' },
+          Line4: { type: 'string' },
+          Line5: { type: 'string' },
+          City: { type: 'string' },
+          Country: { type: 'string' },
+          CountrySubDivisionCode: { type: 'string' },
+          PostalCode: { type: 'string' },
+        },
+      },
+      shipFromAddr: {
+        type: 'object',
+        additionalProperties: false,
+        description: 'Ship-from postal address, same shape as shipAddr. California district tax follows the ship-to address, so this alone does not remove a Temecula city rate.',
+        properties: {
+          Line1: { type: 'string' },
+          Line2: { type: 'string' },
+          Line3: { type: 'string' },
+          Line4: { type: 'string' },
+          Line5: { type: 'string' },
+          City: { type: 'string' },
+          Country: { type: 'string' },
+          CountrySubDivisionCode: { type: 'string' },
+          PostalCode: { type: 'string' },
+        },
+      },
+      expectedTaxCodeId: { type: 'string', description: 'TaxCode the saved invoice must keep, for example 23 for unincorporated Riverside. Required with cdtfaVerified.' },
+      expectedTaxRateIds: { type: 'array', items: { type: 'string' }, description: 'TaxRate ids that must be on the saved invoice and no others. Unincorporated Riverside is ["3","25","9"]. Rate 13 (Temecula city) fails the check.' },
+      expectedTotalTax: { type: 'number', description: 'TotalTax the saved invoice must match, within one cent. 193.75 is 7.75 percent of a 2500 taxable amount (invoice total 34693.75 when the pre-tax total is 34500).' },
       lines: {
         type: 'array',
         maxItems: 50,
@@ -277,7 +313,7 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
   ),
   tool(
     'qbo_import_jobber_invoices',
-    'Import Jobber invoices into QuickBooks one at a time. DocNumber is the invoice number. Customer and item match an explicit customerIds or itemIds entry, otherwise one exact DisplayName or Name. More than one match blocks that invoice. createCustomers:true creates a missing customer. Discounts become a negative line. Payment date and amount come from the Jobber payment record when one exists. payments: payout groups those payments into a new deposit with an optional fee line (feeAmount, feeAccountId, depositToAccountId). taxOverride:true sets TotalTax to the Jobber tax. Negative taxable lines are sent as NON so QuickBooks does not reject them. The preview reports CustomerMemo length and whether it was cut at 1,000 characters. Queries run sequentially and back off on HTTP 429. Header tax is a TaxCode id (San Diego County 3, Menifee 30, Murrieta 25, other Riverside County cities 23). ShipAddr and ShipFromAddr are the Jobber property address (structured, FreeFormAddress false) so Automated Sales Tax uses the jobsite instead of the company address. An invoice with no property street, city, and postal code is blocked, and so is an invoice whose jobs use different properties. PrivateNote on a create includes [batch:<batchId>] once when batchId is set. County rates are fixed ids, 4 for San Diego County and 25 for Riverside County, because TaxRate names are hashes. Preview blocks with ok false when those ids cannot be checked against TaxCode 3 and TaxCode 23, and nothing is posted. Confirm requires rate 4 or 25 to be present on the saved tax lines and the other county id to be absent, and TotalTax within $0.01 of the Jobber tax. A mismatch stops the chunk before payments and writes audit status tax_mismatch. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. confirm:true posts the chunk to whatever environment the env vars select (the configured write target, production when QBO_WRITE_ENVIRONMENT=production) and requires batchId. Does not email.',
+    'Import Jobber invoices into QuickBooks one at a time. DocNumber is the invoice number. Customer and item match an explicit customerIds or itemIds entry, otherwise one exact DisplayName or Name. More than one match blocks that invoice. createCustomers:true creates a missing customer. Discounts become a negative line. Payment date and amount come from the Jobber payment record when one exists. payments: payout groups those payments into a new deposit with an optional fee line (feeAmount, feeAccountId, depositToAccountId). taxOverride:true sets TotalTax to the Jobber tax. Negative taxable lines are sent as NON so QuickBooks does not reject them. The preview reports CustomerMemo length and whether it was cut at 1,000 characters. Queries run sequentially and back off on HTTP 429. Header tax is a TaxCode id (San Diego County 3, Menifee 30, Murrieta 25, other Riverside County cities 23). A Temecula mailing address is geocoded to city code 29 (rate 13) even with a house number; Murrieta and Hemet unincorporated addresses stay on 23. cdtfaVerifiedCities, or a taxCodeByCity entry, sets UseAutomatedSalesTax false so the requested code and its rates are kept. The saved invoice must then match that code, the rate set for that code (23 is 3/9/25 and not 13), Jobber TotalTax, and must not be AST_TAX_OVERRIDE. ShipAddr and ShipFromAddr are the Jobber property address (structured, FreeFormAddress false) so Automated Sales Tax uses the jobsite instead of the company address. An invoice with no property street, city, and postal code is blocked, and so is an invoice whose jobs use different properties. PrivateNote on a create includes [batch:<batchId>] once when batchId is set. County rates are fixed ids, 4 for San Diego County and 25 for Riverside County, because TaxRate names are hashes. Preview blocks with ok false when those ids cannot be checked against TaxCode 3 and TaxCode 23, and nothing is posted. Confirm requires rate 4 or 25 to be present on the saved tax lines and the other county id to be absent, and TotalTax within $0.01 of the Jobber tax. A mismatch stops the chunk before payments and writes audit status tax_mismatch. Each call processes at most 10 invoices and returns nextCursor. Skips a DocNumber that already exists. confirm:true posts the chunk to whatever environment the env vars select (the configured write target, production when QBO_WRITE_ENVIRONMENT=production) and requires batchId. Does not email.',
     {
       invoiceNumbers: { type: 'array', items: { type: 'string' }, maxItems: 500 },
       fromInvoice: { type: 'integer' },
@@ -299,7 +335,12 @@ export const QBO_WRITE_MCP_TOOLS: McpToolDefinition[] = [
       taxCodeByCity: {
         type: 'object',
         additionalProperties: { type: 'string' },
-        description: 'City to TaxCode id overrides, for example {"Anza":"23","Phelan":"62"}.',
+        description: 'City to TaxCode id overrides, for example {"Temecula":"23"}. An entry also sets UseAutomatedSalesTax false so Automated Sales Tax does not replace that code. Use it only where CDTFA says the mailing city is the wrong jurisdiction.',
+      },
+      cdtfaVerifiedCities: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Mailing cities verified with CDTFA as unincorporated. Those invoices are created with UseAutomatedSalesTax false and the city tax code (taxCodeByCity or the default map). Temecula needs this. Murrieta and Hemet unincorporated addresses do not.',
       },
     },
     []

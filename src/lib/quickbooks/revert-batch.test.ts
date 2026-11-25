@@ -540,3 +540,17 @@ test('a tax_code_changed row (ok:false) is a revert target and settles its pendi
   assert.deepEqual(plan.steps.map((step) => [step.action, step.entity, step.qboId, step.auditId]), [['restore', 'Invoice', '39144', 11]]);
   assert.equal(plan.couldNot.length, 0, 'the pending row is settled by the tax_code_changed outcome');
 });
+
+test('a ship-address tax_mismatch update can be restored, and an import tax_mismatch row cannot', () => {
+  const prior = { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01', ShipAddr: { Line1: 'Remuda Drive', City: 'Temecula', PostalCode: '92592' } };
+  const plan = planBatchRevert(
+    [
+      row({ id: 1, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'pending', requestId: 'ship-39170', qboId: '39170', priorState: prior, txnDate: null }),
+      row({ id: 2, entity: 'Invoice', tool: 'qbo_invoice', action: 'update', ok: false, status: 'tax_mismatch', requestId: 'ship-39170', qboId: '39170', priorState: prior, txnDate: '2026-10-01', error: 'tax_mismatch: TotalTax' }),
+      row({ id: 3, entity: 'Invoice', tool: 'qbo_import_jobber_invoices', action: 'create', created: false, ok: false, status: 'tax_mismatch', requestId: 'tax-batch-5901', qboId: '39193', txnDate: '2026-10-01' }),
+    ],
+    '2024-12-31'
+  );
+  assert.deepEqual(plan.steps.map((step) => [step.action, step.qboId, step.auditId]), [['restore', '39170', 2]]);
+  assert.equal(plan.couldNot.length, 0);
+});

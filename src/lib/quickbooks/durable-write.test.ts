@@ -533,6 +533,75 @@ test('the write response TxnDate wins over the prior entity', async () => {
   assert.equal(audits.find((entry) => entry.status === 'ok')?.txnDate, '2026-10-02');
 });
 
+test('a CDTFA ship-address confirm keeps code 23 and audits TxnDate from the invoice', async () => {
+  const line = { Id: '1', Amount: 34500, Description: 'Well service', DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '23' }, Qty: 1, TaxCodeRef: { value: 'TAX' } } };
+  const audits: QboAuditEntry[] = [];
+  let posted: Record<string, unknown> | null = null;
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    if ((init?.method || 'GET') === 'GET') {
+      return json({
+        Invoice: {
+          Id: '39170',
+          SyncToken: '0',
+          TxnDate: '2026-10-01',
+          Line: [line],
+          TxnTaxDetail: { TxnTaxCodeRef: { value: '29' }, TotalTax: 250, TaxReviewStatus: 'AST_TAX_OVERRIDE', TaxLine: ['3', '9', '13', '25'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })) },
+        },
+      });
+    }
+    posted = JSON.parse(String(init?.body));
+    return json({
+      Invoice: {
+        Id: '39170',
+        SyncToken: '1',
+        TxnDate: '2026-10-01',
+        Line: [line],
+        TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, TotalTax: 193.75, TaxLine: ['3', '25', '9'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })) },
+      },
+    });
+  };
+  const ship = { Line1: '100 Remuda Drive', City: 'Temecula', CountrySubDivisionCode: 'CA', PostalCode: '92592' };
+  const result = await runQboWrite(
+    'qbo_invoice',
+    { id: '39170', syncToken: '0', confirm: true, cdtfaVerified: true, shipAddr: ship, shipFromAddr: ship, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 193.75, batchId: 'cdtfa-39170' },
+    { env: SANDBOX, productionRealmId: '9130349321543166', accessToken: 'tok', fetchImpl, audit: async (entry) => { audits.push(entry); } }
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.wrote, true);
+  assert.equal(result.savedTax?.ok, true);
+  assert.equal('Line' in (posted || {}), false);
+  assert.equal((posted?.TxnTaxDetail as { UseAutomatedSalesTax: boolean }).UseAutomatedSalesTax, false);
+  assert.equal(audits.find((entry) => entry.status === 'ok')?.txnDate, '2026-10-01');
+});
+
+test('a ship-address write that comes back with rate 13 is tax_code_changed and still dated', async () => {
+  const line = { Id: '1', Amount: 34500, DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '23' }, Qty: 1, TaxCodeRef: { value: 'TAX' } } };
+  const audits: QboAuditEntry[] = [];
+  const fetchImpl: typeof fetch = async (_url, init) => {
+    const invoice = {
+      Id: '39193',
+      SyncToken: (init?.method || 'GET') === 'GET' ? '0' : '1',
+      TxnDate: '2026-10-01',
+      Line: [line],
+      TxnTaxDetail: { TxnTaxCodeRef: { value: '29' }, TotalTax: 250, TaxLine: ['3', '9', '13', '25'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })) },
+    };
+    return json({ Invoice: invoice });
+  };
+  const ship = { Line1: '100 Stage Road', City: 'Temecula', CountrySubDivisionCode: 'CA', PostalCode: '92592' };
+  const result = await runQboWrite(
+    'qbo_invoice',
+    { id: '39193', syncToken: '0', confirm: true, cdtfaVerified: true, shipAddr: ship, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 193.75 },
+    { env: SANDBOX, productionRealmId: '9130349321543166', accessToken: 'tok', fetchImpl, audit: async (entry) => { audits.push(entry); } }
+  );
+  assert.equal(result.wrote, true);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 'tax_code_changed');
+  assert.match(result.error || '', /13/);
+  assert.equal(audits.at(-1)?.status, 'tax_code_changed');
+  assert.equal(audits.at(-1)?.txnDate, '2026-10-01');
+  assert.equal(audits.at(-1)?.ok, false);
+});
+
 function auditRow(entry: QboAuditEntry, index: number): BatchAuditRow {
   const prior = entry.priorState && typeof entry.priorState === 'object' ? (entry.priorState as Record<string, unknown>) : null;
   return {

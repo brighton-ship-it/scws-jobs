@@ -14,6 +14,7 @@ import {
   resolveRequestId,
   retaxInvoiceBody,
   savedTaxCode,
+  inspectSavedInvoiceTax,
 } from './write-payloads.ts';
 
 const lines = [
@@ -275,4 +276,92 @@ test('retaxInvoiceBody resends every sales line, clears the class only on retaxe
   for (const DetailType of ['DiscountLineDetail', 'DescriptionOnly', 'GroupLineDetail']) {
     assert.throws(() => retaxInvoiceBody({ ...live39144, Line: [...live39144.Line, { Id: '9', DetailType, Amount: 0 }] }, ['3'], '3'), new RegExp(`${DetailType} lines.*would delete them`));
   }
+});
+
+const remuda = {
+  Line1: '100 Remuda Drive',
+  City: 'Temecula',
+  CountrySubDivisionCode: 'CA',
+  PostalCode: '92592',
+  Country: 'United States',
+};
+
+test('cdtfaVerified resends the full postal address and pins the tax code without lines or coordinates', () => {
+  const plan = buildInvoice({
+    id: '39170',
+    syncToken: '0',
+    cdtfaVerified: true,
+    shipAddr: remuda,
+    shipFromAddr: { ...remuda, Line2: 'gate code 1234' },
+    expectedTaxCodeId: '23',
+    expectedTaxRateIds: ['3', '25', '9'],
+    expectedTotalTax: 193.75,
+  });
+  assert.equal(plan.body && 'Line' in plan.body, false);
+  assert.deepEqual(plan.body, {
+    Id: '39170',
+    SyncToken: '0',
+    sparse: true,
+    FreeFormAddress: false,
+    ShipAddr: remuda,
+    ShipFromAddr: { ...remuda, Line2: 'gate code 1234' },
+    TxnTaxDetail: { UseAutomatedSalesTax: false, TxnTaxCodeRef: { value: '23' } },
+  });
+  assert.deepEqual(plan.expectSavedTax, { taxCodeId: '23', rateIds: ['3', '25', '9'], totalTax: 193.75 });
+  assert.equal('TotalTax' in (plan.body?.TxnTaxDetail as object), false);
+  const reset = buildInvoice({
+    id: '39170',
+    syncToken: '0',
+    cdtfaVerified: true,
+    shipAddr: remuda,
+    expectedTaxCodeId: '23',
+    expectedTaxRateIds: ['3', '9', '25'],
+    expectedTotalTax: 193.75,
+    totalTax: 193.75,
+  });
+  assert.equal((reset.body?.TxnTaxDetail as { TotalTax: number }).TotalTax, 193.75);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', shipAddr: remuda, expectedTaxCodeId: '23', expectedTaxRateIds: ['3'], expectedTotalTax: 1 }), /cdtfaVerified/);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, expectedTaxCodeId: '23', expectedTaxRateIds: ['3'], expectedTotalTax: 1 }), /shipAddr/);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { ...remuda, Line2: '33.4936, -117.1484' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /Coordinates/);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { ...remuda, Lat: '33.49', Long: '-117.14' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /Lat/);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: { Line1: 'Remuda Drive', City: 'Temecula' }, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1 }), /full postal address/);
+  assert.throws(() => buildInvoice({ id: '39170', syncToken: '0', cdtfaVerified: true, shipAddr: remuda, expectedTaxCodeId: '23', expectedTaxRateIds: ['3', '25', '9'], expectedTotalTax: 1, lines: [{ amount: 1, itemId: '23' }] }), /lines/);
+});
+
+test('the ship-address post-check requires code 23, rates 3/25/9 only, the tax amount, no override, and the same lines', () => {
+  const line = { Id: '1', Amount: 34500, Description: 'Well service', DetailType: 'SalesItemLineDetail', SalesItemLineDetail: { ItemRef: { value: '23' }, Qty: 1, TaxCodeRef: { value: 'TAX' } } };
+  const prior = { Id: '39170', SyncToken: '0', TxnDate: '2026-10-01', Line: [line] };
+  const expected = { taxCodeId: '23', rateIds: ['3', '25', '9'], totalTax: 193.75 };
+  const saved = (patch: Record<string, unknown>) => ({
+    Invoice: {
+      ...prior,
+      SyncToken: '1',
+      TxnTaxDetail: {
+        TxnTaxCodeRef: { value: '23' },
+        TotalTax: 193.75,
+        TaxLine: ['3', '25', '9'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })),
+      },
+      ...patch,
+    },
+  });
+  assert.equal(inspectSavedInvoiceTax(saved({}), expected, prior).ok, true);
+  const city = inspectSavedInvoiceTax(saved({
+    TxnTaxDetail: {
+      TxnTaxCodeRef: { value: '29' },
+      TotalTax: 193.75,
+      TaxLine: ['3', '9', '13', '25'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })),
+    },
+  }), expected, prior);
+  assert.equal(city.ok, false);
+  assert.equal(city.status, 'tax_code_changed');
+  assert.match(city.reasons.join(' '), /29/);
+  assert.match(city.reasons.join(' '), /13/);
+  const amount = inspectSavedInvoiceTax(saved({ TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, TotalTax: 200, TaxLine: ['3', '9', '25'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })) } }), expected, prior);
+  assert.equal(amount.status, 'tax_mismatch');
+  const override = inspectSavedInvoiceTax(saved({ TxnTaxDetail: { TxnTaxCodeRef: { value: '23' }, TotalTax: 193.75, TaxReviewStatus: 'AST_TAX_OVERRIDE', TaxLine: ['3', '9', '25'].map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id } } })) } }), expected, prior);
+  assert.equal(override.status, 'tax_code_changed');
+  assert.match(override.reasons.join(' '), /AST_TAX_OVERRIDE/);
+  const changed = inspectSavedInvoiceTax(saved({ Line: [{ ...line, Amount: 1 }] }), expected, prior);
+  assert.equal(changed.linesUnchanged, false);
+  assert.match(changed.reasons.join(' '), /lines changed/i);
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   assessSavedTax,
   buildJobberSyncedInvoice,
+  shouldHoldAutomatedSalesTax,
   classifyJobberInvoice,
   countyRateIdFor,
   jobberPaymentLines,
@@ -730,4 +731,50 @@ test('findDiscountItem matches one active item named discount in any case', asyn
   assert.equal(await findDiscountItem(async () => ({ QueryResponse: { Item: [{ Id: '1', Name: 'Discount' }, { Id: '2', Name: 'DISCOUNT' }] } })), null, 'two matches are ambiguous');
   assert.equal(await findDiscountItem(async () => ({ QueryResponse: { Item: [{ Id: '9', Name: 'Discounted pump', Active: true }] } })), null);
   assert.equal(await findDiscountItem(async () => ({ QueryResponse: {} })), null);
+});
+
+test('a CDTFA-verified Temecula mailing city pins code 23 and a plain Temecula import does not', () => {
+  const temecula: JobberInvoiceForQbo = {
+    ...invoice,
+    invoiceNumber: '5901',
+    city: 'Temecula',
+    address: { line1: '100 Remuda Drive', line2: null, city: 'Temecula', province: 'CA', postalCode: '92592', country: 'US' },
+    taxAmount: 193.75,
+    total: 34693.75,
+  };
+  const held = buildJobberSyncedInvoice(temecula, '15', { '1MS': '23', MISC: '5' }, '23', { holdTaxCode: true });
+  const detail = held.body?.TxnTaxDetail as { UseAutomatedSalesTax?: boolean; TxnTaxCodeRef: { value: string }; TotalTax?: number };
+  assert.equal(detail.UseAutomatedSalesTax, false);
+  assert.equal(detail.TxnTaxCodeRef.value, '23');
+  assert.equal('TotalTax' in detail, false);
+  const plain = buildJobberSyncedInvoice(temecula, '15', { '1MS': '23', MISC: '5' }, '23');
+  assert.equal('UseAutomatedSalesTax' in (plain.body?.TxnTaxDetail as object), false);
+  assert.equal(shouldHoldAutomatedSalesTax('Temecula', ['Temecula'], {}), true);
+  assert.equal(shouldHoldAutomatedSalesTax('Murrieta', ['Temecula'], {}), false);
+  assert.equal(shouldHoldAutomatedSalesTax('Temecula', [], { Temecula: '23' }), true);
+  const good = assessSavedTax({
+    requestedTxnTaxCodeId: '23',
+    city: 'Temecula',
+    jobberTax: 193.75,
+    holdTaxCode: true,
+    qbo: { TxnTaxDetail: { ...taxLines(['3', '9', '25'], [6, 0.75, 1], 193.75), TxnTaxCodeRef: { value: '23' } } },
+  });
+  assert.equal(good.taxMismatch, false);
+  const cityRate = assessSavedTax({
+    requestedTxnTaxCodeId: '23',
+    city: 'Temecula',
+    jobberTax: 193.75,
+    holdTaxCode: true,
+    qbo: { TxnTaxDetail: { ...taxLines(['3', '9', '13', '25'], [6, 0.75, 1, 1], 250), TxnTaxCodeRef: { value: '29' }, TaxReviewStatus: 'AST_TAX_OVERRIDE' } },
+  });
+  assert.equal(cityRate.taxMismatch, true);
+  assert.match(cityRate.taxMismatchReasons.join(' '), /13/);
+  assert.match(cityRate.taxMismatchReasons.join(' '), /AST_TAX_OVERRIDE/);
+  const ignored = assessSavedTax({
+    requestedTxnTaxCodeId: '23',
+    city: 'Temecula',
+    jobberTax: 193.75,
+    qbo: { TxnTaxDetail: taxLines(['3', '9', '25'], [6, 0.75, 1], 193.75) },
+  });
+  assert.equal(ignored.taxMismatch, false);
 });

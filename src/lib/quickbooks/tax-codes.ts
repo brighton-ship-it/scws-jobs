@@ -37,6 +37,16 @@ export const COUNTY_RATE_ID_BY_TAX_CODE: Record<string, string> = {
 };
 export const COUNTY_RATE_IDS = ['4', '25'];
 
+/**
+ * Exact TaxRate ids on a code that must not pick up an extra city rate.
+ * Code 23 is unincorporated Riverside: 3 California, 9 Riverside County
+ * district, 25 Riverside County. Temecula city adds rate 13; that set is
+ * not accepted for a CDTFA-unincorporated Temecula mailing address.
+ */
+export const TAX_RATE_IDS_BY_TAX_CODE: Record<string, readonly string[]> = {
+  [RIVERSIDE_COUNTY_TAX_CODE_ID]: ['3', '9', '25'],
+};
+
 const SAN_DIEGO_COUNTY = [
   'san diego', 'ramona', 'escondido', 'poway', 'lakeside', 'santee', 'el cajon', 'la mesa',
   'alpine', 'julian', 'santa ysabel', 'ranchita', 'warner springs', 'valley center', 'fallbrook',

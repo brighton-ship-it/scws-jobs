@@ -19,11 +19,13 @@ import {
   buildQboPlan,
   confirmRequested,
   idempotencyPayload,
+  inspectSavedInvoiceTax,
   parseBatchId,
   resolveRequestId,
   savedTaxCode,
   taxableAmountOfBody,
   type QboPlan,
+  type SavedTaxInspection,
 } from './write-payloads.ts';
 import { COUNTY_RATE_ID_BY_TAX_CODE, COUNTY_RATE_IDS } from './tax-codes.ts';
 
@@ -135,7 +137,9 @@ export type QboWriteResult = {
   outcomeUnknown?: boolean;
   /** Invoice writes with plan.expectTaxCode: what was saved differs from what was asked (Automated Sales Tax re-picked the code, the county rate, or the taxable amount). The write happened; ok is false and status is tax_code_changed. */
   taxCodeChanged?: TaxCodeChange | null;
-  status?: 'tax_code_changed';
+  /** CDTFA ship-address update: code, exact rate set, TotalTax, override flag, and lines. */
+  savedTax?: SavedTaxInspection | null;
+  status?: 'tax_code_changed' | 'tax_mismatch';
   audit: { attempted: boolean; error?: string };
 };
 
@@ -710,19 +714,31 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     return { ...base, http, error, ids, qbo: slim(plan.entity, posted.json), audit: { attempted: true } };
   }
   let auditError: string | undefined;
-  const taxCodeChanged = taxCodeChangeOf(plan, posted.json, body);
-  const changedText = taxCodeChanged ? `tax_code_changed: ${taxCodeChanged.reasons.join(' ')}` : '';
+  const savedTax = plan.expectSavedTax && plan.entity === 'Invoice' ? inspectSavedInvoiceTax(posted.json, plan.expectSavedTax, priorState) : null;
+  const taxCodeChanged = savedTax ? null : taxCodeChangeOf(plan, posted.json, body);
+  const heldBad = savedTax && !savedTax.ok ? savedTax : null;
+  const changedText = heldBad
+    ? `${heldBad.status}: ${heldBad.reasons.join(' ')}`
+    : taxCodeChanged
+      ? `tax_code_changed: ${taxCodeChanged.reasons.join(' ')}`
+      : '';
+  const outcomeStatus: QboAuditStatus = heldBad ? heldBad.status : taxCodeChanged ? 'tax_code_changed' : 'ok';
   try {
     await remember(
-      logged(taxCodeChanged ? 'tax_code_changed' : 'ok', {
+      logged(outcomeStatus, {
         action: plan.action,
         created: plan.action === 'create' || plan.action === 'attach',
         priorState,
         syncToken: ids.syncToken,
-        payload: { http, reason: plan.reason || null, ...(plan.expectTaxCode ? { taxCodeChanged } : {}) },
+        payload: {
+          http,
+          reason: plan.reason || null,
+          ...(plan.expectTaxCode ? { taxCodeChanged } : {}),
+          ...(savedTax ? { savedTax } : {}),
+        },
         qboResponse: cap(posted.json),
         qboIds: ids,
-        ...(taxCodeChanged ? { error: changedText } : {}),
+        ...(changedText ? { error: changedText } : {}),
       }),
       deps,
       true
@@ -733,7 +749,7 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
   const errors = [changedText ? `Posted, but ${changedText}` : '', auditError ? `Posted, but the audit log failed: ${auditError}` : ''].filter(Boolean);
   return {
     ...base,
-    ok: !taxCodeChanged,
+    ok: outcomeStatus === 'ok',
     dryRun: false,
     wrote: true,
     http,
@@ -741,7 +757,8 @@ export async function runQboPlan(plan: QboPlan, args: Record<string, unknown>, d
     qbo: slim(plan.entity, posted.json),
     error: errors.length ? errors.join(' ') : undefined,
     ...(plan.expectTaxCode ? { taxCodeChanged } : {}),
-    ...(taxCodeChanged ? { status: 'tax_code_changed' as const } : {}),
+    ...(savedTax ? { savedTax } : {}),
+    ...(outcomeStatus === 'ok' ? {} : { status: outcomeStatus }),
     audit: { attempted: true, error: auditError },
   };
   }
