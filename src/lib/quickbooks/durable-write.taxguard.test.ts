@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runQboPlan } from './durable-write.ts';
+import { runQboPlan, taxCodeChangeOf } from './durable-write.ts';
 import { buildInvoice } from './write-payloads.ts';
 
 const live = {
@@ -55,4 +55,17 @@ test('a retax that keeps the old taxable amount is flagged', async () => {
   const { result } = await confirmWith({ code: '3', rates: ['3', '4', '5'], net: 5181 });
   assert.equal(result.ok, false);
   assert.match(result.taxCodeChanged?.reasons.join(' ') || '', /NetAmountTaxable is 5181, expected 5331/);
+});
+
+test('San Bernardino codes expect county rate 26 and refuse 4 or 25', () => {
+  const saved = (code: string, rates: string[]) => ({ Invoice: { TxnTaxDetail: { TxnTaxCodeRef: { value: code }, TaxLine: rates.map((id) => ({ TaxLineDetail: { TaxRateRef: { value: id }, NetAmountTaxable: 100 } })) } } });
+  const plan = (code: string) => ({ entity: 'Invoice', expectTaxCode: code } as any);
+  assert.equal(taxCodeChangeOf(plan('46'), saved('46', ['3', '7', '26', '40'])), null);
+  assert.equal(taxCodeChangeOf(plan('31'), saved('31', ['3', '7', '26'])), null);
+  const shop = taxCodeChangeOf(plan('31'), saved('31', ['3', '9', '25']));
+  assert.equal(shop?.expectedCountyRateId, '26');
+  assert.match(shop?.reasons.join(' ') || '', /do not include county rate 26/);
+  assert.match(shop?.reasons.join(' ') || '', /other county rate 25/);
+  assert.equal(taxCodeChangeOf(plan('59'), saved('59', ['3', '9', '25', '49'])), null);
+  assert.match(taxCodeChangeOf(plan('34'), saved('34', ['3', '9', '25', '26']))?.reasons.join(' ') || '', /other county rate 26/);
 });

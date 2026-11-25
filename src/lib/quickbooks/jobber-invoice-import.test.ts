@@ -17,7 +17,7 @@ import {
   type InvoiceTaxReport,
   type JobberInvoiceForQbo,
 } from './jobber-invoice-import.ts';
-import { taxCodeIdForCity } from './tax-codes.ts';
+import { COUNTY_RATE_ID_BY_TAX_CODE, COUNTY_RATE_IDS, countyNameForCity, taxCodeIdForCity } from './tax-codes.ts';
 import { privateNoteWithBatch } from './write-payloads.ts';
 
 const HASH = 'a'.repeat(64);
@@ -777,4 +777,129 @@ test('a CDTFA-verified Temecula mailing city pins code 23 and a plain Temecula i
     qbo: { TxnTaxDetail: taxLines(['3', '9', '25'], [6, 0.75, 1], 193.75) },
   });
   assert.equal(ignored.taxMismatch, false);
+});
+
+test('out-of-county map: Riverside desert cities and San Bernardino County resolve to existing codes', () => {
+  assert.equal(taxCodeIdForCity('La Quinta'), '59');
+  assert.equal(taxCodeIdForCity('Desert Hot Springs'), '34');
+  assert.equal(taxCodeIdForCity('Indio'), '35');
+  assert.equal(taxCodeIdForCity('Idyllwild-Pine Cove'), '23');
+  assert.equal(taxCodeIdForCity('Idyllwild'), '23');
+  assert.equal(taxCodeIdForCity('Yucaipa'), '46');
+  assert.equal(taxCodeIdForCity('San Bernardino'), '55');
+  assert.equal(taxCodeIdForCity('Fawnskin'), '31');
+  assert.equal(taxCodeIdForCity('Oak Glen'), '31');
+  assert.equal(taxCodeIdForCity('Lake Arrowhead'), '31');
+  // taxCodeByCity still wins, e.g. a Desert Hot Springs address outside city limits.
+  assert.equal(taxCodeIdForCity('Desert Hot Springs', { 'Desert Hot Springs': '23' }), '23');
+  for (const city of ['La Quinta', 'Desert Hot Springs', 'Indio', 'Idyllwild-Pine Cove']) {
+    assert.equal(countyNameForCity(city), 'Riverside', city);
+  }
+  for (const city of ['Yucaipa', 'San Bernardino', 'Fawnskin', 'Oak Glen', 'Lake Arrowhead']) {
+    assert.equal(countyNameForCity(city), 'San Bernardino', city);
+  }
+  assert.equal(countyNameForCity('Las Vegas'), null);
+  assert.equal(countyRateIdFor('San Bernardino'), '26');
+  for (const code of ['59', '34', '35']) assert.equal(COUNTY_RATE_ID_BY_TAX_CODE[code], '25');
+  for (const code of ['31', '46', '55']) assert.equal(COUNTY_RATE_ID_BY_TAX_CODE[code], '26');
+  assert.ok(COUNTY_RATE_IDS.includes('26'));
+});
+
+test('TaxCode 31 must carry San Bernardino County rate 26 when QuickBooks returns its list', () => {
+  const good = [
+    { id: '3', rateIds: ['3', '4', '5'] },
+    { id: '23', rateIds: ['3', '9', '25'] },
+  ];
+  assert.equal(verifyCountyRateIds([...good, { id: '31', rateIds: ['3', '7', '26'] }]).unresolvedReason, null);
+  assert.equal(verifyCountyRateIds([...good, { id: '31', rateIds: null }]).unresolvedReason, null);
+  const bad = verifyCountyRateIds([...good, { id: '31', rateIds: ['3', '7'] }]);
+  assert.match(bad.unresolvedReason || '', /TaxCode 31 does not include San Bernardino County rate 26/);
+  assert.equal(countyRateIdFor('San Bernardino', bad), null);
+});
+
+test('saved tax check: San Bernardino needs rate 26 and no other county rate', () => {
+  const yucaipa = assessSavedTax({
+    requestedTxnTaxCodeId: '46',
+    city: 'Yucaipa',
+    jobberTax: 8.75,
+    qbo: { TxnTaxDetail: taxLines(['3', '7', '26', '40'], [6, 0.75, 1, 1], 8.75) },
+  });
+  assert.equal(yucaipa.county, 'San Bernardino');
+  assert.equal(yucaipa.expectedCountyRateId, '26');
+  assert.equal(yucaipa.savedCountyRateId, '26');
+  assert.equal(yucaipa.taxMismatch, false);
+
+  const fawnskinShop = assessSavedTax({
+    requestedTxnTaxCodeId: '31',
+    city: 'Fawnskin',
+    jobberTax: 7.75,
+    qbo: { TxnTaxDetail: taxLines(['3', '9', '25'], [6.25, 0.5, 1], 7.75) },
+  });
+  assert.equal(fawnskinShop.taxMismatch, true);
+  assert.equal(fawnskinShop.savedCountyRateId, '25');
+  assert.match(fawnskinShop.taxMismatchReasons.join(' '), /do not include San Bernardino County rate 26/);
+  assert.match(fawnskinShop.taxMismatchReasons.join(' '), /include Riverside County rate 25/);
+
+  const laQuinta = assessSavedTax({
+    requestedTxnTaxCodeId: '59',
+    city: 'La Quinta',
+    jobberTax: 8.75,
+    qbo: { TxnTaxDetail: taxLines(['3', '9', '25', '49'], [6.25, 0.5, 1, 1], 8.75) },
+  });
+  assert.equal(laQuinta.county, 'Riverside');
+  assert.equal(laQuinta.taxMismatch, false);
+
+  const riversideWithSb = assessSavedTax({
+    requestedTxnTaxCodeId: '23',
+    city: 'Indio',
+    jobberTax: 7.75,
+    qbo: { TxnTaxDetail: taxLines(['3', '25', '26'], [6.25, 1, 0.5], 7.75) },
+  });
+  assert.equal(riversideWithSb.taxMismatch, true);
+  assert.match(riversideWithSb.taxMismatchReasons.join(' '), /include San Bernardino County rate 26/);
+});
+
+test('preview no longer blocks a Yucaipa or La Quinta jobsite on the county map', async () => {
+  const env = {
+    QBO_WRITES_ENABLED: 'true',
+    QBO_WRITE_REALM_ID: '2222222222222222',
+    QBO_PRODUCTION_REALM_ID: '9130349321543166',
+  };
+  const codes = {
+    QueryResponse: {
+      TaxCode: [
+        { Id: '3', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '4' } }, { TaxRateRef: { value: '5' } }] } },
+        { Id: '23', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '9' } }, { TaxRateRef: { value: '25' } }] } },
+        { Id: '31', SalesTaxRateList: { TaxRateDetail: [{ TaxRateRef: { value: '3' } }, { TaxRateRef: { value: '7' } }, { TaxRateRef: { value: '26' } }] } },
+      ],
+    },
+  };
+  const qboQuery = async (sql: string) => {
+    if (sql.includes('SalesTaxRateList')) return codes;
+    if (sql.includes('DocNumber')) return { QueryResponse: {} };
+    if (sql.includes('Customer')) return { QueryResponse: { Customer: [{ Id: '15285' }] } };
+    if (sql.includes('1MS')) return { QueryResponse: { Item: [{ Id: '23' }] } };
+    if (sql.includes('MISC')) return { QueryResponse: { Item: [{ Id: '5' }] } };
+    return { QueryResponse: {} };
+  };
+  const yucaipa: JobberInvoiceForQbo = { ...invoice, invoiceNumber: '5832', city: 'Yucaipa', address: { ...invoice.address!, city: 'Yucaipa', postalCode: '92399' } };
+  const laQuinta: JobberInvoiceForQbo = { ...invoice, invoiceNumber: '5843', city: 'La Quinta', address: { ...invoice.address!, city: 'La Quinta', postalCode: '92253' } };
+  let posts = 0;
+  const preview = await runJobberInvoiceImport(
+    { invoiceNumbers: ['5832', '5843'], batchId: 'ooc' },
+    { env, qboQuery, loadJobberInvoices: async () => [yucaipa, laQuinta], fetchImpl: async () => { posts += 1; throw new Error('preview posted'); } }
+  );
+  assert.equal(posts, 0);
+  assert.equal(preview.ok, true);
+  assert.equal(preview.countyRateUnresolved, false);
+  const rows = preview.invoices as Array<{ invoiceNumber: string; status: string; reason: string | null; body: any; tax: InvoiceTaxReport }>;
+  const y = rows.find((row) => row.invoiceNumber === '5832')!;
+  assert.equal(y.status, 'create', y.reason || '');
+  assert.equal(y.body.TxnTaxDetail.TxnTaxCodeRef.value, '46');
+  assert.equal(y.tax.county, 'San Bernardino');
+  assert.equal(y.tax.expectedCountyRateId, '26');
+  const q = rows.find((row) => row.invoiceNumber === '5843')!;
+  assert.equal(q.status, 'create', q.reason || '');
+  assert.equal(q.body.TxnTaxDetail.TxnTaxCodeRef.value, '59');
+  assert.equal(q.tax.expectedCountyRateId, '25');
 });
