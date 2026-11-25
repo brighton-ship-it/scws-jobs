@@ -67,6 +67,11 @@ export type QboPlan = {
   expectTaxCode?: string;
   /** With expectTaxCode: the NetAmountTaxable every saved TaxLine must carry. 'body' sums the posted TAX lines. */
   expectNetAmountTaxable?: number | 'body';
+  /**
+   * CDTFA ship-address update: the saved invoice must have this code, this rate
+   * set and no others, this TotalTax, no AST_TAX_OVERRIDE, and the same lines.
+   */
+  expectSavedTax?: { taxCodeId: string; rateIds: string[]; totalTax: number };
 };
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -379,6 +384,7 @@ function salesLines(args: Record<string, unknown>): Record<string, unknown>[] {
 }
 
 export function buildInvoice(args: Record<string, unknown>): QboPlan {
+  if (hasShipAddress(args) || flagTrue(args.cdtfaVerified) || flagTrue(args.reuseLiveAddress)) return buildInvoiceShipHold(args);
   const id = args.id === undefined || args.id === null || args.id === '' ? undefined : qboId(args.id, 'id');
   const syncToken = optString(args, 'syncToken');
   const hasLines = Array.isArray(args.lines) && args.lines.length > 0;
@@ -873,6 +879,15 @@ export function applyRead(plan: QboPlan, fetched: Record<string, unknown>): Reco
   const body = { ...(plan.body || {}) };
   body.Id = qboId(entity.Id ?? body.Id, 'Id');
   body.SyncToken = syncToken;
+  if ((plan.changes as { reuseLiveAddress?: boolean } | undefined)?.reuseLiveAddress) {
+    const ship = addressAsRead(entity.ShipAddr);
+    const shipFrom = addressAsRead(entity.ShipFromAddr);
+    if (!ship && !shipFrom) {
+      throw new Error(`${plan.entity} ${String(entity.Id ?? '')} has no ShipAddr or ShipFromAddr to reuse. Nothing was posted.`);
+    }
+    if (ship) body.ShipAddr = ship;
+    if (shipFrom) body.ShipFromAddr = shipFrom;
+  }
   if (plan.read?.apply === 'void') body.sparse = true;
   if (plan.read?.apply === 'retaxLines') {
     const changes = plan.changes as { retaxLineIds: string[]; txnTaxCodeId: string };
@@ -901,6 +916,205 @@ export function taxableAmountOfBody(body: Record<string, unknown> | null | undef
     .filter((line) => line?.DetailType === 'SalesItemLineDetail' && line?.SalesItemLineDetail?.TaxCodeRef?.value === 'TAX')
     .reduce((total, line) => total + Number(line.Amount || 0), 0);
   return Math.round(sum * 100) / 100;
+}
+
+const COORD_LINE = /(?:\blat(?:itude)?\b|\blong(?:itude)?\b|\blng\b)|[-+]?\d{1,3}\.\d{2,}\s*,\s*[-+]?\d{1,3}\.\d{2,}|\d+\s*°/i;
+
+function flagTrue(value: unknown): boolean {
+  return value === true || (typeof value === 'string' && value.trim().toLowerCase() === 'true');
+}
+
+function hasShipAddress(args: Record<string, unknown>): boolean {
+  return (args.shipAddr != null && args.shipAddr !== '') || (args.shipFromAddr != null && args.shipFromAddr !== '');
+}
+
+/**
+ * Full postal address for ShipAddr / ShipFromAddr. QuickBooks replaces an
+ * address sent without its fields, so every line the caller provided is resent.
+ * Coordinates are rejected: the customer sees the address lines, and Automated
+ * Sales Tax does not document Lat/Long as a jurisdiction input.
+ */
+export function postalAddress(value: unknown, label: string): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be a postal address object.`);
+  const src = value as Record<string, unknown>;
+  for (const key of Object.keys(src)) {
+    if (/^(lat|long|latitude|longitude)$/i.test(key)) {
+      throw new Error(`${label} must not include ${key}. Put the street address in the lines. Coordinates are not a tax input, and the customer sees the address.`);
+    }
+  }
+  const lines = [1, 2, 3, 4, 5].map((n) => (typeof src[`Line${n}`] === 'string' ? String(src[`Line${n}`]).trim() : ''));
+  for (const line of lines) {
+    if (line && COORD_LINE.test(line)) {
+      throw new Error(`${label} lines must be a street address. Coordinates are not allowed because the customer sees them.`);
+    }
+  }
+  const city = typeof src.City === 'string' ? src.City.trim() : '';
+  const state = typeof src.CountrySubDivisionCode === 'string' ? src.CountrySubDivisionCode.trim() : '';
+  const postal = typeof src.PostalCode === 'string' ? src.PostalCode.trim() : '';
+  if (!lines[0] || !city || !state || !postal) {
+    throw new Error(`${label} must be a full postal address: Line1, City, CountrySubDivisionCode, and PostalCode.`);
+  }
+  const out: Record<string, string> = {
+    Line1: lines[0],
+    City: city,
+    CountrySubDivisionCode: state,
+    PostalCode: postal,
+    Country: typeof src.Country === 'string' && src.Country.trim() ? src.Country.trim() : 'United States',
+  };
+  for (let n = 2; n <= 5; n += 1) {
+    if (lines[n - 1]) out[`Line${n}`] = lines[n - 1];
+  }
+  return out;
+}
+
+/** Shallow copy of a QuickBooks address, including Id, Lat, and Long. Nothing is rewritten. */
+export function addressAsRead(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const out = { ...(value as Record<string, unknown>) };
+  return Object.keys(out).length ? out : null;
+}
+
+function rateIdList(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.length) throw new Error('expectedTaxRateIds must list the TaxRate ids and no others, for example ["3","25","9"].');
+  const ids = value.map((item, index) => {
+    const text = String(item ?? '').trim();
+    if (!/^\d{1,10}$/.test(text)) throw new Error(`expectedTaxRateIds[${index}] must be a TaxRate id.`);
+    return text;
+  });
+  return [...new Set(ids)];
+}
+
+/**
+ * Sparse invoice update for a CDTFA-verified jobsite whose mailing city makes
+ * Automated Sales Tax pick the wrong code (Temecula city 29 / rate 13, when
+ * CDTFA says unincorporated Riverside 23 / rates 3, 9, 25). A real house number
+ * does not fix that, and neither does ShipFromAddr: California district tax
+ * follows the ship-to address.
+ *
+ * UseAutomatedSalesTax false plus TxnTaxCodeRef is the documented partner
+ * override that keeps the supplied tax code and its rates, when the company
+ * allows it. TotalTax is omitted unless the caller passes an explicit reset.
+ * A TotalTax-only payload is prorated over the AST-assigned code and leaves
+ * TaxReviewStatus AST_TAX_OVERRIDE, which the post-check rejects.
+ * Lines are not sent.
+ */
+function buildInvoiceShipHold(args: Record<string, unknown>): QboPlan {
+  const id = args.id === undefined || args.id === null || args.id === '' ? undefined : qboId(args.id, 'id');
+  const syncToken = optString(args, 'syncToken');
+  if (!id) throw new Error('shipAddr is only for an invoice update.');
+  if (!syncToken) throw new Error('shipAddr needs syncToken: the SyncToken you read. Confirm refuses when QuickBooks has a different one.');
+  if (!flagTrue(args.cdtfaVerified)) {
+    throw new Error('cdtfaVerified: true is required. A Temecula mailing address keeps city code 29 even with a house number, so the tax code is pinned only after a CDTFA check.');
+  }
+  if (Array.isArray(args.lines) && args.lines.length) throw new Error('shipAddr cannot be combined with lines. The update must not change lines.');
+  if (Array.isArray(args.retaxLineIds)) throw new Error('shipAddr cannot be combined with retaxLineIds.');
+  if (note(args.privateNote, 'privateNote')) throw new Error('shipAddr cannot be combined with privateNote.');
+  for (const key of ['customerId', 'txnDate', 'dueDate', 'customerMemo', 'docNumber']) {
+    if (args[key] !== undefined && args[key] !== '') throw new Error(`shipAddr cannot be combined with ${key}.`);
+  }
+  const reuse = flagTrue(args.reuseLiveAddress);
+  if (reuse && hasShipAddress(args)) throw new Error('reuseLiveAddress cannot be combined with shipAddr or shipFromAddr.');
+  let ship: Record<string, unknown> | null = !reuse && args.shipAddr != null && args.shipAddr !== '' ? postalAddress(args.shipAddr, 'shipAddr') : null;
+  let shipFrom: Record<string, unknown> | null = !reuse && args.shipFromAddr != null && args.shipFromAddr !== '' ? postalAddress(args.shipFromAddr, 'shipFromAddr') : null;
+  if (reuse && args.liveInvoice && typeof args.liveInvoice === 'object') {
+    const live = args.liveInvoice as Record<string, unknown>;
+    ship = addressAsRead(live.ShipAddr);
+    shipFrom = addressAsRead(live.ShipFromAddr);
+    if (!ship && !shipFrom) throw new Error(`Invoice ${id} has no ShipAddr or ShipFromAddr to reuse.`);
+  }
+  if (!reuse && !ship && !shipFrom) throw new Error('Pass shipAddr and/or shipFromAddr, or reuseLiveAddress: true to resend the addresses already on the invoice.');
+  const taxCodeId = qboId(args.expectedTaxCodeId, 'expectedTaxCodeId');
+  const rateIds = rateIdList(args.expectedTaxRateIds);
+  const totalTax = money(args.expectedTotalTax, 'expectedTotalTax');
+  const explicitTax = args.totalTax !== undefined && args.totalTax !== null && args.totalTax !== '';
+  const taxDetail: Record<string, unknown> = {
+    UseAutomatedSalesTax: false,
+    TxnTaxCodeRef: { value: taxCodeId },
+  };
+  if (explicitTax) taxDetail.TotalTax = money(args.totalTax, 'totalTax');
+  const body: Record<string, unknown> = {
+    Id: id,
+    SyncToken: syncToken,
+    sparse: true,
+    FreeFormAddress: false,
+    TxnTaxDetail: taxDetail,
+  };
+  if (ship) body.ShipAddr = ship;
+  if (shipFrom) body.ShipFromAddr = shipFrom;
+  return {
+    tool: 'qbo_invoice',
+    entity: 'Invoice',
+    action: 'update',
+    path: '/invoice',
+    body,
+    read: { path: `/invoice/${id}`, apply: 'syncToken' },
+    changes: { expectedSyncToken: syncToken, holdTaxCode: taxCodeId, shipAddr: ship, shipFromAddr: shipFrom, ...(reuse ? { reuseLiveAddress: true } : {}) },
+    expectSavedTax: { taxCodeId, rateIds, totalTax },
+  };
+}
+
+function invoiceEntity(json: unknown): Record<string, any> | null {
+  if (!json || typeof json !== 'object') return null;
+  const root = json as Record<string, any>;
+  const entity = root.Invoice && typeof root.Invoice === 'object' ? root.Invoice : root;
+  return entity && typeof entity === 'object' ? entity : null;
+}
+
+function lineFingerprint(line: any): string {
+  const detail = line?.SalesItemLineDetail || {};
+  return [
+    line?.Id ?? '',
+    line?.DetailType ?? '',
+    line?.Amount ?? '',
+    line?.Description ?? '',
+    detail?.ItemRef?.value ?? '',
+    detail?.Qty ?? '',
+    detail?.TaxCodeRef?.value ?? '',
+  ].join('|');
+}
+
+export type SavedTaxInspection = {
+  ok: boolean;
+  status: 'ok' | 'tax_code_changed' | 'tax_mismatch';
+  reasons: string[];
+  savedTaxCodeId: string | null;
+  savedRateIds: string[];
+  savedTotalTax: number | null;
+  taxReviewStatus: string | null;
+  linesUnchanged: boolean;
+};
+
+/** Post-write check for a CDTFA ship-address update. ok when the saved invoice matches. */
+export function inspectSavedInvoiceTax(json: unknown, expected: { taxCodeId: string; rateIds: string[]; totalTax: number }, prior: unknown): SavedTaxInspection {
+  const saved = invoiceEntity(json);
+  const before = invoiceEntity(prior);
+  const detail = saved?.TxnTaxDetail || {};
+  const taxLines: any[] = Array.isArray(detail.TaxLine) ? detail.TaxLine : [];
+  const savedTaxCodeId = savedTaxCode(json);
+  const savedRateIds = [...new Set(taxLines.map((line) => String(line?.TaxLineDetail?.TaxRateRef?.value ?? '')).filter(Boolean))];
+  const totalRaw = detail.TotalTax;
+  const savedTotalTax = totalRaw == null || totalRaw === '' || !Number.isFinite(Number(totalRaw)) ? null : Math.round(Number(totalRaw) * 100) / 100;
+  const taxReviewStatus = typeof detail.TaxReviewStatus === 'string' && detail.TaxReviewStatus ? detail.TaxReviewStatus : null;
+  const expectedRates = [...new Set(expected.rateIds)];
+  const extra = savedRateIds.filter((id) => !expectedRates.includes(id));
+  const missing = expectedRates.filter((id) => !savedRateIds.includes(id));
+  const priorLines = Array.isArray(before?.Line) ? before.Line.map(lineFingerprint).sort() : [];
+  const savedLines = Array.isArray(saved?.Line) ? saved.Line.map(lineFingerprint).sort() : [];
+  const linesUnchanged = priorLines.length === savedLines.length && priorLines.every((value, index) => value === savedLines[index]);
+  const codeReasons: string[] = [];
+  if (savedTaxCodeId !== expected.taxCodeId) codeReasons.push(`Requested TxnTaxCodeRef ${expected.taxCodeId}, QuickBooks saved ${savedTaxCodeId ?? 'none'}.`);
+  if (extra.length || missing.length) {
+    codeReasons.push(`Saved tax rates ${savedRateIds.join(', ') || 'none'}, expected only ${expectedRates.join(', ')}.`);
+  }
+  if (taxReviewStatus === 'AST_TAX_OVERRIDE') codeReasons.push('TaxReviewStatus is AST_TAX_OVERRIDE.');
+  if (!linesUnchanged) codeReasons.push('Invoice lines changed.');
+  const amountReasons: string[] = [];
+  if (savedTotalTax == null || Math.abs(savedTotalTax - expected.totalTax) > 0.01) {
+    amountReasons.push(`Saved TotalTax ${savedTotalTax ?? 'missing'} does not match expected ${expected.totalTax}.`);
+  }
+  const reasons = [...codeReasons, ...amountReasons];
+  const status = !reasons.length ? 'ok' : codeReasons.length ? 'tax_code_changed' : 'tax_mismatch';
+  return { ok: status === 'ok', status, reasons, savedTaxCodeId, savedRateIds, savedTotalTax, taxReviewStatus, linesUnchanged };
 }
 
 /** Saved header TxnTaxCodeRef on an Invoice response, or null. */

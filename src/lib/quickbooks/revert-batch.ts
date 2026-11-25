@@ -62,6 +62,9 @@ function priorTxnDate(row: BatchAuditRow): string | null {
 function isRevertTarget(row: BatchAuditRow): boolean {
   if (row.dryRun || !row.confirmed) return false;
   if (row.tool === 'qbo_revert_batch') return false;
+  // Import tax_mismatch rows are a note on a create, not the write. A ship-address
+  // update that posted and then failed the tax check is the write and can be restored.
+  if (row.status === 'tax_mismatch' && row.action === 'update' && row.priorState && row.qboId) return true;
   if (row.status && NOT_A_WRITE.has(row.status)) return false;
   if (row.status === 'ok') return true;
   if (row.status && FLAGGED_WRITE.has(row.status)) return true;
@@ -71,7 +74,7 @@ function isRevertTarget(row: BatchAuditRow): boolean {
 /** The pre-write row is settled once the same request stored an outcome. */
 function settlesRequest(row: BatchAuditRow): boolean {
   if (!row.requestId) return false;
-  if (row.status === 'ok' || row.status === 'failed' || row.status === 'tax_code_changed') return true;
+  if (row.status === 'ok' || row.status === 'failed' || row.status === 'tax_code_changed' || row.status === 'tax_mismatch') return true;
   if (row.status != null) return false;
   return row.ok || Boolean(row.error);
 }
