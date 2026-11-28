@@ -6,6 +6,10 @@
  * Code guards (not just prompt): book_job only with a startAt that a check_schedule result in
  * this same thread listed, at most one booking per thread, and every reply is capped and
  * scrubbed of prices other than the $200 service call, the $300 two-man rate, and the $100 drive surcharge.
+ *
+ * check_schedule payloads are larger than the stored tool-result trim. The offered startAt
+ * values are saved on the tool message before that trim. book_job reads the saved list.
+ * Parsing the trimmed text is only a fallback for threads stored before that list existed.
  */
 
 export type ThreadMessage = {
@@ -13,7 +17,16 @@ export type ThreadMessage = {
   content: string;
   at: string;
   name?: string;
+  /**
+   * check_schedule only. startAt values copied from the tool result before content is trimmed.
+   * When this array is present, book_job uses it and does not parse content.
+   */
+  offeredStartAts?: string[];
 };
+
+/** Stored tool JSON is cut here. A longer check_schedule body is not valid JSON. */
+export const TOOL_RESULT_CHARS = 4000;
+const TOOL_REPLAY_CHARS = 1500;
 
 export interface TextAgentTools {
   lookupCustomer(phone: string): Promise<unknown>;
@@ -86,15 +99,89 @@ function unwrap(value: unknown): any {
   return value && typeof value === 'object' && 'result' in (value as any) ? (value as any).result : value;
 }
 
+function addStart(raw: unknown, into: string[], seen: Set<string>): void {
+  if (typeof raw !== 'string' || !raw || seen.has(raw)) return;
+  seen.add(raw);
+  into.push(raw);
+}
+
+/** openSlots and availableSlots only. Visit times and earlierSlots are not offers. */
+function startAtsFromScheduleResult(value: unknown): string[] {
+  const into: string[] = [];
+  const seen = new Set<string>();
+  if (!value || typeof value !== 'object') return into;
+  const record = value as Record<string, unknown>;
+  for (const key of ['openSlots', 'availableSlots'] as const) {
+    const slots = record[key];
+    if (!Array.isArray(slots)) continue;
+    for (const slot of slots) {
+      if (!slot || typeof slot !== 'object') continue;
+      addStart((slot as { startAt?: unknown }).startAt, into, seen);
+    }
+  }
+  return into;
+}
+
+/** Body of a JSON array starting at `from`, or the rest of the string when the array was cut off. */
+function arrayBody(content: string, from: number): string {
+  let depth = 1;
+  for (let i = from; i < content.length; i++) {
+    const c = content[i];
+    if (c === '"') {
+      i += 1;
+      while (i < content.length) {
+        if (content[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (content[i] === '"') break;
+        i += 1;
+      }
+      continue;
+    }
+    if (c === '[') depth += 1;
+    else if (c === ']') {
+      depth -= 1;
+      if (depth === 0) return content.slice(from, i);
+    }
+  }
+  return content.slice(from);
+}
+
+/**
+ * Slots still readable in a check_schedule body. Valid JSON uses the object.
+ * A body cut at TOOL_RESULT_CHARS does not parse; complete startAt strings inside
+ * openSlots / availableSlots are recovered, and a startAt split by the cut is not.
+ */
+function startAtsFromScheduleContent(content: string): string[] {
+  if (!content) return [];
+  try {
+    return startAtsFromScheduleResult(JSON.parse(content));
+  } catch {
+    const into: string[] = [];
+    const seen = new Set<string>();
+    for (const match of content.matchAll(/"(?:openSlots|availableSlots)"\s*:\s*\[/g)) {
+      if (match.index === undefined) continue;
+      const body = arrayBody(content, match.index + match[0].length);
+      for (const slot of body.matchAll(/"startAt"\s*:\s*"([^"\\]*)"/g)) addStart(slot[1], into, seen);
+    }
+    return into;
+  }
+}
+
+function offeredStartSuffix(starts: readonly string[]): string {
+  return starts.length ? ` Offered startAt values: ${starts.join(', ')}` : '';
+}
+
 /** startAt values listed by any check_schedule result already in the thread. */
 export function offeredStarts(thread: ThreadMessage[]): Set<string> {
   const out = new Set<string>();
   for (const m of thread) {
     if (m.role !== 'tool' || m.name !== 'check_schedule') continue;
-    try {
-      const r = JSON.parse(m.content);
-      for (const s of [...(r?.openSlots || []), ...(r?.availableSlots || [])]) if (s?.startAt) out.add(String(s.startAt));
-    } catch { /* ignore */ }
+    const starts = Array.isArray(m.offeredStartAts)
+      ? m.offeredStartAts.filter((s) => typeof s === 'string' && s)
+      : startAtsFromScheduleContent(m.content);
+    for (const s of starts) out.add(s);
   }
   return out;
 }
@@ -132,8 +219,10 @@ export async function runTextAgent(input: {
   let urgent = false;
   const messages: any[] = [{ role: 'system', content: textAgentSystemPrompt(input.now, input.phone) }];
   for (const m of thread.slice(-30)) {
-    if (m.role === 'tool') messages.push({ role: 'system', content: `Earlier ${m.name} result: ${m.content.slice(0, 1500)}` });
-    else messages.push({ role: m.role, content: m.content });
+    if (m.role === 'tool') {
+      const listed = m.name === 'check_schedule' ? offeredStartSuffix([...offeredStarts([m])]) : '';
+      messages.push({ role: 'system', content: `Earlier ${m.name} result: ${m.content.slice(0, TOOL_REPLAY_CHARS)}${listed}` });
+    } else messages.push({ role: m.role, content: m.content });
   }
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
@@ -191,9 +280,12 @@ export async function runTextAgent(input: {
       } catch (e) {
         result = { error: e instanceof Error ? e.message.slice(0, 200) : 'tool_failed' };
       }
-      const content = JSON.stringify(result ?? {}).slice(0, 4000);
-      thread.push({ role: 'tool', name: call.function.name, content, at: nowIso });
-      messages.push({ role: 'tool', tool_call_id: call.id, content });
+      const content = JSON.stringify(result ?? {}).slice(0, TOOL_RESULT_CHARS);
+      const message: ThreadMessage = { role: 'tool', name: call.function.name, content, at: nowIso };
+      if (call.function.name === 'check_schedule') message.offeredStartAts = startAtsFromScheduleResult(result);
+      thread.push(message);
+      const listed = message.offeredStartAts ? offeredStartSuffix(message.offeredStartAts) : '';
+      messages.push({ role: 'tool', tool_call_id: call.id, content: `${content}${listed}` });
     }
   }
   // Model failed or looped: never leave the texter hanging; hand to the office once.
